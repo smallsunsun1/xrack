@@ -22,10 +22,10 @@ export component CaptureAttachmentsDemo inherits Window {
     title: "XRack · 命名深度与法线附件";
     width: 520px; height: 362px; resizable: false;
     background: #172437;
-    in-out property <float> source-z: 2;
-    in-out property <bool> diagnostic-strip: true;
-    in-out property <bool> normals: true;
-    in-out property <bool> color-inset: false;
+    in-out property <float> source-z = 2;
+    in-out property <bool> diagnostic-strip = true;
+    in-out property <bool> normals = true;
+    in-out property <bool> color-inset = false;
 
     property <CaptureMaterial> stock: CaptureMaterial {
         unlit: true, roughness: 0.76, material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),

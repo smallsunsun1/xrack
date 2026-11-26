@@ -833,7 +833,7 @@ mod tests {
 
     const UI: &str = r#"
         export component Search inherits Window {
-            in-out property <[string]> results: [];
+            in-out property <[string]> results = [];
             property <int> untouched: root.read_private();
             pure callback read_private() -> int;
             callback search(query: string);

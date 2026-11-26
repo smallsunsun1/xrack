@@ -185,7 +185,8 @@ def XR_LocalOp : XR_Op<"local", [AllTypesMatch<["input", "result"]>,
 }
 
 def XR_PropertyOp : XR_Op<"property"> {
-  let arguments = (ins XR_Value:$initial, StrAttr:$name, StrAttr:$visibility, OptionalAttr<StrAttr>:$alias);
+  let arguments = (ins XR_Value:$initial, StrAttr:$name, StrAttr:$visibility,
+                       OptionalAttr<StrAttr>:$alias, OptionalAttr<StrAttr>:$mode);
   let hasVerifier = 1;
 }
 def XR_BindOp : XR_Op<"bind"> {

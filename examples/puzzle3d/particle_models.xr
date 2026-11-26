@@ -19,15 +19,15 @@ export component ParticleModelsDemo inherits Window {
     width: 670px; height: 457px;
     background: #182333;
 
-    in-out property <float> time: 0.7;
-    in-out property <bool> imported: false;
-    in-out property <bool> spin: true;
-    in-out property <bool> cover: false;
-    in-out property <bool> translucent: false;
-    in-out property <float> light-angle: 35;
-    in-out property <int> population: 1;
-    in-out property <float> spacing: 0;
-    in-out property <float> motion-scale: 1;
+    in-out property <float> time = 0.7;
+    in-out property <bool> imported = false;
+    in-out property <bool> spin = true;
+    in-out property <bool> cover = false;
+    in-out property <bool> translucent = false;
+    in-out property <float> light-angle = 35;
+    in-out property <int> population = 1;
+    in-out property <float> spacing = 0;
+    in-out property <float> motion-scale = 1;
 
     property <string> prototype: root.imported ? @mesh-url("models/amber.glb") : "primitive:box";
     property <ModelEmitter> first: ModelEmitter {

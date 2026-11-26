@@ -8,8 +8,8 @@
 // CHECK-DAG: %[[ANSWER:[0-9]+]] = "xr.literal"() <{value = "85"}>
 // CHECK-DAG: %[[PADDING:[0-9]+]] = "xr.literal"() <{value = "12"}>
 // CHECK-NOT: "xr.get_field"
-// CHECK: "xr.property"(%[[ANSWER]]) <{name = "answer", visibility = "out"}>
-// CHECK-NEXT: "xr.property"(%[[PADDING]]) <{name = "padding", visibility = "out"}>
+// CHECK: "xr.property"(%[[ANSWER]]) <{mode = "formula", name = "answer", visibility = "out"}>
+// CHECK-NEXT: "xr.property"(%[[PADDING]]) <{mode = "formula", name = "padding", visibility = "out"}>
 
 struct Metrics {
     padding: length,

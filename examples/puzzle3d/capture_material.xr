@@ -17,10 +17,10 @@ export component CaptureMaterialDemo inherits Window {
     title: "XRack · 材质读取场景画面";
     width: 520px; height: 372px; resizable: false;
     background: #162638;
-    in-out property <int> source-layer: 4;
-    in-out property <bool> inset: true;
-    in-out property <bool> direct-visible: true;
-    in-out property <bool> feedback: false;
+    in-out property <int> source-layer = 4;
+    in-out property <bool> inset = true;
+    in-out property <bool> direct-visible = true;
+    in-out property <bool> feedback = false;
 
     property <MonitorStyle> standard: MonitorStyle {
         unlit: true, material-shader: "", shader-textures: [],

@@ -2,7 +2,7 @@ import { DateField, TimeField } from "../form/widgets.xr";
 
 component TapCounter inherits Rectangle {
     in property <string> caption;
-    private property <int> count: 0;
+    private property <int> count = 0;
     background: #e6eef8;
     border-radius: 10px;
     Text {
@@ -20,7 +20,7 @@ component TapCounter inherits Rectangle {
 component InspectionTool inherits Rectangle {
     in property <string> caption;
     in property <int> base-reading;
-    private property <int> samples: 0;
+    private property <int> samples = 0;
     callback record-pressed();
     callback recorded(int);
 
@@ -43,12 +43,12 @@ component InspectionTool inherits Rectangle {
 }
 
 component ToolWorkshop inherits Rectangle {
-    private property <bool> active: false;
-    private property <bool> swap-armed: false;
-    private property <string> panel: "pressure";
-    private property <int> mounts: 0;
-    private property <int> records: 0;
-    private property <string> reading: "No reading";
+    private property <bool> active = false;
+    private property <bool> swap-armed = false;
+    private property <string> panel = "pressure";
+    private property <int> mounts = 0;
+    private property <int> records = 0;
+    private property <string> reading = "No reading";
 
     tool-state := Text { text: "Loader " + stage.status; color: #173047; font-size: 17px; }
     tool-mounts := Text { x: 174px; text: "Mounts " + root.mounts; color: #173047; font-size: 17px; }
@@ -113,7 +113,7 @@ component ToolWorkshop inherits Rectangle {
 
 component SampleCard inherits Button {
     in property <string> caption;
-    in-out property <int> samples: 0;
+    in-out property <int> samples = 0;
     out property <bool> held: root.pressed;
     callback add-samples(amount: int) -> int;
     add-samples(amount) => { root.samples += amount; root.samples }
@@ -128,16 +128,16 @@ struct MobileTab {
 }
 
 component TabWorkshop inherits Rectangle {
-    private property <[MobileTab]> documents: [
+    private property <[MobileTab]> documents = [
         MobileTab { title: "Pump" },
         MobileTab { title: "Valve" },
         MobileTab { title: "Meter" },
     ];
-    private property <string> selected: "Valve";
-    private property <int> moves: 0;
-    private property <string> last-move: "No move";
-    private property <string> last-close: "No close";
-    private property <int> fallback-index: -1;
+    private property <string> selected = "Valve";
+    private property <int> moves = 0;
+    private property <string> last-move = "No move";
+    private property <string> last-close = "No close";
+    private property <int> fallback-index = -1;
     private property <MobileTab> fallback-tab: Model.at(
         root.documents, root.fallback-index, MobileTab { title: "" }
     );
@@ -192,13 +192,13 @@ component CardWorkshop inherits Rectangle {
     private property <SampleCardHandle> north;
     private property <SampleCardHandle> south;
     private property <SampleCardHandle> fresh;
-    private property <bool> populated: false;
-    private property <bool> north-last: false;
-    private property <bool> armed: false;
-    private property <bool> checked-old: false;
-    private property <int> old-result: 0;
-    private property <int> mounts: 0;
-    private property <bool> tabs-open: false;
+    private property <bool> populated = false;
+    private property <bool> north-last = false;
+    private property <bool> armed = false;
+    private property <bool> checked-old = false;
+    private property <int> old-result = 0;
+    private property <int> mounts = 0;
+    private property <bool> tabs-open = false;
 
     remove-held-card := Timer {
         interval: 600;
@@ -276,11 +276,11 @@ component CardWorkshop inherits Rectangle {
 
 component ImageWorkshop inherits Rectangle {
     private property <image> atlas: @image-url("../media/assets/sprite-atlas.png");
-    private property <bool> cover-atlas: false;
-    private property <bool> lower-row: false;
-    private property <bool> playing: false;
-    private property <bool> paused: false;
-    private property <int> completions: 0;
+    private property <bool> cover-atlas = false;
+    private property <bool> lower-row = false;
+    private property <bool> playing = false;
+    private property <bool> paused = false;
+    private property <int> completions = 0;
 
     atlas-size := Text {
         text: "Atlas " + root.atlas.width + " by " + root.atlas.height;
@@ -352,13 +352,13 @@ struct ServiceOption {
 }
 
 component ServiceChoiceWorkshop inherits Rectangle {
-    private property <int> code: 10;
-    private property <string> draft: "";
-    private property <int> edits: 0;
-    private property <int> picks: 0;
-    private property <int> accepts: 0;
-    private property <string> trace: "Editing";
-    private property <bool> unicode-accepted: false;
+    private property <int> code = 10;
+    private property <string> draft = "";
+    private property <int> edits = 0;
+    private property <int> picks = 0;
+    private property <int> accepts = 0;
+    private property <string> trace = "Editing";
+    private property <bool> unicode-accepted = false;
 
     service-code := Text { text: "Code " + root.code; font-size: 17px; color: #173047; }
     service-picks := Text { x: 154px; text: "Picks " + root.picks; font-size: 17px; color: #173047; }
@@ -409,17 +409,17 @@ component ServiceChoiceWorkshop inherits Rectangle {
 }
 
 component PartsSearchWorkshop inherits Rectangle {
-    private property <string> query: "";
-    private property <string> batch: "none";
-    private property <[string]> suggestions: [];
-    private property <bool> old-in-flight: false;
-    private property <bool> old-ready: false;
-    private property <bool> recent-pending: false;
-    private property <bool> meter-pending: false;
-    private property <int> searches: 0;
-    private property <int> picks: 0;
-    private property <int> accepts: 0;
-    private property <string> last: "";
+    private property <string> query = "";
+    private property <string> batch = "none";
+    private property <[string]> suggestions = [];
+    private property <bool> old-in-flight = false;
+    private property <bool> old-ready = false;
+    private property <bool> recent-pending = false;
+    private property <bool> meter-pending = false;
+    private property <int> searches = 0;
+    private property <int> picks = 0;
+    private property <int> accepts = 0;
+    private property <string> last = "";
 
     recent-response := Timer {
         interval: 120;
@@ -487,12 +487,12 @@ component PartsSearchWorkshop inherits Rectangle {
 }
 
 component PopupWorkshop inherits Rectangle {
-    private property <bool> lower: false;
-    private property <bool> modal: false;
-    private property <int> opens: 0;
-    private property <int> closes: 0;
-    private property <int> actions: 0;
-    private property <int> outside: 0;
+    private property <bool> lower = false;
+    private property <bool> modal = false;
+    private property <int> opens = 0;
+    private property <int> closes = 0;
+    private property <int> actions = 0;
+    private property <int> outside = 0;
 
     Text { text: "Opens " + root.opens; color: #173047; font-size: 17px; }
     Text { x: 155px; text: "Closes " + root.closes; color: #173047; font-size: 17px; }
@@ -539,13 +539,13 @@ component PopupWorkshop inherits Rectangle {
 }
 
 component CommandWorkshop inherits Rectangle {
-    private property <string> mode: "detail";
-    private property <bool> locked: false;
-    private property <int> calls: 0;
-    private property <int> groups: 0;
-    private property <int> denied: 0;
-    private property <string> action-mode: "";
-    private property <string> order: "Ready";
+    private property <string> mode = "detail";
+    private property <bool> locked = false;
+    private property <int> calls = 0;
+    private property <int> groups = 0;
+    private property <int> denied = 0;
+    private property <string> action-mode = "";
+    private property <string> order = "Ready";
 
     workshop-modes := ActionGroup {
         enabled: !root.locked;
@@ -600,11 +600,11 @@ component CommandWorkshop inherits Rectangle {
 }
 
 component ScanWorkshop inherits Rectangle {
-    private property <int> samples: 0;
-    private property <bool> scanning: false;
-    private property <bool> report-pending: false;
-    private property <int> reports: 0;
-    private property <string> receipt: "";
+    private property <int> samples = 0;
+    private property <bool> scanning = false;
+    private property <bool> report-pending = false;
+    private property <int> reports = 0;
+    private property <string> receipt = "";
 
     scan-clock := Timer {
         interval: 1200; repeat: true; running <=> root.scanning;
@@ -668,14 +668,14 @@ component ScanWorkshop inherits Rectangle {
 }
 
 component FocusWorkshop inherits Rectangle {
-    private property <string> code: "";
-    private property <string> memo: "";
-    private property <bool> memo-disabled: false;
-    private property <string> capture: "";
-    private property <string> route-status: "Keys ready";
-    private property <int> blocks: 0;
-    private property <int> routes: 0;
-    private property <int> entries: 0;
+    private property <string> code = "";
+    private property <string> memo = "";
+    private property <bool> memo-disabled = false;
+    private property <string> capture = "";
+    private property <string> route-status = "Keys ready";
+    private property <int> blocks = 0;
+    private property <int> routes = 0;
+    private property <int> entries = 0;
 
     enter-fields := Button {
         width: 144px; height: 44px; text: "Enter fields";
@@ -766,9 +766,9 @@ component MotionTile inherits Rectangle {
 }
 
 component MotionWorkshop inherits Rectangle {
-    private property <bool> deployed: false;
-    private property <length> base-width: 72px;
-    private property <int> selections: 0;
+    private property <bool> deployed = false;
+    private property <length> base-width = 72px;
+    private property <int> selections = 0;
 
     Text {
         width: 100%; height: 28px; horizontal-alignment: center; vertical-alignment: center;
@@ -809,8 +809,8 @@ component MotionWorkshop inherits Rectangle {
 }
 
 component DateTimeWorkshop inherits Rectangle {
-    private property <int> date-commits: 0;
-    private property <int> time-commits: 0;
+    private property <int> date-commits = 0;
+    private property <int> time-commits = 0;
 
     Text { text: "Visit date"; font-size: 17px; color: #173047; }
     visit-date := DateField {
@@ -864,11 +864,11 @@ component DateTimeWorkshop inherits Rectangle {
 }
 
 component LayoutWorkshop inherits Rectangle {
-    private property <bool> mirrored: false;
-    private property <bool> narrow: false;
-    private property <int> clicks: 0;
-    private property <string> last: "None";
-    private property <bool> fields-open: false;
+    private property <bool> mirrored = false;
+    private property <bool> narrow = false;
+    private property <int> clicks = 0;
+    private property <string> last = "None";
+    private property <bool> fields-open = false;
     callback picked(string);
     picked(name) => { root.last = name; root.clicks += 1; }
 
@@ -936,34 +936,34 @@ export component MobileNavigation inherits Window {
     title: "XRack Navigation";
     width: 390px; height: 750px;
     color-scheme: root.follow-system ? ColorScheme.system : ColorScheme.light;
-    in-out property <int> mode: 0;
-    in-out property <int> tab: 0;
-    in-out property <int> card: 0;
-    in-out property <bool> locked: false;
-    in-out property <bool> menu-open: false;
-    private property <bool> help-open: false;
-    private property <bool> color-open: false;
-    private property <bool> font-open: false;
-    private property <bool> workshop-open: false;
-    private property <bool> cards-open: false;
-    private property <bool> images-open: false;
-    private property <bool> services-open: false;
-    private property <bool> search-open: false;
-    private property <bool> popup-workshop-open: false;
-    private property <bool> commands-open: false;
-    private property <bool> scan-open: false;
-    private property <bool> focus-open: false;
-    private property <bool> motion-open: false;
-    private property <bool> layouts-open: false;
-    private property <bool> follow-system: false;
-    in-out property <color> chosen-color: #4080c0;
-    in-out property <Font> chosen-font: Font { family: "sans-serif", size: 18px, weight: 400, italic: false };
-    out property <string> picker-status: "";
-    out property <int> mode-changes: 0;
-    out property <int> drawer-opens: 0;
-    out property <int> drawer-closes: 0;
-    out property <int> moves: 0;
-    out property <int> hotkeys: 0;
+    in-out property <int> mode = 0;
+    in-out property <int> tab = 0;
+    in-out property <int> card = 0;
+    in-out property <bool> locked = false;
+    in-out property <bool> menu-open = false;
+    private property <bool> help-open = false;
+    private property <bool> color-open = false;
+    private property <bool> font-open = false;
+    private property <bool> workshop-open = false;
+    private property <bool> cards-open = false;
+    private property <bool> images-open = false;
+    private property <bool> services-open = false;
+    private property <bool> search-open = false;
+    private property <bool> popup-workshop-open = false;
+    private property <bool> commands-open = false;
+    private property <bool> scan-open = false;
+    private property <bool> focus-open = false;
+    private property <bool> motion-open = false;
+    private property <bool> layouts-open = false;
+    private property <bool> follow-system = false;
+    in-out property <color> chosen-color = #4080c0;
+    in-out property <Font> chosen-font = Font { family: "sans-serif", size: 18px, weight: 400, italic: false };
+    out property <string> picker-status = "";
+    out property <int> mode-changes = 0;
+    out property <int> drawer-opens = 0;
+    out property <int> drawer-closes = 0;
+    out property <int> moves = 0;
+    out property <int> hotkeys = 0;
 
     keyboard-action := Shortcut {
         sequence: "Ctrl+K";

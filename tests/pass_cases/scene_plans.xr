@@ -62,10 +62,10 @@ component Cell inherits Rectangle {
 struct Probe3D { source: string, position: point3d, box-size: vector3d }
 
 export component Plans inherits Window {
-    in property <bool> compact: false;
-    in-out property <color> ink: #ebedf0;
-    in property <[string]> items: ["one", "two"];
-    in property <[Probe3D]> probes: [];
+    in property <bool> compact = false;
+    in-out property <color> ink = #ebedf0;
+    in property <[string]> items = ["one", "two"];
+    in property <[Probe3D]> probes = [];
 
     states [
         dead when false: { panel.width: 25px; }

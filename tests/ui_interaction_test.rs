@@ -2326,12 +2326,12 @@ fn shared_scroll_bindings_preserve_requested_position_across_independent_clamps(
     assert_eq!(driver.component().get_small_scrolls(), 0);
 
     assert!(driver.scroll("follower", Point { x: 0.0, y: 30.0 }));
-    assert_eq!(driver.component().get_follower_y(), Length(-86.0));
+    assert_eq!(driver.component().get_follower_y(), Length(-56.0));
     assert_eq!(driver.component().get_vertical(), Length(-56.0));
     driver.click("set-deep");
     assert_eq!(driver.component().get_large_y(), Length(-170.0));
     assert_eq!(driver.component().get_small_y(), Length(-60.0));
-    assert_eq!(driver.component().get_follower_y(), Length(-86.0));
+    assert_eq!(driver.component().get_follower_y(), Length(-170.0));
     assert_eq!(driver.component().get_vertical(), Length(-170.0));
 
     driver.update(|ui| ui.set_small_content(Length(120.0)));
@@ -3483,7 +3483,7 @@ fn custom_window_chrome_routes_background_drags_and_keeps_controls_interactive()
 }
 
 #[test]
-fn component_states_share_lazy_inputs_and_respect_explicit_writes() {
+fn component_states_keep_the_active_binding_above_the_base_value() {
     use std::{cell::Cell, rc::Rc};
 
     let mut ui = ComponentStatesDemo::new();
@@ -3527,7 +3527,7 @@ fn component_states_share_lazy_inputs_and_respect_explicit_writes() {
 
     ui.set_warning(true);
     ui.invoke_set_banner("手动标签".into());
-    assert_eq!(ui.get_effective_caption(), "手动标签");
+    assert_eq!(ui.get_effective_caption(), "需要检查");
     ui.set_warning(false);
     assert_eq!(ui.get_effective_caption(), "手动标签");
 }

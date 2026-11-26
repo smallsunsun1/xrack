@@ -15,12 +15,13 @@ fn reload_keeps_in_flight_host_state_and_does_not_restart_named_one_shot() {
     let source = r#"
         export component App inherits Window {
             title: "Before";
-            in-out property <string> query: "XRack";
-            in-out property <[string]> results: [];
+            in-out property <string> query = "XRack";
+            in-out property <[string]> results = [];
             out property <string> heading: "Count " + Model.count(root.results);
+            in-out property <bool> startup-running = true;
             callback search(string);
             startup := Timer {
-                interval: 1; running: true; repeat: false;
+                interval: 1; running <=> root.startup-running; repeat: false;
                 triggered => { root.search(root.query); }
             }
         }
@@ -104,10 +105,10 @@ fn reload_preserves_edited_list_literals_and_their_row_identities() {
     let source = r#"
         export struct Entry { count: int }
         export component App inherits Window {
-            in-out property <[Entry]> events: [];
-            in-out property <[Entry]> untouched: [Entry { count: 1 }];
+            in-out property <[Entry]> events = [];
+            in-out property <[Entry]> untouched = [Entry { count: 1 }];
             property <[Entry]> internal: [Entry { count: 2 }];
-            in-out property <[Entry]> derived: root.internal;
+            in-out property <[Entry]> derived = root.internal;
             callback append();
             append => {
                 Model.append(root.events, Entry { count: 3 });
@@ -156,7 +157,7 @@ fn reload_preserves_edited_list_literals_and_their_row_identities() {
 fn execute_mlir_bindings_and_callbacks_after_releasing_module() {
     let source = r#"
         export component Counter inherits Window {
-            in-out property <int> count: 0;
+            in-out property <int> count = 0;
             out property <int> doubled: count * 2;
             callback increment(step: int);
             increment(step) => { root.count += step; }
@@ -197,7 +198,7 @@ fn hoisted_translation_tracks_locale_and_arguments() {
         r#"
         translations "catalog.toml";
         export component App inherits Window {
-            in-out property <int> count: 1;
+            in-out property <int> count = 1;
             for row in 3 : Text { text: @tr("label", count: root.count); }
         }
         "#,
@@ -245,10 +246,10 @@ fn visual_caches_stay_lazy_and_use_the_component_or_row_scope() {
     let module = compile(
         r#"
         export component App inherits Window {
-            in-out property <int> count: 1;
-            in-out property <string> prefix: "A";
-            in-out property <bool> show: false;
-            in-out property <[string]> items: ["one", "two"];
+            in-out property <int> count = 1;
+            in-out property <string> prefix = "A";
+            in-out property <bool> show = false;
+            in-out property <[string]> items = ["one", "two"];
             pure callback describe() -> string;
             out property <string> caption: root.describe();
             Text { text: "Count " + root.count; }
@@ -382,12 +383,12 @@ fn child_instances_write_back_to_their_own_parent_input() {
     let module = compile(
         r#"
         component Field inherits LineEdit {
-            in-out property <string> value: "";
+            in-out property <string> value = "";
             text <=> root.value;
         }
         export component App inherits Window {
-            in-out property <string> left: "first";
-            in-out property <string> right: "second";
+            in-out property <string> left = "first";
+            in-out property <string> right = "second";
             VerticalBox {
                 Field { value <=> root.left; }
                 Field { value <=> root.right; }
@@ -421,12 +422,12 @@ fn inactive_branch_stays_lazy_and_errors_do_not_poison_other_exports() {
     let module = compile(
         r#"
         export component App inherits Window {
-            in property <bool> ready: false;
-            in property <int> denominator: 0;
+            in property <bool> ready = false;
+            in property <int> denominator = 0;
             out property <int> result: ready ? 10 / denominator : 7;
         }
         export component Extra inherits Window {
-            in property <int> denominator: 0;
+            in property <int> denominator = 0;
             Text { text: "" + (10 / root.denominator); }
         }
     "#,
@@ -452,13 +453,13 @@ fn state_overrides_are_ordered_and_restore_live_component_inputs() {
     let module = compile(
         r#"
         component Badge inherits Rectangle {
-            in-out property <string> caption: "Default";
+            in-out property <string> caption = "Default";
             Text { text: root.caption; }
         }
         export component App inherits Window {
-            in-out property <string> caption: "Ready";
-            in-out property <bool> warning: false;
-            in-out property <bool> urgent: false;
+            in-out property <string> caption = "Ready";
+            in-out property <bool> warning = false;
+            in-out property <bool> urgent = false;
             badge := Badge { caption: root.caption; width: 100px; }
             states [
                 warning when root.warning: {
@@ -505,8 +506,8 @@ fn selected_combo_item_updates_binding_before_running_handler() {
     let module = compile(
         r#"
         export component App inherits Window {
-            in-out property <string> choice: "one";
-            out property <string> observed: "";
+            in-out property <string> choice = "one";
+            out property <string> observed = "";
             picker := ComboBox {
                 model: ["one", "two"];
                 current-value <=> root.choice;
@@ -536,9 +537,9 @@ fn spin_control_uses_runtime_wrapping_and_read_only_rules() {
     let module = compile(
         r#"
         export component App inherits Window {
-            in-out property <int> count: 5;
-            in-out property <bool> locked: false;
-            out property <int> observed: -1;
+            in-out property <int> count = 5;
+            in-out property <bool> locked = false;
+            out property <int> observed = -1;
             spin := SpinBox {
                 minimum: 0;
                 maximum: 5;
@@ -570,12 +571,12 @@ fn virtual_delegate_retains_local_state_and_rejects_replaced_rows() {
         r#"
         component CounterRow inherits Button {
             in property <string> label;
-            property <int> clicks: 0;
+            property <int> clicks = 0;
             text: root.label + ":" + root.clicks;
             clicked => { root.clicks += 1; }
         }
         export component App inherits Window {
-            in-out property <[string]> items: ["A", "B", "C"];
+            in-out property <[string]> items = ["A", "B", "C"];
             ListView {
                 for item[index] in root.items : CounterRow { label: index + " " + item; }
             }
@@ -649,10 +650,11 @@ fn two_way_link_follows_forwarded_input_through_nested_aliases() {
         }
         component Wrapper inherits Rectangle {
             in-out property <string> forwarded <=> field.value;
-            field := Entry { value: "internal"; }
+            property <string> stored = "internal";
+            field := Entry { value <=> root.stored; }
         }
         export component App inherits Window {
-            in-out property <string> value: "parent";
+            in-out property <string> value = "parent";
             Wrapper { forwarded <=> root.value; }
         }
     "#,
@@ -682,11 +684,11 @@ fn record_row_links_update_only_the_live_nested_field() {
         struct Flags { enabled: bool, retained: int }
         struct Entry { label: string, flags: Flags }
         export component App inherits Window {
-            in-out property <[Entry]> records: [
+            in-out property <[Entry]> records = [
                 Entry { label: "one", flags: Flags { enabled: false, retained: 8 } },
                 Entry { label: "two", flags: Flags { enabled: false, retained: 9 } }
             ];
-            out property <int> edits: 0;
+            out property <int> edits = 0;
             ListView {
                 row-height: 32px;
                 for entry in root.records : CheckDelegate {
@@ -757,7 +759,7 @@ fn record_field_forwards_to_the_editable_component_input() {
             text <=> root.label;
         }
         export component App inherits Window {
-            in-out property <[Entry]> records: [Entry { label: "before" }];
+            in-out property <[Entry]> records = [Entry { label: "before" }];
             ListView {
                 for entry in root.records : Editor { label <=> entry.label; }
             }
@@ -801,7 +803,7 @@ fn custom_clipboard_parser_replays_only_changed_nested_fields() {
         }
 
         export component App inherits Window {
-            in-out property <[PasteEntry]> records: [
+            in-out property <[PasteEntry]> records = [
                 PasteEntry { details: Details { label: "original", enabled: false } },
                 PasteEntry { details: Details { label: "second", enabled: false } },
             ];
@@ -868,7 +870,7 @@ fn custom_clipboard_parser_replays_only_changed_nested_fields() {
 fn string_table_paste_replays_by_row_identity_after_reordering() {
     let source = r#"
         export component App inherits Window {
-            in-out property <[string]> entries: ["alpha", "beta"];
+            in-out property <[string]> entries = ["alpha", "beta"];
             sheet := TableView {
                 pasteable: true;
                 edit-on-tab: true;
@@ -910,8 +912,8 @@ fn timer_immediate_and_completed_ticks_observe_running_in_the_right_order() {
 
     let source = r#"
         export component App inherits Window {
-            out property <string> events: "";
-            in-out property <bool> pending: true;
+            out property <string> events = "";
+            in-out property <bool> pending = true;
             pulse := Timer {
                 interval: 100;
                 running <=> root.pending;
@@ -956,7 +958,7 @@ fn tumbler_literal_model_keeps_its_identity_between_render_and_selection() {
     let module = compile(
         r#"
         export component App inherits Window {
-            in-out property <int> selected: 0;
+            in-out property <int> selected = 0;
             Tumbler {
                 model: ["a", "b", "c"];
                 current-index <=> root.selected;

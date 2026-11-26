@@ -9,8 +9,8 @@ struct Actor {
     color: color, geometry: Geometry,
 }
 export component AuthoredMeshPlan inherits Window {
-    in property <[Vertex]> points: [];
-    in property <[int]> faces: [];
+    in property <[Vertex]> points = [];
+    in property <[int]> faces = [];
     SceneView3D {
         width: 80px; height: 80px;
         model: [Actor {

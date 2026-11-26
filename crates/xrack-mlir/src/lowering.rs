@@ -639,6 +639,9 @@ impl Builder<'_> {
             match member {
                 LoweredMember::Property(p) => {
                     let mut attributes = vec![("visibility", p.visibility.as_str())];
+                    if let Some(mode) = p.mode.mlir_name() {
+                        attributes.push(("mode", mode));
+                    }
                     if p.alias {
                         attributes.push(("alias", "true"));
                     }

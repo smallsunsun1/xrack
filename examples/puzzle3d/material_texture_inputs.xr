@@ -18,9 +18,9 @@ export component MaterialTextureInputsDemo inherits Window {
     width: 480px; height: 310px; resizable: false;
     background: #172332;
 
-    in-out property <bool> file-enabled: true;
-    in-out property <bool> live-enabled: true;
-    in-out property <bool> cool: true;
+    in-out property <bool> file-enabled = true;
+    in-out property <bool> live-enabled = true;
+    in-out property <bool> cool = true;
     property <string> swatch: @texture-url("models/channel-swatch.png");
     property <MaterialInput> input: MaterialInput {
         texture: "", item: "", color-space: "srgb", filter: "linear",

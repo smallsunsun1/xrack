@@ -16,12 +16,12 @@ export component ParticleMeshEmittersDemo inherits Window {
     width: 670px; height: 462px;
     background: #182333;
 
-    in-out property <string> mesh-key: @mesh-url("models/particle-surface.gltf");
-    in-out property <string> direction: "surface-normal";
-    in-out property <float> stretch: 1.0;
-    in-out property <float> turn: 0;
-    in-out property <float> time: 0.55;
-    in-out property <int> population: 800;
+    in-out property <string> mesh-key = @mesh-url("models/particle-surface.gltf");
+    in-out property <string> direction = "surface-normal";
+    in-out property <float> stretch = 1.0;
+    in-out property <float> turn = 0;
+    in-out property <float> time = 0.55;
+    in-out property <int> population = 800;
 
     property <MeshEmitter> defaults: MeshEmitter {
         position: Point3D.new(0, 1.38, 0), color: #50dbffff, size: 0.055, lifetime: 4,

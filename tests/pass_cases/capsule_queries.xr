@@ -10,15 +10,15 @@
 // CHECK: name = "still", visibility = "out"
 // CHECK-NOT: value = "capsule-trigger-crossings-3d"
 // CHECK: [[EMPTY:%[0-9]+]] = "xr.hit3d_array"
-// CHECK: "xr.property"([[EMPTY]]) <{name = "stationary", visibility = "out"
+// CHECK: "xr.property"([[EMPTY]]) <{mode = "formula", name = "stationary", visibility = "out"
 // CHECK: "xr.geometry_function"{{.*}}value = "capsule-trigger-crossings-3d"
 // CHECK: name = "reactive-stationary", visibility = "out"
 // CHECK: "xr.geometry_function"{{.*}}value = "capsule-walk-result-3d"
 // CHECK-NOT: value = "capsule-walk-result-3d"
 // CHECK: [[WALK:%[0-9]+]] = "xr.walk_result3d"({{.*}}, [[EMPTY]])
-// CHECK: "xr.property"([[WALK]]) <{name = "stationary-walk", visibility = "out"
+// CHECK: "xr.property"([[WALK]]) <{mode = "formula", name = "stationary-walk", visibility = "out"
 // CHECK: [[STANDING:%[0-9]+]] = "xr.geometry_function"{{.*}}value = "capsule-walk-result-3d"
-// CHECK: "xr.property"([[STANDING]]) <{name = "standing", visibility = "out"
+// CHECK: "xr.property"([[STANDING]]) <{mode = "formula", name = "standing", visibility = "out"
 // CHECK: "xr.walk_result3d_field"{{.*}}value = "grounded"
 // CHECK: "xr.geometry_function"{{.*}}value = "capsule-walk-with-contacts-3d"
 // CHECK: "xr.walk_result3d_field"{{.*}}value = "contacts"
@@ -37,9 +37,9 @@ struct Actor {
 }
 
 export component App inherits Window {
-    in property <[Actor]> objects: [];
-    in property <point3d> origin: Point3D.new(0, 1, 0);
-    in property <float> capsule-segment: 1;
+    in property <[Actor]> objects = [];
+    in property <point3d> origin = Point3D.new(0, 1, 0);
+    in property <float> capsule-segment = 1;
     out property <hit3d> low: Scene3D.capsule-cast(root.objects, root.origin, Vector3D.new(1, 0, 0), 6, 0.4, 0, 1);
     out property <hit3d> high: Scene3D.capsule-cast(root.objects, root.origin, Vector3D.new(1, 0, 0), 6, 0.4, root.capsule-segment);
     out property <point3d> still: Scene3D.capsule-slide(root.objects, root.origin, Vector3D.new(0, 0, 0), 0.4, root.capsule-segment);

@@ -13,12 +13,12 @@ export component BodyDynamicsDemo inherits Window {
     property <point3d> start: Point3D.new(-1.8, 0.78, 0);
     property <vector3d> zero: Vector3D.new(0, 0, 0);
     property <vector3d> box-size: Vector3D.new(1.05, 0.62, 0.68);
-    out property <int> body: 0;
-    out property <int> ticks: 0;
-    in-out property <bool> running: false;
-    out property <bool> driving: false;
-    out property <bool> locked: false;
-    out property <bool> gravity: false;
+    out property <int> body = 0;
+    out property <int> ticks = 0;
+    in-out property <bool> running = false;
+    out property <bool> driving = false;
+    out property <bool> locked = false;
+    out property <bool> gravity = false;
     out property <point3d> position: root.body == 0 ? root.start : Physics3D.position(root.world, root.body);
     out property <vector3d> orientation: Physics3D.rotation(root.world, root.body);
     out property <vector3d> speed: Physics3D.velocity(root.world, root.body);

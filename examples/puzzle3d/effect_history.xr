@@ -16,13 +16,13 @@ export component EffectHistoryDemo inherits Window {
     width: 480px; height: 310px; resizable: false;
     background: #172332;
 
-    in-out property <float> object-x: -1.4;
-    in-out property <float> decay: 0.82;
-    in-out property <int> history-revision: 0;
-    in-out property <bool> animate-history: false;
-    in-out property <bool> show-trail: true;
-    in-out property <string> history-format: "rgba16f";
-    in-out property <length> view-width: 480px;
+    in-out property <float> object-x = -1.4;
+    in-out property <float> decay = 0.82;
+    in-out property <int> history-revision = 0;
+    in-out property <bool> animate-history = false;
+    in-out property <bool> show-trail = true;
+    in-out property <string> history-format = "rgba16f";
+    in-out property <length> view-width = 480px;
 
     Rectangle { width: 480px; height: 242px; background: #24394e; }
     trail-view := SceneView3D {

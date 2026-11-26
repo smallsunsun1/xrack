@@ -68,3 +68,31 @@ fn parses_nested_callback_branches_and_loops() {
     assert!(parse(source).is_ok(), "{:?}", parse(source).err());
     assert!(parse(&source.replace("else if false", "else if")).is_err());
 }
+
+#[test]
+fn properties_distinguish_storage_formulas_and_initializers() {
+    use xrack_parser::ast::{Member, PropertyMode};
+
+    let source = r#"component Demo inherits Window {
+        in property <string> source;
+        property <string> live: root.source;
+        property <string> draft = root.source;
+    }"#;
+    let doc = parse(source).unwrap();
+    let modes: Vec<_> = doc.components[0]
+        .members
+        .iter()
+        .filter_map(|member| match member {
+            Member::Property(property) => Some(property.mode),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        modes,
+        [
+            PropertyMode::Stored,
+            PropertyMode::Formula,
+            PropertyMode::Once
+        ]
+    );
+}

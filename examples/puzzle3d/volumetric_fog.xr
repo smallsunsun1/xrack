@@ -14,14 +14,14 @@ export component VolumetricFogDemo inherits Window {
     width: 600px; height: 422px;
     resizable: false;
     background: #1a293c;
-    in-out property <bool> fog-enabled: true;
-    in-out property <bool> overlap: true;
-    in-out property <bool> geometry: true;
-    in-out property <bool> hdr-sky: false;
-    in-out property <bool> reverse-list: false;
-    in-out property <float> density: 0.65;
-    in-out property <float> orbit: 0;
-    in-out property <int> view-mask: 3;
+    in-out property <bool> fog-enabled = true;
+    in-out property <bool> overlap = true;
+    in-out property <bool> geometry = true;
+    in-out property <bool> hdr-sky = false;
+    in-out property <bool> reverse-list = false;
+    in-out property <float> density = 0.65;
+    in-out property <float> orbit = 0;
+    in-out property <int> view-mask = 3;
 
     property <Mist> blue: Mist {
         position: Point3D.new(-0.65, 0.03, 1), size: Vector3D.new(3.1, 2.35, 2),

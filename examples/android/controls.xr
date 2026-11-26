@@ -5,14 +5,14 @@ struct GalleryCard {
 }
 
 component GesturePad inherits Rectangle {
-    private property <float> zoom: 1;
-    private property <float> angle: 0;
-    private property <float> initial-zoom: 1;
-    private property <float> initial-angle: 0;
-    private property <int> starts: 0;
-    private property <int> ends: 0;
-    private property <int> cancellations: 0;
-    private property <int> taps: 0;
+    private property <float> zoom = 1;
+    private property <float> angle = 0;
+    private property <float> initial-zoom = 1;
+    private property <float> initial-angle = 0;
+    private property <int> starts = 0;
+    private property <int> ends = 0;
+    private property <int> cancellations = 0;
+    private property <int> taps = 0;
 
     VerticalLayout {
         spacing: 8px;
@@ -72,13 +72,13 @@ component GesturePad inherits Rectangle {
 }
 
 component RangePanel inherits Rectangle {
-    private property <float> low: 50;
-    private property <float> high: 50;
-    private property <bool> mirrored: false;
-    private property <int> edits: 0;
-    private property <int> releases: 0;
-    private property <bool> ordered: true;
-    private property <bool> release-pending: false;
+    private property <float> low = 50;
+    private property <float> high = 50;
+    private property <bool> mirrored = false;
+    private property <int> edits = 0;
+    private property <int> releases = 0;
+    private property <bool> ordered = true;
+    private property <bool> release-pending = false;
 
     Text {
         width: 298px; height: 30px;
@@ -132,13 +132,13 @@ component RangePanel inherits Rectangle {
 }
 
 component DialPanel inherits Rectangle {
-    private property <float> level: 75;
-    private property <float> released-level: 75;
-    private property <int> releases: 0;
-    private property <DialInputMode> mode: circular;
-    private property <bool> locked: false;
-    private property <bool> range-open: false;
-    private property <bool> format-open: false;
+    private property <float> level = 75;
+    private property <float> released-level = 75;
+    private property <int> releases = 0;
+    private property <DialInputMode> mode = circular;
+    private property <bool> locked = false;
+    private property <bool> range-open = false;
+    private property <bool> format-open = false;
 
     gain-dial := Dial {
         x: 80px; y: 4px; width: 140px; height: 140px;
@@ -222,16 +222,16 @@ component DialPanel inherits Rectangle {
 }
 
 component ExportOptionsPanel inherits Rectangle {
-    private property <bool> labels: true;
-    private property <bool> manifest: false;
-    private property <bool> compress: false;
-    private property <CheckState> review: CheckState.unchecked;
-    private property <bool> show-review: false;
-    private property <bool> options-locked: false;
-    private property <int> bulk-edits: 0;
-    private property <int> item-edits: 0;
-    private property <bool> callback-order: true;
-    private property <string> compression-event: "";
+    private property <bool> labels = true;
+    private property <bool> manifest = false;
+    private property <bool> compress = false;
+    private property <CheckState> review = CheckState.unchecked;
+    private property <bool> show-review = false;
+    private property <bool> options-locked = false;
+    private property <int> bulk-edits = 0;
+    private property <int> item-edits = 0;
+    private property <bool> callback-order = true;
+    private property <string> compression-event = "";
 
     options := ButtonGroup { exclusive: false; enabled: !root.options-locked; }
     export-summary := Text {
@@ -313,7 +313,7 @@ component ExportOptionsPanel inherits Rectangle {
 
 component ConnectionDraft inherits VerticalLayout {
     spacing: 8px;
-    out property <string> draft: "";
+    out property <string> draft = "";
     out property <bool> editing: endpoint.has-focus;
     callback saved();
 
@@ -331,11 +331,11 @@ component ConnectionDraft inherits VerticalLayout {
 }
 
 component TagFormatPanel inherits Rectangle {
-    private property <string> tag: "";
-    private property <string> saved: "";
-    private property <int> saves: 0;
-    private property <int> finishes: 0;
-    private property <string> finish-status: "No finished edit";
+    private property <string> tag = "";
+    private property <string> saved = "";
+    private property <int> saves = 0;
+    private property <int> finishes = 0;
+    private property <string> finish-status = "No finished edit";
 
     Text { text: "Asset tag"; font-size: 17px; color: #173047; }
     asset-tag := LineEdit {
@@ -380,11 +380,11 @@ component TagFormatPanel inherits Rectangle {
 }
 
 component ConnectionPanel inherits Rectangle {
-    private property <bool> details-open: false;
-    private property <bool> delivery-on: true;
-    private property <int> folds: 0;
-    private property <int> group-edits: 0;
-    private property <int> saves: 0;
+    private property <bool> details-open = false;
+    private property <bool> delivery-on = true;
+    private property <int> folds = 0;
+    private property <int> group-edits = 0;
+    private property <int> saves = 0;
 
     fold-shortcut := Shortcut {
         sequence: "F8";
@@ -445,11 +445,11 @@ component ConnectionPanel inherits Rectangle {
 }
 
 component DelayConfirmationPanel inherits Rectangle {
-    private property <bool> confirmed: false;
-    private property <bool> locked: false;
-    private property <bool> lock-pending: false;
-    private property <int> confirmations: 0;
-    private property <bool> order-ok: true;
+    private property <bool> confirmed = false;
+    private property <bool> locked = false;
+    private property <bool> lock-pending = false;
+    private property <int> confirmations = 0;
+    private property <bool> order-ok = true;
 
     auto-lock := Timer {
         interval: 7000;
@@ -499,15 +499,15 @@ component DelayConfirmationPanel inherits Rectangle {
 }
 
 component ClickRoutesPanel inherits Rectangle {
-    private property <bool> locked: false;
-    private property <bool> order-ok: true;
-    private property <int> pairs: 0;
-    private property <int> paired-after: 0;
-    private property <int> commands: 0;
-    private property <int> presses: 0;
-    private property <int> releases: 0;
-    private property <int> cancels: 0;
-    private property <int> other: 0;
+    private property <bool> locked = false;
+    private property <bool> order-ok = true;
+    private property <int> pairs = 0;
+    private property <int> paired-after = 0;
+    private property <int> commands = 0;
+    private property <int> presses = 0;
+    private property <int> releases = 0;
+    private property <int> cancels = 0;
+    private property <int> other = 0;
 
     pair-command := Action {
         text: "Pair target";
@@ -574,9 +574,9 @@ component ClickRoutesPanel inherits Rectangle {
 }
 
 component PasswordPanel inherits Rectangle {
-    private property <string> value: "";
-    private property <string> probe: "checkpad";
-    private property <bool> revealed: false;
+    private property <string> value = "";
+    private property <string> probe = "checkpad";
+    private property <bool> revealed = false;
 
     Text { text: "Password field"; font-size: 17px; color: #173047; }
     password-entry := LineEdit {
@@ -616,19 +616,19 @@ component PasswordPanel inherits Rectangle {
 }
 
 component ButtonHoldPanel inherits Rectangle {
-    private property <int> presses: 0;
-    private property <int> releases: 0;
-    private property <int> cancels: 0;
-    private property <int> taps: 0;
-    private property <int> holds: 0;
-    private property <int> repeats: 0;
-    private property <int> repeat-cancels: 0;
-    private property <int> repeat-releases: 0;
-    private property <bool> repeat-saw-press: false;
-    private property <bool> order-ok: true;
-    private property <bool> delay-open: false;
-    private property <bool> clicks-open: false;
-    private property <bool> password-open: false;
+    private property <int> presses = 0;
+    private property <int> releases = 0;
+    private property <int> cancels = 0;
+    private property <int> taps = 0;
+    private property <int> holds = 0;
+    private property <int> repeats = 0;
+    private property <int> repeat-cancels = 0;
+    private property <int> repeat-releases = 0;
+    private property <bool> repeat-saw-press = false;
+    private property <bool> order-ok = true;
+    private property <bool> delay-open = false;
+    private property <bool> clicks-open = false;
+    private property <bool> password-open = false;
 
     inspect-button := Button {
         width: 298px; height: 52px; text: "Inspect control";
@@ -738,33 +738,33 @@ export component MobileControls inherits Window {
     background: #f3f7fb;
     color-scheme: light;
 
-    in-out property <float> volume: 25;
-    in-out property <bool> muted: false;
-    in-out property <bool> locked: false;
-    in-out property <float> lower: 20;
-    in-out property <float> upper: 75;
-    in-out property <int> count: 2;
-    in-out property <float> gain: 1.5;
-    in-out property <int> priority: 0;
-    in-out property <bool> shown: false;
-    out property <int> changes: 0;
-    out property <int> releases: 0;
-    out property <int> accepted: 0;
-    out property <int> rejected: 0;
-    out property <int> background-clicks: 0;
-    private property <bool> wheels-open: false;
-    private property <int> wheel-index: 0;
-    private property <int> wheel-commits: 0;
-    private property <int> card-code: 20;
-    private property <int> card-commits: 0;
-    private property <bool> wrap-wheel: false;
-    private property <bool> lock-wheels: false;
-    private property <bool> mirror-cards: false;
-    private property <bool> gesture-open: false;
-    private property <bool> dial-open: false;
-    private property <bool> export-open: false;
-    private property <bool> connection-open: false;
-    private property <bool> button-holds-open: false;
+    in-out property <float> volume = 25;
+    in-out property <bool> muted = false;
+    in-out property <bool> locked = false;
+    in-out property <float> lower = 20;
+    in-out property <float> upper = 75;
+    in-out property <int> count = 2;
+    in-out property <float> gain = 1.5;
+    in-out property <int> priority = 0;
+    in-out property <bool> shown = false;
+    out property <int> changes = 0;
+    out property <int> releases = 0;
+    out property <int> accepted = 0;
+    out property <int> rejected = 0;
+    out property <int> background-clicks = 0;
+    private property <bool> wheels-open = false;
+    private property <int> wheel-index = 0;
+    private property <int> wheel-commits = 0;
+    private property <int> card-code = 20;
+    private property <int> card-commits = 0;
+    private property <bool> wrap-wheel = false;
+    private property <bool> lock-wheels = false;
+    private property <bool> mirror-cards = false;
+    private property <bool> gesture-open = false;
+    private property <bool> dial-open = false;
+    private property <bool> export-open = false;
+    private property <bool> connection-open = false;
+    private property <bool> button-holds-open = false;
 
     Text { color: #173047; x: 24px; y: 20px; text: "XRack Controls"; font-size: 27px; font-weight: 700; }
     open-dial := Button {

@@ -126,7 +126,6 @@ impl Element {
                 let binding = offset.clone();
                 let target = offset.clone();
                 let value = Rc::new(Property::<Length>::default());
-                let written = value.clone();
                 handle.bind_offset(
                     *axis,
                     move || {
@@ -150,9 +149,7 @@ impl Element {
                                 instance.capture_result(instance.write(target, length.into()));
                             }
                         }
-                        Offset::Binding(_) => written.set_if_changed_by(length, |left, right| {
-                            xrack_runtime::same_float_bits(&left.0, &right.0)
-                        }),
+                        Offset::Binding(_) => {}
                     },
                 );
             }

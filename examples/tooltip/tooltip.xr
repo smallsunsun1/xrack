@@ -4,9 +4,9 @@ export component TooltipDemo inherits Window {
     height: 260px;
     background: #182331;
 
-    in-out property <string> note: "等待后显示的操作说明";
-    in-out property <bool> dialog-open: false;
-    out property <int> actions: 0;
+    in-out property <string> note = "等待后显示的操作说明";
+    in-out property <bool> dialog-open = false;
+    out property <int> actions = 0;
 
     Text { x: 18px; y: 14px; text: "工具提示 · 鼠标悬停或用 Tab 聚焦"; font-size: 20px; }
     action := Button {

@@ -92,7 +92,7 @@ fn generated_component_updates_bindings_and_dispatches_events() {
     ui.invoke_increment(3);
     assert_eq!(ui.get_count(), 8);
     assert_eq!(observed.get(), 3);
-    ui.reset_count();
+    ui.set_count(0);
     assert_eq!(ui.get_count(), 0);
     assert_eq!(ui.get_doubled(), 0);
 }

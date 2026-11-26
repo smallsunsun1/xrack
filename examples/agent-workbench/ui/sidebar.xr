@@ -37,7 +37,7 @@ export component ConversationTile inherits Rectangle {
     in property <bool> menu-pinned;
     in property <bool> menu-archived;
     callback manage(action: string);
-    in property <bool> stacked-detail: false;
+    in property <bool> stacked-detail = false;
     in property <string> heading;
     in property <string> folder;
     in property <string> activity;

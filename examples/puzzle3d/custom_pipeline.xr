@@ -14,9 +14,9 @@ struct PassEffect { strength: float, shader: string, buffers: [PassInput] }
 export component CustomPipelineDemo inherits Window {
     title: "XRack · 自定义视口管线";
     width: 282px; height: 138px; background: #000;
-    in-out property <bool> custom: true;
-    in-out property <bool> output: true;
-    in-out property <bool> effect: false;
+    in-out property <bool> custom = true;
+    in-out property <bool> output = true;
+    in-out property <bool> effect = false;
 
     property <PassActor> actor: PassActor {
         id: "", mesh: "primitive:box", color: #fff, layers: 1, material: PassMaterial { unlit: true },

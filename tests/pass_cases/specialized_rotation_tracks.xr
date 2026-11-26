@@ -1,10 +1,10 @@
 // RAW: "xr.geometry_function"{{.*}}value = "quaternion-track"
 // CHECK: %[[PACKED:[0-9]+]] = "xr.literal"() <{value = "0 0 0 0 1 2 0 0 1 2"}> : () -> !xr.rotationtrack3d
-// CHECK: "xr.property"(%[[PACKED]]) <{name = "packed", visibility = "out"}>
+// CHECK: "xr.property"(%[[PACKED]]) <{mode = "formula", name = "packed", visibility = "out"}>
 // CHECK: %[[POSE:[0-9]+]] = "xr.literal"() <{value = "0 0 1 2"}> : () -> !xr.quaternion3d
-// CHECK: "xr.property"(%[[POSE]]) <{name = "end-pose", visibility = "out"}>
+// CHECK: "xr.property"(%[[POSE]]) <{mode = "formula", name = "end-pose", visibility = "out"}>
 // CHECK: %[[DIRECT:[0-9]+]] = "xr.geometry_function"{{.*}}value = "quaternion-track-keys"
-// CHECK: "xr.property"(%[[DIRECT]]) <{name = "direct", visibility = "out"}>
+// CHECK: "xr.property"(%[[DIRECT]]) <{mode = "formula", name = "direct", visibility = "out"}>
 // CHECK: "xr.geometry_function"{{.*}}value = "quaternion-track"}> : (!xr.recordlist<"Key">)
 // CHECK: "xr.property"{{.*}}name = "from-model"
 // CHECK: "xr.call"{{.*}}value = "read-tag"

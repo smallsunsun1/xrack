@@ -11,10 +11,10 @@ struct FeedActor {
 export component ViewportTextureDemo inherits Window {
     title: "XRack · 3D 视口纹理";
     width: 474px; height: 252px; background: #17263a;
-    in-out property <bool> orange: false;
-    in-out property <bool> mips: false;
-    in-out property <bool> hide-source: false;
-    in-out property <bool> feedback: false;
+    in-out property <bool> orange = false;
+    in-out property <bool> mips = false;
+    in-out property <bool> hide-source = false;
+    in-out property <bool> feedback = false;
 
     property <FeedActor> unit: FeedActor {
         id: "", mesh: "primitive:rectangle",

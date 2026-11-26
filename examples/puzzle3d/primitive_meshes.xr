@@ -22,10 +22,10 @@ export component PrimitiveMeshesDemo inherits Window {
     title: "XRack · 3D 基础图元";
     width: 650px; height: 434px;
     resizable: false; background: #162435;
-    in-out property <bool> overhead: false;
-    in-out property <bool> warm-cap: true;
-    in-out property <bool> cutout: false;
-    in-out property <bool> particles: false;
+    in-out property <bool> overhead = false;
+    in-out property <bool> warm-cap = true;
+    in-out property <bool> cutout = false;
+    in-out property <bool> particles = false;
 
     property <PrimitiveStyle> neutral: PrimitiveStyle {
         enabled: false, base-color: #ffffff, base-color-map: "",

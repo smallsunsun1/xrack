@@ -3108,6 +3108,7 @@ fn inherit<'a>(
                     _ => None,
                 }) {
                     if binding.two_way
+                        || property.mode == ast::PropertyMode::Formula
                         || property.two_way
                         || !matches!(property.visibility.as_str(), "in" | "in-out")
                     {
@@ -3126,6 +3127,7 @@ fn inherit<'a>(
                         });
                     }
                     property.value = Some(binding.value.clone());
+                    property.mode = ast::PropertyMode::Formula;
                     continue;
                 }
                 result.members.retain(|member| !matches!(member, Member::Binding(existing) if existing.name == binding.name));
@@ -4635,6 +4637,9 @@ impl<'a> Scope<'a> {
             );
         if write
             && (loader_read_only
+                || p.mode == ast::PropertyMode::Formula
+                || (scope.instance
+                    && named_binding(scope.members, name).is_some_and(|binding| !binding.two_way))
                 || (external && p.visibility == "out")
                 || (!external && p.visibility == "in"))
         {
@@ -6952,6 +6957,9 @@ fn alias_initializer(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Resul
     let value = if let Some(ty) =
         control_alias_type(&element.kind, name).filter(|_| !element.instance && !tristate)
     {
+        if named_binding(element.members, name).is_some_and(|b| !b.two_way) {
+            return fail(*span, format!("property `{reference}` is read-only"));
+        }
         ir::Expr {
             op: "control_read".into(),
             owner: Some(target.into()),
@@ -6986,6 +6994,7 @@ fn property(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Result<ir::Pro
         None => default(p.ty.clone(), p.span),
     };
     Ok(ir::Property {
+        mode: p.mode,
         name: p.name.clone(),
         ty: p.ty.clone(),
         visibility: p.visibility.clone(),
@@ -8410,7 +8419,7 @@ fn element<'a>(
                 if b.two_way {
                     if instance {
                         let declaration = scope.owners[owner].properties.get(b.name.as_str())
-                            .filter(|property| property.visibility == "in-out")
+                            .filter(|property| property.visibility == "in-out" && property.mode != ast::PropertyMode::Formula)
                             .ok_or_else(|| Diagnostic {
                                 span: b.span,
                                 message: format!("two-way binding requires an in-out component property `{kind}.{}`", b.name),
@@ -9129,8 +9138,13 @@ fn element<'a>(
                     ty.clone()
                 } else if instance {
                     let (_, ty) =
-                        scope.property(owner, &format!("self.{}", b.name), true, b.span)?;
+                        scope.property(owner, &format!("self.{}", b.name), false, b.span)?;
                     if let Some(declaration) = scope.owners[owner].properties.get(b.name.as_str()) {
+                        if !matches!(declaration.visibility.as_str(), "in" | "in-out")
+                            || declaration.mode == ast::PropertyMode::Formula
+                        {
+                            return fail(b.span, format!("property `{}` is read-only", b.name));
+                        }
                         scope.reference(b.span, &b.name, 0, declaration.span, &b.name);
                     }
                     ty
@@ -9461,7 +9475,9 @@ fn state_target<'a>(
         let Some(input) = element.properties.get(property) else {
             return fail(span, format!("unknown component input `{reference}`"));
         };
-        if !matches!(input.visibility.as_str(), "in" | "in-out") {
+        if input.mode == ast::PropertyMode::Formula
+            || !matches!(input.visibility.as_str(), "in" | "in-out")
+        {
             return fail(
                 span,
                 format!("state requires a public writable component input `{reference}`"),

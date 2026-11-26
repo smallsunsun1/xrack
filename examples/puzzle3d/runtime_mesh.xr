@@ -9,10 +9,10 @@ export component RuntimeMeshDemo inherits Window {
     width: 540px; height: 387px; background: #192638;
 
     in property <meshasset3d> loaded;
-    in property <bool> loading: false;
-    in property <string> source-name: "";
-    in property <string> load-error: "";
-    in-out property <float> turn: 0;
+    in property <bool> loading = false;
+    in property <string> source-name = "";
+    in property <string> load-error = "";
+    in-out property <float> turn = 0;
     callback load-mesh(path: string);
 
     property <[RuntimeActor]> world: [

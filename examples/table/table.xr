@@ -5,14 +5,14 @@ export component TableDemo inherits Window {
     background: #182331;
 
     in-out property <[string]> records;
-    in-out property <int> current: -1;
-    out property <int> selections: 0;
-    out property <int> selected-count: 0;
-    in property <SelectionTarget> target: rows;
-    in property <int> pinned: 0;
-    in property <bool> resize-rows: false;
-    in property <length> row-header-size: 0px;
-    in property <bool> show-sequence: true;
+    in-out property <int> current = -1;
+    out property <int> selections = 0;
+    out property <int> selected-count = 0;
+    in property <SelectionTarget> target = rows;
+    in property <int> pinned = 0;
+    in property <bool> resize-rows = false;
+    in property <length> row-header-size = 0px;
+    in property <bool> show-sequence = true;
     callback sort-requested(column: int, descending: bool);
 
     VerticalLayout {
@@ -87,15 +87,15 @@ export component RowVisibilityDemo inherits Window {
     title: "XRack · 按记录隐藏行";
     width: 720px; height: 320px;
     background: #182331;
-    in-out property <[RowVisibilityRecord]> records: [
+    in-out property <[RowVisibilityRecord]> records = [
         RowVisibilityRecord { name: "交换机", rank: 3, flags: RowVisibilityFlags { shown: true } },
         RowVisibilityRecord { name: "工作站", rank: 2, flags: RowVisibilityFlags { shown: true } },
         RowVisibilityRecord { name: "测试设备", rank: 1, flags: RowVisibilityFlags { shown: false } },
         RowVisibilityRecord { name: "路由器", rank: 4, flags: RowVisibilityFlags { shown: true } },
     ];
-    in-out property <string> query: "";
-    in property <int> inspected-source: 24;
-    in property <int> inspected-view: 0;
+    in-out property <string> query = "";
+    in property <int> inspected-source = 24;
+    in property <int> inspected-view = 0;
     out property <int> custom-visible: custom.view-index-for-source(root.inspected-source);
     out property <int> standard-visible: standard.view-index-for-source(root.inspected-source);
     out property <int> standard-source: standard.source-index-for-view(root.inspected-view);
@@ -165,9 +165,9 @@ export component WideTableDemo inherits Window {
     title: "XRack · 宽表格";
     width: 620px; height: 320px;
     background: #182331;
-    in property <int> rows: 50000;
-    in-out property <bool> show-number: true;
-    in-out property <bool> show-february: true;
+    in property <int> rows = 50000;
+    in-out property <bool> show-number = true;
+    in-out property <bool> show-february = true;
     pure callback cell-text(row: int, column: int) -> string;
     cell-text(row, column) => { "" + (row + 1) + " / " + (column + 1) }
     callback locate(row: int, column: int);
@@ -230,7 +230,7 @@ export component ProjectedRowsDemo inherits Window {
     title: "XRack · 模型行高";
     width: 660px; height: 310px;
     background: #182331;
-    in-out property <[LogRow]> entries: [];
+    in-out property <[LogRow]> entries = [];
     out property <length> offset: table.content-y;
     callback set-height(int, length);
     set-height(row, height) => { table.set-row-height(row, height); }
@@ -278,40 +278,40 @@ export component StandardTableDemo inherits Window {
     width: root.window-width; height: 380px;
     background: #182331;
     in-out property <[InventoryRow]> inventory;
-    in-out property <int> current: -1;
-    in property <int> target-row: 0;
-    in property <SelectionTarget> target: rows;
-    in property <length> window-width: 620px;
-    in property <int> pinned: 0;
-    in property <bool> resize-rows: false;
-    in property <bool> move-rows: false;
-    in property <bool> sort-tools: false;
-    in property <bool> selection-tools: false;
-    in property <bool> position-tools: false;
-    in property <bool> edit-columns: false;
-    in property <bool> filter-tools: false;
-    in-out property <string> filter-query: "";
-    in property <bool> paste-cells: false;
-    in property <bool> lock-refresh-time: false;
-    in property <bool> auto-sort-fields: false;
-    in property <bool> multiple: true;
+    in-out property <int> current = -1;
+    in property <int> target-row = 0;
+    in property <SelectionTarget> target = rows;
+    in property <length> window-width = 620px;
+    in property <int> pinned = 0;
+    in property <bool> resize-rows = false;
+    in property <bool> move-rows = false;
+    in property <bool> sort-tools = false;
+    in property <bool> selection-tools = false;
+    in property <bool> position-tools = false;
+    in property <bool> edit-columns = false;
+    in property <bool> filter-tools = false;
+    in-out property <string> filter-query = "";
+    in property <bool> paste-cells = false;
+    in property <bool> lock-refresh-time = false;
+    in property <bool> auto-sort-fields = false;
+    in property <bool> multiple = true;
     out property <int> selected-items: inventory-table.selection-count;
     out property <bool> has-selection: inventory-table.has-selection;
     out property <int> current-column: inventory-table.current-column;
-    out property <int> cell-changes: 0;
+    out property <int> cell-changes = 0;
     out property <length> table-x: inventory-table.content-x;
     out property <length> table-y: inventory-table.content-y;
-    in property <bool> quantity-sortable: true;
-    in property <bool> show-quantity: true;
+    in property <bool> quantity-sortable = true;
+    in property <bool> show-quantity = true;
     out property <int> sort-column: inventory-table.current-sort-column;
     out property <bool> sort-descending: inventory-table.current-sort-descending;
-    in property <length> row-header-size: 0px;
-    out property <int> selections: 0;
-    out property <int> moved-column: -1;
-    out property <int> moved-position: -1;
-    out property <int> moved-model-row: -1;
-    out property <int> moved-row-from: -1;
-    out property <int> moved-row-to: -1;
+    in property <length> row-header-size = 0px;
+    out property <int> selections = 0;
+    out property <int> moved-column = -1;
+    out property <int> moved-position = -1;
+    out property <int> moved-model-row = -1;
+    out property <int> moved-row-from = -1;
+    out property <int> moved-row-to = -1;
     callback sort-requested(column: int, descending: bool);
     callback sort-rows(int, bool);
     sort-rows(column, descending) => { inventory-table.sort-by(column, descending); }
@@ -473,13 +473,13 @@ export component TableSortViewsDemo inherits Window {
     title: "XRack · 独立排序视图";
     width: 680px; height: 370px;
     background: #182331;
-    in-out property <[InventoryRow]> inventory: [
+    in-out property <[InventoryRow]> inventory = [
         InventoryRow { name: "Zulu", units: 30, available: true, refreshed: Time { hour: 9 } },
         InventoryRow { name: "Alpha", units: 20, available: true, refreshed: Time { hour: 9 } },
         InventoryRow { name: "Beta", units: 10, available: true, refreshed: Time { hour: 9 } },
         InventoryRow { name: "Gamma", units: 20, available: true, refreshed: Time { hour: 9 } },
     ];
-    in-out property <int> left-current: -1;
+    in-out property <int> left-current = -1;
     callback initialize();
     initialize => { quantity-table.sort-by(1, false); name-table.sort-by(0, false); }
     callback reduce-zulu();
@@ -527,8 +527,8 @@ export component DirectionalTableDemo inherits Window {
     title: "XRack · 表格方向";
     width: 520px; height: 300px;
     background: #182331;
-    in-out property <bool> rtl: true;
-    in-out property <[InventoryRow]> inventory: [
+    in-out property <bool> rtl = true;
+    in-out property <[InventoryRow]> inventory = [
         InventoryRow { name: "路由器", units: 12, available: true, refreshed: Time { hour: 8 } },
         InventoryRow { name: "交换机", units: 26, available: true, refreshed: Time { hour: 9 } },
         InventoryRow { name: "网关", units: 7, available: false, refreshed: Time { hour: 10 } },
@@ -584,20 +584,20 @@ struct KeyedTableRecord {
 export component KeyedTableDemo inherits Window {
     title: "XRack · 表格业务键选区";
     width: 720px; height: 320px;
-    in-out property <[KeyedTableRecord]> records: [
+    in-out property <[KeyedTableRecord]> records = [
         KeyedTableRecord { id: 10, label: "规划", shown: true },
         KeyedTableRecord { id: 20, label: "草稿", shown: false },
         KeyedTableRecord { id: 30, label: "实现", shown: true },
         KeyedTableRecord { id: 40, label: "审阅", shown: true },
     ];
-    in-out property <string> query: "";
-    in-out property <int> current: -1;
-    in-out property <int> lookup-key: 20;
-    in-out property <SelectionTarget> mode: SelectionTarget.rows;
-    in-out property <bool> multiple: true;
+    in-out property <string> query = "";
+    in-out property <int> current = -1;
+    in-out property <int> lookup-key = 20;
+    in-out property <SelectionTarget> mode = SelectionTarget.rows;
+    in-out property <bool> multiple = true;
     out property <[int]> source-keys: source-table.selected-keys;
     out property <[int]> target-keys: target-table.selected-keys;
-    out property <[int]> saved: [];
+    out property <[int]> saved = [];
     out property <int> target-count: target-table.selection-count;
     out property <int> found-row: target-table.view-index-for-key(root.lookup-key);
     out property <length> target-offset: target-table.content-y;
@@ -682,13 +682,13 @@ export component SelectionHandlesDemo inherits Window {
     height: 350px;
     background: #202c3a;
 
-    in-out property <bool> show-end: true;
-    in-out property <bool> mirrored: false;
-    in-out property <SelectionGesture> gesture: auto;
-    in-out property <int> hold-ms: 500;
+    in-out property <bool> show-end = true;
+    in-out property <bool> mirrored = false;
+    in-out property <SelectionGesture> gesture = auto;
+    in-out property <int> hold-ms = 500;
     out property <bool> selection-active: grid.selection-active || detail.selection-active;
     out property <bool> selection-dragging: grid.selection-dragging || detail.selection-dragging;
-    in-out property <[HandleSampleRow]> records: [
+    in-out property <[HandleSampleRow]> records = [
         HandleSampleRow { name: "交换机", quantity: 12 },
         HandleSampleRow { name: "工作站", quantity: 6 },
         HandleSampleRow { name: "路由器", quantity: 9 },

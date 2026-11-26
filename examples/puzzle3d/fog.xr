@@ -11,15 +11,15 @@ export component SceneFogDemo inherits Window {
     width: 600px; height: 422px;
     resizable: false;
     background: #1b2e40;
-    in-out property <bool> height-fog: true;
-    in-out property <bool> depth-fog: false;
-    in-out property <bool> light-transmission: false;
-    in-out property <bool> reversed: false;
-    in-out property <float> depth-curve: 1;
-    in-out property <float> height-curve: 1;
-    in-out property <float> height-start: 0.95;
-    in-out property <float> height-end: -0.9;
-    in-out property <float> density: 0.87;
+    in-out property <bool> height-fog = true;
+    in-out property <bool> depth-fog = false;
+    in-out property <bool> light-transmission = false;
+    in-out property <bool> reversed = false;
+    in-out property <float> depth-curve = 1;
+    in-out property <float> height-curve = 1;
+    in-out property <float> height-start = 0.95;
+    in-out property <float> height-end = -0.9;
+    in-out property <float> density = 0.87;
 
     property <FogActor> defaults: FogActor {
         id: "", mesh: "primitive:sphere",

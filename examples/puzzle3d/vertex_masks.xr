@@ -17,11 +17,11 @@ export component VertexMasksDemo inherits Window {
     width: 600px; height: 372px;
     background: #192330;
 
-    in-out property <bool> vertex-tint: true;
-    in-out property <string> channel: "r";
-    in-out property <string> look: "color";
-    in-out property <bool> shadows: false;
-    in-out property <bool> motion: false;
+    in-out property <bool> vertex-tint = true;
+    in-out property <string> channel = "r";
+    in-out property <string> look = "color";
+    in-out property <bool> shadows = false;
+    in-out property <bool> motion = false;
 
     property <VertexFinish> flat: VertexFinish {
         base-color: #e0e4ef, vertex-colors: true,

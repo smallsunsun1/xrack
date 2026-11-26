@@ -20,6 +20,11 @@ pub struct Component {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Property {
+    #[serde(
+        default,
+        skip_serializing_if = "xrack_syntax::ast::PropertyMode::is_stored"
+    )]
+    pub mode: xrack_syntax::ast::PropertyMode,
     pub name: String,
     pub ty: Type,
     pub visibility: String,

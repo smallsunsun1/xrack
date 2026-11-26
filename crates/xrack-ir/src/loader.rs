@@ -252,6 +252,7 @@ fn elaborate_loader(members: &mut Vec<Member>, span: Span) -> Result<(), Diagnos
 fn property(name: &str, ty: Type, visibility: &str, value: Expr) -> Member {
     let span = value.span;
     Member::Property(Property {
+        mode: xrack_syntax::ast::PropertyMode::Formula,
         name: name.into(),
         ty,
         type_span: span,

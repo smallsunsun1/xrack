@@ -1,5 +1,5 @@
 export component MediaDemo inherits Window {
-    in-out property <bool> crop: false;
+    in-out property <bool> crop = false;
     property <image> landscape: @image-url("assets/landscape.png");
     property <image> orbit: @image-url("assets/orbit.svg");
 
@@ -74,11 +74,11 @@ export component NineSliceDemo inherits Window {
     title: "XRack · 九宫格图像";
     width: 460px; height: 268px;
     background: #101725;
-    in-out property <length> panel-width: 203px;
-    in-out property <length> panel-height: 129px;
-    in-out property <ImageTileMode> horizontal-mode: stretch;
-    in-out property <ImageTileMode> vertical-mode: stretch;
-    in-out property <image> frame: @image-url("assets/nine-slice.svg", nine-slice(4 6 8 10));
+    in-out property <length> panel-width = 203px;
+    in-out property <length> panel-height = 129px;
+    in-out property <ImageTileMode> horizontal-mode = stretch;
+    in-out property <ImageTileMode> vertical-mode = stretch;
+    in-out property <image> frame = @image-url("assets/nine-slice.svg", nine-slice(4 6 8 10));
 
     Label {
         x: 24px; y: 24px; text: "固定四角，独立平铺两条轴";
@@ -129,15 +129,15 @@ export component AnimatedImageDemo inherits Window {
     title: "XRack · GIF 播放";
     width: 460px; height: 258px;
     background: #101725;
-    in-out property <image> animation: @image-url("assets/pulse.gif");
-    in-out property <bool> running: true;
-    in-out property <bool> pause: false;
-    in-out property <bool> show: true;
-    in-out property <float> rate: 1.0;
-    in-out property <int> passes: -1;
+    in-out property <image> animation = @image-url("assets/pulse.gif");
+    in-out property <bool> running = true;
+    in-out property <bool> pause = false;
+    in-out property <bool> show = true;
+    in-out property <float> rate = 1.0;
+    in-out property <int> passes = -1;
     out property <int> frame: pulse.current-frame;
     out property <int> frame-total: pulse.frame-count;
-    out property <int> completions: 0;
+    out property <int> completions = 0;
 
     Label {
         x: 24px; y: 20px;
@@ -179,13 +179,13 @@ export component SpriteAtlasDemo inherits Window {
     title: "XRack · 精灵图";
     width: 460px; height: 282px;
     background: #101725;
-    in-out property <image> atlas: @image-url("assets/sprite-atlas.png");
-    in-out property <int> column: 0;
-    in-out property <int> row-index: 0;
-    in-out property <int> cell-height: 4;
-    in-out property <ImageFit> fit-mode: contain;
-    in-out property <ImageRendering> sampling: pixelated;
-    in-out property <ImageTileMode> tile-mode: stretch;
+    in-out property <image> atlas = @image-url("assets/sprite-atlas.png");
+    in-out property <int> column = 0;
+    in-out property <int> row-index = 0;
+    in-out property <int> cell-height = 4;
+    in-out property <ImageFit> fit-mode = contain;
+    in-out property <ImageRendering> sampling = pixelated;
+    in-out property <ImageTileMode> tile-mode = stretch;
     out property <int> atlas-width: root.atlas.width;
     out property <int> atlas-height: root.atlas.height;
 
@@ -243,12 +243,12 @@ export component ImageColorizeDemo inherits Window {
     title: "XRack · 图像着色";
     width: 624px; height: 266px;
     background: #101725;
-    in-out property <image> mask: @image-url("assets/color-mask.png");
-    in-out property <brush> accent: #39d6bc;
-    in-out property <int> clip-x: 0;
-    in-out property <int> clip-width: root.mask.width;
-    in-out property <ImageTileMode> tile-mode: stretch;
-    property <bool> alternate: false;
+    in-out property <image> mask = @image-url("assets/color-mask.png");
+    in-out property <brush> accent = #39d6bc;
+    in-out property <int> clip-x = 0;
+    in-out property <int> clip-width = root.mask.width;
+    in-out property <ImageTileMode> tile-mode = stretch;
+    property <bool> alternate = false;
 
     Label {
         x: 24px; y: 20px; font-size: 21px; color: #f0f4ff;

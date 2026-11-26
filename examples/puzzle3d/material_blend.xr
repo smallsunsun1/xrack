@@ -18,14 +18,14 @@ export component MaterialBlendDemo inherits Window {
     width: 600px; height: 352px;
     background: #192330;
 
-    in-out property <string> mode: "source-over";
-    in-out property <string> coverage: "blend";
-    in-out property <color> tint: #cc682880;
-    in-out property <bool> weighted: false;
-    in-out property <bool> underlay: false;
-    in-out property <bool> offscreen: false;
-    in-out property <bool> smooth: false;
-    in-out property <bool> particles: false;
+    in-out property <string> mode = "source-over";
+    in-out property <string> coverage = "blend";
+    in-out property <color> tint = #cc682880;
+    in-out property <bool> weighted = false;
+    in-out property <bool> underlay = false;
+    in-out property <bool> offscreen = false;
+    in-out property <bool> smooth = false;
+    in-out property <bool> particles = false;
 
     property <BlendMaterial> opaque: BlendMaterial {
         base-color: #406090, unlit: true, alpha-mode: "opaque", alpha-cutoff: 0.5, blend-mode: "source-over",

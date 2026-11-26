@@ -12,10 +12,10 @@ export component EffectChainDemo inherits Window {
     title: "XRack · 多阶段后处理";
     width: 481px; height: 310px; resizable: false;
     background: #172332;
-    in-out property <bool> apply-effects: true;
-    in-out property <bool> composite: true;
-    in-out property <bool> composite-first: false;
-    in-out property <float> radius: 8;
+    in-out property <bool> apply-effects = true;
+    in-out property <bool> composite = true;
+    in-out property <bool> composite-first = false;
+    in-out property <float> radius = 8;
     property <EffectStep> horizontal: EffectStep {
         shader: @shader-url("effects/blur.wgsl"),
         strength: root.apply-effects ? 1 : 0, depth: false, scale: 0.5,

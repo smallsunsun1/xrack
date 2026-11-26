@@ -18,10 +18,10 @@ export component GltfInstanceDataDemo inherits Window {
     title: "XRack · glTF instance attributes";
     width: 720px; height: 352px;
     background: #172538;
-    in-out property <float> shift: 0;
-    in-out property <bool> tinted: false;
-    in-out property <bool> indexed: false;
-    in-out property <point2d> pointer: Point2D.new(174px, 130px);
+    in-out property <float> shift = 0;
+    in-out property <bool> tinted = false;
+    in-out property <bool> indexed = false;
+    in-out property <point2d> pointer = Point2D.new(174px, 130px);
 
     property <string> mesh: @mesh-url("models/instance-channels.gltf");
     property <color> tint: root.tinted ? #80ffff : #ffffff;

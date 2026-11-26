@@ -15,9 +15,9 @@ export component NamedEffectBuffersDemo inherits Window {
     title: "XRack · 命名后处理纹理";
     width: 481px; height: 310px; resizable: false;
     background: #172332;
-    in-out property <bool> use-accent: true;
-    in-out property <bool> sharp-input: true;
-    in-out property <float> tint-amount: 0.6;
+    in-out property <bool> use-accent = true;
+    in-out property <bool> sharp-input = true;
+    in-out property <float> tint-amount = 0.6;
     property <BufferPass> defaults: BufferPass {
         shader: "", strength: 1, scale: 1, parameters: Vector3D.new(0, 0, 0),
         input: "", output: "", buffers: [],

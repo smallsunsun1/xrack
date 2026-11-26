@@ -15,19 +15,19 @@ export component TransparencyDemo inherits Window {
     height: 344px;
     background: #141d29;
 
-    in-out property <bool> weighted: false;
-    in-out property <bool> linked: false;
-    in-out property <bool> clipped: false;
-    in-out property <length> clip-x: 96px;
-    in-out property <length> clip-width: 208px;
-    in-out property <bool> reverse-depth: false;
-    in-out property <float> red-depth-bias: 0;
-    in-out property <bool> cache: false;
-    in-out property <bool> reversed: false;
-    in-out property <bool> smooth: false;
-    in-out property <bool> hdr: false;
-    in-out property <bool> single: false;
-    in-out property <bool> offscreen: false;
+    in-out property <bool> weighted = false;
+    in-out property <bool> linked = false;
+    in-out property <bool> clipped = false;
+    in-out property <length> clip-x = 96px;
+    in-out property <length> clip-width = 208px;
+    in-out property <bool> reverse-depth = false;
+    in-out property <float> red-depth-bias = 0;
+    in-out property <bool> cache = false;
+    in-out property <bool> reversed = false;
+    in-out property <bool> smooth = false;
+    in-out property <bool> hdr = false;
+    in-out property <bool> single = false;
+    in-out property <bool> offscreen = false;
     property <float> shift: root.offscreen ? 100 : 0;
 
     property <TransparentActor> defaults: TransparentActor {

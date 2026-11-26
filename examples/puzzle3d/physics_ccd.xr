@@ -16,11 +16,11 @@ export component PhysicsCcdDemo inherits Window {
     property <point3d> blue-wall: Point3D.new(0, 0.64, 0.91);
     property <point3d> gold-wall: Point3D.new(0, 0.64, -0.91);
     property <vector3d> wall-size: Vector3D.new(0.08, 1.28, 1.0);
-    out property <int> blue: 0;
-    out property <int> gold: 0;
-    in-out property <bool> speculative: false;
-    in-out property <bool> dynamic-wall: false;
-    in-out property <float> units: 1;
+    out property <int> blue = 0;
+    out property <int> gold = 0;
+    in-out property <bool> speculative = false;
+    in-out property <bool> dynamic-wall = false;
+    in-out property <float> units = 1;
     out property <float> solver-length: Physics3D.length-unit(root.swept);
     out property <int> budget: Physics3D.ccd-substeps(root.swept);
     out property <float> horizon: Physics3D.soft-ccd(root.swept, root.gold) / root.units;

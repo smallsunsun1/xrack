@@ -10,9 +10,9 @@ export component RefreshDemo inherits Window {
     height: 540px;
     color-scheme: system;
 
-    out property <bool> refreshing: false;
-    out property <int> requests: 0;
-    out property <int> updates: 0;
+    out property <bool> refreshing = false;
+    out property <int> requests = 0;
+    out property <int> updates = 0;
     callback refresh();
 
     refresh() => {
@@ -73,7 +73,7 @@ export struct ListVisibilityRecord {
 
 component VisibilityTile inherits Button {
     in property <string> caption;
-    property <int> presses: 0;
+    property <int> presses = 0;
     callback activated();
     text: root.caption + " · " + root.presses;
     clicked => { root.presses += 1; root.activated(); }
@@ -83,17 +83,17 @@ export component ListVisibilityDemo inherits Window {
     title: "XRack · 列表与网格的记录可见性";
     width: 660px; height: 320px;
     background: #182331;
-    in-out property <[ListVisibilityRecord]> records: [
+    in-out property <[ListVisibilityRecord]> records = [
         ListVisibilityRecord { label: "文档", height: 30px, flags: ListVisibilityFlags { shown: true } },
         ListVisibilityRecord { label: "临时项", height: 30px, flags: ListVisibilityFlags { shown: false } },
         ListVisibilityRecord { label: "图片", height: 52px, flags: ListVisibilityFlags { shown: true } },
         ListVisibilityRecord { label: "音频", height: 30px, flags: ListVisibilityFlags { shown: true } },
     ];
-    in-out property <int> standard-index: 0;
-    in property <int> inspected-source: 2;
+    in-out property <int> standard-index = 0;
+    in property <int> inspected-source = 2;
     out property <int> visible-index: entries.view-index-for-source(root.inspected-source);
     out property <int> selected-source: summary.source-index-for-view(root.standard-index);
-    out property <int> last-source-index: -1;
+    out property <int> last-source-index = -1;
     callback reveal-all();
     callback select-source(int);
     select-source(source) => {
@@ -145,7 +145,7 @@ export component ListVisibilityDemo inherits Window {
 
 component NestedTrack inherits Button {
     in property <string> caption;
-    property <int> plays: 0;
+    property <int> plays = 0;
     callback played(string);
     text: root.caption + " · " + root.plays;
     clicked => {
@@ -176,9 +176,9 @@ export component NestedListsDemo inherits Window {
     title: "XRack · 嵌套虚拟列表";
     width: 580px; height: 330px;
     background: #182331;
-    in property <[string]> albums: ["文档", "图片", "音频", "视频"];
-    in property <[string]> tracks: ["条目 0", "条目 1", "条目 2", "条目 3", "条目 4", "条目 5"];
-    out property <string> last-played: "请选择一项";
+    in property <[string]> albums = ["文档", "图片", "音频", "视频"];
+    in property <[string]> tracks = ["条目 0", "条目 1", "条目 2", "条目 3", "条目 4", "条目 5"];
+    out property <string> last-played = "请选择一项";
     Text { x: 14px; y: 9px; text: root.last-played; }
     albums-view := ListView {
         x: 10px; y: 38px;
@@ -203,7 +203,7 @@ export struct WorkspaceRecord {
 component WorkspaceRow inherits Rectangle {
     in property <string> label;
     in-out property <[WorkspaceRecord]> records;
-    in property <int> branch: -1;
+    in property <int> branch = -1;
     background: #26374e;
     Text { x: 10px; y: 5px; text: root.label; }
     entries := StandardTableView {
@@ -241,8 +241,8 @@ export component NestedDataDemo inherits Window {
     title: "XRack · 嵌套表格和树";
     width: 720px; height: 364px;
     background: #182331;
-    in property <[string]> groups: ["项目 A", "项目 B", "项目 C"];
-    in-out property <[WorkspaceRecord]> records: [
+    in property <[string]> groups = ["项目 A", "项目 B", "项目 C"];
+    in-out property <[WorkspaceRecord]> records = [
         WorkspaceRecord { key: 1, parent: -1, title: "资料", quantity: 1, note: "目录" },
         WorkspaceRecord { key: 2, parent: 1, title: "需求", quantity: 2, note: "文档" },
         WorkspaceRecord { key: 3, parent: 1, title: "设计", quantity: 3, note: "文档" },
@@ -250,7 +250,7 @@ export component NestedDataDemo inherits Window {
         WorkspaceRecord { key: 5, parent: 4, title: "报告", quantity: 5, note: "文档" },
         WorkspaceRecord { key: 6, parent: -1, title: "归档", quantity: 6, note: "目录" },
     ];
-    in property <int> branch: -1;
+    in property <int> branch = -1;
     Text { x: 14px; y: 8px; text: "工作表和目录共用记录 · 双击名称编辑"; }
     projects := ListView {
         x: 10px; y: 34px; width: 97%; height: 320px;
@@ -275,16 +275,16 @@ export component ItemDelegatesDemo inherits Window {
     height: 398px;
     background: #182331;
 
-    in-out property <int> current-action: 0;
-    in-out property <int> current-mode: 0;
-    in property <bool> show-compact-mode: true;
-    in-out property <[DelegateSetting]> settings: [
+    in-out property <int> current-action = 0;
+    in-out property <int> current-mode = 0;
+    in property <bool> show-compact-mode = true;
+    in-out property <[DelegateSetting]> settings = [
         DelegateSetting { label: "文档", selected: CheckState.unchecked, enabled: true },
         DelegateSetting { label: "图片", selected: CheckState.partially-checked, enabled: false },
         DelegateSetting { label: "音频", selected: CheckState.checked, enabled: true },
     ];
-    out property <string> last-action: "打开工作区";
-    out property <int> edits: 0;
+    out property <string> last-action = "打开工作区";
+    out property <int> edits = 0;
 
     VerticalLayout {
         padding: 16px;
@@ -366,9 +366,9 @@ export component ListDemo inherits Window {
     height: 380px;
     background: #182331;
 
-    in-out property <int> count: 100000;
-    in-out property <int> current: -1;
-    out property <int> selections: 0;
+    in-out property <int> count = 100000;
+    in-out property <int> current = -1;
+    out property <int> selections = 0;
     pure callback row-caption(int) -> string;
     row-caption(row) => { "记录 " + (row + 1) }
 
@@ -396,9 +396,9 @@ export component DirectionalScrollDemo inherits Window {
     title: "XRack · 双向滚动画布和网格";
     width: 510px; height: 238px;
     background: #182331;
-    in-out property <bool> rtl: true;
-    in-out property <length> horizontal: 0px;
-    in-out property <int> current: 0;
+    in-out property <bool> rtl = true;
+    in-out property <length> horizontal = 0px;
+    in-out property <int> current = 0;
     layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
 
     flip := Button {
@@ -461,9 +461,9 @@ export component SectionedListDemo inherits Window {
     title: "XRack · 分段列表";
     width: 530px; height: 246px;
     background: #182331;
-    in-out property <bool> sticky: true;
-    in property <color> section-accent: #815329;
-    in-out property <[SectionRecord]> records: [
+    in-out property <bool> sticky = true;
+    in property <color> section-accent = #815329;
+    in-out property <[SectionRecord]> records = [
         SectionRecord { title: "准备交接", group: "待办", shown: true },
         SectionRecord { title: "草拟公告", group: "待办", shown: true },
         SectionRecord { title: "核对清单", group: "待办", shown: true },
@@ -537,14 +537,14 @@ export component TypeaheadDemo inherits Window {
     title: "XRack · 列表键入定位";
     width: 660px; height: 252px;
     background: #182331;
-    in-out property <bool> search-enabled: true;
-    in-out property <int> selected-row: -1;
-    in-out property <int> selected-key: -1;
-    in-out property <int> selected-string: -1;
+    in-out property <bool> search-enabled = true;
+    in-out property <int> selected-row = -1;
+    in-out property <int> selected-key = -1;
+    in-out property <int> selected-string = -1;
     out property <int> string-selection-count: strings.selection-count;
     callback choose-string(int);
     choose-string(row) => { strings.select-row(row); }
-    in-out property <[LookupRecord]> records: [
+    in-out property <[LookupRecord]> records = [
         LookupRecord { id: 10, label: "Atlas", alias: "archive", shown: true },
         LookupRecord { id: 20, label: "Aardvark", alias: "archive hidden", shown: false },
         LookupRecord { id: 30, label: "Atom", alias: "audio", shown: true },
@@ -603,18 +603,18 @@ export component MultiSelectDemo inherits Window {
     title: "XRack · 列表和网格多选";
     width: 560px; height: 254px;
     background: #182331;
-    in-out property <bool> multiple: true;
-    in-out property <int> current: -1;
-    in-out property <int> tile-key: -1;
-    out property <int> list-selection: 0;
-    out property <int> grid-selection: 0;
-    out property <int> grid-selection-events: 0;
+    in-out property <bool> multiple = true;
+    in-out property <int> current = -1;
+    in-out property <int> tile-key = -1;
+    out property <int> list-selection = 0;
+    out property <int> grid-selection = 0;
+    out property <int> grid-selection-events = 0;
     out property <int> actual-list-selection: entries.selection-count;
     out property <int> actual-grid-selection: tiles.selection-count;
     out property <bool> grid-has-selection: tiles.has-selection;
-    in property <int> inspected-row: 0;
+    in property <int> inspected-row = 0;
     out property <bool> inspected-selected: tiles.is-row-selected(root.inspected-row);
-    out property <int> opened: 0;
+    out property <int> opened = 0;
     callback select-grid-row(int);
     select-grid-row(row) => { tiles.select-row(row); }
     callback toggle-grid-row(int);
@@ -627,7 +627,7 @@ export component MultiSelectDemo inherits Window {
     select-all-records => { entries.select-all(); tiles.select-all(); }
     callback clear-selections();
     clear-selections => { entries.clear-selection(); tiles.clear-selection(); }
-    in-out property <[LookupRecord]> records: [
+    in-out property <[LookupRecord]> records = [
         LookupRecord { id: 10, label: "规划", alias: "准备", shown: true },
         LookupRecord { id: 20, label: "隐藏草稿", alias: "准备", shown: false },
         LookupRecord { id: 30, label: "实现", alias: "准备", shown: true },
@@ -695,19 +695,19 @@ export component MultiSelectDemo inherits Window {
 export component ListSelectionTransferDemo inherits Window {
     title: "XRack · 跨视图选区";
     width: 720px; height: 340px;
-    in-out property <[LookupRecord]> records: [
+    in-out property <[LookupRecord]> records = [
         LookupRecord { id: 10, label: "规划", alias: "", shown: true },
         LookupRecord { id: 20, label: "草稿", alias: "", shown: false },
         LookupRecord { id: 30, label: "实现", alias: "", shown: true },
         LookupRecord { id: 40, label: "审阅", alias: "", shown: true },
     ];
-    in-out property <int> source-current: -1;
+    in-out property <int> source-current = -1;
     out property <[int]> source-keys: source-view.selected-keys;
     out property <[int]> list-keys: list-view.selected-keys;
     out property <[int]> grid-keys: grid-view.selected-keys;
     out property <int> source-count: source-view.selection-count;
-    out property <int> source-events: 0;
-    out property <[int]> saved: [];
+    out property <int> source-events = 0;
+    out property <[int]> saved = [];
     callback choose([int]);
     choose(keys) => { source-view.select-keys(keys); }
     callback transfer();
@@ -786,19 +786,19 @@ export component ScrollBarsDemo inherits Window {
     width: 352px;
     height: 272px;
     background: #f0f3fa;
-    in-out property <length> horizontal: 0px;
-    in-out property <length> vertical: 0px;
-    in property <length> canvas-height: 588px;
-    in property <bool> scroll-enabled: true;
-    in property <bool> canvas-visible: true;
-    in property <Orientation> readout-axis: Orientation.vertical;
-    in property <ScrollSnapMode> snap-mode: ScrollSnapMode.none;
-    out property <int> scrolls: 0;
+    in-out property <length> horizontal = 0px;
+    in-out property <length> vertical = 0px;
+    in property <length> canvas-height = 588px;
+    in property <bool> scroll-enabled = true;
+    in property <bool> canvas-visible = true;
+    in property <Orientation> readout-axis = Orientation.vertical;
+    in property <ScrollSnapMode> snap-mode = ScrollSnapMode.none;
+    out property <int> scrolls = 0;
     out property <float> vertical-position: vertical-bar.position;
     out property <float> vertical-size: vertical-bar.size;
     out property <float> readout-position: readout.position;
     out property <float> readout-size: readout.size;
-    out property <float> last-scroll-position: 0;
+    out property <float> last-scroll-position = 0;
 
     canvas := ScrollView {
         x: 16px; y: 16px; width: 260px; height: 196px;
@@ -856,18 +856,18 @@ export component StandaloneScrollDemo inherits Window {
     width: 352px;
     height: 272px;
     background: #f0f3fa;
-    in-out property <float> offset: 0;
-    in property <float> thumb-size: 0.25;
-    in property <bool> interactive: true;
-    in property <ScrollSnapMode> snap-mode: ScrollSnapMode.none;
-    in-out property <bool> snap-on-release: false;
+    in-out property <float> offset = 0;
+    in property <float> thumb-size = 0.25;
+    in property <bool> interactive = true;
+    in property <ScrollSnapMode> snap-mode = ScrollSnapMode.none;
+    in-out property <bool> snap-on-release = false;
     out property <float> position: bar.position;
     out property <float> size: bar.size;
     out property <float> horizontal-position: horizontal-bar.position;
-    out property <int> changes: 0;
-    out property <float> last-change: 0;
-    out property <float> before-jump: 0;
-    out property <float> after-jump: 0;
+    out property <int> changes = 0;
+    out property <float> last-change = 0;
+    out property <float> before-jump = 0;
+    out property <float> after-jump = 0;
     callback jump();
     jump() => {
         root.before-jump = bar.position;
@@ -929,12 +929,12 @@ export component ScrollFocusDemo inherits Window {
     title: "XRack · Scroll to focus";
     width: 380px; height: 224px;
     background: #f0f3fa;
-    in-out property <bool> reveal: true;
-    in-out property <bool> rtl: false;
-    in-out property <length> outer-x: 0px;
-    in-out property <length> outer-y: 0px;
-    in-out property <length> inner-x: 0px;
-    in-out property <length> inner-y: 0px;
+    in-out property <bool> reveal = true;
+    in-out property <bool> rtl = false;
+    in-out property <length> outer-x = 0px;
+    in-out property <length> outer-y = 0px;
+    in-out property <length> inner-x = 0px;
+    in-out property <length> inner-y = 0px;
 
     layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
     jump := Button {
@@ -1001,10 +1001,10 @@ export component ScrollGuttersDemo inherits Window {
     title: "XRack · ScrollView gutters";
     width: 370px; height: 200px;
     background: #f0f3fa;
-    in-out property <bool> reserve: true;
-    in-out property <bool> rtl: false;
-    in-out property <bool> fixed-width: true;
-    in-out property <bool> overflow-y: true;
+    in-out property <bool> reserve = true;
+    in-out property <bool> rtl = false;
+    in-out property <bool> fixed-width = true;
+    in-out property <bool> overflow-y = true;
     out property <length> viewport-width: view.visible-width;
     out property <length> viewport-height: view.visible-height;
     out property <length> vertical-gutter: view.effective-scroll-bar-width;
@@ -1060,11 +1060,11 @@ export component ScrollVisualMetricsDemo inherits Window {
     title: "XRack · Custom scroll controls";
     width: 332px; height: 216px;
     background: #f0f3fa;
-    in-out property <bool> rtl: false;
-    in-out property <bool> show-canvas: true;
-    in-out property <bool> fade-idle: false;
-    in-out property <length> offset: -200px;
-    in-out property <length> canvas-width: 1000px;
+    in-out property <bool> rtl = false;
+    in-out property <bool> show-canvas = true;
+    in-out property <bool> fade-idle = false;
+    in-out property <length> offset = -200px;
+    in-out property <length> canvas-width = 1000px;
     callback queued-steps();
     queued-steps() => {
         bar.increase();
@@ -1150,20 +1150,20 @@ export component ScrollPositionDemo inherits Window {
     title: "XRack · 滚动定位";
     width: 540px; height: 300px;
     background: #182331;
-    in-out property <int> count: 10000;
-    in-out property <int> current: 0;
-    in-out property <length> records-target: 0px;
-    in property <bool> preview-enabled: true;
-    in property <bool> pan-enabled: true;
+    in-out property <int> count = 10000;
+    in-out property <int> current = 0;
+    in-out property <length> records-target = 0px;
+    in property <bool> preview-enabled = true;
+    in property <bool> pan-enabled = true;
     out property <length> preview-x: preview.content-x;
     out property <length> preview-y: preview.content-y;
     out property <length> records-y: records.content-y;
     out property <length> records-height: records.visible-height;
-    out property <int> preview-scrolls: 0;
-    out property <int> records-scrolls: 0;
-    out property <length> last-preview-x: 0px;
-    out property <length> last-preview-y: 0px;
-    out property <int> preview-clicks: 0;
+    out property <int> preview-scrolls = 0;
+    out property <int> records-scrolls = 0;
+    out property <length> last-preview-x = 0px;
+    out property <length> last-preview-y = 0px;
+    out property <int> preview-clicks = 0;
 
     callback scroll-preview(length, length);
     scroll-preview(x, y) => { preview.scroll-to(x, y); }
@@ -1240,20 +1240,20 @@ export component LinkedScrollDemo inherits Window {
     title: "XRack · 双向滚动绑定";
     width: 540px; height: 270px;
     background: #182331;
-    in-out property <length> vertical: -36px;
-    in-out property <length> horizontal: 0px;
-    in property <length> small-content: 180px;
+    in-out property <length> vertical = -36px;
+    in-out property <length> horizontal = 0px;
+    in property <length> small-content = 180px;
     out property <length> large-y: large.content-y;
     out property <length> small-y: small.content-y;
     out property <length> follower-y: follower.content-y;
-    out property <int> large-scrolls: 0;
-    out property <int> small-scrolls: 0;
-    out property <length> large-writeback: 0px;
+    out property <int> large-scrolls = 0;
+    out property <int> small-scrolls = 0;
+    out property <length> large-writeback = 0px;
 
     Text { x: 16px; y: 12px; text: "目标 Y " + (root.vertical / 1px); font-size: 20px; }
     Text { x: 16px; y: 45px; text: "共享位置 · 大画布"; }
     Text { x: 190px; y: 45px; text: "共享位置 · 小画布"; }
-    Text { x: 364px; y: 45px; text: "单向初值"; }
+    Text { x: 364px; y: 45px; text: "单向跟随"; }
 
     large := ScrollView {
         x: 16px; y: 75px; width: 160px; height: 120px;
@@ -1303,12 +1303,12 @@ export component AnchoredListDemo inherits Window {
     title: "XRack · 保留虚拟列表阅读位置";
     width: 560px; height: 274px;
     background: #182331;
-    in-out property <[DirectoryItem]> records: [];
-    in property <length> anchor-row-height: 32px;
-    in property <bool> anchor-comparison: false;
+    in-out property <[DirectoryItem]> records = [];
+    in property <length> anchor-row-height = 32px;
+    in property <bool> anchor-comparison = false;
     out property <length> anchored-y: anchored.content-y;
     out property <length> plain-y: plain.content-y;
-    out property <int> scroll-events: 0;
+    out property <int> scroll-events = 0;
     callback prepend();
     callback reverse-order();
     callback position(int);
@@ -1356,16 +1356,16 @@ export component StandardListDemo inherits Window {
     height: 355px;
     background: #182331;
 
-    in-out property <[string]> categories: ["全部", "最近", "收藏"];
-    in-out property <[DirectoryItem]> records: [
+    in-out property <[string]> categories = ["全部", "最近", "收藏"];
+    in-out property <[DirectoryItem]> records = [
         DirectoryItem { label: "接口文档", rank: 0 },
         DirectoryItem { label: "布局示例", rank: 1 },
         DirectoryItem { label: "键盘导航", rank: 2 },
     ];
-    in-out property <int> category: 0;
-    in-out property <int> current: -1;
-    in-out property <int> jump-index: 2;
-    out property <int> selections: 0;
+    in-out property <int> category = 0;
+    in-out property <int> current = -1;
+    in-out property <int> jump-index = 2;
+    out property <int> selections = 0;
 
     Text { x: 20px; y: 16px; text: "默认行 · 字符串与记录模型"; font-size: 22px; }
     categories-view := StandardListView {
@@ -1394,7 +1394,7 @@ export component StandardListDemo inherits Window {
 component GridCard inherits Rectangle {
     in property <string> label;
     in property <int> rank;
-    property <bool> pinned: false;
+    property <bool> pinned = false;
 
     accessible-name: root.label;
     background: root.rank % 2 == 0 ? #263750 : #304565;
@@ -1407,14 +1407,14 @@ export component GridDemo inherits Window {
     width: 620px; height: 420px;
     background: #182331;
 
-    in-out property <[DirectoryItem]> records: [
+    in-out property <[DirectoryItem]> records = [
         DirectoryItem { label: "条目 00000", rank: 0 },
         DirectoryItem { label: "条目 00001", rank: 1 },
     ];
-    in-out property <int> current: -1;
-    in property <int> jump-index: 1;
-    in property <bool> preserve-viewport: false;
-    out property <int> selections: 0;
+    in-out property <int> current = -1;
+    in property <int> jump-index = 1;
+    in property <bool> preserve-viewport = false;
+    out property <int> selections = 0;
 
     VerticalLayout {
         padding: 16px; spacing: 8px;
@@ -1457,17 +1457,17 @@ export component ViewCountsDemo inherits Window {
     width: 780px; height: 422px;
     background: #182331;
 
-    in property <[ViewCountRow]> sample: [
+    in property <[ViewCountRow]> sample = [
         ViewCountRow { key: 1, parent: -1, title: "文档", shown: true },
         ViewCountRow { key: 2, parent: 1, title: "计划", shown: false },
         ViewCountRow { key: 3, parent: -1, title: "图片", shown: true },
     ];
-    in-out property <[ViewCountRow]> records: root.sample;
-    in-out property <string> query: "";
-    in-out property <int> selected-key: -1;
-    out property <int> selection-events: 0;
-    out property <int> row-activations: 0;
-    out property <int> retry-count: 0;
+    in-out property <[ViewCountRow]> records = root.sample;
+    in-out property <string> query = "";
+    in-out property <int> selected-key = -1;
+    out property <int> selection-events = 0;
+    out property <int> row-activations = 0;
+    out property <int> retry-count = 0;
     out property <int> search-source-count: search.source-row-count;
     out property <int> search-match-count: search.row-count;
     callback select-source(int);
@@ -1607,7 +1607,7 @@ export component KeyNavigationDemo inherits Window {
     title: "XRack · 按键定位记录";
     width: 480px; height: 260px;
     background: #182331;
-    in-out property <[ViewCountRow]> records: [
+    in-out property <[ViewCountRow]> records = [
         ViewCountRow { key: 10, parent: -1, title: "启动界面", shown: true },
         ViewCountRow { key: 20, parent: -1, title: "载入配置", shown: true },
         ViewCountRow { key: 30, parent: -1, title: "打开工作区", shown: true },
@@ -1621,9 +1621,9 @@ export component KeyNavigationDemo inherits Window {
         ViewCountRow { key: 110, parent: -1, title: "同步界面", shown: true },
         ViewCountRow { key: 120, parent: -1, title: "准备就绪", shown: true },
     ];
-    in-out property <int> selected-key: -1;
+    in-out property <int> selected-key = -1;
     out property <int> selection-position: entries.selected-view-index;
-    out property <int> changed-count: 0;
+    out property <int> changed-count = 0;
 
     callback select-target(int);
     select-target(key) => { entries.select-key(key); }

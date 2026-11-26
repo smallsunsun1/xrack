@@ -18,14 +18,14 @@ struct Light {
 export component ProceduralSkyDemo inherits Window {
     title: "XRack · 程序化天空";
     width: 420px; height: 256px; resizable: false; background: #1b2636;
-    in-out property <bool> procedural: true;
-    in-out property <bool> evening: false;
-    in-out property <bool> backdrop: true;
-    in-out property <float> latitude: 14;
-    in-out property <float> turn: 0;
-    in-out property <float> energy: 1;
-    in-out property <float> sun-energy: 18;
-    in-out property <int> resolution: 64;
+    in-out property <bool> procedural = true;
+    in-out property <bool> evening = false;
+    in-out property <bool> backdrop = true;
+    in-out property <float> latitude = 14;
+    in-out property <float> turn = 0;
+    in-out property <float> energy = 1;
+    in-out property <float> sun-energy = 18;
+    in-out property <int> resolution = 64;
 
     property <Actor> unit: Actor {
         id: "", mesh: "primitive:sphere", x: 0, y: -0.20, z: 0,

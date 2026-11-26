@@ -23,8 +23,8 @@ export component App inherits Window {
             x: 0, y: 2, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
             yaw: 0, pitch: 0, roll: 0, color: #ffffff },
     ];
-    out property <float> old-x: 0;
-    out property <float> new-x: 0;
+    out property <float> old-x = 0;
+    out property <float> new-x = 0;
 
     callback sample();
     sample() => {

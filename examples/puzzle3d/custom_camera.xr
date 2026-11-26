@@ -18,15 +18,15 @@ export component CustomCameraDemo inherits Window {
     title: "XRack · 自定义投影";
     width: 432px; height: 330px; resizable: false;
     background: #152131;
-    in-out property <float> skew: 0.35;
-    in-out property <bool> parallel: false;
-    in-out property <bool> opengl: false;
-    in-out property <bool> reversed: false;
-    in-out property <bool> device-reversed: false;
-    in-out property <bool> mirrored: false;
-    in-out property <bool> effects: true;
-    in-out property <bool> geometry-culling: true;
-    in-out property <bool> msaa: false;
+    in-out property <float> skew = 0.35;
+    in-out property <bool> parallel = false;
+    in-out property <bool> opengl = false;
+    in-out property <bool> reversed = false;
+    in-out property <bool> device-reversed = false;
+    in-out property <bool> mirrored = false;
+    in-out property <bool> effects = true;
+    in-out property <bool> geometry-culling = true;
+    in-out property <bool> msaa = false;
     property <point2d> viewport: Point2D.new(432px, 272px);
 
     property <CameraMatrix> perspective: CameraMatrix {

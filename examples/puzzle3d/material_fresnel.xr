@@ -19,18 +19,18 @@ export component FresnelDemo inherits Window {
     title: "XRack · Fresnel reflectance";
     width: 600px; height: 372px; background: #192330;
 
-    in-out property <bool> base-controls: false;
-    in-out property <bool> coat-controls: false;
-    in-out property <float> base-power: 5.0;
-    in-out property <float> coat-power: 5.0;
-    in-out property <float> base-scale: 1.0;
-    in-out property <float> coat-scale: 1.0;
-    in-out property <float> base-bias: 0.30;
-    in-out property <float> coat-bias: 0.30;
-    in-out property <bool> curved: false;
-    in-out property <bool> probe: false;
-    in-out property <bool> floor: false;
-    in-out property <bool> screen-reflections: false;
+    in-out property <bool> base-controls = false;
+    in-out property <bool> coat-controls = false;
+    in-out property <float> base-power = 5.0;
+    in-out property <float> coat-power = 5.0;
+    in-out property <float> base-scale = 1.0;
+    in-out property <float> coat-scale = 1.0;
+    in-out property <float> base-bias = 0.30;
+    in-out property <float> coat-bias = 0.30;
+    in-out property <bool> curved = false;
+    in-out property <bool> probe = false;
+    in-out property <bool> floor = false;
+    in-out property <bool> screen-reflections = false;
 
     property <FresnelFinish> flat: FresnelFinish {
         unlit: false, base-color: #111, metalness: 0.0, roughness: 0.62, specular-amount: 1.0,

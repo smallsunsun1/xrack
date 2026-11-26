@@ -8,7 +8,7 @@ struct Actor {
     color: color, geometry: Shape,
 }
 export component ProceduralPlan inherits Window {
-    in property <float> radius: 1.0;
+    in property <float> radius = 1.0;
     SceneView3D {
         width: 80px; height: 80px;
         model: [Actor {

@@ -7,14 +7,14 @@ struct ImportedActor {
 export component DeclarativeMeshDemo inherits Window {
     title: "XRack · 声明式导入";
     width: 540px; height: 360px; background: #192638;
-    in-out property <string> path: "";
-    in-out property <bool> active: true;
-    in-out property <int> revision: 0;
-    in-out property <float> turn: 0;
-    in-out property <bool> auto-frame: true;
-    in-out property <length> viewport-width: 540px;
-    in-out property <point2d> pointer: Point2D.new(270px, 122px);
-    out property <string> clicked-object: "";
+    in-out property <string> path = "";
+    in-out property <bool> active = true;
+    in-out property <int> revision = 0;
+    in-out property <float> turn = 0;
+    in-out property <bool> auto-frame = true;
+    in-out property <length> viewport-width = 540px;
+    in-out property <point2d> pointer = Point2D.new(270px, 122px);
+    out property <string> clicked-object = "";
     out property <string> status: importer.status;
     out property <string> error: importer.error;
     out property <meshasset3d> loaded: importer.asset;

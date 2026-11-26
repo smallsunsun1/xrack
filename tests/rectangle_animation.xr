@@ -2,10 +2,10 @@ export component RectangleAnimation inherits Window {
     width: 96px;
     height: 72px;
     background: #e7e9ee;
-    in property <bool> shifted: false;
-    in property <bool> rounded: false;
-    in property <float> group-opacity: 1.0;
-    in property <length> round-offset: 0px;
+    in property <bool> shifted = false;
+    in property <bool> rounded = false;
+    in property <float> group-opacity = 1.0;
+    in property <length> round-offset = 0px;
 
     Rectangle {
         x: 8px + root.round-offset;
@@ -56,7 +56,7 @@ export component InitialShadowBatch inherits Window {
     width: 520px;
     height: 115px;
     background: #e7e9ee;
-    in property <color> shadow-tint: #10172666;
+    in property <color> shadow-tint = #10172666;
 
     for index in 8 : Rectangle {
         x: 23.125px + index * 63px;
@@ -87,14 +87,14 @@ export component LayerMotion inherits Window {
     width: 96px;
     height: 72px;
     background: #e7e9ee;
-    in property <length> offset: 8px;
-    in property <length> card-width: 49px;
-    in property <float> fade: 0.61;
-    in property <bool> edited: false;
-    in property <bool> cache-layer: false;
-    in property <bool> shadowed: false;
-    in property <color> shadow-tint: #10172666;
-    in property <length> shadow-blur: 12px;
+    in property <length> offset = 8px;
+    in property <length> card-width = 49px;
+    in property <float> fade = 0.61;
+    in property <bool> edited = false;
+    in property <bool> cache-layer = false;
+    in property <bool> shadowed = false;
+    in property <color> shadow-tint = #10172666;
+    in property <length> shadow-blur = 12px;
 
     Rectangle {
         x: root.offset;
@@ -142,8 +142,8 @@ export component TransientOpacityAtlasDemo inherits Window {
     width: 128px;
     height: 96px;
     background: #e7e9ee;
-    in property <int> revision: 0;
-    in property <length> first-x: 8px;
+    in property <int> revision = 0;
+    in property <length> first-x = 8px;
 
     Rectangle {
         x: root.first-x;

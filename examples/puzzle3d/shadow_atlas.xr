@@ -15,13 +15,13 @@ export component ShadowAtlasDemo inherits Window {
     title: "XRack · 阴影图分配";
     width: 408px; height: 352px; resizable: false; background: #182438;
 
-    in-out property <bool> mixed: false;
-    in-out property <bool> depth16: false;
-    in-out property <bool> larger-green: false;
-    in-out property <bool> point: false;
-    in-out property <bool> shadows: true;
-    in-out property <string> green-precision: "inherit";
-    in-out property <string> blue-precision: "inherit";
+    in-out property <bool> mixed = false;
+    in-out property <bool> depth16 = false;
+    in-out property <bool> larger-green = false;
+    in-out property <bool> point = false;
+    in-out property <bool> shadows = true;
+    in-out property <string> green-precision = "inherit";
+    in-out property <string> blue-precision = "inherit";
 
     property <Actor> wall: Actor {
         id: "wall", mesh: "primitive:box", x: 0, y: 0, z: 0,

@@ -16,10 +16,10 @@ export component KinematicReportsDemo inherits Window {
     property <point3d> kinematic-wall: Point3D.new(0, 0.62, -0.92);
     property <vector3d> mover-size: Vector3D.new(0.7, 0.54, 0.62);
     property <vector3d> wall-size: Vector3D.new(0.24, 1.24, 1.13);
-    out property <int> blue: 0;
-    out property <int> teal: 0;
-    out property <int> fixed: 0;
-    out property <int> parked: 0;
+    out property <int> blue = 0;
+    out property <int> teal = 0;
+    out property <int> fixed = 0;
+    out property <int> parked = 0;
     out property <bool> report-fixed: Physics3D.report-static-kinematic-collisions(root.world);
     out property <bool> report-pair: Physics3D.report-kinematic-kinematic-collisions(root.world);
     out property <point3d> blue-position: root.blue == 0 ? root.blue-start : Physics3D.position(root.world, root.blue);

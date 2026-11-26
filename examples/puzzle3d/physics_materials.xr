@@ -14,19 +14,19 @@ export component PhysicsMaterialsDemo inherits Window {
     property <vector3d> ball-size: Vector3D.new(0.64, 0.64, 0.64);
     property <point3d> rest-amber: Point3D.new(-2.0, root.mode == 0 ? 0.27 : 2.4, -0.85);
     property <point3d> rest-teal: Point3D.new(-2.0, root.mode == 0 ? 0.27 : 2.4, 0.85);
-    out property <int> mode: 0;
-    out property <int> amber: 0;
-    out property <int> teal: 0;
-    out property <int> ticks: 0;
-    in-out property <bool> running: false;
-    out property <bool> low-grip: false;
+    out property <int> mode = 0;
+    out property <int> amber = 0;
+    out property <int> teal = 0;
+    out property <int> ticks = 0;
+    in-out property <bool> running = false;
+    out property <bool> low-grip = false;
     out property <float> grip: Physics3D.static-friction(root.world, root.amber);
     out property <float> slide: Physics3D.dynamic-friction(root.world, root.amber);
     out property <float> elasticity: Physics3D.restitution(root.world, root.amber);
     out property <point3d> amber-position: root.amber == 0 ? root.rest-amber : Physics3D.position(root.world, root.amber);
     out property <point3d> teal-position: root.teal == 0 ? root.rest-teal : Physics3D.position(root.world, root.teal);
     out property <vector3d> amber-speed: Physics3D.velocity(root.world, root.amber);
-    out property <float> peak: 0;
+    out property <float> peak = 0;
 
     callback reset(mode: int);
     reset(mode) => {

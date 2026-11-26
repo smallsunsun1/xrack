@@ -2,8 +2,8 @@ export component CustomRenderProbe inherits Window {
     width: 64px;
     height: 48px;
     background: #112233;
-    in-out property <int> paint-revision: 0;
-    in-out property <string> paint-data: "warm";
+    in-out property <int> paint-revision = 0;
+    in-out property <string> paint-data = "warm";
 
     geometry := CustomRender {
         x: 6px;
@@ -58,8 +58,8 @@ export component RetainedSceneProbe inherits Window {
     width: 128px;
     height: 64px;
     background: #111822;
-    in-out property <length> offset: 8px;
-    in-out property <string> caption: "Retained text";
+    in-out property <length> offset = 8px;
+    in-out property <string> caption = "Retained text";
     in property <image> picture;
     Rectangle {
         x: root.offset;
@@ -97,14 +97,14 @@ export component DisplayListProbe inherits Window {
 export struct PerformanceRow { owner: string, label: string }
 
 export component PerformanceProbe inherits Window {
-    private property <int> amount: 3;
+    private property <int> amount = 3;
     in property <[PerformanceRow]> rows;
-    in-out property <string> search: "one";
+    in-out property <string> search = "one";
     out property <[PerformanceRow]> selected: Model.lookup(root.rows, "owner", root.search);
     out property <[PerformanceRow]> filtered: Model.filter(root.rows, "owner", root.search);
     out property <[PerformanceRow]> sorted: Model.sort-by(root.rows, "owner", false);
     out property <string> summary: "[" + root.calculate() + "]: " + root.search;
-    in-out property <color> ink: #123456;
+    in-out property <color> ink = #123456;
 
     out property <bool> has-one: Strings.contains(root.search, "one");
     out property <int> plus-result: root.add-amount(8);
@@ -117,7 +117,7 @@ export component PerformanceProbe inherits Window {
 }
 
 export component RetainedGeometryProbe inherits Window {
-    in-out property <length> offset: 0px;
+    in-out property <length> offset = 0px;
     for i in 12 : Rectangle {
         x: root.offset + (i * 8px);
         y: 10px;

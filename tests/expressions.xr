@@ -1,5 +1,5 @@
 export component Expressions inherits Rectangle {
-    in-out property <int> base-value: 3;
+    in-out property <int> base-value = 3;
     out property <int> precedence: 1 + 2 * 3;
     out property <int> left-associative: 10 - 3 - 2;
     out property <float> promoted: base-value + 0.5;
@@ -20,13 +20,13 @@ export component Expressions inherits Rectangle {
     update(type) => { root.base-value = type; }
     callback step();
     step() => { root.base-value += 1; root.base-value += root.base-value; }
-    out property <int> calls: 0;
-    out property <bool> branch-result: false;
+    out property <int> calls = 0;
+    out property <bool> branch-result = false;
     callback touch() -> bool;
     touch => { root.calls += 1; true }
     callback run-branch(bool);
     run-branch(run) => { root.branch-result = !!(run && (root.touch() && true)); }
-    out property <int> branch-value: 0;
+    out property <int> branch-value = 0;
     callback run-equal-branches();
     run-equal-branches() => { root.branch-value = root.touch() ? 7 : 7; }
     width: scaled;
@@ -46,9 +46,9 @@ export component LiteralDecodingParity inherits Window {
 }
 
 export component BrushPromotionParity inherits Window {
-    in-out property <brush> paint: #f00;
-    in-out property <color> tint: #f00;
-    in-out property <bool> use-color: true;
+    in-out property <brush> paint = #f00;
+    in-out property <color> tint = #f00;
+    in-out property <bool> use-color = true;
     out property <bool> left: root.paint == root.tint;
     out property <bool> right: root.tint != root.paint;
     out property <brush> first: root.use-color ? root.tint : root.paint;
@@ -58,15 +58,15 @@ export component BrushPromotionParity inherits Window {
 }
 
 export component FixedTextUpdates inherits Window {
-    in-out property <string> message: "Ready";
-    in-out property <string> summary: "Short";
+    in-out property <string> message = "Ready";
+    in-out property <string> summary = "Short";
     Text { text: root.message; width: 180px; height: 28px; }
     Label { text: root.message; width: 180px; height: 28px; y: 32px; }
     Label { text: root.summary; y: 64px; }
 }
 
 export component LocalAliasUpdates inherits Window {
-    property <int> value: 7;
+    property <int> value = 7;
     property <int> middle <=> root.value;
     property <int> tail <=> root.middle;
     in-out property <int> exposed <=> root.tail;
@@ -76,7 +76,7 @@ export component LocalAliasUpdates inherits Window {
 }
 
 export component AnimationTimingParity inherits Window {
-    in-out property <bool> active: true;
+    in-out property <bool> active = true;
     pure callback motion(int) -> bool;
     motion(tag) => { true }
 
@@ -99,7 +99,7 @@ export component AnimationTimingParity inherits Window {
 }
 
 export component StaticStatePlans inherits Window {
-    in-out property <string> message: "Ready";
+    in-out property <string> message = "Ready";
     pure callback fallback-width() -> length;
     fallback-width => { 20px }
 
@@ -113,7 +113,7 @@ export component StaticStatePlans inherits Window {
 }
 
 export component MergedStateCases inherits Window {
-    in-out property <int> mode: 0;
+    in-out property <int> mode = 0;
     pure callback probe(int, int) -> bool;
     out property <bool> flag: root.mode == 1 ? true : root.probe(4, root.mode);
     panel := Text { text: "Base"; }
@@ -125,9 +125,9 @@ export component MergedStateCases inherits Window {
 }
 
 export component ActionStateParity inherits Window {
-    in-out property <bool> command-enabled: false;
-    in-out property <bool> alternate: true;
-    out property <int> activations: 0;
+    in-out property <bool> command-enabled = false;
+    in-out property <bool> alternate = true;
+    out property <int> activations = 0;
     pure callback allow-button(int) -> bool;
 
     command := Action {
@@ -155,14 +155,14 @@ export component ActionPresentationParity inherits Window {
 }
 
 export component LiveActionActivationParity inherits Window {
-    in-out property <bool> command-enabled: true;
-    in-out property <bool> menu-enabled: true;
-    in-out property <bool> menu-parent-enabled: true;
-    in-out property <bool> menu-checkable: true;
-    in-out property <bool> action-checked: false;
-    in-out property <bool> menu-checked: false;
-    out property <int> action-activations: 0;
-    out property <int> menu-activations: 0;
+    in-out property <bool> command-enabled = true;
+    in-out property <bool> menu-enabled = true;
+    in-out property <bool> menu-parent-enabled = true;
+    in-out property <bool> menu-checkable = true;
+    in-out property <bool> action-checked = false;
+    in-out property <bool> menu-checked = false;
+    out property <int> action-activations = 0;
+    out property <int> menu-activations = 0;
     pure callback check-action() -> bool;
     pure callback check-menu-item() -> bool;
     check-action => { true }
@@ -192,9 +192,9 @@ export component LiveActionActivationParity inherits Window {
 }
 
 export component DelayActivationParity inherits Window {
-    in-out property <bool> allowed: true;
-    out property <bool> confirmed: false;
-    out property <int> activations: 0;
+    in-out property <bool> allowed = true;
+    out property <bool> confirmed = false;
+    out property <int> activations = 0;
     pure callback read-delay() -> int;
     read-delay => { 800 }
     button := DelayButton {
@@ -206,10 +206,10 @@ export component DelayActivationParity inherits Window {
 }
 
 export component TumblerSelectionParity inherits Window {
-    in-out property <bool> allowed: true;
-    in-out property <int> limit: 5;
-    in-out property <int> selected: 0;
-    out property <int> changes: 0;
+    in-out property <bool> allowed = true;
+    in-out property <int> limit = 5;
+    in-out property <int> selected = 0;
+    out property <int> changes = 0;
     pure callback read-count() -> int;
     read-count => { root.limit }
     wheel := Tumbler {
@@ -224,12 +224,12 @@ export struct ItemActivationRow { label: string, allowed: bool }
 
 export component ItemActivationParity inherits Window {
     width: 300px; height: 120px;
-    in-out property <bool> locked: false;
-    in-out property <[ItemActivationRow]> rows: [
+    in-out property <bool> locked = false;
+    in-out property <[ItemActivationRow]> rows = [
         ItemActivationRow { label: "First", allowed: true },
         ItemActivationRow { label: "Second", allowed: true },
     ];
-    out property <int> activations: 0;
+    out property <int> activations = 0;
     pure callback allow-row(bool) -> bool;
     allow-row(value) => { value }
     ListView {
@@ -244,12 +244,12 @@ export component ItemActivationParity inherits Window {
 }
 
 export component ItemActionRouteParity inherits Window {
-    in-out property <[ItemActivationRow]> rows: [
+    in-out property <[ItemActivationRow]> rows = [
         ItemActivationRow { label: "First", allowed: true },
         ItemActivationRow { label: "Second", allowed: true },
     ];
-    in-out property <bool> command-enabled: true;
-    out property <int> activations: 0;
+    in-out property <bool> command-enabled = true;
+    out property <int> activations = 0;
     pure callback prepare-action() -> bool;
     prepare-action => { true }
     command := Action {
@@ -267,13 +267,13 @@ export component ItemActionRouteParity inherits Window {
 }
 
 export component FilteredItemActionRouteParity inherits Window {
-    in-out property <[ItemActivationRow]> rows: [
+    in-out property <[ItemActivationRow]> rows = [
         ItemActivationRow { label: "Before", allowed: true },
         ItemActivationRow { label: "Target", allowed: true },
         ItemActivationRow { label: "After", allowed: true },
     ];
-    out property <int> activations: 0;
-    in-out property <int> revision: 0;
+    out property <int> activations = 0;
+    in-out property <int> revision = 0;
     pure callback use-rows(int) -> bool;
     use-rows(revision) => { true }
     property <[ItemActivationRow]> empty-rows: [];
@@ -294,8 +294,8 @@ export component FilteredItemActionRouteParity inherits Window {
 }
 
 export component StateOrderParity inherits Window {
-    in-out property <int> mode: 1;
-    in-out property <string> caption: "Before";
+    in-out property <int> mode = 1;
+    in-out property <string> caption = "Before";
     pure callback condition(int) -> bool;
     pure callback label(string) -> string;
 
@@ -316,7 +316,7 @@ export component RepeatParameterNamesParity inherits Window {
 
 export component InputStatePredicateParity inherits Window {
     pure callback locked() -> bool;
-    out property <int> clicks: 0;
+    out property <int> clicks = 0;
     target := Button {
         text: "Run";
         states [ disabled when root.locked(): { enabled: false; } ]
@@ -333,8 +333,8 @@ component InputPredicateChild inherits FocusScope {
 }
 
 export component InputPathPredicateParity inherits Window {
-    out property <int> changes: 0;
-    out property <float> latest: 0.0;
+    out property <int> changes = 0;
+    out property <float> latest = 0.0;
     pure callback blocked(int) -> bool;
     blocked(tag) => { false }
     parent := Pane {
@@ -347,10 +347,10 @@ export component InputPathPredicateParity inherits Window {
 }
 
 export component StatefulSwipeParity inherits Window {
-    in-out property <bool> hide-first: false;
-    in-out property <bool> disable-second: false;
-    in-out property <int> selection: 0;
-    out property <int> changes: 0;
+    in-out property <bool> hide-first = false;
+    in-out property <bool> disable-second = false;
+    in-out property <int> selection = 0;
+    out property <int> changes = 0;
     pure callback page-body(int) -> string;
     pure callback page-flag(bool) -> bool;
 
@@ -372,10 +372,10 @@ export component StatefulSwipeParity inherits Window {
 }
 
 export component MountedPageInputParity inherits Window {
-    in-out property <int> tab: 0;
-    in-out property <int> swipe: 0;
-    in-out property <bool> hide-first: false;
-    out property <int> clicks: 0;
+    in-out property <int> tab = 0;
+    in-out property <int> swipe = 0;
+    in-out property <bool> hide-first = false;
+    out property <int> clicks = 0;
     pure callback page-content() -> string;
     page-content => { "inactive content" }
     callback advance();
@@ -406,10 +406,10 @@ export component MountedPageInputParity inherits Window {
 }
 
 export component ProgressRangeParity inherits Window {
-    in-out property <float> amount: 380.0;
-    in-out property <float> upper-bound: 900.0;
-    in-out property <bool> rtl: false;
-    in-out property <bool> override-bound: false;
+    in-out property <float> amount = 380.0;
+    in-out property <float> upper-bound = 900.0;
+    in-out property <bool> rtl = false;
+    in-out property <bool> override-bound = false;
     out property <float> fraction: meter.position;
     out property <float> visual-fraction: meter.visual-position;
 
@@ -428,8 +428,8 @@ export component ProgressRangeParity inherits Window {
 }
 
 export component ComboContentParity inherits Window {
-    in-out property <bool> editing: true;
-    in-out property <int> selection: 0;
+    in-out property <bool> editing = true;
+    in-out property <int> selection = 0;
     pure callback describe(string) -> string;
     choice := ComboBox {
         model: ["Alpha", "Beta"];
@@ -442,17 +442,17 @@ export component ComboContentParity inherits Window {
 }
 
 export component NavigationSelectionParity inherits Window {
-    in-out property <bool> allowed: true;
-    in-out property <bool> shown: true;
-    in-out property <string> choice: "a";
-    in-out property <int> tab: 0;
-    in-out property <int> repeated: 0;
-    in-out property <[string]> labels: ["A", "B"];
-    in-out property <int> revision: 0;
+    in-out property <bool> allowed = true;
+    in-out property <bool> shown = true;
+    in-out property <string> choice = "a";
+    in-out property <int> tab = 0;
+    in-out property <int> repeated = 0;
+    in-out property <[string]> labels = ["A", "B"];
+    in-out property <int> revision = 0;
     pure callback use-labels(int) -> bool;
     use-labels(revision) => { true }
     property <[string]> other-labels: ["X", "Y"];
-    out property <string> events: "";
+    out property <string> events = "";
     pure callback label() -> string;
     label => { "b" }
     radio := RadioGroup {
@@ -478,11 +478,11 @@ export component NavigationSelectionParity inherits Window {
 }
 
 export component NavigationOptionsSourceParity inherits Window {
-    in-out property <[string]> radio-labels: ["old", "stale"];
-    in-out property <[string]> tab-labels: ["old", "stale"];
-    in-out property <int> profile: 0;
-    in-out property <int> tab-index: 0;
-    out property <string> events: "";
+    in-out property <[string]> radio-labels = ["old", "stale"];
+    in-out property <[string]> tab-labels = ["old", "stale"];
+    in-out property <int> profile = 0;
+    in-out property <int> tab-index = 0;
+    out property <string> events = "";
     pure callback option-label(bool, string) -> string;
     option-label(radio, label) => { label }
     radio := RadioGroup {
@@ -498,12 +498,12 @@ export component NavigationOptionsSourceParity inherits Window {
 }
 
 export component DistributedSelectionParity inherits Window {
-    in-out property <string> label: "b";
-    in-out property <string> choice: "a";
-    in-out property <bool> allowed: true;
-    in-out property <bool> checked: false;
-    out property <string> selected: "";
-    out property <int> toggles: 0;
+    in-out property <string> label = "b";
+    in-out property <string> choice = "a";
+    in-out property <bool> allowed = true;
+    in-out property <bool> checked = false;
+    out property <string> selected = "";
+    out property <int> toggles = 0;
     radios := ButtonGroup {
         current-value <=> root.choice;
         selected(value) => { root.selected = value; }
@@ -519,7 +519,7 @@ export component DistributedSelectionParity inherits Window {
 }
 
 export component ButtonGroupRenderOrderParity inherits Window {
-    in property <int> revision: 0;
+    in property <int> revision = 0;
     pure callback sample(int, int) -> int;
     sample(tag, revision) => { tag }
     options := ButtonGroup {
@@ -533,8 +533,8 @@ export component ButtonGroupRenderOrderParity inherits Window {
 }
 
 component NestedMonthGridContent inherits Rectangle {
-    in-out property <Date> date: Date { year: 2026, month: 1, day: 5 };
-    in-out property <Date> month: Date { year: 2026, month: 1, day: 1 };
+    in-out property <Date> date = Date { year: 2026, month: 1, day: 5 };
+    in-out property <Date> month = Date { year: 2026, month: 1, day: 1 };
     in property <int> revision;
     in property <int> week-start;
     pure callback sibling(int) -> string;
@@ -553,11 +553,11 @@ component NestedMonthGridContent inherits Rectangle {
 }
 
 export component NestedMonthGridParity inherits Window {
-    in-out property <int> revision: 0;
-    in-out property <int> week-start: 1;
+    in-out property <int> revision = 0;
+    in-out property <int> week-start = 1;
     in-out property <Date> date <=> child.date;
     in-out property <Date> month <=> child.month;
-    out property <string> events: "";
+    out property <string> events = "";
     pure callback sibling(int) -> string;
     child := NestedMonthGridContent {
         revision: root.revision;
@@ -579,10 +579,10 @@ export component ScrollReadOrderParity inherits Window {
 }
 
 export component OverlayTransitionParity inherits Window {
-    in-out property <bool> popup-open: root.read-popup-open();
-    in-out property <bool> drawer-open: false;
-    in-out property <bool> dialog-open: true;
-    out property <string> events: "";
+    in-out property <bool> popup-open;
+    in-out property <bool> drawer-open = false;
+    in-out property <bool> dialog-open = true;
+    out property <string> events = "";
     pure callback read-popup-open() -> bool;
     read-popup-open => { false }
     callback show-popup();
@@ -590,9 +590,9 @@ export component OverlayTransitionParity inherits Window {
 
     anchor := Button {
         popup := PopupWindow {
-            open <=> root.popup-open;
-            opened => { root.events += "popup-open:" + root.popup-open + ";"; }
-            closed => { root.events += "popup-close:" + root.popup-open + ";"; }
+            open: root.popup-open || root.read-popup-open();
+            opened => { root.popup-open = true; root.events += "popup-open:" + root.popup-open + ";"; }
+            closed => { root.popup-open = false; root.events += "popup-close:" + root.popup-open + ";"; }
         }
     }
     drawer := Drawer {
@@ -608,7 +608,7 @@ export component OverlayTransitionParity inherits Window {
 }
 
 export component StackPathCommandParity inherits Window {
-    out property <string> events: "";
+    out property <string> events = "";
     pure callback path(int) -> [string];
     path(tag) => { ["detail", "review"] }
     callback append-path();
@@ -666,7 +666,7 @@ export component FocusCommandOrderParity inherits Window {
 }
 
 export component FocusHandlerParity inherits Window {
-    out property <string> events: "";
+    out property <string> events = "";
     empty := FocusScope {
         focus-gained(reason) => {}
         focus-within-changed(focused, reason) => {}
@@ -685,7 +685,7 @@ export component RepeatedDragRoutingParity inherits Window {
 }
 
 component FocusRowContent inherits Rectangle {
-    in property <string> label: "";
+    in property <string> label = "";
     callback seen(string);
     scope := FocusScope {
         focus-lost(reason) => { root.seen("lost " + root.label); }
@@ -702,8 +702,8 @@ component FocusRowContent inherits Rectangle {
 }
 
 export component TypedInputAvailabilityParity inherits Window {
-    in-out property <bool> allowed: true;
-    out property <string> events: "";
+    in-out property <bool> allowed = true;
+    out property <string> events = "";
     blocker := WheelHandler {
         wheel(event) => { root.allowed = false; reject }
     }
@@ -745,9 +745,9 @@ component TypedInputChild inherits Rectangle {
 }
 
 export component TypedInputAncestorParity inherits Window {
-    in-out property <bool> allowed: true;
-    in-out property <bool> shown: true;
-    out property <string> events: "";
+    in-out property <bool> allowed = true;
+    in-out property <bool> shown = true;
+    out property <string> events = "";
     pure callback check-wheel() -> bool;
     check-wheel => { true }
     parent := FocusScope {
@@ -787,13 +787,13 @@ component ScopedInputProbe inherits FocusScope {
 }
 
 export component TypedInputScopeParity inherits Window {
-    in-out property <bool> checkable: true;
-    in-out property <bool> checked: true;
-    in-out property <bool> dialog-open: true;
-    in-out property <bool> drawer-open: true;
-    in-out property <bool> popup-open: true;
-    in-out property <SwipeSide> side: left;
-    out property <string> events: "";
+    in-out property <bool> checkable = true;
+    in-out property <bool> checked = true;
+    in-out property <bool> dialog-open = true;
+    in-out property <bool> drawer-open = true;
+    in-out property <bool> popup-open = true;
+    in-out property <SwipeSide> side = left;
+    out property <string> events = "";
     pure callback read-popup-check() -> bool;
     read-popup-check => { false }
     GroupBox {
@@ -834,10 +834,10 @@ export component TypedInputScopeParity inherits Window {
 }
 
 export component SwipePanelAvailabilityParity inherits Window {
-    in-out property <bool> panel-visible: true;
-    in-out property <bool> enabled: true;
-    in-out property <SwipeSide> side: closed;
-    out property <int> changes: 0;
+    in-out property <bool> panel-visible = true;
+    in-out property <bool> enabled = true;
+    in-out property <SwipeSide> side = closed;
+    out property <int> changes = 0;
     pure callback panel-shown(bool) -> bool;
     panel-shown(shown) => { shown }
     row := SwipeDelegate {
@@ -865,13 +865,13 @@ component RoutedEditor inherits LineEdit {
 }
 
 export component RoutedEditorParity inherits Window {
-    in-out property <bool> opened: true;
-    in-out property <bool> locked: false;
-    in-out property <int> limit: 12;
-    in-out property <InputType> mode: text;
-    in-out property <string> separator: ".";
-    in-out property <string> value: "1";
-    out property <string> submitted: "";
+    in-out property <bool> opened = true;
+    in-out property <bool> locked = false;
+    in-out property <int> limit = 12;
+    in-out property <InputType> mode = text;
+    in-out property <string> separator = ".";
+    in-out property <string> value = "1";
+    out property <string> submitted = "";
     Dialog {
         open <=> root.opened;
         RoutedEditor {
@@ -886,10 +886,10 @@ export component RoutedEditorParity inherits Window {
 }
 
 export component TextEditConflictParity inherits Window {
-    in-out property <string> line: "before";
-    in-out property <string> paragraph: "before";
-    in-out property <string> query: "before";
-    out property <int> edits: 0;
+    in-out property <string> line = "before";
+    in-out property <string> paragraph = "before";
+    in-out property <string> query = "before";
+    out property <int> edits = 0;
     pure callback line-limit() -> int;
     line-limit => { 40 }
     single := LineEdit {
@@ -908,7 +908,7 @@ export component TextEditConflictParity inherits Window {
 }
 
 component RoutedChoice inherits Rectangle {
-    in-out property <int> selection: 0;
+    in-out property <int> selection = 0;
     in property <[string]> options;
     pure callback can-edit() -> bool;
     callback selected-value(string);
@@ -921,11 +921,11 @@ component RoutedChoice inherits Rectangle {
 }
 
 export component RoutedChoiceParity inherits Window {
-    in-out property <bool> opened: true;
-    in-out property <bool> drawer-open: false;
-    in-out property <int> selection: 0;
-    in-out property <[string]> options: ["A", "B"];
-    out property <string> selected: "";
+    in-out property <bool> opened = true;
+    in-out property <bool> drawer-open = false;
+    in-out property <int> selection = 0;
+    in-out property <[string]> options = ["A", "B"];
+    out property <string> selected = "";
     pure callback can-edit() -> bool;
     can-edit => { false }
     Dialog {
@@ -941,9 +941,9 @@ export component RoutedChoiceParity inherits Window {
 }
 
 component RoutedRanges inherits Rectangle {
-    in-out property <float> amount: 20;
-    in-out property <float> position: 0.2;
-    in-out property <float> upper: 70;
+    in-out property <float> amount = 20;
+    in-out property <float> position = 0.2;
+    in-out property <float> upper = 70;
     pure callback limit() -> float;
     Slider { value <=> root.amount; maximum: root.limit(); }
     ScrollBar { position <=> root.position; size: 0.25; }
@@ -951,11 +951,11 @@ component RoutedRanges inherits Rectangle {
 }
 
 export component RoutedRangeParity inherits Window {
-    in-out property <bool> opened: true;
-    in-out property <float> amount: 20;
-    in-out property <float> position: 0.2;
-    in-out property <float> upper: 70;
-    out property <int> split-edits: 0;
+    in-out property <bool> opened = true;
+    in-out property <float> amount = 20;
+    in-out property <float> position = 0.2;
+    in-out property <float> upper = 70;
+    out property <int> split-edits = 0;
     pure callback limit() -> float;
     limit => { 100 }
     Dialog {
@@ -981,8 +981,8 @@ export component RoutedRangeParity inherits Window {
 }
 
 export component MovedFocusRowParity inherits Window {
-    in-out property <[string]> labels: ["A", "B"];
-    out property <string> events: "";
+    in-out property <[string]> labels = ["A", "B"];
+    out property <string> events = "";
     ListView {
         row-height: 28px;
         for label[index] in root.labels : FocusRowContent {
@@ -996,10 +996,10 @@ component HiddenFocusRowContent inherits FocusRowContent { visible: false; }
 
 export component TableDelegateInputParity inherits Window {
     width: 320px; height: 200px;
-    in-out property <bool> pane-enabled: true;
-    in-out property <bool> delegate-visible: true;
-    in-out property <[string]> labels: ["A", "B"];
-    out property <string> events: "";
+    in-out property <bool> pane-enabled = true;
+    in-out property <bool> delegate-visible = true;
+    in-out property <[string]> labels = ["A", "B"];
+    out property <string> events = "";
     TableView {
         TableColumn { title: "Name"; }
         for input[node] in root.labels : TableRow {
@@ -1017,7 +1017,7 @@ export component TableDelegateInputParity inherits Window {
 
 export component TableRowStatePredicateParity inherits Window {
     width: 320px; height: 200px;
-    out property <string> events: "";
+    out property <string> events = "";
     pure callback row-locked(int) -> bool;
     row-locked(index) => { false }
     TableView {
@@ -1048,9 +1048,9 @@ component NestedFocusRows inherits Rectangle {
 
 export component NestedMovedFocusParity inherits Window {
     width: 360px; height: 240px;
-    in-out property <[string]> groups: ["first", "second"];
-    in-out property <[string]> labels: ["A", "B"];
-    out property <string> events: "";
+    in-out property <[string]> groups = ["first", "second"];
+    in-out property <[string]> labels = ["A", "B"];
+    out property <string> events = "";
     ListView {
         width: 320px; height: 210px; row-height: 96px;
         for group[index] in root.groups : NestedFocusRows {
@@ -1061,7 +1061,7 @@ export component NestedMovedFocusParity inherits Window {
 }
 
 export component NativeDialogOptionOrderParity inherits Window {
-    in-out property <bool> can-open: true;
+    in-out property <bool> can-open = true;
     out property <bool> file-pending: file.pending;
     out property <bool> message-pending: message.pending;
     pure callback file-enabled() -> bool;
@@ -1095,7 +1095,7 @@ export component NativeDialogOptionOrderParity inherits Window {
 }
 
 export component StaticRepeatScenes inherits Window {
-    in-out property <string> caption: "Before";
+    in-out property <string> caption = "Before";
     Text { text: root.caption; }
     for row in 48 : Rectangle { width: 120px; height: 24px; Text { text: "Static"; } }
     for row in 48 : Rectangle { width: 120px; height: 24px; Text { text: "Static"; } }
@@ -1104,7 +1104,7 @@ export component StaticRepeatScenes inherits Window {
 }
 
 export component ReactiveBrushScenes inherits Window {
-    in-out property <color> accent: #48a;
+    in-out property <color> accent = #48a;
     Rectangle { background: @linear-gradient(90deg, root.accent, #fff); }
     Rectangle { background: @linear-gradient(90deg, root.accent, #fff); }
     for row in 5 : Rectangle {
@@ -1118,8 +1118,8 @@ export component ReactiveBrushScenes inherits Window {
 }
 
 export component FileEventListParity inherits Window {
-    out property <[string]> first: [];
-    out property <[string]> second: [];
+    out property <[string]> first = [];
+    out property <[string]> second = [];
     callback open-picker();
     open-picker => { picker.open(); }
     picker := FileDialog {
@@ -1132,15 +1132,15 @@ export component FileEventListParity inherits Window {
 }
 
 export component RepeatModelReadParity inherits Window {
-    in-out property <int> revision: 0;
+    in-out property <int> revision = 0;
     pure callback sample-count(int) -> int;
     sample-count(revision) => { 2 }
     for row in root.sample-count(root.revision) : Text { text: "Row " + row; }
 }
 
 export component OrdinaryRepeatSourceParity inherits Window {
-    in-out property <[string]> text-rows: ["first", "second"];
-    in-out property <[string]> group-rows: ["first", "second"];
+    in-out property <[string]> text-rows = ["first", "second"];
+    in-out property <[string]> group-rows = ["first", "second"];
     pure callback describe(int, string) -> string;
     describe(kind, label) => { label }
     for row in root.text-rows : Text { text: root.describe(0, row); }
@@ -1148,8 +1148,8 @@ export component OrdinaryRepeatSourceParity inherits Window {
 }
 
 export component EmptyOrdinaryRepeats inherits Window {
-    in-out property <int> count: 0;
-    out property <int> clicks: 0;
+    in-out property <int> count = 0;
+    out property <int> clicks = 0;
     pure callback describe(int) -> string;
     describe(index) => { "" + index }
     for row in 0 : Text { text: root.describe(row); }
@@ -1167,8 +1167,8 @@ export component EmptyOrdinaryRepeats inherits Window {
 export struct VisualStrings { prefix: string, suffix: string }
 
 export component RecordVisualCaches inherits Window {
-    in-out property <VisualStrings> style: VisualStrings { prefix: "old ", suffix: "end" };
-    in-out property <[string]> items: ["A", "B"];
+    in-out property <VisualStrings> style = VisualStrings { prefix: "old ", suffix: "end" };
+    in-out property <[string]> items = ["A", "B"];
     Text { text: root.style.prefix + root.style.suffix; }
     Text { text: root.style.prefix + root.style.suffix; }
     for item in root.items : Text { text: root.style.prefix + item; }
@@ -1176,7 +1176,7 @@ export component RecordVisualCaches inherits Window {
 
 export component StaticBuiltinValues inherits Window {
     property <Time> fixed: Time { hour: 30, minute: -2, second: 99 };
-    in-out property <Time> live: Time { hour: 30, minute: -2, second: 99 };
+    in-out property <Time> live = Time { hour: 30, minute: -2, second: 99 };
     property <Date> today: Date { year: 2026, month: 11, day: 12 };
     property <Font> face: Font { family: "sans-serif", size: 18px, weight: 500, italic: false };
     out property <int> fixed-hour: root.fixed.hour;
@@ -1197,19 +1197,19 @@ export component InternedScenes inherits Window {
 }
 
 export component FixedImageUpdates inherits Window {
-    in-out property <image> picture: @image-url("");
-    in-out property <image> intrinsic-picture: @image-url("");
+    in-out property <image> picture = @image-url("");
+    in-out property <image> intrinsic-picture = @image-url("");
     Image { source: root.picture; width: 120px; height: 80px; }
     Image { source: root.intrinsic-picture; }
 }
 
 // Component names must not shadow paths used by generated code.
 export component String inherits Window { out property <string> value: "ok"; }
-export component Option inherits Window { in-out property <int> value: 7; }
+export component Option inherits Window { in-out property <int> value = 7; }
 export component type inherits Window { out property <float> value: 1; }
 
 export component SelectionByValue inherits Rectangle {
-    in-out property <string> selection: "beta";
+    in-out property <string> selection = "beta";
     choice := ComboBox {
         model: ["alpha", "beta"];
         current-value <=> root.selection;
@@ -1217,12 +1217,12 @@ export component SelectionByValue inherits Rectangle {
 }
 
 export component ComboTextParity inherits Window {
-    in-out property <[string]> choices: ["A", "A", "B"];
-    in-out property <bool> allowed: true;
-    in-out property <bool> can-edit: true;
-    out property <int> selection: 0;
-    out property <string> accepted: "";
-    out property <int> selections: 0;
+    in-out property <[string]> choices = ["A", "A", "B"];
+    in-out property <bool> allowed = true;
+    in-out property <bool> can-edit = true;
+    out property <int> selection = 0;
+    out property <string> accepted = "";
+    out property <int> selections = 0;
     pure callback allow-edit() -> bool;
     allow-edit => { root.can-edit }
     choice := ComboBox {
@@ -1238,8 +1238,8 @@ export component ComboTextParity inherits Window {
 export struct ComboCommitOption { label: string, code: int }
 
 export component ComboRenderSampleParity inherits Window {
-    in-out property <int> current: 1;
-    in property <[ComboCommitOption]> options: [
+    in-out property <int> current = 1;
+    in property <[ComboCommitOption]> options = [
         ComboCommitOption { label: "A", code: 1 },
         ComboCommitOption { label: "B", code: 2 },
     ];
@@ -1254,9 +1254,9 @@ export component ComboRenderSampleParity inherits Window {
 }
 
 export component ComboCommitParity inherits Window {
-    in-out property <int> current: 1;
-    in-out property <string> draft: "";
-    out property <string> events: "";
+    in-out property <int> current = 1;
+    in-out property <string> draft = "";
+    out property <string> events = "";
     combo := ComboBox {
         model: [ComboCommitOption { label: "A", code: 1 }, ComboCommitOption { label: "B", code: 2 }];
         text-role: "label";
@@ -1271,12 +1271,12 @@ export component ComboCommitParity inherits Window {
 }
 
 export component SearchInputParity inherits Window {
-    in-out property <string> query: "a";
-    in-out property <[string]> suggestions: ["alpha"];
-    in-out property <string> result-query: "a";
-    in-out property <bool> allowed: true;
-    in-out property <bool> locked: false;
-    out property <string> events: "";
+    in-out property <string> query = "a";
+    in-out property <[string]> suggestions = ["alpha"];
+    in-out property <string> result-query = "a";
+    in-out property <bool> allowed = true;
+    in-out property <bool> locked = false;
+    out property <string> events = "";
     pure callback live-search() -> bool;
     live-search => { true }
 
@@ -1295,7 +1295,7 @@ export component SearchInputParity inherits Window {
 }
 
 export component RadioByValue inherits Rectangle {
-    in-out property <string> selection: "beta";
+    in-out property <string> selection = "beta";
     group := RadioGroup {
         current-value <=> root.selection;
         RadioButton { text: "alpha"; }
@@ -1304,19 +1304,23 @@ export component RadioByValue inherits Rectangle {
 }
 
 component LazyChild inherits Rectangle {
-    in property <int> input: 0;
+    in property <int> input = 0;
     out property <int> doubled: input * 2;
 }
 
 export component LazyProperties inherits Window {
-    in-out property <bool> use-left: true;
-    in-out property <int> left: 3;
-    in-out property <int> right: 8;
-    in-out property <int> unused: 0;
+    in-out property <bool> use-left = true;
+    in-out property <int> left = 3;
+    in-out property <int> right = 8;
+    in-out property <int> unused = 0;
     pure callback observe(int) -> int;
     pure callback format-value(int) -> string;
     pure callback format-right(int) -> string;
-    in-out property <int> result: root.observe(root.use-left ? root.left : root.right);
+    in-out property <int> manual-result;
+    in-out property <bool> manual-result-active;
+    out property <int> result: root.manual-result-active
+        ? root.manual-result
+        : root.observe(root.use-left ? root.left : root.right);
     out property <int> shown: child.doubled;
     child := LazyChild { input: root.result; }
     label := Text { text: root.format-value(root.shown); }
@@ -1324,12 +1328,12 @@ export component LazyProperties inherits Window {
 }
 
 export component LazyList inherits Window {
-    in-out property <[string]> items: [];
-    in-out property <bool> show-list: true;
-    in-out property <bool> use-suffix: true;
-    in-out property <string> suffix: "!";
-    in-out property <int> details: 1;
-    in-out property <int> unrelated: 0;
+    in-out property <[string]> items = [];
+    in-out property <bool> show-list = true;
+    in-out property <bool> use-suffix = true;
+    in-out property <string> suffix = "!";
+    in-out property <int> details = 1;
+    in-out property <int> unrelated = 0;
     pure callback row-label(string, int, string) -> string;
     pure callback row-index(int) -> string;
     pure callback detail-label(string, int, int) -> string;
@@ -1347,8 +1351,8 @@ export component LazyList inherits Window {
 }
 
 export component SharedVisuals inherits Window {
-    in-out property <int> count: 0;
-    in-out property <[string]> items: ["A", "B"];
+    in-out property <int> count = 0;
+    in-out property <[string]> items = ["A", "B"];
     pure callback describe() -> string;
     out property <string> caption: root.describe();
     first := Text { text: "Count " + root.count; }
@@ -1363,14 +1367,14 @@ export component SharedVisuals inherits Window {
 }
 
 component StringRows inherits ListView {
-    in property <[string]> items: [];
+    in property <[string]> items = [];
     for item[index] in root.items : Text { text: index + ": " + item; }
 }
 
 export component ScenePlans inherits Window {
-    in-out property <color> tint: #aabbcc;
-    in-out property <length> swatch-width: 40px;
-    in-out property <bool> show-caption: false;
+    in-out property <color> tint = #aabbcc;
+    in-out property <length> swatch-width = 40px;
+    in-out property <bool> show-caption = false;
     pure callback describe() -> string;
     out property <string> caption: root.describe();
     swatch := Rectangle { background: root.tint; width: root.swatch-width; }
@@ -1384,8 +1388,8 @@ export component ScenePlans inherits Window {
 }
 
 export component GradientPlans inherits Window {
-    in-out property <color> tint: #abc;
-    in-out property <length> swatch-width: 40px;
+    in-out property <color> tint = #abc;
+    in-out property <length> swatch-width = 40px;
     fixed := Rectangle {
         width: root.swatch-width;
         background: @linear-gradient(90deg, #000, #fff);
@@ -1396,12 +1400,12 @@ export component GradientPlans inherits Window {
 }
 
 export component EmbeddedList inherits Window {
-    in-out property <[string]> items: ["a", "b", "c"];
+    in-out property <[string]> items = ["a", "b", "c"];
     records := StringRows { items: root.items; }
 }
 
 export component GridPlans inherits Window {
-    in-out property <bool> show-extra: true;
+    in-out property <bool> show-extra = true;
     fixed := GridLayout {
         width: 150px; height: 100px; spacing: 4px;
         Rectangle { rowspan: 2; min-width: 20px; min-height: 20px; }
@@ -1425,7 +1429,7 @@ component PlannedGridInstance inherits GridLayout {
 }
 
 export component InstanceScenePlans inherits Window {
-    in-out property <bool> wide: false;
+    in-out property <bool> wide = false;
     out property <bool> mounted: grid.layout-ready;
     grid := PlannedGridInstance {
         width: 100px;
@@ -1435,7 +1439,7 @@ export component InstanceScenePlans inherits Window {
 }
 
 export component ModelBindings inherits Window {
-    in-out property <[string]> records: ["first", "second"];
+    in-out property <[string]> records = ["first", "second"];
     pure callback mirror([string]) -> [string];
     mirror(rows) => { rows }
     out property <[string]> mirrored: root.mirror(root.records);
@@ -1447,8 +1451,8 @@ export struct CallbackSnapshotRow {
 }
 
 export component ListEqualityBindings inherits Window {
-    in-out property <[string]> strings: ["before"];
-    in-out property <[CallbackSnapshotRow]> rows: [CallbackSnapshotRow { text: "before" }];
+    in-out property <[string]> strings = ["before"];
+    in-out property <[CallbackSnapshotRow]> rows = [CallbackSnapshotRow { text: "before" }];
     in-out property <[TouchPoint]> points;
     out property <bool> same-strings: root.strings == ["before"];
     out property <bool> different-rows: root.rows != [CallbackSnapshotRow { text: "before" }];
@@ -1466,10 +1470,10 @@ struct RetainedWindowReply {
 }
 
 component RetainedWindowChild inherits Window {
-    in-out property <int> bound: 3;
-    in property <int> fixed: 4;
-    in-out property <string> linked: "local";
-    out property <int> pings: 0;
+    in-out property <int> bound = 3;
+    in property <int> fixed = 4;
+    in-out property <string> linked = "local";
+    out property <int> pings = 0;
     pure callback answer() -> RetainedWindowReply;
     answer => { RetainedWindowReply { code: 99 } }
     out property <RetainedWindowReply> reply: root.answer();
@@ -1486,8 +1490,8 @@ component RetainedWindowChild inherits Window {
 }
 
 export component RetainedWindowParent inherits Window {
-    in-out property <int> count: 12;
-    in-out property <string> shared: "parent";
+    in-out property <int> count = 12;
+    in-out property <string> shared = "parent";
     child-window := SecondaryWindow {
         visible: true;
         RetainedWindowChild {
@@ -1506,7 +1510,7 @@ export component WindowCommandParity inherits Window {
     initial-visible => { false }
     pure callback full-screen-argument() -> bool;
     full-screen-argument => { true }
-    in-out property <bool> shown: root.initial-visible();
+    in-out property <bool> shown = root.initial-visible();
     callback hide-child();
     hide-child => { child.hide(); }
     callback close-child();
@@ -1524,9 +1528,9 @@ export component WindowCommandParity inherits Window {
 }
 
 export component CallbackModelSnapshots inherits Window {
-    in-out property <[string]> strings: ["before"];
-    in-out property <[CallbackSnapshotRow]> rows: [CallbackSnapshotRow { text: "before" }];
-    out property <bool> saw-original: false;
+    in-out property <[string]> strings = ["before"];
+    in-out property <[CallbackSnapshotRow]> rows = [CallbackSnapshotRow { text: "before" }];
+    out property <bool> saw-original = false;
     out property <[string]> saved-strings;
     out property <[CallbackSnapshotRow]> saved-rows;
     out property <[TouchPoint]> empty-points: root.copy-points([]);
@@ -1562,9 +1566,11 @@ export struct ToggleDelegateRow {
 export component ToggleDelegateEvents inherits Window {
     width: 240px;
     height: 180px;
-    in-out property <[ToggleDelegateRow]> rows: root.initial-rows();
-    out property <int> trace: 0;
-    in-out property <bool> three-states: true;
+    in-out property <[ToggleDelegateRow]> rows = root.initial-rows();
+    out property <int> trace = 0;
+    in-out property <bool> three-states = true;
+    callback reload-rows();
+    reload-rows => { root.rows = root.initial-rows(); }
     callback before-observe();
     pure callback read-three-states() -> bool;
     read-three-states => { root.three-states }
@@ -1608,8 +1614,8 @@ export component ToggleDelegateEvents inherits Window {
 
 export component PaintOrderPlans inherits Window {
     width: 240px; height: 100px;
-    in-out property <float> live-z: -1;
-    out property <string> winner: "";
+    in-out property <float> live-z = -1;
+    out property <string> winner = "";
     fixed := Rectangle {
         width: 100px; height: 80px; z: 2;
         upper := Button {
@@ -1635,9 +1641,9 @@ export component PaintOrderPlans inherits Window {
 }
 
 export component OperandCacheProbe inherits Window {
-    in-out property <length> panel-width: 100px;
-    in-out property <string> payload: "first";
-    in-out property <bool> show-extra: false;
+    in-out property <length> panel-width = 100px;
+    in-out property <string> payload = "first";
+    in-out property <bool> show-extra = false;
     pure callback describe(value: string) -> string;
     pure callback field-label(value: string) -> string;
     pure callback extra-label(value: string) -> string;
@@ -1650,7 +1656,7 @@ export component OperandCacheProbe inherits Window {
 struct ClipboardProbeRow { text: string }
 
 export component ClipboardProbe inherits Window {
-    in property <[ClipboardProbeRow]> records: [ClipboardProbeRow { text: "item" }];
+    in property <[ClipboardProbeRow]> records = [ClipboardProbeRow { text: "item" }];
     pure callback format-copy(string) -> string;
     TableView {
         copyable: true;
@@ -1685,18 +1691,19 @@ export component ClipboardProjectionParity inherits Window {
 }
 
 component ClipboardNamedContent inherits Rectangle {
-    in-out property <int> clipboard-text: 7;
+    in-out property <int> clipboard-text = 7;
     in-out property <int> copy-value <=> root.clipboard-text;
     Text { text: "stored " + root.clipboard-text; }
 }
 
 export component ClipboardBindingParity inherits Window {
-    in-out property <int> source: 42;
+    in-out property <int> source = 42;
+    private property <int> copy-row;
     out property <int> observed: child.clipboard-text;
     child := ClipboardNamedContent { clipboard-text: root.source; }
     table := TableView {
         copyable: true;
-        current-row: 0;
+        current-row <=> root.copy-row;
         TableColumn { title: "Cell"; }
         TableColumn { title: "Nested"; }
         for row in 1 : TableRow {
@@ -1707,8 +1714,8 @@ export component ClipboardBindingParity inherits Window {
 }
 
 component DirectDispatchLeaf inherits Rectangle {
-    out property <int> calls: 0;
-    out property <bool> checked: false;
+    out property <int> calls = 0;
+    out property <bool> checked = false;
     hidden-button := Button {
         visible: false;
         clicked => { root.calls = root.calls + 1; }
@@ -1729,7 +1736,7 @@ component DirectDispatchMiddle inherits Rectangle {
 export component DirectDispatchScene inherits Window {
     out property <int> calls: middle.calls;
     out property <bool> checked: middle.checked;
-    out property <int> endings: 0;
+    out property <int> endings = 0;
     hidden-root-button := Button {
         visible: false;
         clicked => { root.endings = root.endings + 10; }
@@ -1746,8 +1753,8 @@ export component DirectDispatchScene inherits Window {
 }
 
 export component MountedListParity inherits Window {
-    in-out property <int> page: 0;
-    in-out property <bool> show-list: true;
+    in-out property <int> page = 0;
+    in-out property <bool> show-list = true;
     pure callback row-label(int) -> string;
 
     tabs := TabWidget {
@@ -1763,39 +1770,41 @@ export component MountedListParity inherits Window {
 }
 
 export component ListSelectionParity inherits Window {
-    in-out property <[string]> labels: ["A", "B", "C"];
-    in-out property <bool> allowed: true;
-    in-out property <int> selected: root.read-selection();
-    out property <int> changes: 0;
+    in-out property <[string]> labels = ["A", "B", "C"];
+    in-out property <bool> allowed = true;
+    in-out property <int> selected = -1;
+    private property <bool> selection-changed-by-control;
+    out property <int> changes = 0;
     pure callback read-selection() -> int;
     callback select-source(int);
     select-source(source) => { entries.select-source-index(source); }
-    read-selection => { -1 }
+    read-selection => { root.selected }
 
     entries := ListView {
         enabled: root.allowed;
-        current-index <=> root.selected;
-        changed(index) => { root.changes += 1; }
+        current-index: root.selection-changed-by-control ? root.selected : root.read-selection();
+        changed(index) => { root.selected = index; root.selection-changed-by-control = true; root.changes += 1; }
         for label in root.labels : Text { text: label; }
     }
 }
 
 export component TableRowSelectionParity inherits Window {
-    in-out property <[string]> labels: ["A", "B", "C"];
-    in-out property <bool> allowed: true;
-    in-out property <bool> multiple: false;
-    in-out property <int> current: root.read-row();
-    out property <int> row-events: 0;
-    out property <int> cell-events: 0;
-    out property <int> selection-events: 0;
+    in-out property <[string]> labels = ["A", "B", "C"];
+    in-out property <bool> allowed = true;
+    in-out property <bool> multiple = false;
+    in-out property <int> current = -1;
+    private property <bool> selection-changed-by-control;
+    out property <int> row-events = 0;
+    out property <int> cell-events = 0;
+    out property <int> selection-events = 0;
     pure callback read-row() -> int;
-    read-row => { -1 }
+    read-row => { root.current }
 
     table := TableView {
         enabled: root.allowed;
         multi-select: root.multiple;
-        current-row <=> root.current;
-        current-row-changed(row) => { root.row-events += 1; }
+        current-row: root.selection-changed-by-control ? root.current : root.read-row();
+        current-row-changed(row) => { root.current = row; root.selection-changed-by-control = true; root.row-events += 1; }
         current-cell-changed(row, column) => { root.cell-events += 1; }
         selection-changed(count) => { root.selection-events += 1; }
         TableColumn { title: "Label"; }
@@ -1813,18 +1822,18 @@ component SampledRowButton inherits Button {
 }
 
 export component ProjectedDelegateModelParity inherits Window {
-    in-out property <int> revision: 0;
-    in-out property <[TreeInputParityRow]> first: [
+    in-out property <int> revision = 0;
+    in-out property <[TreeInputParityRow]> first = [
         TreeInputParityRow { id: 1, parent: -1, label: "first" },
     ];
-    in-out property <[TreeInputParityRow]> second: [
+    in-out property <[TreeInputParityRow]> second = [
         TreeInputParityRow { id: 2, parent: -1, label: "second" },
     ];
-    out property <int> activated: 0;
-    in-out property <bool> expanded: true;
+    out property <int> activated = 0;
+    in-out property <bool> expanded = true;
     pure callback use-first(int) -> bool;
     use-first(revision) => { revision == 0 }
-    in-out property <[TreeInputParityRow]> rows: root.use-first(root.revision) ? root.first : root.second;
+    out property <[TreeInputParityRow]> rows: root.use-first(root.revision) ? root.first : root.second;
     TreeView {
         width: 240px; height: 80px; row-height: 36px;
         for row in root.rows : TreeRow {
@@ -1838,17 +1847,17 @@ export component ProjectedDelegateModelParity inherits Window {
                     checked <=> root.expanded;
                 }
             }
-            TreeCell { text <=> row.label; }
+            TreeCell { text: row.label; }
         }
     }
 }
 
 export component VirtualModelSampleParity inherits Window {
-    in-out property <int> revision: 0;
-    in-out property <[TreeInputParityRow]> first: [
+    in-out property <int> revision = 0;
+    in-out property <[TreeInputParityRow]> first = [
         TreeInputParityRow { id: 1, parent: -1, label: "first" },
     ];
-    in-out property <[TreeInputParityRow]> second: [
+    in-out property <[TreeInputParityRow]> second = [
         TreeInputParityRow { id: 2, parent: -1, label: "second" },
     ];
     pure callback sample(int, [TreeInputParityRow]) -> [TreeInputParityRow];
@@ -1871,7 +1880,7 @@ export component VirtualModelSampleParity inherits Window {
 export struct VirtualSceneRow { id: int, parent: int, text: string, shown: bool }
 
 export component VirtualSceneOrderParity inherits Window {
-    in-out property <[VirtualSceneRow]> rows: [
+    in-out property <[VirtualSceneRow]> rows = [
         VirtualSceneRow { id: 1, parent: -1, text: "first", shown: true },
         VirtualSceneRow { id: 2, parent: -1, text: "second", shown: true },
     ];
@@ -1915,20 +1924,21 @@ export component TreeInputParity inherits Window {
     out property <bool> queried-expanded: branches.is-expanded(root.query-key(3));
     out property <int> queried-view-index: branches.view-index-for-source(root.query-key(4));
     out property <int> queried-source-index: branches.source-index-for-view(root.query-key(5));
-    in-out property <[TreeInputParityRow]> records: [
+    in-out property <[TreeInputParityRow]> records = [
         TreeInputParityRow { id: 1, parent: -1, label: "One" },
         TreeInputParityRow { id: 2, parent: -1, label: "Two" },
         TreeInputParityRow { id: 3, parent: -1, label: "Three" },
         TreeInputParityRow { id: 11, parent: 1, label: "Child" },
     ];
-    in-out property <bool> allowed: true;
-    in-out property <bool> multiple: false;
-    in-out property <int> current: root.read-key();
-    out property <int> changes: 0;
-    out property <int> expansions: 0;
-    out property <int> collapses: 0;
-    out property <int> current-at-collapse: -1;
-    out property <int> selected-count: 0;
+    in-out property <bool> allowed = true;
+    in-out property <bool> multiple = false;
+    in-out property <int> current = -1;
+    private property <bool> selection-changed-by-control;
+    out property <int> changes = 0;
+    out property <int> expansions = 0;
+    out property <int> collapses = 0;
+    out property <int> current-at-collapse = -1;
+    out property <int> selected-count = 0;
     pure callback read-key() -> int;
     pure callback query-root() -> int;
     query-root => { -1 }
@@ -1946,14 +1956,14 @@ export component TreeInputParity inherits Window {
     reveal-child => { branches.expand-to(11); }
     toggle-root => { branches.toggle-expanded(1); }
     select-source(source) => { branches.select-source-index(source); }
-    read-key => { -1 }
+    read-key => { root.current }
 
     branches := TreeView {
         root-key: root.query-root();
         enabled: root.allowed;
         multi-select: root.multiple;
-        current-key <=> root.current;
-        changed(key) => { root.changes += 1; }
+        current-key: root.selection-changed-by-control ? root.current : root.read-key();
+        changed(key) => { root.current = key; root.selection-changed-by-control = true; root.changes += 1; }
         expanded(key) => { root.expansions += 1; }
         collapsed(key) => { root.collapses += 1; root.current-at-collapse = root.current; }
         selection-changed(count) => { root.selected-count = count; }
@@ -1965,10 +1975,10 @@ export component TreeInputParity inherits Window {
 }
 
 export component TreeModelReplacementParity inherits Window {
-    in-out property <[TreeInputParityRow]> rows: [
+    in-out property <[TreeInputParityRow]> rows = [
         TreeInputParityRow { id: 1, parent: -1, label: "old" },
     ];
-    in-out property <bool> filtering: false;
+    in-out property <bool> filtering = false;
     pure callback query-root() -> int;
     query-root => { -1 }
     pure callback query-text() -> string;
@@ -1995,7 +2005,7 @@ export component TreeModelReplacementParity inherits Window {
 }
 
 export component CallbackReplacementParity inherits Window {
-    out property <int> steps: 0;
+    out property <int> steps = 0;
     out property <int> observed: root.probe();
     callback replace();
     callback advance() -> int;
@@ -2018,26 +2028,26 @@ export component RangeAliasParity inherits Window {
 }
 
 export component HiddenSliderContent inherits Slider {
-    in-out property <float> level <=> root.value;
+    in-out property <float> level = 10;
     visible: false;
-    value: 10;
+    value <=> root.level;
 }
 
 export component HiddenIntervalContent inherits RangeSlider {
-    in-out property <float> upper <=> root.upper-value;
+    in-out property <float> upper = 20;
     visible: false;
     lower-value: 10;
-    upper-value: 20;
+    upper-value <=> root.upper;
 }
 
 export component HiddenSpinContent inherits SpinBox {
-    in-out property <int> amount <=> root.value;
+    in-out property <int> amount = 10;
     visible: false;
-    value: 10;
+    value <=> root.amount;
 }
 
 export component InstanceRangeVisibilityParity inherits Window {
-    in-out property <bool> shown: true;
+    in-out property <bool> shown = true;
     out property <float> level: slider.level;
     out property <float> upper: interval.upper;
     out property <int> amount: spin.amount;
@@ -2047,42 +2057,42 @@ export component InstanceRangeVisibilityParity inherits Window {
 }
 
 component HiddenComboContent inherits ComboBox {
-    in-out property <int> selected-index: 0;
+    in-out property <int> selected-index = 0;
     current-index <=> root.selected-index;
     visible: false;
     model: ["A", "B"];
 }
 
 component HiddenSearchContent inherits SearchField {
-    out property <int> submissions: 0;
+    out property <int> submissions = 0;
     visible: false;
     text: "test";
     accepted(value) => { root.submissions += 1; }
 }
 
 component HiddenListContent inherits StandardListView {
-    in-out property <int> selected-index: 0;
+    in-out property <int> selected-index = 0;
     current-index <=> root.selected-index;
     visible: false;
     model: ["A", "B"];
 }
 
 component HiddenDelayContent inherits DelayButton {
-    in-out property <bool> confirmed: false;
+    in-out property <bool> confirmed = false;
     checked <=> root.confirmed;
     visible: false;
     delay: 800;
 }
 
 component HiddenTumblerContent inherits Tumbler {
-    in-out property <int> selected-index: 0;
+    in-out property <int> selected-index = 0;
     current-index <=> root.selected-index;
     visible: false;
     count: 3;
 }
 
 component HiddenIndicatorContent inherits PageIndicator {
-    in-out property <int> selected-index: 0;
+    in-out property <int> selected-index = 0;
     current-index <=> root.selected-index;
     visible: false;
     count: 3;
@@ -2090,7 +2100,7 @@ component HiddenIndicatorContent inherits PageIndicator {
 }
 
 component HiddenTableContent inherits TableView {
-    in-out property <int> selected-index: 0;
+    in-out property <int> selected-index = 0;
     visible: false;
     current-row <=> root.selected-index;
     TableColumn { title: "Label"; }
@@ -2098,7 +2108,7 @@ component HiddenTableContent inherits TableView {
 }
 
 component HiddenTreeContent inherits TreeView {
-    in-out property <int> selected-key: -1;
+    in-out property <int> selected-key = -1;
     visible: false;
     current-key <=> root.selected-key;
     for entry in [TreeInputParityRow { id: 1, parent: -1, label: "A" }] : TreeRow {
@@ -2109,7 +2119,7 @@ component HiddenTreeContent inherits TreeView {
 }
 
 export component InstanceControlVisibilityParity inherits Window {
-    in-out property <bool> shown: true;
+    in-out property <bool> shown = true;
     out property <int> combo-index: combo.selected-index;
     out property <int> submissions: search.submissions;
     out property <int> list-index: list.selected-index;
@@ -2129,7 +2139,7 @@ export component InstanceControlVisibilityParity inherits Window {
 }
 
 component HiddenEditableTable inherits StandardTableView {
-    in-out property <[ProjectedPasteRow]> rows: [
+    in-out property <[ProjectedPasteRow]> rows = [
         ProjectedPasteRow { first: "one", second: "two" },
     ];
     width: 240px;
@@ -2145,7 +2155,7 @@ component HiddenEditableTable inherits StandardTableView {
 }
 
 export component InstanceTableVisibilityParity inherits Window {
-    in-out property <bool> shown: true;
+    in-out property <bool> shown = true;
     HiddenEditableTable { visible: root.shown; }
 }
 
@@ -2183,8 +2193,8 @@ component HiddenRowEditorTree inherits TreeView {
 }
 
 export component InstanceRowEditorVisibilityParity inherits Window {
-    in-out property <bool> shown: true;
-    in-out property <[VisibilityEditorRow]> rows: [
+    in-out property <bool> shown = true;
+    in-out property <[VisibilityEditorRow]> rows = [
         VisibilityEditorRow { key: 1, parent: -1, title: "before", linked: "old", checked: false, amount: 10 },
     ];
     pure callback record-history() -> bool;
@@ -2198,7 +2208,7 @@ export component InstanceRowEditorVisibilityParity inherits Window {
 }
 
 export component ControlStorageParity inherits Window {
-    in-out property <float> minimum-value: 4.5;
+    in-out property <float> minimum-value = 4.5;
     in-out property <float> level <=> slider.value;
     in-out property <int> amount <=> spin.value;
     out property <CheckState> last-state;
@@ -2213,8 +2223,8 @@ export component ControlStorageParity inherits Window {
 }
 
 export component ToggleInputParity inherits Window {
-    in-out property <CheckState> state: CheckState.unchecked;
-    out property <int> changes: 0;
+    in-out property <CheckState> state = CheckState.unchecked;
+    out property <int> changes = 0;
     pure callback read-tristate() -> bool;
     read-tristate => { true }
 
@@ -2226,7 +2236,7 @@ export component ToggleInputParity inherits Window {
 }
 
 component RetryBindingChild inherits Text {
-    in property <string> label: "fallback";
+    in property <string> label = "fallback";
     text: root.label;
 }
 
@@ -2239,13 +2249,13 @@ export component RetryBindingParity inherits Window {
 }
 
 export component SpinOptionsParity inherits Window {
-    in-out property <int> integer-limit: 100;
-    in-out property <float> decimal-limit: 100.0;
-    in-out property <int> precision: 2;
-    in-out property <bool> unlocked: true;
-    in-out property <int> amount: 10;
-    in-out property <float> level: 10.0;
-    out property <int> edits: 0;
+    in-out property <int> integer-limit = 100;
+    in-out property <float> decimal-limit = 100.0;
+    in-out property <int> precision = 2;
+    in-out property <bool> unlocked = true;
+    in-out property <int> amount = 10;
+    in-out property <float> level = 10.0;
+    out property <int> edits = 0;
 
     integer-spin := SpinBox {
         maximum: root.integer-limit;
@@ -2263,16 +2273,16 @@ export component SpinOptionsParity inherits Window {
 }
 
 export component RangeOptionsParity inherits Window {
-    in-out property <float> limit: 100.0;
-    in-out property <float> amount: 10.0;
-    in-out property <float> dial-value: 10.0;
-    in-out property <float> lower: 10.0;
-    in-out property <float> upper: 40.0;
-    out property <int> changes: 0;
-    out property <int> releases: 0;
-    out property <float> last-release: 0.0;
-    out property <float> band-changed-upper: 0.0;
-    out property <float> band-released-lower: 0.0;
+    in-out property <float> limit = 100.0;
+    in-out property <float> amount = 10.0;
+    in-out property <float> dial-value = 10.0;
+    in-out property <float> lower = 10.0;
+    in-out property <float> upper = 40.0;
+    out property <int> changes = 0;
+    out property <int> releases = 0;
+    out property <float> last-release = 0.0;
+    out property <float> band-changed-upper = 0.0;
+    out property <float> band-released-lower = 0.0;
     callback after-change;
 
     slider := Slider {
@@ -2293,9 +2303,9 @@ export component RangeOptionsParity inherits Window {
 }
 
 export component RangeWithoutReleaseHandlerParity inherits Window {
-    in-out property <float> amount: 10.0;
-    in-out property <float> lower: 10.0;
-    in-out property <float> upper: 40.0;
+    in-out property <float> amount = 10.0;
+    in-out property <float> lower = 10.0;
+    in-out property <float> upper = 40.0;
     pure callback limit(int) -> float;
     limit(tag) => { 100.0 }
 
@@ -2329,10 +2339,10 @@ export struct SpinEditorRow {
 
 export component RowSpinOptionsParity inherits Window {
     width: 480px; height: 250px;
-    in-out property <int> precision: 2;
-    in-out property <bool> row-visible: true;
-    in-out property <bool> dial-wrap: false;
-    in-out property <[SpinEditorRow]> rows: [
+    in-out property <int> precision = 2;
+    in-out property <bool> row-visible = true;
+    in-out property <bool> dial-wrap = false;
+    in-out property <[SpinEditorRow]> rows = [
         SpinEditorRow { key: 1, parent: -1, amount: 10, level: 10.0, limit: 100 },
     ];
     pure callback read-limit(int) -> int;
@@ -2373,8 +2383,8 @@ export component RowSpinOptionsParity inherits Window {
 
 export component NumericEditScopeParity inherits Window {
     width: 300px; height: 180px;
-    in-out property <bool> accepting-input: true;
-    in-out property <[SpinEditorRow]> rows: [
+    in-out property <bool> accepting-input = true;
+    in-out property <[SpinEditorRow]> rows = [
         SpinEditorRow { key: 1, parent: -1, amount: 10, level: 10.0, limit: 100 },
     ];
     pure callback read-limit(int) -> int;
@@ -2400,9 +2410,9 @@ export component NumericEditScopeParity inherits Window {
 }
 
 export component IntegerArithmeticParity inherits Window {
-    in-out property <int> left: 9223372036854775807;
-    in-out property <int> right: 1;
-    in-out property <bool> evaluate-right: false;
+    in-out property <int> left = 9223372036854775807;
+    in-out property <int> right = 1;
+    in-out property <bool> evaluate-right = false;
     out property <int> sum: root.left + root.right;
     out property <int> difference: root.left - root.right;
     out property <int> product: root.left * root.right;
@@ -2477,7 +2487,7 @@ export component ImageRecordEqualityParity inherits Window {
     out property <bool> same-record: root.original == root.candidate;
     out property <bool> different-record: root.original != root.candidate;
     out property <bool> same-list: root.originals == root.candidates;
-    out property <int> received: 0;
+    out property <int> received = 0;
     callback receive(card: ComparedCard);
     callback supply() -> ComparedCard;
     callback observe-list(rows: [ComparedCard]);
@@ -2498,11 +2508,11 @@ export struct LiveCheckedRow {
 }
 
 export component LiveRecordValidationParity inherits Window {
-    in-out property <[LiveCheckedRow]> rows: [
+    in-out property <[LiveCheckedRow]> rows = [
         LiveCheckedRow { title: "first", picture: ComparedPicture { source: @image-url(""), score: 1.0 } },
         LiveCheckedRow { title: "second", picture: ComparedPicture { source: @image-url(""), score: 2.0 } },
     ];
-    in-out property <int> mode: 0;
+    in-out property <int> mode = 0;
     if root.mode == 0 : ListView {
         for row in root.rows : Text { text: row.title + row.picture.score; }
     }
@@ -2519,7 +2529,7 @@ export component LiveRecordValidationParity inherits Window {
 export struct PasteBoundsRow { count: int, load: float }
 
 export component PasteBoundsParity inherits Window {
-    in-out property <[PasteBoundsRow]> rows: [PasteBoundsRow { count: 2, load: 0.5 }];
+    in-out property <[PasteBoundsRow]> rows = [PasteBoundsRow { count: 2, load: 0.5 }];
     pure callback integer-minimum(int) -> int;
     pure callback decimal-minimum(float) -> float;
     pure callback integer-maximum() -> int;
@@ -2548,8 +2558,8 @@ export component PasteBoundsParity inherits Window {
 export struct ProjectedPasteRow { first: string, second: string }
 
 export component PastePermissionOrderParity inherits Window {
-    in-out property <bool> paste-active: true;
-    in-out property <[string]> rows: ["original"];
+    in-out property <bool> paste-active = true;
+    in-out property <[string]> rows = ["original"];
     pure callback row-visible() -> bool;
     pure callback cell-enabled() -> bool;
     row-visible => { true }
@@ -2568,8 +2578,8 @@ export component PastePermissionOrderParity inherits Window {
 }
 
 export component ProjectedPasteParity inherits Window {
-    in-out property <bool> table-enabled: true;
-    in-out property <[ProjectedPasteRow]> rows: [
+    in-out property <bool> table-enabled = true;
+    in-out property <[ProjectedPasteRow]> rows = [
         ProjectedPasteRow { first: "one", second: "two" },
     ];
     pure callback allow-second() -> bool;
@@ -2596,9 +2606,9 @@ component StatefulPasteEditor inherits HorizontalLayout {
 export struct HistoryCallbackRow { direct: string, linked: string }
 
 export component RoutedCellCommitParity inherits Window {
-    in-out property <bool> opened: true;
-    in-out property <bool> direct-row-visible: true;
-    in-out property <[HistoryCallbackRow]> rows: [
+    in-out property <bool> opened = true;
+    in-out property <bool> direct-row-visible = true;
+    in-out property <[HistoryCallbackRow]> rows = [
         HistoryCallbackRow { direct: "one", linked: "two" },
     ];
     pure callback record-history() -> bool;
@@ -2640,9 +2650,9 @@ export component RoutedCellCommitParity inherits Window {
 }
 
 export component HistoryCallbackParity inherits Window {
-    in-out property <bool> table-enabled: true;
-    in-out property <bool> table-visible: true;
-    in-out property <[HistoryCallbackRow]> rows: [
+    in-out property <bool> table-enabled = true;
+    in-out property <bool> table-visible = true;
+    in-out property <[HistoryCallbackRow]> rows = [
         HistoryCallbackRow { direct: "one", linked: "two" },
     ];
     pure callback record-history() -> bool;
@@ -2667,9 +2677,9 @@ export struct RowToggleInput { key: int, parent: int, checked: bool, state: Chec
 
 export component RowToggleInputParity inherits Window {
     width: 420px; height: 300px;
-    in-out property <bool> allowed: true;
-    in-out property <bool> three-states: true;
-    in-out property <[RowToggleInput]> rows: [
+    in-out property <bool> allowed = true;
+    in-out property <bool> three-states = true;
+    in-out property <[RowToggleInput]> rows = [
         RowToggleInput { key: 1, parent: 0, checked: false, state: CheckState.unchecked },
     ];
     pure callback read-tristate() -> bool;
@@ -2700,8 +2710,8 @@ export component RowToggleInputParity inherits Window {
 }
 
 export component PlainTableAvailability inherits Window {
-    in-out property <bool> table-enabled: true;
-    in-out property <[HistoryCallbackRow]> rows: [
+    in-out property <bool> table-enabled = true;
+    in-out property <[HistoryCallbackRow]> rows = [
         HistoryCallbackRow { direct: "one", linked: "two" },
     ];
 
@@ -2717,9 +2727,9 @@ export component PlainTableAvailability inherits Window {
 }
 
 export component TableBindingCacheParity inherits Window {
-    in-out property <bool> mounted: true;
-    in-out property <bool> table-enabled: true;
-    in-out property <[HistoryCallbackRow]> rows: [
+    in-out property <bool> mounted = true;
+    in-out property <bool> table-enabled = true;
+    in-out property <[HistoryCallbackRow]> rows = [
         HistoryCallbackRow { direct: "one", linked: "two" },
     ];
     pure callback sample(int, bool) -> bool;
@@ -2739,10 +2749,10 @@ export component TableBindingCacheParity inherits Window {
 }
 
 export component TableReadViewParity inherits Window {
-    in-out property <bool> table-enabled: true;
-    in-out property <bool> copy-enabled: true;
-    in-out property <bool> tab-enabled: true;
-    in-out property <[HistoryCallbackRow]> rows: [
+    in-out property <bool> table-enabled = true;
+    in-out property <bool> copy-enabled = true;
+    in-out property <bool> tab-enabled = true;
+    in-out property <[HistoryCallbackRow]> rows = [
         HistoryCallbackRow { direct: "one", linked: "two" },
     ];
     pure callback format-copy(string) -> string;
@@ -2766,8 +2776,8 @@ export component TableReadViewParity inherits Window {
 }
 
 export component StatefulPasteParity inherits Window {
-    in-out property <bool> lock-cell: false;
-    in-out property <[StatefulPasteRow]> rows: [
+    in-out property <bool> lock-cell = false;
+    in-out property <[StatefulPasteRow]> rows = [
         StatefulPasteRow { name: "first", note: "one" },
         StatefulPasteRow { name: "second", note: "two" },
     ];
@@ -2806,9 +2816,9 @@ export component StatefulPasteParity inherits Window {
 }
 
 export component TimerRevisionParity inherits Window {
-    out property <int> ticks: 0;
-    out property <bool> running-at-tick: false;
-    in-out property <bool> running: true;
+    out property <int> ticks = 0;
+    out property <bool> running-at-tick = false;
+    in-out property <bool> running = true;
     callback restart();
     pure callback interval() -> int;
     restart => { timer.restart(); }
@@ -2821,7 +2831,7 @@ export component TimerRevisionParity inherits Window {
 }
 
 export component TimerCommandReadParity inherits Window {
-    in-out property <bool> running: root.initial-running();
+    in-out property <bool> running = root.initial-running();
     pure callback initial-running() -> bool;
     initial-running => { true }
     callback start();
@@ -2834,10 +2844,10 @@ export component TimerCommandReadParity inherits Window {
 }
 
 export component AnimatedImageStateParity inherits Window {
-    in-out property <bool> show-animation: false;
-    in-out property <image> animation: @image-url("");
+    in-out property <bool> show-animation = false;
+    in-out property <image> animation = @image-url("");
     out property <int> frame-total: player.frame-count;
-    out property <int> completions: 0;
+    out property <int> completions = 0;
     player := AnimatedImage {
         source: @image-url("");
         loops: 1;
@@ -2858,7 +2868,7 @@ export component AnimatedImageStateParity inherits Window {
 export struct TableMoveOrderRow { name: string }
 
 export component TableFilterMutationParity inherits Window {
-    in-out property <[TableMoveOrderRow]> rows: [
+    in-out property <[TableMoveOrderRow]> rows = [
         TableMoveOrderRow { name: "one" },
         TableMoveOrderRow { name: "two" },
     ];
@@ -2873,11 +2883,12 @@ export component TableFilterMutationParity inherits Window {
 }
 
 export component TableMoveOrderParity inherits Window {
-    in-out property <[TableMoveOrderRow]> rows: [TableMoveOrderRow { name: "one" }, TableMoveOrderRow { name: "two" }];
-    in-out property <int> current: 0;
-    in-out property <string> query: "";
-    out property <int> moves: 0;
-    out property <string> events: "";
+    in-out property <[TableMoveOrderRow]> rows = [TableMoveOrderRow { name: "one" }, TableMoveOrderRow { name: "two" }];
+    in-out property <int> current;
+    private property <bool> cursor-changed;
+    in-out property <string> query = "";
+    out property <int> moves = 0;
+    out property <string> events = "";
     out property <int> sort-column: table.current-sort-column;
     out property <bool> sort-descending: table.current-sort-descending;
     out property <int> selected-column: table.current-column;
@@ -2924,14 +2935,14 @@ export component TableMoveOrderParity inherits Window {
     table := StandardTableView {
         model: root.source();
         auto-sort: root.automatic();
-        current-row: root.selected();
+        current-row: root.cursor-changed ? root.current : root.selected();
         selection-target: root.selection-mode();
         multi-select: true;
         movable-rows: true;
         filter-field: "name";
         filter-text: root.filter(root.query);
         current-cell-changed(row, column) => { root.events += "cell:" + row + "/" + column + ";"; }
-        current-row-changed(row) => { root.events += "cursor:" + row + ";"; }
+        current-row-changed(row) => { root.current = row; root.cursor-changed = true; root.events += "cursor:" + row + ";"; }
         row-moved(row, from, to) => {
             root.moves += 1;
             root.events += "move:" + row + "/" + from + "/" + to + ";";
@@ -2942,8 +2953,8 @@ export component TableMoveOrderParity inherits Window {
 }
 
 export component TableRowNotificationParity inherits Window {
-    out property <int> revision: 0;
-    out property <string> events: "";
+    out property <int> revision = 0;
+    out property <string> events = "";
     pure callback selection-mode(int) -> SelectionTarget;
     selection-mode(revision) => { SelectionTarget.cells }
     table := TableView {
@@ -2961,12 +2972,12 @@ export component TableRowNotificationParity inherits Window {
 }
 
 export component TableColumnEditorParity inherits Window {
-    in-out property <[TableMoveOrderRow]> rows: [TableMoveOrderRow { name: "one" }, TableMoveOrderRow { name: "two" }];
-    in-out property <bool> resize-columns: true;
-    in-out property <bool> resize-rows: true;
-    in-out property <bool> move-columns: true;
-    in-out property <bool> move-rows: true;
-    in-out property <bool> first-resizable: true;
+    in-out property <[TableMoveOrderRow]> rows = [TableMoveOrderRow { name: "one" }, TableMoveOrderRow { name: "two" }];
+    in-out property <bool> resize-columns = true;
+    in-out property <bool> resize-rows = true;
+    in-out property <bool> move-columns = true;
+    in-out property <bool> move-rows = true;
+    in-out property <bool> first-resizable = true;
     pure callback editable-column(int) -> bool;
     editable-column(column) => { true }
     StandardTableView {
@@ -2981,7 +2992,7 @@ export component TableColumnEditorParity inherits Window {
 }
 
 export component ControlRenderOrderParity inherits Window {
-    out property <bool> last-checked: true;
+    out property <bool> last-checked = true;
     pure callback sample(int) -> float;
     sample(tag) => { tag * 10.0 }
     interval := RangeSlider {
@@ -2996,24 +3007,25 @@ export component ControlRenderOrderParity inherits Window {
 }
 
 export component TumblerModelOrderParity inherits Window {
-    in-out property <int> selected: root.read-index();
-    out property <int> changes: 0;
+    in-out property <int> selected = 0;
+    private property <bool> selection-changed-by-control;
+    out property <int> changes = 0;
     pure callback read-items() -> [string];
     pure callback read-index() -> int;
     read-items => { ["One", "Two", "Three"] }
-    read-index => { 0 }
+    read-index => { root.selected }
     wheel := Tumbler {
         model: root.read-items();
-        current-index <=> root.selected;
-        changed(index) => { root.changes += 1; }
+        current-index: root.selection-changed-by-control ? root.selected : root.read-index();
+        changed(index) => { root.selected = index; root.selection-changed-by-control = true; root.changes += 1; }
     }
 }
 
 export component PickerCancelBindingsParity inherits Window {
-    in-out property <bool> color-open: true;
-    in-out property <bool> date-open: true;
-    in-out property <bool> time-open: true;
-    out property <int> cancels: 0;
+    in-out property <bool> color-open = true;
+    in-out property <bool> date-open = true;
+    in-out property <bool> time-open = true;
+    out property <int> cancels = 0;
     pure callback color-alpha() -> bool;
     pure callback color-visible() -> bool;
     pure callback date-maximum() -> Date;
@@ -3047,7 +3059,7 @@ export component PickerCancelBindingsParity inherits Window {
 }
 
 export component ViewportOffsetRetryParity inherits Window {
-    in-out property <length> offset: -48px;
+    in-out property <length> offset = -48px;
     pure callback read-offset(length) -> length;
     read-offset(value) => { value }
     ScrollView {
@@ -3061,7 +3073,7 @@ export component ReadOnlyTableHistoryParity inherits Window {
     pure callback history-enabled() -> bool;
     rows => { 2 }
     history-enabled => { true }
-    in property <[TouchPoint]> touches: [];
+    in property <[TouchPoint]> touches = [];
     out property <bool> undo-available: table.can-undo;
     out property <bool> redo-available: table.can-redo;
     out property <bool> touch-undo-available: touch-table.can-undo;
@@ -3113,7 +3125,7 @@ export component CallbackPrecedenceParity inherits Window {
 }
 
 component PropertyForwardLeaf inherits Rectangle {
-    in-out property <int> value: 1;
+    in-out property <int> value = 1;
 }
 
 component PropertyForwardInner inherits Rectangle {
@@ -3125,11 +3137,12 @@ component PropertyForwardInner inherits Rectangle {
 component PropertyForwardOuter inherits Rectangle {
     in-out property <int> supplied <=> inner.first;
     in-out property <int> fallback <=> inner.second;
-    inner := PropertyForwardInner { second: 20; }
+    property <int> value = 20;
+    inner := PropertyForwardInner { second <=> root.value; }
 }
 
 export component PropertyForwardParity inherits Window {
-    in-out property <int> external: 30;
+    in-out property <int> external = 30;
     in-out property <int> edited <=> with-override.fallback;
     out property <int> overridden: with-override.supplied;
     out property <int> fallback: with-default.supplied;
@@ -3138,9 +3151,9 @@ export component PropertyForwardParity inherits Window {
 }
 
 export component PropertyForwardStateParity inherits Window {
-    in-out property <bool> active: false;
-    in-out property <int> base: 30;
-    in-out property <int> edited <=> editor.fallback;
+    in-out property <bool> active = false;
+    in-out property <int> base = 30;
+    out property <int> edited: editor.fallback;
     out property <int> observed: editor.supplied;
     editor := PropertyForwardOuter { supplied: root.base; }
     states [ active-state when root.active: { editor.fallback: 40; } ]
@@ -3155,22 +3168,20 @@ component RowGroupInputContent inherits Rectangle {
 
 export component RowGroupInputParity inherits Window {
     width: 320px; height: 200px;
-    in-out property <[RowGroupInputRecord]> rows: [
+    in-out property <[RowGroupInputRecord]> rows = [
         RowGroupInputRecord { name: "A", expanded: true },
         RowGroupInputRecord { name: "B", expanded: false },
     ];
-    out property <string> hits: "";
+    out property <string> hits = "";
     TableView {
         row-height: 64px;
         TableColumn { title: "Group"; width: 280px; }
         for row[index] in root.rows : TableRow {
             GroupBox {
                 checkable: true;
-                checked: row.expanded;
                 RowGroupInputContent { hit => { root.hits += row.name; } }
                 for child in index + 2 : GroupBox {
                     checkable: true;
-                    checked: child == 0;
                     Text { text: row.name; }
                 }
             }
@@ -3182,8 +3193,8 @@ export struct TreeEditScopeRow { key: int, parent: int, label: string }
 
 export component TreeEditScopeParity inherits Window {
     width: 320px; height: 200px;
-    in-out property <bool> shown: true;
-    in-out property <[TreeEditScopeRow]> rows: [TreeEditScopeRow { key: 1, parent: -1, label: "original" }];
+    in-out property <bool> shown = true;
+    in-out property <[TreeEditScopeRow]> rows = [TreeEditScopeRow { key: 1, parent: -1, label: "original" }];
     pure callback row-visible() -> bool;
     pure callback cell-enabled() -> bool;
     row-visible => { true }
@@ -3198,16 +3209,14 @@ export component TreeEditScopeParity inherits Window {
 }
 
 export component RepeatedGroupParity inherits Window {
-    in-out property <[string]> labels: ["A", "B"];
-    in-out property <bool> allow-rows: true;
+    in-out property <[string]> labels = ["A", "B"];
+    in-out property <bool> allow-rows = true;
     for label in root.labels : GroupBox {
         title: label;
         enabled: root.allow-rows;
         checkable: true;
-        checked: label == "A";
         for child in 2 : GroupBox {
             checkable: true;
-            checked: child == 0;
             Text { text: label; }
         }
     }
@@ -3215,16 +3224,15 @@ export component RepeatedGroupParity inherits Window {
 
 export component VirtualListGroupParity inherits Window {
     width: 320px; height: 270px;
-    in-out property <[string]> labels: ["A", "B"];
-    in-out property <bool> allow-rows: true;
+    in-out property <[string]> labels = ["A", "B"];
+    in-out property <bool> allow-rows = true;
     ListView {
         width: 320px; height: 126px; row-height: 60px;
         for label in root.labels : GroupBox {
             title: label;
             enabled: root.allow-rows;
             checkable: true;
-            checked: label == "A";
-            for item in 1 : GroupBox { checkable: true; checked: item == 0; }
+            for item in 1 : GroupBox { checkable: true; }
         }
     }
     GridView {
@@ -3233,8 +3241,7 @@ export component VirtualListGroupParity inherits Window {
             title: label;
             enabled: root.allow-rows;
             checkable: true;
-            checked: label == "A";
-            for item in 1 : GroupBox { checkable: true; checked: item == 0; }
+            for item in 1 : GroupBox { checkable: true; }
         }
     }
 }
@@ -3243,8 +3250,8 @@ export struct LinkedGroupRow { name: string, shown: bool }
 
 export component LinkedGroupRepeatParity inherits Window {
     width: 320px; height: 230px;
-    in-out property <bool> expanded: true;
-    in-out property <[LinkedGroupRow]> rows: [
+    in-out property <bool> expanded = true;
+    in-out property <[LinkedGroupRow]> rows = [
         LinkedGroupRow { name: "hidden", shown: false },
         LinkedGroupRow { name: "visible", shown: true },
     ];
@@ -3265,7 +3272,7 @@ export component LinkedGroupRepeatParity inherits Window {
 }
 
 export component SplitPaneNamesParity inherits SplitView {
-    in property <bool> show-middle: true;
+    in property <bool> show-middle = true;
     fill-pane: fill;
     SplitHandle { background: #224466; }
     Rectangle {}
@@ -3277,10 +3284,12 @@ export struct UpdateDetails { label: string }
 export struct UpdateRecord { first: int, second: int, revision: int, details: UpdateDetails }
 
 export component RecordUpdateParity inherits Window {
-    in-out property <UpdateRecord> source: UpdateRecord {
+    in-out property <UpdateRecord> source = UpdateRecord {
         first: 10, second: 20, revision: 30, details: UpdateDetails { label: "original" },
     };
-    in-out property <UpdateRecord> record: root.source;
+    in-out property <UpdateRecord> record = root.source;
+    callback restore-record();
+    restore-record => { root.record = root.source; }
     out property <string> summary: root.record.details.label + ":" + root.record.revision;
 
     pure callback mark(int) -> int;
@@ -3300,12 +3309,12 @@ export component RecordUpdateParity inherits Window {
 export struct FlowRow { label: string, ready: bool }
 
 export component HandlerControlFlowParity inherits Window {
-    in-out property <[FlowRow]> rows: [
+    in-out property <[FlowRow]> rows = [
         FlowRow { label: "A", ready: true },
         FlowRow { label: "B", ready: false },
     ];
-    out property <string> trace: "";
-    out property <int> total: 0;
+    out property <string> trace = "";
+    out property <int> total = 0;
 
     pure callback selected(int) -> bool;
     callback touched(string);
@@ -3349,16 +3358,16 @@ component ComposedList inherits VerticalLayout {
 }
 
 export component LanguageCompositionParity inherits Window {
-    in-out property <CompositionMode> mode: CompositionMode::Idle;
+    in-out property <CompositionMode> mode = CompositionMode::Idle;
     out property <string> summary: root.describe(root.mode);
-    in-out property <string> query: "";
-    in-out property <[CompositionRow]> rows: [
+    in-out property <string> query = "";
+    in-out property <[CompositionRow]> rows = [
         CompositionRow { id: 3, title: "Beta" },
         CompositionRow { id: 1, title: "Alpha" },
         CompositionRow { id: 2, title: "Alpine" },
     ];
     out property <[CompositionRow]> shown: Model.sort-by(Model.filter(root.rows, "title", root.query), "id", true);
-    out property <int> calls: 0;
+    out property <int> calls = 0;
     callback next() -> int;
     next => { root.calls += 1; root.calls }
     callback calculate() -> int;
@@ -3394,10 +3403,10 @@ export component LanguageCompositionParity inherits Window {
 
 export component CallbackIterationParity inherits Window {
     in-out property <[int]> items;
-    out property <int> outer: 0;
-    out property <int> inner: 0;
-    out property <int> visited: 0;
-    out property <int> completed: 0;
+    out property <int> outer = 0;
+    out property <int> inner = 0;
+    out property <int> visited = 0;
+    out property <int> completed = 0;
 
     callback consume();
     consume => {
@@ -3424,9 +3433,9 @@ export component CallbackIterationParity inherits Window {
 }
 
 export component OrdinaryRowSceneCache inherits Window {
-    in-out property <[string]> rows: ["first", "latest"];
-    in-out property <string> suffix: "!";
-    in-out property <int> clicked-index: -1;
+    in-out property <[string]> rows = ["first", "latest"];
+    in-out property <string> suffix = "!";
+    in-out property <int> clicked-index = -1;
 
     pure function caption(value: string) -> string {
         value + root.suffix

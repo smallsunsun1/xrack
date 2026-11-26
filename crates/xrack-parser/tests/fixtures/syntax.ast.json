@@ -54,6 +54,7 @@
       "members": [
         {
           "Property": {
+            "mode": "Once",
             "name": "entries",
             "ty": "[Data]",
             "visibility": "in-out",
@@ -76,7 +77,7 @@
                               },
                               "span": {
                                 "line": 4,
-                                "column": 53
+                                "column": 54
                               }
                             }
                           },
@@ -91,7 +92,7 @@
                               },
                               "span": {
                                 "line": 4,
-                                "column": 73
+                                "column": 74
                               }
                             }
                           }
@@ -100,14 +101,14 @@
                     },
                     "span": {
                       "line": 4,
-                      "column": 40
+                      "column": 41
                     }
                   }
                 ]
               },
               "span": {
                 "line": 4,
-                "column": 39
+                "column": 40
               }
             },
             "span": {
@@ -118,6 +119,7 @@
         },
         {
           "Property": {
+            "mode": "Once",
             "name": "value",
             "ty": "int",
             "visibility": "private",
@@ -138,7 +140,7 @@
                           },
                           "span": {
                             "line": 5,
-                            "column": 27
+                            "column": 28
                           }
                         },
                         "right": {
@@ -154,7 +156,7 @@
                                 },
                                 "span": {
                                   "line": 5,
-                                  "column": 31
+                                  "column": 32
                                 }
                               },
                               "right": {
@@ -166,21 +168,21 @@
                                 },
                                 "span": {
                                   "line": 5,
-                                  "column": 35
+                                  "column": 36
                                 }
                               }
                             }
                           },
                           "span": {
                             "line": 5,
-                            "column": 31
+                            "column": 32
                           }
                         }
                       }
                     },
                     "span": {
                       "line": 5,
-                      "column": 27
+                      "column": 28
                     }
                   },
                   "right": {
@@ -196,21 +198,21 @@
                           },
                           "span": {
                             "line": 5,
-                            "column": 40
+                            "column": 41
                           }
                         }
                       }
                     },
                     "span": {
                       "line": 5,
-                      "column": 39
+                      "column": 40
                     }
                   }
                 }
               },
               "span": {
                 "line": 5,
-                "column": 27
+                "column": 28
               }
             },
             "span": {
@@ -221,6 +223,7 @@
         },
         {
           "Property": {
+            "mode": "Formula",
             "name": "ok",
             "ty": "bool",
             "visibility": "private",

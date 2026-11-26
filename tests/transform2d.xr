@@ -13,8 +13,8 @@ export component TransformProbe inherits Window {
     height: 62px;
     background: #223344;
 
-    in-out property <length> dx: 5px;
-    in-out property <point2d> point: Point2D.new(2px, 3px);
+    in-out property <length> dx = 5px;
+    in-out property <point2d> point = Point2D.new(2px, 3px);
     in property <vector2d> empty-vector;
     in property <transform2d> identity;
     out property <point2d> mapped: root.project(root.point);
@@ -30,7 +30,7 @@ export component TransformProbe inherits Window {
         Transform2D.around(Transform2D.scale(2, 3), Point2D.new(4px, 5px)),
         Point2D.new(5px, 7px),
     );
-    out property <int> clicks: 0;
+    out property <int> clicks = 0;
 
     property <transform2d> visual: Transform2D.compose(
         Transform2D.compose(

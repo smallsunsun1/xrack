@@ -12,7 +12,7 @@ export component SceneModelTest inherits Window {
     width: 200px;
     height: 200px;
 
-    in-out property <[Actor3D]> actors: [
+    in-out property <[Actor3D]> actors = [
         Actor3D {
             id: "orb", mesh: "primitive:sphere",
             x: 0, y: 0, z: 0,
@@ -37,8 +37,8 @@ export component SceneModelTest inherits Window {
 export component ProjectionReuseScene inherits Window {
     width: 400px;
     height: 200px;
-    in-out property <[Actor3D]> actors: [];
-    in-out property <float> heading: 0;
+    in-out property <[Actor3D]> actors = [];
+    in-out property <float> heading = 0;
     out property <hit3d> hit: Scene3D.hit(root.actors, root.heading, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(100px, 100px));
     out property <[hit3d]> ray-hits: Scene3D.ray-hit-all(
@@ -74,7 +74,7 @@ struct OrthoExtentActor {
 }
 
 export component OrthoExtentProbe inherits Window {
-    in-out property <float> span: 8;
+    in-out property <float> span = 8;
     property <[OrthoExtentActor]> cameras: [
         OrthoExtentActor {
             id: "map", mesh: "", x: 0, y: 0, z: 8,
@@ -128,7 +128,7 @@ export component MaterialScene inherits Window {
 export component BlendedScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <bool> rear: false;
+    in-out property <bool> rear = false;
     property <float> yaw: root.rear ? 180 : 0;
     property <[Actor3D]> actors: [
         Actor3D {
@@ -175,7 +175,7 @@ export component BlendedScene inherits Window {
 export component SidedScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <bool> rear: false;
+    in-out property <bool> rear = false;
     property <float> yaw: root.rear ? 180 : 0;
     property <[Actor3D]> actors: [
         Actor3D {
@@ -205,7 +205,7 @@ export component SidedScene inherits Window {
 export component PbrScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <int> lamp: 0;
+    in-out property <int> lamp = 0;
     property <[Actor3D]> actors: [
         Actor3D {
             id: "materials", mesh: @mesh-url("scene3d_pbr.gltf"),
@@ -229,7 +229,7 @@ export component PbrScene inherits Window {
 export component NormalMapScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <bool> rear: false;
+    in-out property <bool> rear = false;
     property <float> yaw: root.rear ? 180 : 0;
     property <[Actor3D]> actors: [
         Actor3D {
@@ -264,10 +264,10 @@ export struct LightRow {
 export component LightsScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <int> mode: 0;
-    in-out property <float> point-distance: 2;
-    in-out property <float> point-range: 2.6;
-    in-out property <float> ambient: 0;
+    in-out property <int> mode = 0;
+    in-out property <float> point-distance = 2;
+    in-out property <float> point-range = 2.6;
+    in-out property <float> ambient = 0;
     property <LightRow> common-light: LightRow {
         kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0,
         intensity: 0, color: #ffffff, range: 0, inner-angle: 8, outer-angle: 24,
@@ -328,9 +328,9 @@ struct ShadowLamp {
 export component ShadowScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <bool> enabled: false;
-    in-out property <float> orbit: 0;
-    in-out property <int> mode: 0;
+    in-out property <bool> enabled = false;
+    in-out property <float> orbit = 0;
+    in-out property <int> mode = 0;
     property <ShadowActor> wall: ShadowActor {
         id: "wall", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 5, scale-y: 5, scale-z: 0.1,
@@ -385,8 +385,8 @@ export component ShadowScene inherits Window {
 export component PointShadows inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <bool> enabled: false;
-    in-out property <int> face: 0;
+    in-out property <bool> enabled = false;
+    in-out property <int> face = 0;
     property <int> axis: root.face / 2;
     property <float> axial-distance: root.face % 2 == 0 ? -4 : 4;
     property <ShadowLamp> lamp: ShadowLamp {
@@ -430,10 +430,10 @@ export component PointShadows inherits Window {
 export component CascadeScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <bool> enabled: false;
-    in-out property <float> orbit: 0;
-    in-out property <float> coverage: 30;
-    in-out property <bool> punctual-on: false;
+    in-out property <bool> enabled = false;
+    in-out property <float> orbit = 0;
+    in-out property <float> coverage = 30;
+    in-out property <bool> punctual-on = false;
     property <ShadowActor> panel: ShadowActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1.46, scale-y: 2, scale-z: 0.1,
@@ -491,13 +491,13 @@ export component CascadeScene inherits Window {
 export component EnvironmentScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <bool> enabled: true;
-    in-out property <bool> sky: true;
-    in-out property <bool> geometry: true;
-    in-out property <float> yaw: 0;
-    in-out property <float> camera: 0;
-    in-out property <float> exposure: 1;
-    in-out property <float> intensity: 1;
+    in-out property <bool> enabled = true;
+    in-out property <bool> sky = true;
+    in-out property <bool> geometry = true;
+    in-out property <float> yaw = 0;
+    in-out property <float> camera = 0;
+    in-out property <float> exposure = 1;
+    in-out property <float> intensity = 1;
     property <[ShadowLamp]> lamps: [];
     property <[Actor3D]> models: [
         Actor3D {
@@ -537,9 +537,9 @@ struct HierarchyActor {
 export component HierarchyScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <int> mode: 0;
-    in-out property <float> shift: 0;
-    in-out property <float> orbit: 0;
+    in-out property <int> mode = 0;
+    in-out property <float> shift = 0;
+    in-out property <float> orbit = 0;
     property <HierarchyActor> defaults: HierarchyActor {
         id: "", mesh: "", parent: "", visible: true,
         x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
@@ -595,17 +595,17 @@ export struct CameraRow {
 export component CameraScene inherits Window {
     width: root.view-width;
     height: 200px;
-    in-out property <length> view-width: 200px;
-    in-out property <string> active: "perspective";
-    in-out property <float> rig-x: 0;
-    in-out property <float> rig-yaw: 0;
-    in-out property <float> target-x: 0;
-    in-out property <bool> target-visible: true;
-    in-out property <bool> rig-visible: true;
-    in-out property <float> near: 0.1;
-    in-out property <float> far: 40;
-    in-out property <float> fov: 45;
-    in-out property <bool> shadows: false;
+    in-out property <length> view-width = 200px;
+    in-out property <string> active = "perspective";
+    in-out property <float> rig-x = 0;
+    in-out property <float> rig-yaw = 0;
+    in-out property <float> target-x = 0;
+    in-out property <bool> target-visible = true;
+    in-out property <bool> rig-visible = true;
+    in-out property <float> near = 0.1;
+    in-out property <float> far = 40;
+    in-out property <float> fov = 45;
+    in-out property <bool> shadows = false;
     property <CameraRow> defaults: CameraRow {
         id: "", mesh: "", parent: "", visible: true,
         x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
@@ -670,13 +670,13 @@ struct MountedLamp {
 export component MountedLightScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <float> mount-x: 0;
-    in-out property <float> mount-yaw: 0;
-    in-out property <int> mode: 0;
-    in-out property <bool> root-visible: true;
-    in-out property <bool> light-visible: true;
-    in-out property <string> parent-id: "joint";
-    in-out property <bool> shadows: false;
+    in-out property <float> mount-x = 0;
+    in-out property <float> mount-yaw = 0;
+    in-out property <int> mode = 0;
+    in-out property <bool> root-visible = true;
+    in-out property <bool> light-visible = true;
+    in-out property <string> parent-id = "joint";
+    in-out property <bool> shadows = false;
     property <CameraRow> defaults: CameraRow {
         id: "", mesh: "", parent: "", visible: true,
         x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
@@ -739,10 +739,10 @@ struct AnimatedActor {
 export component AnimatedScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <string> clip: "Slide";
-    in-out property <float> time: 0;
-    in-out property <bool> loop: false;
-    in-out property <float> orbit: 0;
+    in-out property <string> clip = "Slide";
+    in-out property <float> time = 0;
+    in-out property <bool> loop = false;
+    in-out property <float> orbit = 0;
     property <AnimatedActor> base: AnimatedActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1,
@@ -780,8 +780,8 @@ export component AnimatedScene inherits Window {
 export component SkinnedScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <float> time: 0;
-    in-out property <float> orbit: 0;
+    in-out property <float> time = 0;
+    in-out property <float> orbit = 0;
     property <AnimatedActor> base: AnimatedActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1,
@@ -820,9 +820,9 @@ export component SkinnedScene inherits Window {
 export component MorphScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <string> clip: "";
-    in-out property <float> time: 0;
-    in-out property <float> orbit: 0;
+    in-out property <string> clip = "";
+    in-out property <float> time = 0;
+    in-out property <float> orbit = 0;
     property <AnimatedActor> base: AnimatedActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1,
@@ -875,8 +875,8 @@ struct DrivenActor {
 export component MorphControlScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <float> time: 0.5;
-    in-out property <float> extension: 0;
+    in-out property <float> time = 0.5;
+    in-out property <float> extension = 0;
     property <float> orbit: 0;
     property <DrivenActor> base: DrivenActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
@@ -971,8 +971,8 @@ export component HitListScene inherits Window {
     out property <int> selected-row: root.selected.row-index;
     out property <int> count: Model.count(root.hits);
     out property <bool> no-short-hits: Model.is-empty(root.too-short);
-    out property <string> visited: "";
-    out property <[hit3d]> edited: [];
+    out property <string> visited = "";
+    out property <[hit3d]> edited = [];
     callback collect();
     collect => {
         root.visited = "";
@@ -993,8 +993,8 @@ export component HitListScene inherits Window {
 export component CullScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <bool> cull: true;
-    in-out property <[CameraRow]> actors: [];
+    in-out property <bool> cull = true;
+    in-out property <[CameraRow]> actors = [];
     SceneView3D {
         width: 200px;
         height: 200px;
@@ -1009,9 +1009,9 @@ export component CullScene inherits Window {
 export component CullPoseScene inherits Window {
     width: 200px;
     height: 200px;
-    in-out property <bool> cull: true;
-    in-out property <bool> morph: false;
-    in-out property <float> time: 0;
+    in-out property <bool> cull = true;
+    in-out property <bool> morph = false;
+    in-out property <float> time = 0;
     property <[AnimatedActor]> actors: [AnimatedActor {
         id: "panel",
         mesh: root.morph ? @mesh-url("../examples/puzzle3d/models/morph-panel.glb")

@@ -19,23 +19,23 @@ export component LodDemo inherits Window {
     resizable: false;
     background: #141d29;
 
-    in-out property <float> distance: 6;
-    in-out property <bool> orthographic: false;
-    in-out property <bool> full-detail: false;
-    in-out property <float> object-bias: 1;
-    in-out property <float> lod-factor: -1;
-    in-out property <bool> instanced: false;
-    in-out property <bool> animated: false;
-    in-out property <bool> automatic: false;
-    in-out property <bool> deformation: false;
-    in-out property <bool> morph-only: false;
-    in-out property <float> time: 0;
-    in-out property <bool> shadows: false;
-    in-out property <int> probe-layers: 1;
-    in-out property <float> probe-max: 20;
-    in-out property <float> clip-far: 100;
-    in-out property <float> visible-distance: -1;
-    in-out property <[int]> probe-rows: [1];
+    in-out property <float> distance = 6;
+    in-out property <bool> orthographic = false;
+    in-out property <bool> full-detail = false;
+    in-out property <float> object-bias = 1;
+    in-out property <float> lod-factor = -1;
+    in-out property <bool> instanced = false;
+    in-out property <bool> animated = false;
+    in-out property <bool> automatic = false;
+    in-out property <bool> deformation = false;
+    in-out property <bool> morph-only = false;
+    in-out property <float> time = 0;
+    in-out property <bool> shadows = false;
+    in-out property <int> probe-layers = 1;
+    in-out property <float> probe-max = 20;
+    in-out property <float> clip-far = 100;
+    in-out property <float> visible-distance = -1;
+    in-out property <[int]> probe-rows = [1];
     property <point2d> viewport: Point2D.new(280px, 252px);
     property <point2d> center: Point2D.new(140px, 126px);
 
@@ -103,7 +103,7 @@ export component LodDemo inherits Window {
 
     property <point3d> probe-origin: Point3D.new(0, 0, 10);
     property <vector3d> probe-direction: Vector3D.new(0, 0, -2);
-    property <string> probe-result: "检测射线";
+    property <string> probe-result = "检测射线";
     out property <hit3d> view-ray: viewport-view.ray-hit(root.probe-origin, root.probe-direction, root.probe-max);
     out property <[hit3d]> view-rays: viewport-view.ray-hit-all(root.probe-origin, root.probe-direction, root.probe-max);
     out property <hit3d> view-ray-row: viewport-view.ray-hit-row(root.probe-origin, root.probe-direction, root.probe-max, 1);

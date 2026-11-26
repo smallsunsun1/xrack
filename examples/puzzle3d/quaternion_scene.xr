@@ -14,8 +14,8 @@ struct RotationKey { time: float, orientation: quaternion3d }
 export component QuaternionSceneDemo inherits Window {
     title: "XRack · Quaternion rotations";
     width: 400px; height: 318px; background: #182638;
-    in-out property <float> progress: 0.5;
-    in-out property <quaternion3d> target: Quaternion3D.from-axis-angle(Vector3D.new(0, 0, 1), 180);
+    in-out property <float> progress = 0.5;
+    in-out property <quaternion3d> target = Quaternion3D.from-axis-angle(Vector3D.new(0, 0, 1), 180);
     property <quaternion3d> identity: Quaternion3D.identity();
     out property <rotationtrack3d> track: Quaternion3D.track([
         RotationKey { time: 0, orientation: root.identity },
@@ -28,7 +28,7 @@ export component QuaternionSceneDemo inherits Window {
     ]);
     out property <quaternion3d> rotation: Quaternion3D.sample(root.track, root.progress);
     out property <vector3d> direction: Quaternion3D.rotate(root.rotation, Vector3D.new(1, 0, 0));
-    in-out property <bool> playing: false;
+    in-out property <bool> playing = false;
     clock := FrameAnimation {
         running <=> root.playing;
         triggered(delta, elapsed, frame) => {

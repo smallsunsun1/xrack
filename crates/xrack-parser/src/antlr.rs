@@ -45,6 +45,16 @@ pub fn parse(source: &str) -> Result<Document, Vec<Diagnostic>> {
     parse_tree(source.strip_prefix('\u{feff}').unwrap_or(source)).map(|tree| document(&tree))
 }
 
+fn property_mode(property: &PropertyContextAll<'_>) -> PropertyMode {
+    if property.expression().is_none() {
+        PropertyMode::Stored
+    } else if child_text(property, property.get_child_count() - 3) == "=" {
+        PropertyMode::Once
+    } else {
+        PropertyMode::Formula
+    }
+}
+
 fn parse_tree(source: &str) -> Result<Rc<DocumentContextAll<'_>>, Vec<Diagnostic>> {
     let errors = Errors::default();
     let mut lexer = XrackLexer::new(InputStream::new(source));
@@ -629,6 +639,7 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
     if let Some(property) = ctx.property() {
         let alias = property.reference();
         Member::Property(Property {
+            mode: property_mode(&property),
             name: property.identifier().required("property name").get_text(),
             ty: Type::from_source(&property.typeName().required("property type").get_text()),
             type_span: type_span(&property.typeName().required("property type")),

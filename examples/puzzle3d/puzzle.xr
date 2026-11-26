@@ -26,24 +26,24 @@ export component Puzzle3D inherits Window {
     resizable: false;
     background: #141d29;
 
-    in-out property <float> yaw: 24;
-    in-out property <float> pitch: 24;
-    in-out property <float> distance: 11;
-    in-out property <bool> map-view: false;
+    in-out property <float> yaw = 24;
+    in-out property <float> pitch = 24;
+    in-out property <float> distance = 11;
+    in-out property <bool> map-view = false;
     property <string> active-camera: root.map-view ? "overview" : "";
-    in-out property <float> player-x: 0;
-    in-out property <float> player-z: 1;
-    in-out property <bool> amber-on: false;
-    in-out property <bool> blue-on: false;
-    in-out property <bool> finished: false;
-    in-out property <bool> playing: false;
-    in-out property <string> selected: "";
+    in-out property <float> player-x = 0;
+    in-out property <float> player-z = 1;
+    in-out property <bool> amber-on = false;
+    in-out property <bool> blue-on = false;
+    in-out property <bool> finished = false;
+    in-out property <bool> playing = false;
+    in-out property <string> selected = "";
     out property <hit3d> last-hit;
-    property <bool> through-selection: false;
-    out property <[hit3d]> hit-list: [];
-    property <int> hit-index: 0;
+    property <bool> through-selection = false;
+    out property <[hit3d]> hit-list = [];
+    property <int> hit-index = 0;
     property <hit3d> no-hit;
-    in-out property <string> status: "拖动绕视，点击物体以选中";
+    in-out property <string> status = "拖动绕视，点击物体以选中";
     out property <bool> gate-open: root.amber-on && root.blue-on;
     out property <float> gate-angle: root.gate-open ? -90 : 0;
 
@@ -67,11 +67,11 @@ export component Puzzle3D inherits Window {
     property <length> window-height: 560px;
     property <length> view-width: root.window-width - root.panel-width - 36px;
     property <length> view-height: root.window-height - 24px;
-    property <length> last-x: 0px;
-    property <length> last-y: 0px;
-    property <length> start-x: 0px;
-    property <length> start-y: 0px;
-    property <bool> orbiting: false;
+    property <length> last-x = 0px;
+    property <length> last-y = 0px;
+    property <length> start-x = 0px;
+    property <length> start-y = 0px;
+    property <bool> orbiting = false;
     property <SceneObject3D> box-defaults: SceneObject3D {
         id: "", mesh: "primitive:box", parent: "", camera-kind: "", camera-look-at: "", camera-height: 8,
         x: 0, y: 0, z: 0,

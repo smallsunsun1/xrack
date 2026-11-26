@@ -537,8 +537,8 @@ fn record_updates_preserve_fields_and_evaluation_order_in_both_backends() {
         ..generated.get_source()
     });
     assert_summary(&actual, &generated, "original:3");
-    actual.reset("record").unwrap();
-    generated.reset_record();
+    actual.invoke("restore-record", &[]).unwrap();
+    generated.invoke_restore_record();
     assert_summary(&actual, &generated, "changed:30");
 }
 
@@ -950,9 +950,16 @@ fn host_bound_models_keep_row_keys_and_reset_to_the_declared_defaults() {
     assert_eq!(actual.get("different-rows"), Ok(true.into()));
     assert_eq!(actual.get("no-points"), Ok(false.into()));
 
-    actual.reset("rows").unwrap();
+    actual
+        .set(
+            "rows",
+            Value::RecordList(RecordList::new("CallbackSnapshotRow", vec![row("before")])),
+        )
+        .unwrap();
     actual.reset("points").unwrap();
-    generated.reset_rows();
+    generated.set_rows(vec![CallbackSnapshotRow {
+        text: "before".into(),
+    }]);
     generated.reset_points();
     assert_ne!(
         actual.record_model("rows").unwrap().model().row_key(0),
@@ -2442,8 +2449,8 @@ fn projected_row_input_samples_the_model_once() {
         assert_eq!(scene.at_path(&cell).unwrap().text("text"), Some("first"));
         assert!(!ui.commit_table_cell(scene, &cell, "first", "discarded".into()));
     }
-    assert_eq!(actual_reads.take(), [0], "interpreted cell");
-    assert_eq!(compiled_reads.take(), [0], "compiled cell");
+    assert!(actual_reads.take().is_empty(), "interpreted cell");
+    assert!(compiled_reads.take().is_empty(), "compiled cell");
     actual.set("revision", 0_i64.into()).unwrap();
     expected.set_revision(0);
 
@@ -2457,7 +2464,7 @@ fn projected_row_input_samples_the_model_once() {
     ] {
         assert!(ui.dispatch_at(&scene, &[0, 0, 0, 0, 0], "clicked"));
         assert!(ui.dispatch_at(&scene, &[0, 0, 0, 0, 1], "clicked"));
-        assert!(ui.commit_table_cell(&scene, &cell, "first", "edited".into()));
+        assert!(!ui.commit_table_cell(&scene, &cell, "first", "edited".into()));
     }
     assert_eq!(actual.get("activated"), Ok(1_i64.into()));
     assert_eq!(expected.get_activated(), 1);
@@ -2466,9 +2473,9 @@ fn projected_row_input_samples_the_model_once() {
     let first = actual.record_model("first").unwrap();
     assert_eq!(
         first.model().row(0).unwrap().field("label"),
-        Some(&"edited".to_owned().into())
+        Some(&"first".to_owned().into())
     );
-    assert_eq!(expected.model_first().row(0).unwrap().label, "edited");
+    assert_eq!(expected.model_first().row(0).unwrap().label, "first");
     let second = actual.record_model("second").unwrap();
     assert_eq!(
         second.model().row(0).unwrap().field("label"),
@@ -5510,8 +5517,8 @@ fn backends_reject_unverified_module_before_resolving_resources() {
 fn standalone_mlir_rejects_duplicate_visual_bindings_and_handlers() {
     let source = r#"
         export component App inherits Window {
-            out property <int> edits: 0;
-            in-out property <string> draft: "";
+            out property <int> edits;
+            in-out property <string> draft = "";
             width: 200px;
             height: 100px;
             field := LineEdit {
@@ -5559,8 +5566,8 @@ fn standalone_mlir_validates_declaration_names_before_either_backend() {
     let source = r#"
         export struct DataPoint { weight: int }
         export component Name_Probe inherits Window {
-            in-out property <int> first-value: 2;
-            in-out property <int> other-value: 7;
+            in-out property <int> first-value = 2;
+            in-out property <int> other-value = 7;
             pure callback convert(int) -> int;
             pure callback reset-counter();
             convert(value) => { value + root.first-value }
@@ -5685,7 +5692,7 @@ fn standalone_mlir_checks_visual_property_names_and_types() {
 
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> narrow: false;
+            in-out property <bool> narrow = false;
             button := Button { text: "Go"; }
             panel := Rectangle {
                 width: 50%;
@@ -5754,7 +5761,7 @@ fn standalone_mlir_rejects_conflicting_controls_and_animation_targets() {
 
     let source = r#"
         export component App inherits Window {
-            in-out property <int> selected: 0;
+            in-out property <int> selected = 0;
             choice := ComboBox {
                 model: ["one", "two"];
                 edit-text: "draft";
@@ -6540,7 +6547,7 @@ fn animated_image_state_source_controls_playback_and_completion() {
 fn standalone_mlir_routes_anonymous_handlers_by_scene_path() {
     let source = r#"
         export component App inherits Window {
-            out property <string> events: "";
+            out property <string> events;
             first := Button { clicked => { root.events += "first;"; } }
             second := Button { clicked => { root.events += "second;"; } }
             toggle := CheckBox { toggled => { root.events += "toggle;"; } }
@@ -6645,7 +6652,7 @@ fn standalone_mlir_state_selector_can_supply_a_binding_value() {
 fn standalone_mlir_rejects_state_overrides_of_control_storage() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> active: false;
+            in property <bool> active = false;
             spin := SpinBox {
                 value: 2;
                 states [ marked when root.active: { font-weight: 600; } ]
@@ -7026,10 +7033,10 @@ fn viewport_offset_retries_failed_bindings_until_the_first_success() {
     expected.write_bound_offset(Vertical, 16.0);
     interpreted.set("offset", Length(-120.0).into()).unwrap();
     generated.set_offset(Length(-120.0));
-    assert_eq!(expected.bound_offset(Vertical), Some(16.0));
-    assert_eq!(actual.bound_offset(Vertical), Some(16.0));
-    assert_eq!(actual_calls.get(), 3);
-    assert_eq!(generated_calls.get(), 3);
+    assert_eq!(expected.bound_offset(Vertical), Some(120.0));
+    assert_eq!(actual.bound_offset(Vertical), Some(120.0));
+    assert_eq!(actual_calls.get(), 4);
+    assert_eq!(generated_calls.get(), 4);
     assert_eq!(interpreted.take_error(), None);
 }
 
@@ -7713,7 +7720,7 @@ fn linked_scroll_updates_and_user_notifications_match_compiled_component() {
     );
     assert_eq!(
         instance.component().get("follower-y"),
-        Ok(Length(-86.0).into())
+        Ok(Length(-170.0).into())
     );
 
     instance.update(|ui| assert!(ui.dispatch("move-small", "clicked")));
@@ -12384,8 +12391,10 @@ fn control_aliases_share_defaults_reset_and_callback_storage() {
     assert!(actual.edit_at(&actual.render_shared(), &path, "Control write".into()));
     assert!(expected.edit_at(&expected.render_shared(), &path, "Control write".into()));
     compare(&actual, &expected);
-    actual.reset("document").unwrap();
-    expected.reset_document();
+    actual
+        .set("document", "编辑器默认值".to_owned().into())
+        .unwrap();
+    expected.set_document("编辑器默认值".into());
     compare(&actual, &expected);
     assert!(actual.dispatch_at(&actual.render_shared(), &path, "accepted"));
     assert!(expected.dispatch_at(&expected.render_shared(), &path, "accepted"));
@@ -12422,7 +12431,6 @@ fn standalone_mlir_uses_root_for_control_aliases_even_with_a_custom_root_id() {
     let source = r#"
         export component Editor inherits LineEdit {
             in-out property <string> value <=> root.text;
-            text: "Original";
             callback submitted();
             accepted => { root.submitted(); }
         }
@@ -12453,13 +12461,13 @@ fn standalone_mlir_uses_root_for_control_aliases_even_with_a_custom_root_id() {
         .unwrap();
         let scene = ui.try_render().unwrap();
         assert_eq!(scene.element_id(), Some("editor"));
-        assert_eq!(ui.get("value"), Ok("Original".to_owned().into()));
+        assert_eq!(ui.get("value"), Ok(String::new().into()));
         ui.set("value", "Updated".to_owned().into()).unwrap();
         assert_eq!(ui.try_render().unwrap().text("text"), Some("Updated"));
         assert!(ui.edit_at(&ui.render_shared(), &[], "Input".into()));
         assert_eq!(ui.get("value"), Ok("Input".to_owned().into()));
         ui.reset("value").unwrap();
-        assert_eq!(ui.try_render().unwrap().text("text"), Some("Original"));
+        assert_eq!(ui.try_render().unwrap().text("text"), Some(""));
         assert!(ui.dispatch("editor", "accepted"));
         assert_eq!(submissions.get(), 1);
         assert_eq!(ui.take_error(), None);
@@ -12961,13 +12969,13 @@ fn instance_state_targets_validate_aliases_the_same_in_both_backends() {
         format!(
             r#"
             component StateTarget inherits Rectangle {{
-                in-out property <float> level: 2;
+                in-out property <float> level = 2;
                 in-out property <float> first <=> root.level;
                 in-out property <float> second <=> root.level;
             }}
             export component StateAliasProbe inherits Window {{
-                in-out property <bool> active: true;
-                in-out property <float> external: 1;
+                in-out property <bool> active = true;
+                in-out property <float> external = 1;
                 out property <float> observed: child.level;
                 child := StateTarget {{ {binding} }}
                 states [ override when root.active: {{ {overrides} }} ]
@@ -13030,14 +13038,14 @@ fn standalone_mlir_rejects_a_forwarded_two_way_input_with_an_inner_state() {
         }
         component Frame inherits Rectangle {
             in-out property <string> alias <=> badge.caption;
-            in property <bool> active: false;
+            in property <bool> active = false;
             badge := Leaf {
                 states [ warning when root.active: { caption: "Warning"; } ]
             }
         }
         export component App inherits Window {
-            in-out property <string> caption: "Normal";
-            in-out property <bool> active: false;
+            in-out property <string> caption = "Normal";
+            in-out property <bool> active = false;
             frame := Frame { alias: root.caption; active: root.active; }
         }
     "#;
@@ -13107,7 +13115,7 @@ fn instance_callback_handlers_validate_shared_alias_targets() {
                 right := CallbackLeaf {{}}
             }}
             export component CallbackAliasProbe inherits Window {{
-                out property <int> observed: 0;
+                out property <int> observed;
                 callback fire();
                 fire => {{ child.first(5); child.second(7); }}
                 child := CallbackTarget {{ {handlers} }}
@@ -13211,7 +13219,7 @@ fn standalone_mlir_detects_cycles_through_equivalent_control_aliases() {
             field := AliasEditor {}
         }
         export component AliasCycleProbe inherits Window {
-            in-out property <string> input: "Initial";
+            in-out property <string> input = "Initial";
             editor := AliasWrapper { primary: root.input; }
         }
     "#;
@@ -13279,20 +13287,14 @@ fn nested_property_aliases_preserve_incoming_links_and_local_defaults() {
     generated.set_edited(50);
     check(&generated, 50);
 
-    interpreted.reset("edited").unwrap();
-    generated.reset_edited();
-    check(&generated, 30);
-
-    interpreted.set("edited", 60_i64.into()).unwrap();
-    generated.set_edited(60);
-    interpreted.reset("external").unwrap();
-    generated.reset_external();
+    interpreted.set("external", 30_i64.into()).unwrap();
+    generated.set_external(30);
     check(&generated, 30);
     assert_eq!(interpreted.take_error(), None);
 }
 
 #[test]
-fn nested_property_reset_restores_state_and_base_bindings() {
+fn nested_property_state_preserves_its_base_binding() {
     let preview = xrack_compiler::prepare_preview(
         include_str!("expressions.xr"),
         "expressions.xr",
@@ -13314,11 +13316,7 @@ fn nested_property_reset_restores_state_and_base_bindings() {
     actual.set("active", true.into()).unwrap();
     generated.set_active(true);
     check(&generated, 40);
-    actual.set("edited", 50_i64.into()).unwrap();
-    generated.set_edited(50);
-    check(&generated, 50);
-    actual.reset("edited").unwrap();
-    generated.reset_edited();
+    assert!(actual.set("edited", 50_i64.into()).is_err());
     check(&generated, 40);
     actual.set("base", 35_i64.into()).unwrap();
     generated.set_base(35);
@@ -16127,16 +16125,16 @@ fn timer_start_only_samples_running_when_it_needs_to() {
     actual.invoke("restart", &[]).unwrap();
     generated.invoke_restart();
     assert_eq!((actual_reads.get(), generated_reads.get()), (0, 0));
-    actual.reset("running").unwrap();
-    generated.reset_running();
+    actual.set("running", true.into()).unwrap();
+    generated.set_running(true);
     actual.invoke("stop", &[]).unwrap();
     generated.invoke_stop();
     assert_eq!((actual_reads.get(), generated_reads.get()), (0, 0));
-    actual.reset("running").unwrap();
-    generated.reset_running();
+    actual.set("running", true.into()).unwrap();
+    generated.set_running(true);
     actual.invoke("start", &[]).unwrap();
     generated.invoke_start();
-    assert_eq!((actual_reads.get(), generated_reads.get()), (1, 1));
+    assert_eq!((actual_reads.get(), generated_reads.get()), (0, 0));
     assert_eq!(actual.get("running"), Ok(true.into()));
     assert!(generated.get_running());
     assert_eq!(actual.take_error(), None);
@@ -17507,7 +17505,10 @@ fn checkable_buttons_commit_before_callbacks_and_keep_state_by_row_key() {
             _ => unreachable!(),
         },
         |ui| {
-            assert!(ui.model_filters().sort_by(|left, right| right.cmp(left)));
+            assert!(
+                ui.model_filters()
+                    .sort_by(|left, right| right.label.cmp(&left.label))
+            );
         },
     );
     exercise(
@@ -17528,9 +17529,16 @@ fn checkable_buttons_commit_before_callbacks_and_keep_state_by_row_key() {
         |ui, name, value| ui.set(name, value.into()).unwrap(),
         |ui| {
             assert!(
-                ui.string_model("filters")
+                ui.record_model("filters")
                     .unwrap()
-                    .sort_by(|left, right| right.cmp(left))
+                    .model()
+                    .sort_by(|left, right| {
+                        let label = |row: &xrack_runtime::RecordValue| match row.field("label") {
+                            Some(Value::String(label)) => label.clone(),
+                            _ => unreachable!(),
+                        };
+                        label(right).cmp(&label(left))
+                    })
             );
         },
     );
@@ -17598,7 +17606,12 @@ fn programmatic_row_toggles_keep_local_and_linked_state_consistent() {
                 ui.get_shared_filter(),
             )
         },
-        |ui| assert!(ui.model_filters().sort_by(|left, right| right.cmp(left))),
+        |ui| {
+            assert!(
+                ui.model_filters()
+                    .sort_by(|left, right| right.label.cmp(&left.label))
+            )
+        },
     );
     exercise(
         interpret_controls_fixture("CheckableButtonsDemo"),
@@ -17614,9 +17627,16 @@ fn programmatic_row_toggles_keep_local_and_linked_state_consistent() {
         },
         |ui| {
             assert!(
-                ui.string_model("filters")
+                ui.record_model("filters")
                     .unwrap()
-                    .sort_by(|left, right| right.cmp(left))
+                    .model()
+                    .sort_by(|left, right| {
+                        let label = |row: &xrack_runtime::RecordValue| match row.field("label") {
+                            Some(Value::String(label)) => label.clone(),
+                            _ => unreachable!(),
+                        };
+                        label(right).cmp(&label(left))
+                    })
             )
         },
     );
@@ -18345,6 +18365,7 @@ fn ordinary_repeated_group_boxes_toggle_by_row_identity() {
         assert!(ui.dispatch_at(scene, &first, "clicked"));
         assert!(!ui.dispatch_at(scene, &nested, "clicked"));
         assert!(ui.dispatch_at(scene, &second, "clicked"));
+        assert!(ui.dispatch_at(scene, &second, "clicked"));
     }
     let reordered = interpreted.string_model("labels").unwrap();
     assert!(reordered.sort_by(|left, right| right.cmp(left)));
@@ -18420,6 +18441,7 @@ fn virtual_list_group_boxes_route_clicks_and_keep_state_by_row_identity() {
                 "root group in view {view}"
             );
             assert!(!ui.dispatch_at(scene, &[view, 0, 0, 0, 0], "clicked"));
+            assert!(ui.dispatch_at(scene, &[view, 1, 0], "clicked"));
             assert!(ui.dispatch_at(scene, &[view, 1, 0], "clicked"));
         }
     }
@@ -18557,6 +18579,10 @@ fn table_row_group_boxes_keep_independent_state_and_route_their_children() {
     let button_b = [0, 1, 0, 0, 0, 0];
     let nested_a = [0, 0, 0, 0, 1, 0];
     let nested_b = [0, 1, 0, 0, 1, 0];
+    assert!(interpreted.dispatch_at(&actual, &group_b, "clicked"));
+    assert!(compiled.dispatch_at(&expected, &group_b, "clicked"));
+    let (actual, _) = prepare_list(&interpreted, &input, size);
+    let (expected, _) = prepare_list(&compiled, &input, size);
     for (ui, scene) in [
         (&mut interpreted as &mut dyn Component, &*actual),
         (&mut compiled as &mut dyn Component, &*expected),
@@ -20771,11 +20797,11 @@ fn window_commands_sample_only_their_required_bindings() {
     assert!(actual.secondary_windows().unwrap().is_empty());
     assert!(generated.secondary_windows().unwrap().is_empty());
     assert_eq!((actual_reads.get(), generated_reads.get()), (0, 0));
-    actual.reset("shown").unwrap();
-    generated.reset_shown();
+    actual.set("shown", true.into()).unwrap();
+    generated.set_shown(true);
     actual.invoke("close-child", &[]).unwrap();
     generated.invoke_close_child();
-    assert_eq!((actual_reads.get(), generated_reads.get()), (1, 1));
+    assert_eq!((actual_reads.get(), generated_reads.get()), (0, 0));
     for registrations in [
         actual.secondary_windows().unwrap(),
         generated.secondary_windows().unwrap(),
@@ -20797,7 +20823,7 @@ fn window_commands_sample_only_their_required_bindings() {
     ];
     assert_eq!(actual.take_window_commands(), expected);
     assert_eq!(generated.take_window_commands(), expected);
-    assert_eq!((actual_reads.get(), generated_reads.get()), (2, 2));
+    assert_eq!((actual_reads.get(), generated_reads.get()), (1, 1));
     assert_eq!(actual.take_error(), None);
 }
 
@@ -26103,6 +26129,8 @@ fn virtual_check_delegates_dispatch_after_committing_the_row() {
         .on("copy-rows", Rc::new(|args| Ok(args.first().cloned())))
         .unwrap();
     generated.on_copy_rows(|rows| rows);
+    actual.invoke("reload-rows", &[]).unwrap();
+    generated.invoke_reload_rows();
     let (scene, _) = prepare_list(&actual, &input, size);
     let (generated_scene, _) = prepare_list(&generated, &input, size);
     assert_same_scene(&scene, &generated_scene);

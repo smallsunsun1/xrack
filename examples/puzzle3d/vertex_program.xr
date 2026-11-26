@@ -15,9 +15,9 @@ export component VertexProgramDemo inherits Window {
     width: 520px; height: 380px; resizable: false;
     background: #182737;
 
-    in-out property <float> travel: -4.8;
-    in-out property <float> wave: 0;
-    in-out property <bool> temporal: true;
+    in-out property <float> travel = -4.8;
+    in-out property <float> wave = 0;
+    in-out property <bool> temporal = true;
     property <VertexStyle> base-style: VertexStyle {
         material-shader: "", shader-parameters: Vector3D.new(0, 0, 0), shader-displacement: 0,
         unlit: false, roughness: 1,

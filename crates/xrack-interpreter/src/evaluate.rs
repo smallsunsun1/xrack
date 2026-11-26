@@ -12,6 +12,8 @@ use xrack_runtime::{
     ListModel, Property, RangeAction, RoutedEvent, StateTiming,
 };
 
+use xrack_syntax::ast::PropertyMode;
+
 pub(crate) type Globals = RefCell<BTreeMap<String, Instance>>;
 
 pub(crate) enum GlobalContext {
@@ -165,7 +167,28 @@ fn host_callback_arguments(args: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+#[derive(Default)]
+struct AllocationScope {
+    row: Option<RowScope>,
+    locale: Option<xrack_runtime::LocaleContext>,
+}
+
 impl Program {
+    pub(crate) fn allocate_root(
+        &self,
+        name: &str,
+        locale: Option<xrack_runtime::LocaleContext>,
+    ) -> Result<Instance> {
+        self.allocate_scope(
+            name,
+            None,
+            Default::default(),
+            &self.definition(name)?.root,
+            AllocationScope { row: None, locale },
+            &mut Vec::new(),
+        )
+    }
+
     pub(crate) fn allocate(
         &self,
         name: &str,
@@ -180,7 +203,7 @@ impl Program {
             parent,
             (incoming, callbacks),
             &definition.root,
-            None,
+            AllocationScope::default(),
             stack,
         )
     }
@@ -212,13 +235,17 @@ impl Program {
         parent: Option<Weak<State>>,
         (incoming, mut callbacks): (InstanceInputs, InstanceCallbacks),
         root: &Element,
-        row: Option<RowScope>,
+        AllocationScope {
+            row,
+            locale: initial_locale,
+        }: AllocationScope,
         stack: &mut Vec<String>,
     ) -> Result<Instance> {
         if stack.iter().any(|entry| entry == name) {
             return Err(Error::Invalid(format!("recursive component {name}")));
         }
         let definition = self.definition(name)?;
+        let initialize_once = self.initialize_once && stack.is_empty();
         let mut keys = BTreeSet::new();
         root.scope_keys(&mut keys);
         if row.is_none() {
@@ -242,7 +269,7 @@ impl Program {
                     endpoint.owner, endpoint.name
                 )));
             }
-            local.insert(endpoint, input);
+            local.insert(endpoint, input.protect_binding());
         }
         let owner = row
             .as_ref()
@@ -252,7 +279,8 @@ impl Program {
         let registry = owner
             .as_ref()
             .map_or_else(|| Ok(Rc::default()), |owner| owner.globals.registry())?;
-        let globals = if self.globals.contains_key(name) {
+        let global = self.globals.contains_key(name);
+        let globals = if global {
             GlobalContext::Member(Rc::downgrade(&registry))
         } else {
             GlobalContext::Owner(registry.clone())
@@ -262,6 +290,9 @@ impl Program {
             .map_or_else(xrack_runtime::LocaleBinding::default, |owner| {
                 owner.locale.clone()
             });
+        if let Some(context) = initial_locale {
+            locale.set_context(context);
+        }
         let window = match (&row, &owner) {
             (Some(_), Some(owner)) => owner.window.clone(),
             _ => Rc::default(),
@@ -477,11 +508,17 @@ impl Program {
                 member.owner, member.name
             )));
         }
+        let deferred = build.is_some();
         if let (Some(build), Some(pending)) = (build, pending_children) {
             let parent = Rc::downgrade(&instance.0);
             build.complete(move || {
                 if let Some(parent) = parent.upgrade() {
                     assert!(parent.children.set(pending.take()).is_ok());
+                    if initialize_once {
+                        Instance::from_state(parent)
+                            .initialize_allocated_graph()
+                            .map_err(|error| error.to_string())?;
+                    }
                 }
                 Ok(())
             });
@@ -504,6 +541,12 @@ impl Program {
             slot.set(callback);
         }
         root.bind_viewport_offsets(&instance);
+        if global {
+            registry.borrow_mut().insert(name.into(), instance.clone());
+        }
+        if initialize_once && !deferred {
+            instance.initialize_allocated_graph()?;
+        }
         Ok(instance)
     }
 }
@@ -599,7 +642,7 @@ impl Element {
                     Err(error) => Some(Err(error)),
                 }
             });
-            bindings.insert(key, state);
+            bindings.insert(key, state.protect_binding());
         }
         bindings
     }
@@ -676,7 +719,10 @@ impl Instance {
             None,
             (BTreeMap::new(), BTreeMap::new()),
             template,
-            Some(row),
+            AllocationScope {
+                row: Some(row),
+                locale: None,
+            },
             &mut Vec::new(),
         )
     }
@@ -1177,6 +1223,7 @@ impl Instance {
                     owner.binding_lifetime.track();
                     Some(Instance(owner, None).evaluate(&expression, &[]))
                 })
+                .protect_binding()
             }
             InputSource::RowLink(field) => {
                 let read_field = field.clone();
@@ -1232,15 +1279,13 @@ impl Instance {
         if let Some(instance) = registry.borrow().get(name).cloned() {
             return Ok(instance);
         }
-        let instance = self.program().allocate(
+        self.program().allocate(
             name,
             Some(Rc::downgrade(&self.0)),
             BTreeMap::new(),
             BTreeMap::new(),
             &mut Vec::new(),
-        )?;
-        registry.borrow_mut().insert(name.into(), instance.clone());
-        Ok(instance)
+        )
     }
 
     fn property(&self, member: &Member) -> Result<&PropertyDef> {
@@ -1259,6 +1304,31 @@ impl Instance {
             return Err(evaluation(format!("property {} is read-only", member.name)));
         }
         Ok(property)
+    }
+
+    fn initialize_allocated_graph(&self) -> Result<()> {
+        self.initialize_once().inspect_err(|_| {
+            if let GlobalContext::Member(registry) = &self.0.globals
+                && let Some(registry) = registry.upgrade()
+            {
+                registry.borrow_mut().remove(&self.0.name);
+            }
+        })
+    }
+
+    fn initialize_once(&self) -> Result<()> {
+        for (member, slot) in &self.0.values {
+            let property = &self.definition().properties[member];
+            if property.mode == PropertyMode::Once
+                && let PropertySource::Initial(initial) = &property.source
+            {
+                slot.try_get_once(|| self.evaluate(initial, &[]))?;
+            }
+        }
+        for child in self.children().values() {
+            child.initialize_once()?;
+        }
+        Ok(())
     }
 
     pub(crate) fn read(&self, member: &Member) -> Result<Value> {
@@ -1289,10 +1359,18 @@ impl Instance {
             PropertySource::Alias(target) => return self.read(target),
         };
         let initial = || self.evaluate(initial, &[]);
+        let local = || {
+            let slot = &self.0.values[member];
+            if property.mode == PropertyMode::Once {
+                slot.try_get_once(initial)
+            } else {
+                slot.try_get(initial)
+            }
+        };
         if let Some(input) = self.0.incoming.get(member) {
-            input.get_result(initial)
+            input.get_result(local)
         } else {
-            self.0.values[member].try_get(initial)
+            local()
         }
     }
 
@@ -1440,6 +1518,9 @@ impl Instance {
             return owner.write(member, value);
         }
         let property = self.property(member)?;
+        if property.mode == PropertyMode::Formula {
+            return Err(evaluation(format!("property {} is read-only", member.name)));
+        }
         if !property.ty.matches(&value) {
             return Err(evaluation(format!(
                 "wrong value type for {}.{}: expected {:?}",
@@ -1481,7 +1562,17 @@ impl Instance {
         {
             return owner.reset_member(member);
         }
-        if let PropertySource::Alias(target) = &self.property(member)?.source {
+        let property = self.property(member)?;
+        if property.mode == PropertyMode::Formula {
+            return Err(evaluation(format!("property {} is read-only", member.name)));
+        }
+        if property.mode == PropertyMode::Once {
+            return Err(evaluation(format!(
+                "property {} is initialized only once",
+                member.name
+            )));
+        }
+        if let PropertySource::Alias(target) = &property.source {
             return self.reset_member(target);
         }
         if let Some(input) = self.0.incoming.get(member) {
@@ -5219,6 +5310,9 @@ impl Instance {
     ) -> Result<bool> {
         if let Some(target) = element.links.get(name) {
             self.write(target, value)?;
+            return Ok(true);
+        }
+        if element.read_only_bindings.contains(name) {
             return Ok(true);
         }
         let member = Member::new(&element.key, name);

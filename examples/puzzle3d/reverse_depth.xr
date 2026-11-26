@@ -11,9 +11,9 @@ export component ReverseDepthDemo inherits Window {
     title: "XRack · 远距离深度精度";
     width: 432px; height: 314px; resizable: false;
     background: #152130;
-    in-out property <bool> reversed: true;
-    in-out property <bool> msaa: false;
-    in-out property <bool> prepass: false;
+    in-out property <bool> reversed = true;
+    in-out property <bool> msaa = false;
+    in-out property <bool> prepass = false;
     property <point2d> viewport: Point2D.new(432px, 252px);
     property <PrecisionActor> base: PrecisionActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,

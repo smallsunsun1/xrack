@@ -11,10 +11,10 @@ export component NodeMappingDemo inherits Window {
     title: "XRack · 节点坐标";
     width: 600px; height: 412px; resizable: false;
     background: #152232;
-    in-out property <float> yaw: 0;
-    in-out property <float> stretch: 1.5;
-    in-out property <bool> show-rig: true;
-    in-out property <string> destination: "dock";
+    in-out property <float> yaw = 0;
+    in-out property <float> stretch = 1.5;
+    in-out property <bool> show-rig = true;
+    in-out property <string> destination = "dock";
 
     property <MappingActor> base: MappingActor {
         id: "", parent: "", mesh: "",

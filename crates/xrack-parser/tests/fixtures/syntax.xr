@@ -1,8 +1,8 @@
 /* 🌱 */ import { Base, Named as Other, } from "widgets.xr";
 export struct Data { name: string, weight: float, }
 export component App inherits Window {
-    in-out property <[Data]> entries: [Data { name: "你好\u263A", weight: 2.5e-2, },];
-    property <int> value: 1 + 2 * 3 - -4;
+    in-out property <[Data]> entries = [Data { name: "你好\u263A", weight: 2.5e-2, },];
+    property <int> value = 1 + 2 * 3 - -4;
     property <bool> ok: !(value <= 0) && true || false;
     pure callback format(string, value: int,) -> string;
     callback done;

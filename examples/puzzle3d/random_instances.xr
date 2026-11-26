@@ -25,19 +25,19 @@ export component RandomInstancesDemo inherits Window {
     width: 640px; height: 388px;
     background: #172538;
 
-    in-out property <int> count: 6;
-    in-out property <int> seed: 7;
-    in-out property <bool> grid: true;
-    in-out property <bool> coarse: false;
-    in-out property <bool> imported: false;
-    in-out property <bool> shared-table: true;
-    in-out property <bool> reuse-table: false;
-    in-out property <string> color-model: "rgb";
-    in-out property <bool> proportional-color: false;
-    in-out property <int> draw-limit: -1;
+    in-out property <int> count = 6;
+    in-out property <int> seed = 7;
+    in-out property <bool> grid = true;
+    in-out property <bool> coarse = false;
+    in-out property <bool> imported = false;
+    in-out property <bool> shared-table = true;
+    in-out property <bool> reuse-table = false;
+    in-out property <string> color-model = "rgb";
+    in-out property <bool> proportional-color = false;
+    in-out property <int> draw-limit = -1;
     property <instancetable3d> unloaded;
-    in-out property <float> offset: 0;
-    in-out property <point2d> pointer: root.first-screen.point;
+    in-out property <float> offset = 0;
+    in-out property <point2d> pointer = root.first-screen.point;
     property <point2d> viewport: Point2D.new(640px, 278px);
 
     property <InstanceBits> zero: InstanceBits { x: 0, y: 0, z: 0, w: 0 };

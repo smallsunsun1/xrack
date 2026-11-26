@@ -20,10 +20,10 @@ export component ContentLayersDemo inherits Window {
     height: 310px;
     resizable: false;
     background: #141d29;
-    in-out property <int> mask: 1;
-    in-out property <float> hidden-x: -2.0;
-    in-out property <bool> culling: true;
-    in-out property <point2d> pointer: Point2D.new(128px, 110px);
+    in-out property <int> mask = 1;
+    in-out property <float> hidden-x = -2.0;
+    in-out property <bool> culling = true;
+    in-out property <point2d> pointer = Point2D.new(128px, 110px);
     property <point2d> viewport: Point2D.new(256px, 220px);
     property <point3d> ray-origin: Point3D.new(0, 0, 8);
     property <vector3d> ray-direction: Vector3D.new(0, 0, -1);

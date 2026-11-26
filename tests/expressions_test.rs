@@ -539,20 +539,21 @@ fn generated_bindings_are_lazy_across_instances_and_rendering() {
     assert_eq!(label(&ui), "18");
     assert_eq!((observed.get(), formatted.get()), (3, 3));
 
-    ui.set_result(9);
+    ui.set_manual_result(9);
+    ui.set_manual_result_active(true);
     ui.set_right(10);
     assert_eq!(label(&ui), "18");
-    assert_eq!((observed.get(), formatted.get()), (3, 3));
-    ui.reset_result();
+    assert_eq!((observed.get(), formatted.get()), (3, 4));
+    ui.set_manual_result_active(false);
     assert_eq!(label(&ui), "20");
-    assert_eq!((observed.get(), formatted.get()), (4, 4));
+    assert_eq!((observed.get(), formatted.get()), (4, 5));
 
     ui.on_observe(|value| value + 1);
     assert_eq!(ui.get_shown(), 22);
     assert_eq!(label(&ui), "22");
     ui.on_format_value(|value| format!("updated:{value}"));
     assert_eq!(label(&ui), "updated:22");
-    assert_eq!((observed.get(), formatted.get()), (4, 5));
+    assert_eq!((observed.get(), formatted.get()), (4, 6));
 }
 
 #[test]

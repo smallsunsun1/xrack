@@ -46,8 +46,8 @@ use std::{
     sync::Arc,
 };
 use xrack_runtime::{
-    Animation, Component, ImageAsset, LoadedFonts, LoadedVectorPath, LocaleContext, Node,
-    RecordList, RecordRowValidator, RecordValue, TouchPoints, TranslationCatalog, Value,
+    Animation, ImageAsset, LoadedFonts, LoadedVectorPath, LocaleContext, Node, RecordList,
+    RecordRowValidator, RecordValue, TouchPoints, TranslationCatalog, Value,
 };
 
 pub use load::load_mlir;
@@ -122,6 +122,7 @@ pub struct Program {
     #[cfg(all(feature = "live-reload", unix))]
     update_plan: Rc<serde_json::Value>,
     components: Rc<BTreeMap<String, Result<Definition>>>,
+    initialize_once: bool,
     exports: Rc<BTreeSet<String>>,
     globals: Rc<BTreeMap<String, bool>>,
     records: Rc<RecordSchemas>,
@@ -258,6 +259,14 @@ impl Program {
     }
 
     pub fn create(&self, name: &str) -> Result<Instance> {
+        self.create_with_initial_locale(name, None)
+    }
+
+    fn create_with_initial_locale(
+        &self,
+        name: &str,
+        locale: Option<LocaleContext>,
+    ) -> Result<Instance> {
         install_external_loader();
         if self.globals.contains_key(name) {
             return Err(Error::Invalid(
@@ -265,20 +274,12 @@ impl Program {
             ));
         }
         self.validate_dependencies(name, &mut BTreeSet::new())?;
-        self.allocate(
-            name,
-            None,
-            BTreeMap::new(),
-            BTreeMap::new(),
-            &mut Vec::new(),
-        )
+        self.allocate_root(name, locale)
     }
 
     /// Create a component whose translations share the supplied locale context.
     pub fn create_with_locale(&self, name: &str, context: LocaleContext) -> Result<Instance> {
-        let instance = self.create(name)?;
-        instance.set_locale_context(context);
-        Ok(instance)
+        self.create_with_initial_locale(name, Some(context))
     }
 }
 
@@ -651,6 +652,7 @@ struct PropertyDef {
     visibility: String,
     ty: ValueType,
     source: PropertySource,
+    mode: xrack_syntax::ast::PropertyMode,
     public: bool,
     writable: bool,
 }
@@ -736,6 +738,7 @@ struct Element {
     static_subtree: Option<StaticCache<Node>>,
     static_hidden: bool,
     bindings: Vec<Binding>,
+    read_only_bindings: BTreeSet<&'static str>,
     controls: Box<[Control]>,
     offsets: Vec<(xrack_runtime::Orientation, viewport::Offset)>,
     scroll_target: Option<String>,

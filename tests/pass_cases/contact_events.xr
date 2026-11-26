@@ -7,8 +7,8 @@
 // CHECK: "xr.physics_function"{{.*}}value = "contact-entered"{{.*}} -> !xr.intlist
 // CHECK: "xr.physics_function"{{.*}}value = "contact-exited"{{.*}} -> !xr.intlist
 export component App inherits Window {
-    in-out property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, 0, 0), 0.016);
-    in-out property <int> body: 0;
+    in-out property <physicsworld3d> world = Physics3D.new(Vector3D.new(0, 0, 0), 0.016);
+    in-out property <int> body = 0;
     out property <[int]> previous;
     out property <[int]> touched;
     out property <[int]> entered;

@@ -44,7 +44,7 @@ fn push_button_press_and_hold_is_a_typed_zero_argument_event() {
         let source = format!(
             r#"
             component App inherits Window {{
-                in-out property <int> holds: 0;
+                in-out property <int> holds = 0;
                 target := {kind} {{
                     press-and-hold-interval: 550;
                     press-and-hold => {{ root.holds += 1; }}
@@ -223,7 +223,7 @@ fn numeric_control_values_are_typed_reads_and_preserve_writable_aliases() {
             in-out property <float> slider-alias <=> slider.value;
             out property <float> meter: slider.value + dial.value + range.lower-value + range.upper-value + decimal.value;
             out property <int> count: integer.value;
-            slider := Slider { value: 3; }
+            slider := Slider {}
             dial := Dial {}
             range := RangeSlider {}
             decimal := DoubleSpinBox {}
@@ -241,7 +241,12 @@ fn numeric_control_values_are_typed_reads_and_preserve_writable_aliases() {
         .replace("value = \"upper-value\"", "value = \"value\"");
     let error = mlir::Module::parse(&invalid).err().unwrap();
     assert!(error.contains("numeric control value"), "{error}");
-    let cycle = source.replace("value: 3;", "value: self.value + 1;");
+    let cycle = source
+        .replace("in-out property <float> slider-alias <=> slider.value;", "")
+        .replace(
+            "slider := Slider {}",
+            "slider := Slider { value: self.value + 1; }",
+        );
     let error = compile(&cycle, "numeric-state.xr")
         .err()
         .unwrap()
@@ -474,7 +479,7 @@ fn programmatic_button_click_is_a_verified_effect() {
 fn button_appearance_bindings_have_paint_effects_and_accept_visual_states() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> prominent: true;
+            in property <bool> prominent = true;
             pick := Button {
                 primary: root.prominent;
                 flat: false;
@@ -511,7 +516,7 @@ fn button_appearance_bindings_have_paint_effects_and_accept_visual_states() {
 fn button_display_and_replaceable_content_are_verified() {
     let source = r#"
         export component App inherits Window {
-            in property <ButtonDisplay> mode: ButtonDisplay.text-under-icon;
+            in property <ButtonDisplay> mode = ButtonDisplay.text-under-icon;
             Button { display: root.mode; colorize-icon: true; spacing: 3px; }
             ToolButton { ButtonContent { Text { text: "Tool"; } } }
             RoundButton { ButtonContent { Text { text: "Round"; } } }
@@ -534,7 +539,7 @@ fn button_display_and_replaceable_content_are_verified() {
 fn push_button_groups_validate_membership_and_state_ownership() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> checked: false;
+            in-out property <bool> checked = false;
             modes := ButtonGroup { current-value: "list"; }
             flags := ButtonGroup { exclusive: false; }
             command := Action {}
@@ -571,7 +576,7 @@ fn checkable_buttons_accept_boolean_bindings_and_zero_argument_toggle() {
         let source = format!(
             r#"
             export component App inherits Window {{
-                in-out property <bool> pinned: false;
+                in-out property <bool> pinned = false;
                 pin := {kind} {{ checkable: true; checked <=> root.pinned; toggled => {{}} }}
             }}
         "#
@@ -882,7 +887,7 @@ fn scale_rotate_handlers_expose_typed_read_only_metrics_and_lifecycle() {
 fn scroll_snap_modes_are_typed_on_both_scroll_bar_modes() {
     let source = r#"
         component App inherits Window {
-            in property <ScrollSnapMode> mode: ScrollSnapMode.on-release;
+            in property <ScrollSnapMode> mode = ScrollSnapMode.on-release;
             view := ScrollView { content-height: 400px; }
             ScrollBar { target: view; snap-mode: root.mode; step-size: 0.3; }
             ScrollBar { size: 0.25; snap-mode: always; step-size: 0.25; }
@@ -976,7 +981,7 @@ fn attached_scroll_metrics_are_read_only_and_follow_layout_phases() {
 fn standalone_scroll_controls_support_observable_normalized_ranges() {
     let source = r#"
         component App inherits Window {
-            in-out property <float> offset: 0;
+            in-out property <float> offset = 0;
             out property <float> position: bar.position;
             bar := ScrollBar { position <=> root.offset; size: 0.25; }
             indicator := ScrollIndicator { position: bar.position; size: bar.size; }
@@ -1014,7 +1019,7 @@ fn standalone_scroll_controls_support_observable_normalized_ranges() {
 fn non_exclusive_button_groups_verify_members_reads_and_effects() {
     let source = r#"
         component App inherits Window {
-            in property <bool> choice-mode: false;
+            in property <bool> choice-mode = false;
             out property <CheckState> status: checks.check-state;
             checks := ButtonGroup { exclusive: false; }
             master := CheckBox { check-state <=> checks.check-state; }
@@ -1127,8 +1132,8 @@ fn native_check_groups_reject_cycles_between_aggregate_checkboxes() {
 fn button_group_membership_is_a_verified_reference_with_typed_selection() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> mode: "quick";
-            in property <bool> show-detail: true;
+            in-out property <string> mode = "quick";
+            in property <bool> show-detail = true;
             modes := ButtonGroup { current-value <=> root.mode; selected(value) => { } }
             HorizontalLayout {
                 RadioButton { group: modes; value: "quick"; text: "Quick"; }
@@ -1182,7 +1187,7 @@ fn button_group_membership_is_a_verified_reference_with_typed_selection() {
 fn native_window_status_and_commands_have_verified_types_and_scope() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> fullscreen-request: true;
+            in property <bool> fullscreen-request = true;
             out property <bool> actual-fullscreen: root.full-screen;
             callback update();
             update() => { root.maximize(); root.set-full-screen(root.fullscreen-request); }
@@ -1438,7 +1443,7 @@ fn source_scroll_commands_capture_row_keys_and_require_virtual_view_owners() {
 fn source_index_queries_are_typed_and_reject_projection_cycles() {
     let source = r#"
         component App inherits Window {
-            in property <int> source: 3;
+            in property <int> source = 3;
             out property <int> shown: list.view-index-for-source(root.source);
             out property <int> original: table.source-index-for-view(root.shown);
             list := ListView { for item in 5 : Text {} }
@@ -1606,7 +1611,7 @@ fn row_visibility_fields_are_constant_boolean_paths_in_both_table_kinds() {
 fn table_column_visibility_is_a_typed_binding() {
     let source = r#"
         component ColumnDemo inherits TableView {
-            in property <bool> show-detail: true;
+            in property <bool> show-detail = true;
             TableColumn { width: 120px; visible: root.show-detail; }
             for item in 4 : TableRow { Text { text: "" + item; } }
         }
@@ -1707,7 +1712,7 @@ fn custom_clipboard_parsers_require_a_pure_typed_projection_to_a_row_link() {
     let source = r#"
         struct Parsed { accepted: bool, value: string }
         component Demo inherits Window {
-            in-out property <[string]> names: ["one"];
+            in-out property <[string]> names = ["one"];
             pure callback decode(string) -> Parsed;
             decode(raw) => { Parsed { accepted: raw != "", value: raw } }
             TableView {
@@ -1766,8 +1771,8 @@ fn custom_clipboard_parsers_require_a_pure_typed_projection_to_a_row_link() {
 #[test]
 fn row_component_delegates_share_typed_repeat_context_and_validate_clipboard_text() {
     let source = r#"component Demo inherits Window {
-        in-out property <[string]> names: ["one"];
-        out property <int> committed: -1;
+        in-out property <[string]> names = ["one"];
+        out property <int> committed = -1;
         TableView {
             copyable: true;
             TableColumn { title: "Name"; }
@@ -1854,7 +1859,7 @@ fn table_copy_projections_are_typed_and_scoped_to_direct_cells() {
 #[test]
 fn table_paste_compiles_writable_row_links_and_checks_the_flag_type() {
     let source = r#"component Demo inherits Window {
-        in-out property <[string]> names: ["One", "Two"];
+        in-out property <[string]> names = ["One", "Two"];
         TableView {
             row-height: 32px;
             pasteable: true;
@@ -2399,7 +2404,7 @@ fn mouse_drag_pan_is_a_boolean_viewport_binding() {
 #[test]
 fn viewport_offset_bindings_require_writable_lengths_and_reject_feedback_cycles() {
     let source = r#"export component Demo inherits Window {
-        in-out property <length> shared: -24px;
+        in-out property <length> shared = -24px;
         first := ScrollView { content-y <=> root.shared; }
         second := ScrollView { content-y: root.shared; }
     }"#;
@@ -2409,8 +2414,8 @@ fn viewport_offset_bindings_require_writable_lengths_and_reject_feedback_cycles(
     for (from, to, diagnostic) in [
         ("in-out property", "in property", "read-only"),
         (
-            "<length> shared: -24px",
-            "<int> shared: -24",
+            "<length> shared = -24px",
+            "<int> shared = -24",
             "writable length",
         ),
         (
@@ -2445,7 +2450,7 @@ fn viewport_offset_bindings_require_writable_lengths_and_reject_feedback_cycles(
 #[test]
 fn scrolled_is_a_zero_argument_viewport_event_in_source_and_mlir() {
     let source = r#"export component Demo inherits ScrollView {
-        out property <length> last: 0px;
+        out property <length> last = 0px;
         scrolled() => { root.last = self.content-y; }
     }"#;
     let compiled = compile(source, "scrolled.xr").unwrap();
@@ -2703,7 +2708,7 @@ fn touch_area_multitouch_fields_are_verified() {
 fn touch_area_accepted_buttons_is_a_typed_set() {
     let source = r#"
         component Demo inherits Window {
-            in property <bool> right-only: true;
+            in property <bool> right-only = true;
             out property <PointerButtons> buttons: root.right-only ? [secondary] : [];
             area := TouchArea { accepted-buttons: root.buttons; }
         }
@@ -2894,7 +2899,7 @@ fn hover_handler_verifies_read_only_metrics_and_passive_events() {
         component Demo inherits Window {
             out property <bool> inside: area.hovered;
             out property <length> position: area.hover-x;
-            out property <int> entries: 0;
+            out property <int> entries = 0;
             area := HoverHandler {
                 blocking: true;
                 entered() => { root.entries += 1; }
@@ -2933,7 +2938,7 @@ fn hover_handler_verifies_read_only_metrics_and_passive_events() {
 fn cursor_shape_requires_a_typed_value_on_a_pointer_handler() {
     let source = r#"
         component Demo inherits Window {
-            in property <CursorShape> shape: CursorShape.crosshair;
+            in property <CursorShape> shape = CursorShape.crosshair;
             area := HoverHandler { cursor-shape: root.shape; }
             touch := TouchArea { cursor-shape: grab; }
         }
@@ -3022,7 +3027,7 @@ fn focus_scope_commands_and_initial_targets_are_checked_in_both_stages() {
 #[test]
 fn states_use_scoped_selectors_and_reject_invalid_property_changes() {
     let source = r#"export component App inherits Window {
-        in property <bool> open: false;
+        in property <bool> open = false;
         panel := Rectangle { width: 48px; visible: true; }
         states [ expanded when root.open: {
             panel.width: 96px;
@@ -3086,9 +3091,9 @@ fn states_use_scoped_selectors_and_reject_invalid_property_changes() {
 fn instance_states_verify_public_inputs_layout_and_composition_dependencies() {
     let source = r#"
         component Badge inherits Rectangle {
-            in-out property <string> caption: "Ready";
+            in-out property <string> caption = "Ready";
             out property <string> reported: root.caption;
-            in property <int> count: 0;
+            in property <int> count = 0;
             Label { text: root.caption; }
         }
         export component App inherits Window {
@@ -3175,7 +3180,7 @@ fn a_two_way_input_cannot_be_routed_to_an_instance_state_through_an_alias() {
 #[test]
 fn grouped_animation_has_typed_timing_and_an_enabled_operand() {
     let source = r#"export component App inherits Window {
-        in property <bool> motion: true;
+        in property <bool> motion = true;
         Rectangle {
             x: 20px; width: 120px;
             animate x, width { duration: 400ms; delay: 120ms; easing: cubic-bezier(0.2, -0.3, 0.8, 1.2); enabled: root.motion; }
@@ -3229,7 +3234,7 @@ fn grouped_animation_has_typed_timing_and_an_enabled_operand() {
 #[test]
 fn drag_areas_verify_action_types_and_generate_typed_event_routes() {
     let source = r#"export component App inherits Window {
-        out property <DragAction> result: none;
+        out property <DragAction> result = none;
         source := DragArea {
             data: "ticket"; drag-key: "tasks"; allow-move: true;
             drag-finished(action) => { root.result = action; }
@@ -3272,7 +3277,7 @@ fn drag_areas_verify_action_types_and_generate_typed_event_routes() {
 #[test]
 fn accessible_heading_level_requires_an_integer_on_plain_text() {
     let source = r#"export component App inherits Window {
-        in property <int> heading-level: 2;
+        in property <int> heading-level = 2;
         Text { text: "Maintenance"; accessible-heading-level: root.heading-level; }
         Label { text: "Overview"; accessible-heading-level: 1; }
     }"#;
@@ -3334,7 +3339,7 @@ fn accessible_live_requires_a_supported_priority_on_plain_text() {
 fn pull_to_refresh_has_boolean_properties_and_a_zero_argument_handler() {
     let source = r#"
         export component App inherits Window {
-            out property <int> requests: 0;
+            out property <int> requests = 0;
             feed := ScrollView {
                 content-height: 320px;
                 pull-to-refresh: true;
@@ -3440,8 +3445,8 @@ fn touch_drag_delay_requires_integer_milliseconds_on_a_drag_area() {
 #[test]
 fn native_file_drop_uses_typed_success_and_failure_events() {
     let source = r#"export component App inherits Window {
-        out property <[string]> selection: [];
-        out property <string> message: "";
+        out property <[string]> selection = [];
+        out property <string> message = "";
         inbox := DropArea {
             accept-files: true;
             file-extensions: ["png", "jpg"];
@@ -3502,7 +3507,7 @@ fn native_file_drop_uses_typed_success_and_failure_events() {
 fn window_and_control_fonts_keep_typed_bindings_through_mlir() {
     let source = r#"
         export component App inherits Window {
-            in property <string> family: "monospace";
+            in property <string> family = "monospace";
             default-font-family: root.family;
             default-font-size: 19px;
             default-font-weight: 400;
@@ -3702,8 +3707,8 @@ fn standard_table_checks_column_fields_in_source_and_mlir() {
         export struct Part { device-name: string, header-label: string, count: int, time: Time, color: color }
         export component App inherits Window {
             in property <[Part]> parts;
-            in property <string> field-name: "device-name";
-            in-out property <int> current: -1;
+            in property <string> field-name = "device-name";
+            in-out property <int> current = -1;
             view := StandardTableView {
                 model: root.parts;
                 current-row <=> root.current;
@@ -3788,7 +3793,7 @@ fn table_row_header_text_can_read_the_repeated_item() {
 fn move_row_lowers_to_a_verified_table_command() {
     let source = r#"
         component App inherits Window {
-            property <int> destination: -1;
+            property <int> destination = -1;
             callback move-one();
             move-one() => { table.move-row(0, 1); }
             table := TableView {
@@ -3815,7 +3820,7 @@ fn nested_record_fields_are_typed_and_layouts_must_be_acyclic() {
         struct Entry { details: Details }
         struct Details { label: string, units: int }
         component App inherits Window {
-            in property <[Entry]> rows: [Entry { details: Details { label: "one", units: 1 } }];
+            in property <[Entry]> rows = [Entry { details: Details { label: "one", units: 1 } }];
             StandardListView { model: root.rows; text-role: "details.label"; }
         }
     "#;
@@ -3867,7 +3872,7 @@ fn nested_record_fields_are_typed_and_layouts_must_be_acyclic() {
 fn popup_window_checks_placement_open_links_and_commands() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> shown: false;
+            in-out property <bool> shown = false;
             trigger := Button {
                 clicked() => { popover.show(); }
                 popover := PopupWindow {
@@ -3950,7 +3955,7 @@ fn text_and_label_layout_options_are_typed_in_mlir() {
 fn flexbox_layout_keeps_typed_direction_wrap_and_line_alignment() {
     let source = r#"
         export component App inherits Window {
-            in property <FlexboxLayoutDirection> direction: row-reverse;
+            in property <FlexboxLayoutDirection> direction = row-reverse;
             FlexboxLayout {
                 flex-direction: root.direction;
                 flex-wrap: wrap-reverse;
@@ -3981,8 +3986,8 @@ fn flexbox_layout_keeps_typed_direction_wrap_and_line_alignment() {
 fn timer_validates_nonvisual_properties_and_effectful_commands() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> active: false;
-            out property <int> hits: 0;
+            in-out property <bool> active = false;
+            out property <int> hits = 0;
             timer := Timer {
                 running <=> root.active;
                 interval: 80;
@@ -4040,7 +4045,7 @@ fn timer_validates_nonvisual_properties_and_effectful_commands() {
 fn swipe_delegate_checks_slots_and_the_typed_side() {
     let source = r#"
         export component App inherits Window {
-            in-out property <SwipeSide> side: closed;
+            in-out property <SwipeSide> side = closed;
             row := SwipeDelegate {
                 open-side <=> root.side;
                 SwipeContent { Text { text: "Item"; } }
@@ -4071,8 +4076,8 @@ fn swipe_delegate_checks_slots_and_the_typed_side() {
 fn standard_buttons_use_a_verified_enum_and_button_box() {
     let source = r#"
         export component App inherits Window {
-            in property <StandardButtonKind> primary-kind: save-all;
-            out property <int> applies: 0;
+            in property <StandardButtonKind> primary-kind = save-all;
+            out property <int> applies = 0;
             dialog := Dialog {
                 open: true;
                 applied() => { root.applies += 1; }
@@ -4122,9 +4127,9 @@ fn standard_buttons_use_a_verified_enum_and_button_box() {
 fn date_picker_popup_verifies_date_binding_and_modal_events() {
     let source = r#"
         export component App inherits Window {
-            in-out property <Date> selected: Date { year: 2024, month: 2, day: 29 };
-            in-out property <bool> picker-open: true;
-            out property <int> day: 0;
+            in-out property <Date> selected = Date { year: 2024, month: 2, day: 29 };
+            in-out property <bool> picker-open = true;
+            out property <int> day = 0;
             picker := DatePickerPopup {
                 open <=> root.picker-open;
                 date <=> root.selected;
@@ -4163,9 +4168,9 @@ fn date_picker_popup_verifies_date_binding_and_modal_events() {
 fn time_picker_verifies_types_events_and_time_fields_in_mlir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <Time> chosen: Time { hour: 12, minute: 32 };
-            in-out property <bool> shown: false;
-            out property <int> seconds: root.chosen.second;
+            in-out property <Time> chosen = Time { hour: 12, minute: 32 };
+            in-out property <bool> shown = false;
+            out property <int> seconds = root.chosen.second;
             inline := TimePicker { time <=> root.chosen; changed(value) => { root.seconds = value.second; } }
             popup := TimePickerPopup {
                 open <=> root.shown;
@@ -4218,7 +4223,7 @@ fn combo_enabled_role_requires_a_constant_nested_boolean_field() {
         struct OptionRow { title: string, access: Access }
         component App inherits Window {
             in property <[OptionRow]> options;
-            in property <string> role: "access.allowed";
+            in property <string> role = "access.allowed";
             ComboBox { model: root.options; text-role: "title"; enabled-role: "access.allowed"; }
         }
     "#;
@@ -4264,8 +4269,8 @@ fn combo_roles_and_business_value_types_are_verified() {
     let source = r#"
         struct OptionRow { title: string, key: int }
         export component App inherits Window {
-            in-out property <[OptionRow]> rows: [OptionRow { title: "One", key: 1 }];
-            in-out property <int> selection: 1;
+            in-out property <[OptionRow]> rows = [OptionRow { title: "One", key: 1 }];
+            in-out property <int> selection = 1;
             choice := ComboBox {
                 model: root.rows;
                 text-role: "title";
@@ -4306,7 +4311,7 @@ fn tab_widget_repeats_pages_and_exposes_a_read_only_count() {
     let source = r#"
         component Editor inherits Rectangle { in property <string> title; Text { text: root.title; } }
         export component App inherits Window {
-            in-out property <int> selected: 1;
+            in-out property <int> selected = 1;
             out property <int> total: tabs.count;
             tabs := TabWidget {
                 current-index <=> root.selected;
@@ -4360,7 +4365,7 @@ fn tab_widget_repeats_pages_and_exposes_a_read_only_count() {
 fn table_selection_gestures_and_live_state_are_typed_and_read_only() {
     let source = r#"
         export component App inherits Window {
-            in-out property <SelectionGesture> gesture: press-and-hold;
+            in-out property <SelectionGesture> gesture = press-and-hold;
             property <[string]> rows: ["one", "two"];
             out property <bool> active: grid.selection-active;
             out property <bool> dragging: grid.selection-dragging;
@@ -4450,7 +4455,7 @@ fn selection_handle_parts_are_static_unique_and_positioned_by_the_table() {
 fn model_edits_verify_the_property_row_type_and_callback_effects() {
     let source = r#"
         export component App inherits Window {
-            in-out property <[int]> rows: [1, 2];
+            in-out property <[int]> rows = [1, 2];
             property <[int]> alias <=> root.rows;
             callback change();
             change() => { Model.append(root.alias, 3); }
@@ -4502,7 +4507,7 @@ fn model_edits_verify_the_property_row_type_and_callback_effects() {
 fn navigation_move_commands_verify_owners_writability_and_effects() {
     let source = r#"
         export component App inherits Window {
-            in-out property <[string]> labels: ["a", "b"];
+            in-out property <[string]> labels = ["a", "b"];
             callback move(int, int);
             move(from, to) => { tabs.move-item(from, to); }
             tabs := TabWidget {
@@ -4557,7 +4562,7 @@ fn navigation_move_commands_verify_owners_writability_and_effects() {
 fn stack_layout_supports_regular_children_and_checks_keyed_templates() {
     let source = r#"
         export component App inherits Window {
-            in-out property <int> index: 0;
+            in-out property <int> index = 0;
             out property <int> selected: layers.active-index;
             out property <int> items: layers.count;
             layers := StackLayout {
@@ -4612,7 +4617,7 @@ fn stack_layout_supports_regular_children_and_checks_keyed_templates() {
 fn close_tab_properties_and_event_payload_have_verified_types() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> last: "";
+            in-out property <string> last = "";
             tabs := TabBar {
                 tabs-closable: true;
                 TabButton { text: "Notes"; value: "notes"; closable: true; }
@@ -4654,8 +4659,8 @@ fn close_tab_properties_and_event_payload_have_verified_types() {
 fn reorderable_tabs_require_a_writable_list_and_typed_move_event() {
     let source = r#"
         export component App inherits Window {
-            in-out property <[string]> entries: ["a", "b"];
-            out property <int> last-move: 0;
+            in-out property <[string]> entries = ["a", "b"];
+            out property <int> last-move = 0;
             tabs := TabBar {
                 reorderable: true;
                 for entry in root.entries : TabButton { text: entry; }
@@ -4701,7 +4706,7 @@ fn reorderable_tabs_require_a_writable_list_and_typed_move_event() {
 fn navigation_value_checks_keys_conflicts_and_derived_index_reads() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> selection: "draft";
+            in-out property <string> selection = "draft";
             out property <int> index: bar.current-index;
             bar := TabBar {
                 current-value <=> root.selection;
@@ -4870,8 +4875,8 @@ fn tumbler_record_roles_and_selection_type_are_checked() {
     let source = r#"
         struct OptionRow { title: string, key: int }
         export component App inherits Window {
-            in-out property <[OptionRow]> rows: [OptionRow { title: "One", key: 1 }];
-            in-out property <int> selection: 1;
+            in-out property <[OptionRow]> rows = [OptionRow { title: "One", key: 1 }];
+            in-out property <int> selection = 1;
             out property <string> label: choice.current-text;
             choice := Tumbler {
                 model: root.rows;
@@ -5222,7 +5227,7 @@ fn combo_state_read_types_and_dependencies_are_verified() {
     let source = r#"
         struct OptionRow { title: string, code: int }
         export component App inherits Window {
-            in property <[OptionRow]> options: [OptionRow { title: "First", code: 42 }];
+            in property <[OptionRow]> options = [OptionRow { title: "First", code: 42 }];
             out property <int> picked: choice.current-value;
             out property <string> label: choice.current-text;
             out property <int> size: choice.count;
@@ -5261,7 +5266,7 @@ fn secondary_windows_require_a_window_component_and_typed_visibility() {
         component Content inherits Window { title: "Inspector"; }
         component Panel inherits Rectangle {}
         export component App inherits Window {
-            in-out property <bool> inspecting: false;
+            in-out property <bool> inspecting = false;
             inspector := SecondaryWindow { visible <=> root.inspecting; Content {} }
             open := Button { clicked => { inspector.show(); } }
         }
@@ -5338,7 +5343,7 @@ fn window_close_commands_and_guard_results_are_verified() {
 fn file_dialog_open_and_result_signatures_are_verified() {
     let source = r#"
         export component App inherits Window {
-            out property <[string]> paths: [];
+            out property <[string]> paths = [];
             callback choose;
             choose => { picker.open(); }
             picker := FileDialog {
@@ -5449,7 +5454,7 @@ fn message_dialog_has_typed_buttons_levels_and_results() {
 fn shortcut_bindings_and_action_links_are_checked_in_mlir() {
     let source = r#"
         export component App inherits Window {
-            out property <int> hits: 0;
+            out property <int> hits = 0;
             save := Action { shortcut: "Primary+S"; activated => { root.hits += 1; } }
             Shortcut { action: save; sequences: ["Primary+K, Primary+S", "F9"]; }
             Shortcut { sequence: "F6"; activated-ambiguously => { root.hits += 2; } }
@@ -5480,7 +5485,7 @@ fn shortcut_bindings_and_action_links_are_checked_in_mlir() {
 fn window_palette_is_typed_in_xr_and_mlir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <ColorScheme> scheme: ColorScheme.light;
+            in-out property <ColorScheme> scheme = ColorScheme.light;
             color-scheme: root.scheme;
             accent-color: #c36728;
             Button { text: "Preview"; }
@@ -5509,8 +5514,8 @@ fn window_palette_is_typed_in_xr_and_mlir() {
 fn color_popup_verifies_control_links_and_callback_types() {
     let source = r#"
         export component App inherits Window {
-            in-out property <color> selected: #124380a0;
-            in-out property <bool> shown: false;
+            in-out property <color> selected = #124380a0;
+            in-out property <bool> shown = false;
             out property <color> accepted-color;
             picker := ColorPickerPopup {
                 open <=> root.shown;
@@ -5555,7 +5560,7 @@ fn color_popup_verifies_control_links_and_callback_types() {
 fn font_picker_verifies_construction_fields_links_and_callbacks() {
     let source = r#"
         export component App inherits Window {
-            in-out property <Font> selected: Font {
+            in-out property <Font> selected = Font {
                 family: "serif", size: 18.5px, weight: 550, italic: false
             };
             out property <string> family: root.selected.family;
@@ -5610,7 +5615,7 @@ fn font_picker_verifies_construction_fields_links_and_callbacks() {
         (
             "font <=> root.selected",
             "font <=> root.family",
-            "two-way binding requires a writable font property",
+            "read-only",
         ),
     ] {
         let invalid = source.replacen(from, to, 1);
@@ -5626,7 +5631,7 @@ fn grid_view_checks_geometry_and_repeated_template_in_source_and_mlir() {
     let source = r#"
         component Tile inherits Rectangle { in property <int> index; }
         export component App inherits Window {
-            in-out property <int> chosen: -1;
+            in-out property <int> chosen = -1;
             grid := GridView {
                 cell-width: 100px; cell-height: 84px; spacing: 10px;
                 current-index <=> root.chosen;
@@ -5706,8 +5711,8 @@ fn standard_list_uses_a_verified_record_text_field() {
     let source = r#"
         export struct Entry { label: string, rank: int }
         export component App inherits Window {
-            in property <[Entry]> records: [Entry { label: "one", rank: 1 }];
-            in-out property <int> selected: -1;
+            in property <[Entry]> records = [Entry { label: "one", rank: 1 }];
+            in-out property <int> selected = -1;
             list := StandardListView {
                 model: root.records;
                 text-role: "label";
@@ -5831,7 +5836,7 @@ fn progress_artwork_parts_are_unique_static_children_of_the_indicator() {
 fn spinner_and_busy_indicator_verify_progress_and_motion_types() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> loading: true;
+            in property <bool> loading = true;
             BusyIndicator { running: root.loading; stroke-width: 3px; animated: false; }
             Spinner { progress: 65%; track-color: #384761; }
         }
@@ -5860,7 +5865,7 @@ fn spinner_and_busy_indicator_verify_progress_and_motion_types() {
 fn expander_uses_a_boolean_link_and_expansion_event() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> active: false;
+            in-out property <bool> active = false;
             details := Expander {
                 title: "Details";
                 expanded <=> root.active;
@@ -5875,8 +5880,8 @@ fn expander_uses_a_boolean_link_and_expansion_event() {
     assert!(
         compile(
             &source.replace(
-                "in-out property <bool> active: false",
-                "in-out property <int> active: 1"
+                "in-out property <bool> active = false",
+                "in-out property <int> active = 1"
             ),
             "expander.xr"
         )
@@ -5894,7 +5899,7 @@ fn expander_uses_a_boolean_link_and_expansion_event() {
 fn group_box_checks_its_header_and_checked_binding_in_mlir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> enabled-group: true;
+            in-out property <bool> enabled-group = true;
             settings := GroupBox {
                 title: "Settings";
                 checkable: true;
@@ -5926,7 +5931,7 @@ fn group_box_checks_its_header_and_checked_binding_in_mlir() {
 fn check_state_bindings_and_callbacks_use_the_typed_mlir_enum() {
     let source = r#"
         export component App inherits Window {
-            in-out property <CheckState> selection: CheckState.partially-checked;
+            in-out property <CheckState> selection = CheckState.partially-checked;
             out property <CheckState> last;
             item := CheckBox {
                 check-state <=> root.selection;
@@ -5964,7 +5969,7 @@ fn check_state_bindings_and_callbacks_use_the_typed_mlir_enum() {
 fn delay_button_verifies_delay_checked_link_and_activation_handler() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> confirmed: false;
+            in-out property <bool> confirmed = false;
             confirm := DelayButton {
                 delay: 250;
                 checked <=> root.confirmed;
@@ -5999,7 +6004,7 @@ fn delay_button_verifies_delay_checked_link_and_activation_handler() {
 fn tumbler_verifies_the_model_source_and_index_link() {
     let source = r#"
         export component App inherits Window {
-            in-out property <int> selected: 0;
+            in-out property <int> selected = 0;
             wheel := Tumbler {
                 model: ["one", "two"];
                 current-index <=> root.selected;
@@ -6031,8 +6036,8 @@ fn password_mode_and_reveal_are_typed_in_mlir() {
     let source = r#"
         export component App inherits Window {
             in-out property <string> secret;
-            in property <InputType> mode: InputType.password;
-            in property <bool> reveal: false;
+            in property <InputType> mode = InputType.password;
+            in property <bool> reveal = false;
             LineEdit {
                 input-type: root.mode;
                 password-visible: root.reveal;
@@ -6113,7 +6118,7 @@ fn text_editor_constraints_are_verified_in_semantics_and_mlir() {
 fn keyboard_assistance_is_typed_and_verified_in_mlir() {
     let source = r#"
         export component App inherits Window {
-            in property <KeyboardCapitalization> capitalization: KeyboardCapitalization.words;
+            in property <KeyboardCapitalization> capitalization = KeyboardCapitalization.words;
             LineEdit { keyboard-capitalization: root.capitalization; auto-correct: false; }
             TextArea { keyboard-capitalization: characters; spell-check: true; }
         }
@@ -6138,7 +6143,7 @@ fn keyboard_assistance_is_typed_and_verified_in_mlir() {
 fn keyboard_navigation_is_a_boolean_for_text_editors() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> navigate: true;
+            in property <bool> navigate = true;
             TextArea { keyboard-navigation: root.navigate; }
             LineEdit { return-key: next; keyboard-navigation: false; }
         }
@@ -6173,7 +6178,7 @@ fn keyboard_navigation_is_a_boolean_for_text_editors() {
 fn return_key_hints_are_typed_and_limited_to_single_line_editors() {
     let source = r#"
         export component App inherits Window {
-            in property <ReturnKey> action: ReturnKey.next;
+            in property <ReturnKey> action = ReturnKey.next;
             LineEdit { return-key: root.action; }
             TextInput { return-key: done; }
             ComboBox { editable: true; return-key: auto; }
@@ -6200,7 +6205,7 @@ fn return_key_hints_are_typed_and_limited_to_single_line_editors() {
 fn input_purpose_has_a_typed_binding_and_a_verified_mlir_enum() {
     let source = r#"
         export component App inherits Window {
-            in property <InputPurpose> account-purpose: InputPurpose.username;
+            in property <InputPurpose> account-purpose = InputPurpose.username;
             in property <InputPurpose> fallback;
             LineEdit { input-type: email; input-purpose: root.account-purpose; }
             TextInput { input-type: password; input-purpose: current-password; }
@@ -6284,8 +6289,8 @@ fn search_field_checks_live_query_and_candidate_model_types() {
 fn decimal_spin_box_uses_float_links_and_typed_precision() {
     let source = r#"
         export component App inherits Window {
-            in-out property <float> amount: 0.5;
-            out property <float> last: 0.0;
+            in-out property <float> amount = 0.5;
+            out property <float> last = 0.0;
             amount-field := DoubleSpinBox {
                 value <=> root.amount;
                 decimals: 2;
@@ -6308,7 +6313,7 @@ fn decimal_spin_box_uses_float_links_and_typed_precision() {
             .unwrap_err()
             .contains("incorrect DoubleSpinBox property type")
     );
-    let wrong = source.replace("<float> amount: 0.5", "<int> amount: 1");
+    let wrong = source.replace("<float> amount = 0.5", "<int> amount = 1");
     assert!(
         compile(&wrong, "decimal-spin.xr")
             .err()
@@ -6377,8 +6382,8 @@ fn day_cell_templates_verify_typed_context_and_visual_content() {
 fn calendar_parts_verify_typed_months_weekday_labels_and_activation() {
     let source = r#"
         component App inherits Window {
-            in-out property <Date> selected: Date { year: 2021, month: 1, day: 1 };
-            in-out property <Date> month: root.selected;
+            in-out property <Date> selected = Date { year: 2021, month: 1, day: 1 };
+            in-out property <Date> month = root.selected;
             DayOfWeekRow { week-start: 7; weekday-labels: ["M", "T", "W", "T", "F", "S", "S"]; }
             WeekNumberColumn { display-month: root.month; week-start: 7; }
             grid := MonthGrid {
@@ -6416,9 +6421,9 @@ fn calendar_parts_verify_typed_months_weekday_labels_and_activation() {
 fn calendar_lowers_date_values_and_rejects_invalid_schema_and_aliases() {
     let source = r#"
         export component App inherits Window {
-            in-out property <Date> selection: Date { year: 2024, month: 2, day: 29 };
-            in-out property <Date> month: Date { year: 2024, month: 2, day: 1 };
-            out property <int> picked: 0;
+            in-out property <Date> selection = Date { year: 2024, month: 2, day: 29 };
+            in-out property <Date> month = Date { year: 2024, month: 2, day: 1 };
+            out property <int> picked = 0;
             picker := Calendar {
                 date <=> root.selection;
                 display-month <=> root.month;
@@ -6575,7 +6580,7 @@ fn lower(source: &str, filename: &str) -> String {
 #[test]
 fn parses_comments_unicode_and_operator_precedence() {
     let source = r#"/* banner */ export component App inherits Window {
-        in-out property <int> count: 1 + 2 * 3;
+        in-out property <int> count = 1 + 2 * 3;
         property <string> name: "你好\n\"XRack\"";
         property <color> color: #abc;
         title: name;
@@ -6915,7 +6920,7 @@ fn table_column_and_cell_structure_is_verified_in_mlir() {
 #[test]
 fn table_edit_links_a_writable_model_to_the_repeat_item() {
     let source = r#"component App inherits Window {
-        in-out property <[string]> rows: ["one"];
+        in-out property <[string]> rows = ["one"];
         TableView {
             TableColumn { title: "A"; }
             for entry[index] in root.rows : TableRow { TableCell { text <=> entry; } }
@@ -6940,7 +6945,7 @@ fn record_fields_are_typed_through_mlir_and_rust_generation() {
         export struct Entry { name: string, count: int }
         export component App inherits Window {
             property <Entry> active: Entry { count: 2, name: "alpha" };
-            in-out property <[Entry]> entries: [Entry { name: "beta", count: 3 }];
+            in-out property <[Entry]> entries = [Entry { name: "beta", count: 3 }];
             pure callback label(Entry) -> string;
             label(value) => { value.name + value.count }
             title: root.label(root.active);
@@ -6987,7 +6992,7 @@ fn record_updates_check_the_base_and_all_explicit_fields() {
         struct Entry { name: string, count: int }
         struct Other { name: string, count: int }
         export component App inherits Window {
-            property <Entry> active: Entry { name: "old", count: 2 };
+            property <Entry> active = Entry { name: "old", count: 2 };
             property <Other> other: Other { name: "other", count: 3 };
             callback edit();
             edit => { root.active = Entry { name: "new", ..root.active }; }
@@ -7029,7 +7034,7 @@ fn record_updates_check_the_base_and_all_explicit_fields() {
 fn callback_control_flow_checks_nested_statements_and_loop_bindings() {
     let source = r#"
         export component App inherits Window {
-            out property <int> total: 0;
+            out property <int> total = 0;
             callback run(bool);
             run(enabled) => {
                 if enabled {
@@ -7457,7 +7462,7 @@ fn tree_batch_selection_uses_a_typed_integer_model() {
         struct Branch { id: int, parent: int }
         export component App inherits Window {
             in property <[Branch]> branches;
-            in property <[int]> keys: [9, 3];
+            in property <[int]> keys = [9, 3];
             out property <int> first: Model.at(tree.selected-keys, 0, -1);
             callback choose();
             choose => { tree.select-keys(root.keys); }
@@ -7602,7 +7607,7 @@ fn live_integer_list_bindings_emit_explicit_runtime_values() {
     let document = parse(
         r#"
         export component App inherits Window {
-            in-out property <[int]> numbers: [1, 2];
+            in-out property <[int]> numbers = [1, 2];
             pure callback echo([int]) -> [int];
             echo(keys) => { keys }
         }
@@ -7627,7 +7632,7 @@ fn virtual_lists_accept_typed_multi_selection_bindings_and_events() {
         let source = format!(
             r#"
             component App inherits Window {{
-                out property <int> selected: 0;
+                out property <int> selected = 0;
                 view := {kind} {{
                     {rows}
                     multi-select: true;
@@ -7958,7 +7963,7 @@ fn tree_root_keys_are_typed_and_cannot_form_query_initialization_cycles() {
         struct Entry { id: int, parent: int }
         component App inherits Window {
             property <[Entry]> records;
-            in property <int> branch: 1;
+            in property <int> branch = 1;
             directory := TreeView {
                 root-key: root.branch;
                 for row in root.records : TreeRow { key: row.id; parent-key: row.parent; Text { text: "row"; } }
@@ -8097,8 +8102,8 @@ fn tree_cells_lower_to_verified_writable_record_links() {
 fn range_slider_verifies_both_links_and_pair_events() {
     let source = r#"
         export component App inherits Window {
-            in-out property <float> lo: 15;
-            in-out property <float> hi: 85;
+            in-out property <float> lo = 15;
+            in-out property <float> hi = 85;
             range := RangeSlider {
                 lower-value <=> root.lo;
                 upper-value <=> root.hi;
@@ -8145,8 +8150,8 @@ fn range_slider_verifies_both_links_and_pair_events() {
 fn dial_keeps_its_typed_input_mode_through_mlir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <float> value: 20;
-            in-out property <DialInputMode> mode: DialInputMode.vertical;
+            in-out property <float> value = 20;
+            in-out property <DialInputMode> mode = DialInputMode.vertical;
             knob := Dial {
                 value <=> root.value;
                 input-mode: root.mode;
@@ -8179,7 +8184,7 @@ fn dial_keeps_its_typed_input_mode_through_mlir() {
 fn scroll_bar_policy_is_typed_and_requires_a_supported_axis() {
     let source = r#"
         export component App inherits Window {
-            in-out property <ScrollBarPolicy> policy: ScrollBarPolicy.always-on;
+            in-out property <ScrollBarPolicy> policy = ScrollBarPolicy.always-on;
             ScrollView {
                 vertical-scroll-bar-policy: root.policy;
                 horizontal-scroll-bar-policy: as-needed;
@@ -8219,8 +8224,8 @@ fn scroll_bar_policy_is_typed_and_requires_a_supported_axis() {
 fn drawer_checks_the_edge_and_its_open_link_in_mlir() {
     let source = r#"
         component App inherits Window {
-            in-out property <bool> showing: false;
-            in property <DrawerEdge> side: DrawerEdge.right;
+            in-out property <bool> showing = false;
+            in property <DrawerEdge> side = DrawerEdge.right;
             drawer := Drawer {
                 open <=> root.showing;
                 edge: root.side;
@@ -8257,7 +8262,7 @@ fn drawer_checks_the_edge_and_its_open_link_in_mlir() {
 fn swipe_view_verifies_static_pages_and_its_index_link() {
     let source = r#"
         component App inherits Window {
-            in-out property <int> page: 0;
+            in-out property <int> page = 0;
             views := SwipeView {
                 current-index <=> root.page;
                 orientation: vertical;
@@ -8333,7 +8338,7 @@ fn swipe_view_accepts_one_repeated_page_with_component_content() {
 fn page_indicator_verifies_count_style_and_index_binding() {
     let source = r#"
         component App inherits Window {
-            in-out property <int> page: 0;
+            in-out property <int> page = 0;
             indicator := PageIndicator {
                 count: 8;
                 current-index <=> root.page;
@@ -8523,7 +8528,7 @@ fn stack_state_reads_are_typed_and_detect_initialization_cycles() {
     }
     let cross_component = r#"
         component Child inherits StackView {
-            in property <string> seed: "home";
+            in property <string> seed = "home";
             out property <int> level: root.depth;
             initial-page: root.seed;
             home := StackPage {}
@@ -8546,7 +8551,7 @@ fn stack_page_lifecycle_and_guards_are_verified_in_both_compilers() {
         component App inherits Window {
             out property <int> detail-index: detail.stack-index;
             out property <bool> detail-active: detail.active;
-            in-out property <bool> dirty: false;
+            in-out property <bool> dirty = false;
             nav := StackView {
                 initial-page: "home";
                 home := StackPage {}
@@ -8665,7 +8670,7 @@ fn exported_record_types_and_literals_resolve_through_import_aliases() {
     .unwrap();
     let source = r#"import { Data as Row, Details as Info } from "types.xr";
         export component App inherits Window {
-            in property <[Row]> rows: [Row { details: Info { label: "one" } }];
+            in property <[Row]> rows = [Row { details: Info { label: "one" } }];
             property <Info> info: Info { label: "two" };
             out property <Info> copy: Info { ..Info { ..root.info } };
             VerticalLayout { for item in root.rows : Text { text: item.details.label; } }
@@ -8756,7 +8761,7 @@ fn radio_group_has_focus_lowers_to_descendant_focus_and_allows_focus_commands() 
 fn radio_groups_accept_mixed_options_without_relaxing_tab_rules() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> optional: false;
+            in property <bool> optional = false;
             RadioGroup {
                 RadioButton { text: "Fixed"; }
                 if root.optional: RadioButton { text: "Extra"; }
@@ -8828,7 +8833,7 @@ fn virtual_views_can_be_instantiated_inside_component_delegates() {
 #[test]
 fn dialog_open_and_button_role_are_typed() {
     let source = r#"export component Confirm inherits Dialog {
-        in-out property <bool> showing: false;
+        in-out property <bool> showing = false;
         open <=> root.showing;
         accepted() => { }
         DialogButton { role: DialogRole.accept; }
@@ -8881,8 +8886,8 @@ fn multiline_edit_has_a_typed_wrap_and_edit_callback() {
 #[test]
 fn numeric_and_choice_controls_validate_bindings_and_events() {
     let source = r#"export component Demo inherits Window {
-        in-out property <int> quantity: 2;
-        in-out property <int> selection-index: 0;
+        in-out property <int> quantity = 2;
+        in-out property <int> selection-index = 0;
         spin := SpinBox { value <=> root.quantity; edited(value) => { root.quantity = value; } }
         picker := ComboBox { model: ["alpha"]; current-index <=> root.selection-index; selected(value) => {} }
     }"#;
@@ -8911,7 +8916,7 @@ fn numeric_and_choice_controls_validate_bindings_and_events() {
 #[test]
 fn slider_callbacks_and_progress_ratios_have_typed_mlir() {
     let source = r#"export component Demo inherits Window {
-        in-out property <float> level: 12;
+        in-out property <float> level = 12;
         adjustment := Slider {
             orientation: Orientation.vertical;
             value <=> root.level;
@@ -9003,7 +9008,7 @@ fn callback_calls_enforce_signatures_and_purity() {
     }
 
     let cross_instance_cycle = r#"component Child inherits Rectangle {
-        in property <int> input: 0;
+        in property <int> input = 0;
         pure callback value() -> int;
         value => { input }
     }
@@ -9109,12 +9114,12 @@ fn rejects_recursive_instances_and_cross_instance_binding_cycles() {
 fn component_links_verify_writable_matching_endpoints_and_alias_cycles() {
     let source = r#"
         component App inherits Window {
-            in-out property <string> shared: "host";
+            in-out property <string> shared = "host";
             left := Editor { draft <=> root.shared; }
             right := Editor { draft <=> left.draft; }
         }
         component Editor inherits Rectangle {
-            in-out property <string> draft: "child";
+            in-out property <string> draft = "child";
         }
     "#;
     let compiled = compile(source, "links.xr").unwrap();
@@ -9156,8 +9161,8 @@ fn component_links_verify_writable_matching_endpoints_and_alias_cycles() {
     );
     assert!(analyze(&read_only).unwrap_err().contains("read-only"));
     let mismatch = source.replace(
-        "in-out property <string> shared: \"host\"",
-        "property <int> shared: 1",
+        "in-out property <string> shared = \"host\"",
+        "property <int> shared = 1",
     );
     assert!(
         analyze(&mismatch)
@@ -9272,7 +9277,7 @@ fn callback_aliases_and_instance_handlers_share_a_verified_signature() {
 fn property_aliases_verify_controls_types_and_cycles() {
     let source = r#"export component Editor inherits Rectangle {
         in-out property <string> document <=> entry.text;
-        entry := LineEdit { text: "initial"; }
+        entry := LineEdit {}
     }"#;
     let compiled = compile(source, "aliases.xr").unwrap();
     assert!(compiled.mlir.contains("\"xr.control_read\""));
@@ -9292,22 +9297,18 @@ fn property_aliases_verify_controls_types_and_cycles() {
             .unwrap_err()
             .contains("property alias type mismatch")
     );
-    let cycle = source.replace("text: \"initial\"", "text <=> root.document");
+    let cycle = source.replace("LineEdit {}", "LineEdit { text <=> root.document; }");
     assert!(
         analyze(&cycle)
             .unwrap_err()
             .contains("cyclic property binding")
     );
-    let cycle = source.replace("text: \"initial\"", "text: root.document");
-    assert!(
-        analyze(&cycle)
-            .unwrap_err()
-            .contains("cyclic property binding")
-    );
+    let read_only = source.replace("LineEdit {}", "LineEdit { text: root.document; }");
+    assert!(analyze(&read_only).unwrap_err().contains("read-only"));
 
     let raw = lower(
         r#"component App inherits Window {
-        property <string> data: "value";
+        property <string> data = "value";
         property <string> alias <=> root.data;
     }"#,
         "aliases.xr",
@@ -9358,7 +9359,7 @@ fn alias_inputs_detect_duplicate_and_recursive_initializers_at_the_leaf() {
 #[test]
 fn mlir_roundtrip_preserves_typed_expressions_and_unicode() {
     let source = r#"export component App inherits Window {
-        in-out property <int> n: 2;
+        in-out property <int> n = 2;
         out property <float> scale: n + 0.5;
         title: "你好\n\"MLIR\"";
         width: 100px * scale;
@@ -9413,7 +9414,7 @@ fn multiple_components_forward_references_and_float_promotion() {
 #[test]
 fn gradient_stops_are_typed_and_verified_in_mlir() {
     let source = r#"export component Gallery inherits Window {
-        in property <color> accent: #123;
+        in property <color> accent = #123;
         property <brush> fill: @linear-gradient(-90deg, #000 20%, #fff, accent 80%);
         background: fill;
     }"#;
@@ -9491,7 +9492,7 @@ fn native_frontend_and_mlir_are_safe_to_call_from_multiple_threads() {
 #[test]
 fn markdown_literals_are_typed_in_mlir_and_compiled_to_static_style_ranges() {
     let source = r#"export component App inherits Window {
-        in property <styled-text> body: @markdown("**bold** `code`");
+        in property <styled-text> body = @markdown("**bold** `code`");
         StyledText { text: root.body; }
     }"#;
     let compiled = compile(source, "markdown.xr").unwrap();
@@ -9529,7 +9530,7 @@ fn markdown_literals_are_typed_in_mlir_and_compiled_to_static_style_ranges() {
 #[test]
 fn markdown_links_compile_with_a_typed_activation_handler() {
     let source = r#"export component App inherits Window {
-        out property <string> destination: "";
+        out property <string> destination = "";
         body := StyledText {
             text: @markdown("[**manual**](#docs)");
             link-color: #41a6e7;
@@ -9685,7 +9686,7 @@ fn animated_image_embeds_gif_frames_and_checks_read_only_playback_state() {
 #[test]
 fn image_clips_alignments_and_intrinsic_dimensions_are_typed_in_mlir() {
     let source = r#"export component Atlas inherits Window {
-        in property <image> atlas: @image-url("");
+        in property <image> atlas = @image-url("");
         out property <int> pixels: root.atlas.width * root.atlas.height;
         Image {
             source: root.atlas;
@@ -9739,7 +9740,7 @@ fn image_clips_alignments_and_intrinsic_dimensions_are_typed_in_mlir() {
 #[test]
 fn image_colorize_uses_typed_brushes_in_bindings_and_states() {
     let source = r#"export component Art inherits Window {
-        in property <bool> alternate: false;
+        in property <bool> alternate = false;
         icon := Image {
             source: @image-url("");
             colorize: #0af;
@@ -9777,7 +9778,7 @@ fn image_colorize_uses_typed_brushes_in_bindings_and_states() {
 fn composition_properties_have_typed_bindings_on_nodes_and_instances() {
     let source = r#"component Card inherits Rectangle { background: #024; }
     export component App inherits Window {
-        in property <bool> raised: true;
+        in property <bool> raised = true;
         panel := Rectangle {
             opacity: 0.5;
             z: 2;
@@ -9824,7 +9825,7 @@ fn composition_properties_have_typed_bindings_on_nodes_and_instances() {
 #[test]
 fn rectangle_shadows_keep_typed_brush_geometry_and_state_overrides() {
     let source = r#"export component Card inherits Window {
-        in property <bool> lifted: false;
+        in property <bool> lifted = false;
         panel := Rectangle {
             background: #fff;
             drop-shadow-color: #3154;
@@ -9882,7 +9883,7 @@ fn rectangle_shadows_keep_typed_brush_geometry_and_state_overrides() {
 #[test]
 fn rectangle_clip_is_a_typed_binding_and_state_override() {
     let source = r#"export component Demo inherits Window {
-        in property <bool> enabled-clip: false;
+        in property <bool> enabled-clip = false;
         mask := Rectangle { clip: root.enabled-clip; }
         states [ rounded when root.enabled-clip: { mask.clip: true; } ]
     }"#;
@@ -9912,7 +9913,7 @@ fn rectangle_clip_is_a_typed_binding_and_state_override() {
 fn transforms_are_typed_on_visual_nodes_instances_and_states() {
     let source = r#"component Tile inherits Rectangle { background: #234; }
     export component Demo inherits Window {
-        in property <bool> turned: false;
+        in property <bool> turned = false;
         tile := Rectangle {
             transform-rotation: 45;
             transform-scale: 125%;
@@ -10183,7 +10184,7 @@ fn table_edit_requests_check_types_purity_and_receiver() {
 fn table_history_controls_verify_types_receivers_and_dependency_cycles() {
     let source = r#"
         component Demo inherits Window {
-            in-out property <[string]> records: ["One"];
+            in-out property <[string]> records = ["One"];
             out property <bool> available: table.can-undo;
             callback revert();
             revert => { table.undo(); table.redo(); }
@@ -10217,8 +10218,8 @@ fn table_history_controls_verify_types_receivers_and_dependency_cycles() {
             "cyclic property binding",
         ),
         (
-            "records: [\"One\"]",
-            "records: table.can-redo ? [\"One\"] : [\"Two\"]",
+            "records = [\"One\"]",
+            "records = table.can-redo ? [\"One\"] : [\"Two\"]",
             "cyclic property binding",
         ),
     ] {
@@ -10249,7 +10250,7 @@ fn standard_table_editable_columns_require_a_writable_record_model() {
         struct Entry { stock: Stock }
         component App inherits Window {
             in-out property <[Entry]> records;
-            in property <bool> allow-edit: true;
+            in property <bool> allow-edit = true;
             table := StandardTableView {
                 model: root.records;
                 edit-on-typing: true;
@@ -10450,7 +10451,7 @@ fn sound_effect_verifies_nonvisual_bindings_and_playback_commands() {
 fn combo_submission_rules_are_typed_and_follow_the_draft() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> draft: "12,50";
+            in-out property <string> draft = "12,50";
             out property <bool> ready: amount.acceptable-input;
             amount := ComboBox {
                 editable: true;
@@ -10491,7 +10492,7 @@ fn combo_submission_rules_are_typed_and_follow_the_draft() {
 fn editing_finished_handler_is_typed_and_scoped_to_text_editors() {
     let source = r#"
         export component App inherits Window {
-            out property <string> saved: "";
+            out property <string> saved;
             notes := TextArea {
                 editing-finished(text, acceptable) => {
                     root.saved = acceptable ? text : "";
@@ -10592,8 +10593,8 @@ fn input_validity_is_a_typed_read_only_editor_property() {
 fn iso_time_helpers_and_popup_bounds_use_typed_ir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> text: "13:30:42";
-            in property <Time> latest: Time { hour: 17 };
+            in-out property <string> text = "13:30:42";
+            in property <Time> latest = Time { hour: 17 };
             out property <Time> typed: Times.parse-iso(root.text, root.latest);
             out property <bool> valid: Times.is-valid-iso(root.text) && Times.in-range(root.typed, Time { hour: 9 }, root.latest);
             out property <string> display: Times.format-iso(root.typed, false);
@@ -10640,10 +10641,10 @@ fn iso_time_helpers_and_popup_bounds_use_typed_ir() {
 fn date_parsing_and_availability_lower_with_typed_fallback_and_models() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> text: "2024-02-29";
-            in property <Date> minimum: Date { year: 2024, month: 2, day: 5 };
-            in property <Date> maximum: Date { year: 2024, month: 4, day: 15 };
-            in-out property <[Date]> unavailable: [Date { year: 2024, month: 2, day: 29 }];
+            in-out property <string> text = "2024-02-29";
+            in property <Date> minimum = Date { year: 2024, month: 2, day: 5 };
+            in property <Date> maximum = Date { year: 2024, month: 4, day: 15 };
+            in-out property <[Date]> unavailable = [Date { year: 2024, month: 2, day: 29 }];
             out property <Date> parsed: Dates.parse-iso(root.text, root.minimum);
             out property <bool> allowed: Dates.is-selectable(root.parsed, root.minimum, root.maximum, [6, 7], root.unavailable);
         }
@@ -10720,8 +10721,8 @@ fn calendar_ranges_expose_typed_highlight_bindings_and_day_cell_inputs() {
 fn date_month_models_and_fixed_month_grids_have_typed_ir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <Date> start: Date { year: 2024, month: 2, day: 29 };
-            in-out property <Date> end: Date { year: 2025, month: 3, day: 2 };
+            in-out property <Date> start = Date { year: 2024, month: 2, day: 29 };
+            in-out property <Date> end = Date { year: 2025, month: 3, day: 2 };
             out property <[Date]> months: Dates.months(root.start, root.end);
             out property <int> last-index: Dates.month-index(root.start, root.end, root.end);
             MonthGrid { fixed-month: true; display-month: root.start; }
@@ -10760,7 +10761,7 @@ fn date_month_models_and_fixed_month_grids_have_typed_ir() {
 fn date_lists_support_models_repeats_and_typed_calendar_bindings() {
     let source = r#"
         export component App inherits Window {
-            in-out property <[Date]> holidays: [Date { year: 2024, month: 2, day: 29 }];
+            in-out property <[Date]> holidays = [Date { year: 2024, month: 2, day: 29 }];
             out property <Date> first-holiday: Model.at(root.holidays, 0, Date { year: 2024, month: 1, day: 1 });
             pure callback echo([Date]) -> [Date];
             echo(dates) => { dates }
@@ -11005,7 +11006,7 @@ fn text_editing_commands_check_operand_types_and_read_only_targets() {
 fn text_selection_colors_are_bound_and_type_checked() {
     let source = r#"
         export component App inherits Window {
-            in-out property <color> ink: #ffe600;
+            in-out property <color> ink = #ffe600;
             LineEdit { selection-color: #603fa2; selected-text-color: root.ink; }
             TextArea { selection-color: #603fa2; selected-text-color: root.ink; }
             StyledText { selectable: true; selected-text-color: root.ink; }
@@ -11094,7 +11095,7 @@ fn persistent_selection_is_a_boolean_editor_binding() {
 fn editor_overwrite_and_select_word_are_checked() {
     let source = r#"
         export component Editor inherits Window {
-            in-out property <bool> overwrite: true;
+            in-out property <bool> overwrite = true;
             line := LineEdit { overwrite-mode: root.overwrite; }
             TextArea { overwrite-mode: true; }
             ComboBox { editable: true; overwrite-mode: root.overwrite; }
@@ -11136,7 +11137,7 @@ fn editor_overwrite_and_select_word_are_checked() {
 fn mouse_selection_mode_is_checked_in_source_and_mlir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <MouseSelectionMode> mode: MouseSelectionMode.words;
+            in-out property <MouseSelectionMode> mode = MouseSelectionMode.words;
             TextInput { mouse-selection-mode: root.mode; }
             LineEdit { mouse-selection-mode: characters; }
             TextEdit { mouse-selection-mode: caret; }
@@ -11184,7 +11185,7 @@ fn mouse_selection_mode_is_checked_in_source_and_mlir() {
 fn text_submission_status_is_read_only_and_cannot_feed_its_own_rule() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> code: "";
+            in-out property <string> code = "";
             entry := LineEdit {
                 minimum-length: 4;
                 submit-when: root.code != "0000";
@@ -11393,8 +11394,8 @@ fn list_selection_by_key_checks_model_field_and_control_mode() {
     let valid = r#"
         struct Record { id: int, text: string }
         export component App inherits Window {
-            in-out property <int> selection: -1;
-            in property <[Record]> records: [];
+            in-out property <int> selection = -1;
+            in property <[Record]> records = [];
             StandardListView {
                 current-key <=> root.selection;
                 row-key-field: "id";
@@ -11424,7 +11425,7 @@ fn key_navigation_has_typed_commands_and_read_only_selection_position() {
     let source = r#"
         struct Record { id: int, text: string }
         export component App inherits Window {
-            in property <[Record]> records: [];
+            in property <[Record]> records = [];
             out property <int> position: rows.selected-view-index;
             rows := StandardListView { model: root.records; row-key-field: "id"; }
             go := Button {
@@ -11465,7 +11466,7 @@ fn layout_direction_is_typed_on_windows_and_component_instances() {
     let source = r#"
         component Pair inherits HorizontalLayout { Text { text: "item"; } }
         export component App inherits Window {
-            in property <LayoutDirection> direction: right-to-left;
+            in property <LayoutDirection> direction = right-to-left;
             layout-direction: root.direction;
             Pair { layout-direction: left-to-right; }
         }
@@ -12639,7 +12640,7 @@ fn viewport_scissor_validates_rect_fields_and_only_affects_paint() {
     let text = r#"
         struct Region { x: length, y: length, width: length, height: length, enabled: bool }
         export component App inherits Window {
-            in-out property <Region> rect: Region { x: 0px, y: 0px, width: 80px, height: 40px, enabled: true };
+            in-out property <Region> rect = Region { x: 0px, y: 0px, width: 80px, height: 40px, enabled: true };
             SceneView3D { scissor-rect: root.rect; }
         }
     "#;
@@ -12672,7 +12673,7 @@ fn viewport_scissor_validates_rect_fields_and_only_affects_paint() {
 fn viewport_flags_are_typed_and_only_affect_paint() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> inspect: true;
+            in-out property <bool> inspect = true;
             SceneView3D {
                 depth-prepass: root.inspect;
                 debug-wireframe: root.inspect;
@@ -12709,7 +12710,7 @@ fn viewport_flags_are_typed_and_only_affect_paint() {
 fn viewport_oit_method_is_typed_and_only_affects_paint() {
     let input = r#"
         export component App inherits Window {
-            in-out property <string> method: "linked-list";
+            in-out property <string> method = "linked-list";
             SceneView3D { oit-method: root.method; }
         }
     "#;
@@ -12721,7 +12722,7 @@ fn viewport_oit_method_is_typed_and_only_affects_paint() {
             |line| line.contains("oit-method") && line.contains("xr.update_effect = \"paint\"")
         )
     );
-    let invalid = input.replace("<string> method: \"linked-list\"", "<float> method: 1.0");
+    let invalid = input.replace("<string> method = \"linked-list\"", "<float> method = 1.0");
     assert!(compile(&invalid, "oit-method.xr").is_err());
     let raw = lower(
         &invalid.replace("oit-method", "camera-yaw"),
@@ -12735,7 +12736,7 @@ fn viewport_oit_method_is_typed_and_only_affects_paint() {
 fn viewport_material_debug_is_typed_and_only_affects_paint() {
     let input = r#"
         export component App inherits Window {
-            in-out property <string> mode: "normals";
+            in-out property <string> mode = "normals";
             SceneView3D { material-debug: root.mode; }
         }
     "#;
@@ -12745,7 +12746,7 @@ fn viewport_material_debug_is_typed_and_only_affects_paint() {
     assert!(mlir.lines().any(
         |line| line.contains("material-debug") && line.contains("xr.update_effect = \"paint\"")
     ));
-    let invalid = input.replace("<string> mode: \"normals\"", "<float> mode: 1.0");
+    let invalid = input.replace("<string> mode = \"normals\"", "<float> mode = 1.0");
     assert!(compile(&invalid, "material-debug.xr").is_err());
     let raw = lower(
         &invalid.replace("material-debug", "camera-yaw"),
@@ -12759,7 +12760,7 @@ fn viewport_material_debug_is_typed_and_only_affects_paint() {
 fn viewport_shadow_precision_is_typed_and_only_affects_paint() {
     let text = r#"
         export component App inherits Window {
-            in-out property <string> precision: "depth16";
+            in-out property <string> precision = "depth16";
             SceneView3D { shadow-map-precision: root.precision; }
         }
     "#;
@@ -12773,7 +12774,10 @@ fn viewport_shadow_precision_is_typed_and_only_affects_paint() {
             .any(|line| line.contains("shadow-map-precision")
                 && line.contains("xr.update_effect = \"paint\""))
     );
-    let invalid = text.replace("<string> precision: \"depth16\"", "<float> precision: 1.0");
+    let invalid = text.replace(
+        "<string> precision = \"depth16\"",
+        "<float> precision = 1.0",
+    );
     let diagnostic = compile(&invalid, "shadow-precision.xr")
         .err()
         .expect("invalid precision type");
@@ -12811,4 +12815,53 @@ fn viewport_bake_quality_is_typed_in_source_and_mlir() {
             "{diagnostic}"
         );
     }
+}
+
+#[test]
+fn rejects_writes_and_links_to_formula_properties() {
+    for statement in [
+        r#"callback change(); change => { root.source = "changed"; }"#,
+        "in-out property <string> alias <=> root.source;",
+        "TextInput { text <=> root.source; }",
+    ] {
+        let source = format!(
+            r#"component App inherits Window {{
+                in-out property <string> source: "A";
+                {statement}
+            }}"#
+        );
+        let error = compile(&source, "formula.xr").err().unwrap();
+        assert!(error.contains("read-only"), "{error}");
+    }
+    for member in [
+        "in-out property <string> alias <=> child.source;",
+        r#"callback change(); change => { child.source = "changed"; }"#,
+    ] {
+        let source = format!(
+            r#"component Child inherits Rectangle {{ in-out property <string> source; }}
+                component App inherits Window {{
+                    child := Child {{ source: "A"; }}
+                    {member}
+                }}"#
+        );
+        let error = compile(&source, "parent-owned.xr").err().unwrap();
+        assert!(error.contains("read-only"), "{error}");
+    }
+}
+
+#[test]
+fn rust_api_only_exposes_writable_property_setters() {
+    let compilation = compile(
+        r#"export component App inherits Window {
+            in-out property <string> formula: "A";
+            in-out property <string> stored = root.formula;
+        }"#,
+        "setters.xr",
+    )
+    .unwrap();
+    let rust = compilation.rust.to_string();
+    assert!(rust.contains("pub fn get_formula"));
+    assert!(!rust.contains("pub fn set_formula"));
+    assert!(rust.contains("pub fn set_stored"));
+    assert!(!rust.contains("pub fn reset_stored"));
 }

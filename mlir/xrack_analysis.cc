@@ -53,6 +53,7 @@ PropertyOp PropertyAnalysis::resolve(ReadOp read) const {
 
 bool PropertyAnalysis::isImmutablePrivate(PropertyOp property) const {
   return property && property.getVisibility() == "private" &&
+         property.getMode().value_or("") != "once" &&
          property.getAlias().value_or("") != "true" &&
          !writes.contains(property);
 }

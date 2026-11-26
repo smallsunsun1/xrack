@@ -12,11 +12,11 @@ struct FadeActor {
 export component LodFadeDemo inherits Window {
     title: "XRack · LOD 平滑过渡";
     width: 320px; height: 304px; background: #182535;
-    in-out property <float> span: 2.4;
-    in-out property <bool> fade: true;
-    in-out property <bool> msaa: false;
-    in-out property <bool> reversed: false;
-    in-out property <int> detail: 1;
+    in-out property <float> span = 2.4;
+    in-out property <bool> fade = true;
+    in-out property <bool> msaa = false;
+    in-out property <bool> reversed = false;
+    in-out property <int> detail = 1;
     property <string> camera-name: root.detail == 0 ? "fine" : root.detail == 2 ? "coarse" : "adaptive";
 
     property <FadeActor> defaults: FadeActor {

@@ -690,6 +690,27 @@ rust_test(
 )
 
 xr_ui_library(
+    name = "property_ownership_ui",
+    src = "property_ownership.xr",
+)
+
+rust_test(
+    name = "property_ownership_test",
+    size = "small",
+    srcs = ["property_ownership_test.rs"],
+    compile_data = ["property_ownership.xr"],
+    edition = "2024",
+    deps = [
+        ":property_ownership_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
+    ],
+)
+
+xr_ui_library(
     name = "enum_payload_ui",
     src = "enum_payload.xr",
 )

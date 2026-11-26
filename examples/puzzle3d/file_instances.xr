@@ -14,18 +14,18 @@ export component FileInstancesDemo inherits Window {
     title: "XRack · File instance table";
     width: 580px; height: 354px;
     background: #172538;
-    in-out property <bool> binary: false;
-    in-out property <bool> authored: false;
-    in-out property <int> limit: -1;
-    in-out property <int> inspect-index: 2;
-    in-out property <float> offset: 0;
+    in-out property <bool> binary = false;
+    in-out property <bool> authored = false;
+    in-out property <int> limit = -1;
+    in-out property <int> inspect-index = 2;
+    in-out property <float> offset = 0;
     property <point2d> viewport: Point2D.new(580px, 282px);
     property <instancetable3d> unbound;
     property <InstanceRow> placement: InstanceRow {
         position: Point3D.new(0, 0, 0), scale: Vector3D.new(0.42, 0.42, 0.42),
         rotation: Vector3D.new(0, 0, 0), color: #ff0000, data-w: 0.5,
     };
-    property <[InstanceRow]> data-rows: [
+    property <[InstanceRow]> data-rows = [
         InstanceRow { position: Point3D.new(-2, 0, 0), ..root.placement },
         InstanceRow { scale: Vector3D.new(0.4, 0.6, 0.4), rotation: Vector3D.new(0, 0, 180),
             color: #00ff00, ..root.placement },

@@ -15,10 +15,10 @@ export component MaterialShaderDemo inherits Window {
     width: 634px; height: 385px; resizable: false;
     background: #1a2638;
 
-    in-out property <bool> surface-program: true;
-    in-out property <bool> trim-program: true;
-    in-out property <bool> cutout: false;
-    in-out property <float> intensity: 0.95;
+    in-out property <bool> surface-program = true;
+    in-out property <bool> trim-program = true;
+    in-out property <bool> cutout = false;
+    in-out property <float> intensity = 0.95;
     property <ProgramStyle> style: ProgramStyle {
         enabled: false, base-color: #fff, material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
         unlit: false, alpha-mode: "opaque", alpha-cutoff: 0.5,

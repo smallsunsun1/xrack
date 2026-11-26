@@ -19,31 +19,31 @@ export component ItemTextureDemo inherits Window {
     width: 600px; height: 389px; resizable: false;
     background: #172332;
 
-    in-out property <bool> active: false;
-    in-out property <bool> source-visible: true;
-    in-out property <bool> offscreen-only: false;
-    in-out property <bool> mipmaps: false;
-    in-out property <bool> fine-grid: false;
-    in-out property <bool> scroll-console: false;
-    in-out property <bool> accept-wheel: false;
-    in-out property <length> inner-offset: 0px;
-    in-out property <length> outer-offset: 0px;
-    in-out property <length> viewport-offset: 0px;
-    out property <int> wheel-events: 0;
+    in-out property <bool> active = false;
+    in-out property <bool> source-visible = true;
+    in-out property <bool> offscreen-only = false;
+    in-out property <bool> mipmaps = false;
+    in-out property <bool> fine-grid = false;
+    in-out property <bool> scroll-console = false;
+    in-out property <bool> accept-wheel = false;
+    in-out property <length> inner-offset = 0px;
+    in-out property <length> outer-offset = 0px;
+    in-out property <length> viewport-offset = 0px;
+    out property <int> wheel-events = 0;
     out property <length> wheel-x;
     out property <length> wheel-y;
     out property <length> wheel-delta;
-    in-out property <float> camera-height: 4.2;
-    in-out property <bool> duplicate: false;
-    in-out property <bool> input-enabled: true;
-    in-out property <bool> clip-right-panel: false;
-    in-out property <bool> source-enabled: true;
-    in-out property <bool> blocker: false;
-    in-out property <float> level: 16;
-    out property <int> activations: 0;
-    out property <int> downs: 0;
-    out property <int> ups: 0;
-    out property <int> cancels: 0;
+    in-out property <float> camera-height = 4.2;
+    in-out property <bool> duplicate = false;
+    in-out property <bool> input-enabled = true;
+    in-out property <bool> clip-right-panel = false;
+    in-out property <bool> source-enabled = true;
+    in-out property <bool> blocker = false;
+    in-out property <float> level = 16;
+    out property <int> activations = 0;
+    out property <int> downs = 0;
+    out property <int> ups = 0;
+    out property <int> cancels = 0;
     out property <length> contact-x;
     out property <length> contact-y;
 
@@ -52,11 +52,11 @@ export component ItemTextureDemo inherits Window {
         root.active = !root.active;
         root.activations += 1;
     }
-    in-out property <float> camera-turn: 0;
-    in-out property <length> panel-width: 174px;
-    in-out property <string> texture-name: "dashboard";
-    in-out property <int> mapping: 0;
-    in-out property <bool> sample-mips: true;
+    in-out property <float> camera-turn = 0;
+    in-out property <length> panel-width = 174px;
+    in-out property <string> texture-name = "dashboard";
+    in-out property <int> mapping = 0;
+    in-out property <bool> sample-mips = true;
 
     property <ScreenMaterial> finish: ScreenMaterial {
         base-color: #ffffff, unlit: true, alpha-mode: "blend",

@@ -1,9 +1,9 @@
 // RAW: "xr.mesh_lightmap_url"() <{value = "models/static.glb"}> : () -> !xr.string
 // RAW: "xr.mesh_lod_lightmap_url"() <{value = "models/static.glb"}> : () -> !xr.string
 // CHECK: %[[CHART:[0-9]+]] = "xr.mesh_lightmap_url"() <{value = "models/static.glb"}> : () -> !xr.string
-// CHECK: "xr.property"(%[[CHART]]) <{name = "chart", visibility = "out"}>
+// CHECK: "xr.property"(%[[CHART]]) <{mode = "formula", name = "chart", visibility = "out"}>
 // CHECK: %[[LOD:[0-9]+]] = "xr.mesh_lod_lightmap_url"() <{value = "models/static.glb"}> : () -> !xr.string
-// CHECK: "xr.property"(%[[LOD]]) <{name = "simplified", visibility = "out"}>
+// CHECK: "xr.property"(%[[LOD]]) <{mode = "formula", name = "simplified", visibility = "out"}>
 
 export component ChartAssets inherits Window {
     out property <string> chart: @mesh-url("models/static.glb", lightmap-uv);

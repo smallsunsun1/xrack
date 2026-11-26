@@ -1949,6 +1949,13 @@ fn table_history_method(key: &str, action: &str) -> Ident {
     format_ident!("__xr_table_history_{}_{}", action, rust_key(key))
 }
 
+fn has_read_only_binding(element: OperationRef<'_>, property: &str) -> bool {
+    element.children().any(|binding| {
+        matches!(binding.name(), "xr.bind" | "xr.state_set")
+            && binding.attribute("name") == Some(property)
+    })
+}
+
 fn viewport_bindings(element: OperationRef<'_>) -> impl Iterator<Item = &'static str> {
     ["content-x", "content-y"]
         .into_iter()
@@ -2597,6 +2604,7 @@ impl<'a> VisualScope<'a> {
 }
 
 struct Generator<'a> {
+    initialize_once: bool,
     component_name: &'a str,
     root_key: &'a str,
     alias_graphs: &'a BTreeMap<&'a str, AliasGraph<'a>>,
@@ -7648,6 +7656,8 @@ impl<'a> Generator<'a> {
             } else {
                 Ok(self.set_property(owner(read), read.attr("value")?, value))
             }
+        } else if has_read_only_binding(element, property) {
+            Ok(quote!(let _ = #value;))
         } else {
             let field = control_field(element_key(element)?, property);
             let ty = if viewport_bindings(element).any(|name| name == property) {
@@ -11444,7 +11454,10 @@ impl<'a> Generator<'a> {
         scope: &VisualScope<'_>,
     ) -> Result<TokenStream, String> {
         let key = element_key(element)?;
-        if scope.row_checks.contains_key(key) && control_link(element, "checked").is_none() {
+        if scope.row_checks.contains_key(key)
+            && control_link(element, "checked").is_none()
+            && !has_read_only_binding(element, "checked")
+        {
             let field = control_field(key, "checked");
             let storage = scope.receiver();
             Ok(quote!(#storage.#field.set_if_changed(__xr_checked);))
@@ -13785,7 +13798,7 @@ impl<'a> Generator<'a> {
                             __ui.__state.__binding_lifetime.track();
                             #parameters
                             ::core::option::Option::Some(#expression)
-                        })
+                        }).protect_binding()
                     })
                 }
             } else {
@@ -13855,7 +13868,7 @@ impl<'a> Generator<'a> {
                                 __ui.__state.__binding_lifetime.track();
                                 #parameters
                                 match #selected { #choices _ => ::core::option::Option::None }
-                            })
+                            }).protect_binding()
                         })
                     },
                 ),
@@ -14155,6 +14168,11 @@ impl<'a> Generator<'a> {
                 component.name()
             ));
         }
+        let allocate = if self.initialize_once {
+            format_ident!("__allocate")
+        } else {
+            format_ident!("__new")
+        };
         let component_name = component.attr("sym_name")?;
         let name = ident(component_name);
         let state = format_ident!("__State_{}", rust_name(component_name));
@@ -14192,6 +14210,11 @@ impl<'a> Generator<'a> {
         }
         let mut methods = self.loader_item_accessor()?;
         let mut viewport_initializers = TokenStream::new();
+        let mut once_initializers = TokenStream::new();
+        if self.initialize_once {
+            fields.extend(quote!(__once_initialized: ::std::cell::Cell<bool>,));
+            defaults.extend(quote!(__once_initialized: ::std::cell::Cell::new(false),));
+        }
         for (&owner, &selector) in &self.analysis.persistent_state_selectors {
             let field = state_selector_name(owner);
             let value = self.state_choice(selector, |condition| self.expr(condition))?;
@@ -14590,16 +14613,22 @@ impl<'a> Generator<'a> {
                 } else {
                     TokenStream::new()
                 };
+                let handle = quote!(#ty { __state: global.__state.clone(), __global_context: Some(registry) });
+                let handle = if self.initialize_once {
+                    quote!(let global = #handle; global.__finish_construction(); global)
+                } else {
+                    handle
+                };
                 methods.extend(quote! {
                     #[allow(non_snake_case)]
                     #public fn #method(&self) -> #ty {
                         let registry = #registry;
-                        let global = registry.#cell.get_or_init(|| #ty::__new(#inputs {
+                        let global = registry.#cell.get_or_init(|| #ty::#allocate(#inputs {
                             __globals: registry.clone(),
                             #locale
                             ..::core::default::Default::default()
                         }));
-                        #ty { __state: global.__state.clone(), __global_context: Some(registry) }
+                        #handle
                     }
                 });
             }
@@ -14609,10 +14638,19 @@ impl<'a> Generator<'a> {
             defaults.extend(quote!(__locale: __inputs.__locale.clone(),));
             input_fields.extend(quote!(__locale: ::xrack_runtime::LocaleBinding,));
             if component.attribute("global") != Some("true") {
+                let construct = if self.initialize_once {
+                    quote!(Self::__allocate(::core::default::Default::default()))
+                } else {
+                    quote!(Self::new())
+                };
+                let finish = self
+                    .initialize_once
+                    .then(|| quote!(component.__finish_construction();));
                 methods.extend(quote! {
                     pub fn new_with_locale(context: ::xrack_runtime::LocaleContext) -> Self {
-                        let component = Self::new();
+                        let component = #construct;
                         ::xrack_runtime::Component::set_locale_context(&component, context);
+                        #finish
                         component
                     }
                 });
@@ -14636,7 +14674,9 @@ impl<'a> Generator<'a> {
             let rust_type = ty(&value_type);
             let host_type = host_ty(&value_type);
             let expression = self.expr(init)?;
-            let writable = owner == "root" && matches!(visibility, "in" | "in-out");
+            let formula = property.attribute("mode") == Some("formula");
+            let once = property.attribute("mode") == Some("once");
+            let writable = owner == "root" && matches!(visibility, "in" | "in-out") && !formula;
             let write_method = property_method("write", owner, property_name);
             let reset_method = property_method("reset", owner, property_name);
             let mut shared_read = quote!(::std::rc::Rc::new(self.#getter()));
@@ -14651,7 +14691,7 @@ impl<'a> Generator<'a> {
                 {
                     let field = control_field(target, name);
                     (
-                        write_cached_property(&field, &quote!(value), Some(&value_type)),
+                        self.set_control_property(self.elements[target], name, &quote!(value))?,
                         quote!(self.__state.#field.reset();),
                     )
                 } else {
@@ -14669,7 +14709,8 @@ impl<'a> Generator<'a> {
                 (expression, write, clear)
             } else {
                 let incoming = self.forwarded_input((owner, property_name));
-                if writable || incoming.is_some() {
+                let has_input = writable || incoming.is_some();
+                if has_input {
                     fields.extend(quote!(#field: ::xrack_runtime::InputProperty<#rust_type>,));
                     let incoming = match (writable, incoming) {
                         (true, Some(aliases)) => quote!(__inputs.#field.take().or(#aliases)),
@@ -14677,17 +14718,40 @@ impl<'a> Generator<'a> {
                         (false, Some(aliases)) => aliases,
                         (false, None) => unreachable!(),
                     };
-                    defaults.extend(quote!(#field: (#incoming).unwrap_or_default(),));
+                    defaults
+                        .extend(quote!(#field: (#incoming).unwrap_or_default().protect_binding(),));
                 } else {
                     fields.extend(quote!(#field: ::xrack_runtime::Property<#rust_type>,));
                     defaults.extend(quote!(#field: ::core::default::Default::default(),));
                 }
+                let mut read = quote!(self.__state.#field.get(|| #expression));
                 shared_read = quote!(self.__state.#field.get_shared(|| #expression));
-                (
-                    quote!(self.__state.#field.get(|| #expression)),
-                    write_cached_property(&field, &quote!(value), Some(&value_type)),
-                    quote!(self.__state.#field.reset();),
-                )
+                if once {
+                    let seed = if has_input {
+                        let seed = format_ident!("__once_{}", field);
+                        fields.extend(quote!(#seed: ::xrack_runtime::Property<#rust_type>,));
+                        defaults.extend(quote!(#seed: ::core::default::Default::default(),));
+                        seed
+                    } else {
+                        field.clone()
+                    };
+                    let initial = quote!(self.__state.#seed.get_once(|| #expression));
+                    once_initializers.extend(quote!(let _ = #initial;));
+                    if has_input {
+                        read = quote!(self.__state.#field.get(|| #initial));
+                        shared_read = quote!(self.__state.#field.get_shared(|| #initial));
+                    } else {
+                        shared_read = quote!(::std::rc::Rc::new(#initial));
+                        read = initial;
+                    }
+                }
+                let write = if formula {
+                    quote!(let _ = value;)
+                } else {
+                    write_cached_property(&field, &quote!(value), Some(&value_type))
+                };
+                let clear = (!formula && !once).then(|| quote!(self.__state.#field.reset();));
+                (read, write, clear.unwrap_or_default())
             };
             if owner == "root" && value_type == Type::String {
                 let read = property_method("get_shared", owner, property_name);
@@ -14717,10 +14781,14 @@ impl<'a> Generator<'a> {
                     pub fn #setter(&mut self, value: #host_type) {
                         self.#write_method(#input);
                     }
-                    pub fn #reset(&mut self) {
-                        self.#reset_method();
-                    }
                 });
+                if !once {
+                    methods.extend(quote! {
+                        pub fn #reset(&mut self) {
+                            self.#reset_method();
+                        }
+                    });
+                }
                 if value_type.list_item().is_some() {
                     let bind_model = format_ident!("bind_model_{}", rust_name(property_name));
                     methods.extend(quote! {
@@ -14746,7 +14814,7 @@ impl<'a> Generator<'a> {
             let rust_type = ty(value_type);
             if let Some(input) = self.forwarded_input((key, property)) {
                 fields.extend(quote!(#field: ::xrack_runtime::InputProperty<#rust_type>,));
-                defaults.extend(quote!(#field: (#input).unwrap_or_default(),));
+                defaults.extend(quote!(#field: (#input).unwrap_or_default().protect_binding(),));
             } else {
                 fields.extend(quote!(#field: ::xrack_runtime::Property<#rust_type>,));
                 defaults.extend(quote!(#field: ::core::default::Default::default(),));
@@ -15763,11 +15831,43 @@ impl<'a> Generator<'a> {
                         #globals
                         ..::core::default::Default::default()
                     };
-                    ::xrack_runtime::LoaderChild::new(move || #component::__new(__xr_child_inputs))
+                    ::xrack_runtime::LoaderChild::new(move || #component::#allocate(__xr_child_inputs))
                 },
             });
+            if self.initialize_once {
+                once_initializers.extend(quote!(self.__state.#field.__initialize_once();));
+            }
             instance_routes.extend(quote!(#key => self.__state.#field.__dispatch(id, event),));
         }
+
+        let finalize_construction = self.initialize_once.then(|| quote! {
+            fn __new(__inputs: #inputs) -> Self {
+                let component = Self::__allocate(__inputs);
+                component.__finish_construction();
+                component
+            }
+
+            fn __finish_construction(&self) {
+                if let ::core::option::Option::Some(build) = ::xrack_runtime::LoaderBuild::current() {
+                    let weak = self.as_weak();
+                    build.complete(move || {
+                        if let ::core::option::Option::Some(component) = weak.upgrade() {
+                            component.__initialize_once();
+                        }
+                        Ok(())
+                    });
+                } else {
+                    self.__initialize_once();
+                }
+            }
+
+            fn __initialize_once(&self) {
+                if self.__state.__once_initialized.replace(true) {
+                    return;
+                }
+                #once_initializers
+            }
+        });
 
         for &(instance, repeat) in &self.instance_handlers {
             let owner = element_key(instance)?;
@@ -16393,7 +16493,9 @@ impl<'a> Generator<'a> {
                     )
                 }
 
-                fn __new(mut __inputs: #inputs) -> Self {
+                #finalize_construction
+
+                fn #allocate(mut __inputs: #inputs) -> Self {
                     let __component = Self {
                         #init_handle
                         __state: ::std::rc::Rc::new_cyclic(
@@ -18259,6 +18361,13 @@ fn generate_with_resources(
         properties: alias_graphs,
         callbacks: callback_graphs,
     } = AliasGraphs::from_module(module)?;
+    let mut pending: Vec<_> = module.operations().collect();
+    let initialize_once = std::iter::from_fn(|| {
+        let op = pending.pop()?;
+        pending.extend(op.children());
+        Some(op)
+    })
+    .any(|op| op.name() == "xr.property" && op.attribute("mode") == Some("once"));
     for op in module.operations().filter(|op| {
         !matches!(
             op.name(),
@@ -18275,6 +18384,7 @@ fn generate_with_resources(
             .next()
             .ok_or("component has no root element")?;
         let mut generator = Generator {
+            initialize_once,
             component_name: op.attr("sym_name")?,
             root_key: element_key(root)?,
             alias_graphs: &alias_graphs,

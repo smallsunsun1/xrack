@@ -4,14 +4,14 @@ export component MenuDemo inherits Window {
     height: 366px;
     background: #182331;
 
-    in-out property <bool> show-grid: false;
-    in-out property <bool> rtl: false;
-    in-out property <bool> grid-enabled: true;
-    in-out property <bool> dialog-open: false;
-    in-out property <string> new-shortcut: "Primary+N";
-    out property <int> background-clicks: 0;
-    out property <int> grid-activations: 0;
-    out property <string> command: "请选择一条命令";
+    in-out property <bool> show-grid = false;
+    in-out property <bool> rtl = false;
+    in-out property <bool> grid-enabled = true;
+    in-out property <bool> dialog-open = false;
+    in-out property <string> new-shortcut = "Primary+N";
+    out property <int> background-clicks = 0;
+    out property <int> grid-activations = 0;
+    out property <string> command = "请选择一条命令";
 
     grid-command := Action {
         text: "显示网格";
@@ -98,11 +98,11 @@ export component ButtonAppearanceDemo inherits Window {
     background: #182331;
     color-scheme: dark;
     accent-color: #f2a354;
-    in-out property <bool> emphasize: true;
-    in-out property <bool> flat-save: false;
-    in-out property <bool> save-enabled: true;
-    in-out property <bool> pinned: false;
-    out property <int> activations: 0;
+    in-out property <bool> emphasize = true;
+    in-out property <bool> flat-save = false;
+    in-out property <bool> save-enabled = true;
+    in-out property <bool> pinned = false;
+    out property <int> activations = 0;
 
     save := Button {
         x: 18px; y: 20px; width: 122px; height: 46px;
@@ -132,8 +132,8 @@ export component ButtonAppearanceDemo inherits Window {
 export component ButtonDisplayDemo inherits Window {
     title: "XRack · 按钮图标布局";
     width: 475px; height: 300px;
-    in-out property <bool> rtl: false;
-    out property <int> activations: 0;
+    in-out property <bool> rtl = false;
+    out property <int> activations = 0;
 
     grid := Action {
         text: "网格";
@@ -175,12 +175,12 @@ export component RoundToolbarDemo inherits Window {
     width: 480px; height: 280px;
     background: #182331;
     color-scheme: dark;
-    in-out property <bool> grid-enabled: true;
-    in-out property <bool> show-grid: false;
-    in property <length> corner-radius: 5px;
-    out property <int> activations: 0;
-    out property <int> underlying-clicks: 0;
-    out property <int> plain-clicks: 0;
+    in-out property <bool> grid-enabled = true;
+    in-out property <bool> show-grid = false;
+    in property <length> corner-radius = 5px;
+    out property <int> activations = 0;
+    out property <int> underlying-clicks = 0;
+    out property <int> plain-clicks = 0;
 
     grid := Action {
         text: "网格";
@@ -240,15 +240,15 @@ export component ActionGroupDemo inherits Window {
     height: 300px;
     background: #182331;
 
-    in-out property <string> mode: "detail";
-    in-out property <bool> modes-enabled: true;
-    in-out property <bool> compact-enabled: true;
-    in-out property <bool> show-grid: false;
-    in-out property <bool> show-guides: false;
+    in-out property <string> mode = "detail";
+    in-out property <bool> modes-enabled = true;
+    in-out property <bool> compact-enabled = true;
+    in-out property <bool> show-grid = false;
+    in-out property <bool> show-guides = false;
     out property <string> last-command;
     out property <string> mode-at-action;
-    out property <int> mode-activations: 0;
-    out property <int> overlay-activations: 0;
+    out property <int> mode-activations = 0;
+    out property <int> overlay-activations = 0;
 
     view-modes := ActionGroup {
         enabled: root.modes-enabled;
@@ -325,16 +325,16 @@ export component ShortcutDemo inherits Window {
     title: "XRack · 快捷键";
     width: 532px; height: 344px;
 
-    in-out property <bool> conflict: false;
-    in-out property <bool> command-enabled: true;
-    in-out property <bool> dialog-open: false;
-    in-out property <string> draft: "";
-    out property <int> commands: 0;
-    out property <int> window-hits: 0;
-    out property <int> dialog-hits: 0;
-    out property <int> focused-hits: 0;
-    out property <int> repeats: 0;
-    out property <int> conflicts: 0;
+    in-out property <bool> conflict = false;
+    in-out property <bool> command-enabled = true;
+    in-out property <bool> dialog-open = false;
+    in-out property <string> draft = "";
+    out property <int> commands = 0;
+    out property <int> window-hits = 0;
+    out property <int> dialog-hits = 0;
+    out property <int> focused-hits = 0;
+    out property <int> repeats = 0;
+    out property <int> conflicts = 0;
 
     palette-command := Action {
         text: "命令面板";

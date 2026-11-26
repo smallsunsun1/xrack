@@ -834,8 +834,32 @@ impl<'de> Deserialize<'de> for Type {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PropertyMode {
+    #[default]
+    Stored,
+    Formula,
+    Once,
+}
+
+impl PropertyMode {
+    pub fn is_stored(&self) -> bool {
+        *self == Self::Stored
+    }
+
+    pub fn mlir_name(self) -> Option<&'static str> {
+        match self {
+            Self::Stored => None,
+            Self::Formula => Some("formula"),
+            Self::Once => Some("once"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Property {
+    #[serde(default, skip_serializing_if = "PropertyMode::is_stored")]
+    pub mode: PropertyMode,
     pub name: String,
     pub ty: Type,
     #[serde(skip)]

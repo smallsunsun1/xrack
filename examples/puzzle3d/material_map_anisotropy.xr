@@ -12,8 +12,8 @@ struct MapActor {
 export component MaterialMapAnisotropyDemo inherits Window {
     title: "XRack · 材质贴图各向异性";
     width: 256px; height: 180px; background: #000;
-    in-out property <int> max-anisotropy: 1;
-    in-out property <bool> nearest: false;
+    in-out property <int> max-anisotropy = 1;
+    in-out property <bool> nearest = false;
 
     property <MapActor> unit: MapActor {
         id: "", mesh: "primitive:rectangle", color: #fff,

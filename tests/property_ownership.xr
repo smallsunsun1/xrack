@@ -1,0 +1,76 @@
+enum TitleMode {
+    Follow,
+    Custom(string),
+}
+
+component DocumentEditor inherits Rectangle {
+    in property <string> document-title;
+    out property <string> live-title: root.document-title;
+    private property <string> draft = root.document-title;
+    in-out property <string> editable-title <=> root.draft;
+    private property <TitleMode> title-mode = TitleMode::Follow;
+    out property <string> display-title: match root.title-mode {
+        Follow => root.document-title,
+        Custom(text) => text,
+    };
+
+    callback rename(string);
+    rename(text) => { root.title-mode = TitleMode::Custom(text); }
+    callback restore-default();
+    restore-default => { root.title-mode = TitleMode::Follow; }
+}
+
+component InputProbe inherits Rectangle {
+    in-out property <string> supplied;
+    callback attempt(string);
+    attempt(value) => { root.supplied = value; }
+}
+
+export component PropertyOwnership inherits Window {
+    in-out property <string> document-title = "A";
+    in-out property <length> offset = -10px;
+    out property <string> live-title: document.live-title;
+    out property <string> display-title: document.display-title;
+    out property <string> draft-title: document.editable-title;
+    out property <string> probe-title: probe.supplied;
+    out property <string> reported;
+    in-out property <string> draft <=> document.editable-title;
+
+    callback rename(string);
+    rename(text) => { document.rename(text); }
+    callback restore-default();
+    restore-default => { document.restore-default(); }
+    callback try-child-write(string);
+    try-child-write(text) => { probe.attempt(text); }
+
+    document := DocumentEditor { document-title: root.document-title; }
+    probe := InputProbe { supplied: root.document-title; }
+
+    fixed := TextEdit {
+        y: 20px;
+        width: 180px;
+        height: 30px;
+        text: root.document-title;
+        edited(text) => { root.reported = text; }
+    }
+    writable := TextInput {
+        y: 60px;
+        width: 180px;
+        height: 30px;
+        text <=> root.draft;
+    }
+    viewport := ScrollView {
+        y: 100px;
+        width: 180px;
+        height: 80px;
+        content-height: 300px;
+        content-y: root.offset;
+    }
+    linked-viewport := ScrollView {
+        y: 190px;
+        width: 180px;
+        height: 80px;
+        content-height: 300px;
+        content-y <=> root.offset;
+    }
+}

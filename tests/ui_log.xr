@@ -1,7 +1,7 @@
 export component LogDemo inherits Window {
-    in-out property <int> count: 0;
-    in-out property <LogLevel> diagnostic-level: LogLevel.debug;
-    in-out property <float> measurement: 2.5;
+    in-out property <int> count = 0;
+    in-out property <LogLevel> diagnostic-level = LogLevel.debug;
+    in-out property <float> measurement = 2.5;
     out property <int> rounded: Math.round(root.measurement);
     out property <int> constant-rounded: Math.round(-2.5);
     out property <float> pi: Math.pi;
@@ -24,10 +24,10 @@ export component LogDemo inherits Window {
 export struct BuiltinRow { label: string }
 
 export component BuiltinDemo inherits Window {
-    in-out property <float> sample: -2.5;
-    in-out property <string> input: "  中文👩‍💻é  ";
-    in-out property <[string]> names: ["one", "two"];
-    in-out property <[BuiltinRow]> rows: [BuiltinRow { label: "one" }];
+    in-out property <float> sample = -2.5;
+    in-out property <string> input = "  中文👩‍💻é  ";
+    in-out property <[string]> names = ["one", "two"];
+    in-out property <[BuiltinRow]> rows = [BuiltinRow { label: "one" }];
     out property <int> round-down: Math.floor(root.sample);
     out property <int> round-up: Math.ceil(root.sample);
     out property <float> minimum: Math.min(root.sample, -1);
@@ -47,11 +47,11 @@ export component BuiltinDemo inherits Window {
 }
 
 export component StandardLibraryDemo inherits Window {
-    in-out property <float> sample: 2;
-    in-out property <string> input: " 42 ";
-    in-out property <int> index: 0;
-    in-out property <[string]> names: ["one", "two"];
-    in-out property <[BuiltinRow]> rows: [BuiltinRow { label: "record" }];
+    in-out property <float> sample = 2;
+    in-out property <string> input = " 42 ";
+    in-out property <int> index = 0;
+    in-out property <[string]> names = ["one", "two"];
+    in-out property <[BuiltinRow]> rows = [BuiltinRow { label: "record" }];
 
     out property <float> magnitude: Math.sqrt(Math.pow(root.sample, 2) + Math.pow(3, 2));
     out property <float> trig: Math.sin(Math.to-radians(90)) + Math.cos(0) + Math.tan(0);
@@ -97,12 +97,12 @@ export component SignedZeroMath inherits Window {
 }
 
 export component SignedZeroProperties inherits Window {
-    in-out property <float> number: 0.0;
-    in-out property <length> extent: 0px;
-    in-out property <float> level <=> slider.value;
+    in-out property <float> number;
+    in-out property <length> extent;
+    in-out property <float> level;
     out property <string> display: Strings.format("{} {} {}", root.number, 1px / root.extent, root.level);
     out property <bool> equal: root.number == root.level && root.extent == 0px;
-    slider := Slider { minimum: -1; maximum: 1; value: 0.0; }
+    slider := Slider { minimum: -1; maximum: 1; value <=> root.level; }
     Text { text: root.display; }
 }
 
@@ -120,8 +120,8 @@ export component SplitHandleRetry inherits Window {
 }
 
 export component ConditionalFillSplit inherits Window {
-    in-out property <bool> show-center: true;
-    in property <string> saved-layout: "";
+    in-out property <bool> show-center = true;
+    in property <string> saved-layout = "";
     out property <string> layout: split.save-state();
     callback restore();
     restore => { split.restore-state(root.saved-layout); }
@@ -134,8 +134,8 @@ export component ConditionalFillSplit inherits Window {
 }
 
 export component LocalizedNumberDemo inherits Window {
-    in-out property <string> input: "1,5";
-    in-out property <int> decimals: 2;
+    in-out property <string> input = "1,5";
+    in-out property <int> decimals = 2;
     out property <float> parsed: I18n.parse-number(root.input, -99.0);
     out property <string> display: I18n.format-number(1234.5, root.decimals);
     out property <string> large-number: I18n.format-number(9007199254740993, 0);
@@ -143,7 +143,7 @@ export component LocalizedNumberDemo inherits Window {
 }
 
 export component DisplayRepeatCache inherits Window {
-    in-out property <[string]> items: ["B", "A"];
+    in-out property <[string]> items = ["B", "A"];
     pure callback describe(string) -> string;
     describe(value) => { value }
     for item[index] in root.items : Text {
@@ -152,8 +152,8 @@ export component DisplayRepeatCache inherits Window {
 }
 
 export component DateArithmeticDemo inherits Window {
-    in-out property <Date> selected-date: Date { year: 2024, month: 1, day: 31 };
-    in-out property <int> offset: 1;
+    in-out property <Date> selected-date = Date { year: 2024, month: 1, day: 31 };
+    in-out property <int> offset = 1;
 
     pure callback missing-date() -> Date;
     missing-date => { Date { year: 1970, month: 1, day: 1 } }

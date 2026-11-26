@@ -11,7 +11,7 @@ struct Actor {
 }
 export component InstanceQueryPlan inherits Window {
     in property <[Actor]> actors;
-    in property <int> address: 0;
+    in property <int> address = 0;
     out property <hit3d> orbit: Scene3D.hit-instance(
         root.actors, 0, 0, 8, Point2D.new(200px, 200px), Point2D.new(100px, 100px), 1, 2, root.address);
     out property <hit3d> camera: Scene3D.hit-instance-camera(

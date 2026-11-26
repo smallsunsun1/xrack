@@ -15,14 +15,14 @@ export component FogNoiseDemo inherits Window {
     width: 600px; height: 422px;
     resizable: false;
     background: #152437;
-    in-out property <bool> noise: true;
-    in-out property <bool> wind: false;
-    in-out property <bool> lit: true;
-    in-out property <bool> graded: true;
-    in-out property <bool> overlap: false;
-    in-out property <bool> reversed: false;
-    in-out property <float> drift: 0;
-    in-out property <int> density-samples: 36;
+    in-out property <bool> noise = true;
+    in-out property <bool> wind = false;
+    in-out property <bool> lit = true;
+    in-out property <bool> graded = true;
+    in-out property <bool> overlap = false;
+    in-out property <bool> reversed = false;
+    in-out property <float> drift = 0;
+    in-out property <int> density-samples = 36;
 
     wind-clock := Timer {
         interval: 34;

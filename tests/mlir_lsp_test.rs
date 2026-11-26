@@ -11,11 +11,11 @@ use xrack_compiler::{lower, mlir, parse};
 
 const URI: &str = "file:///xrack-test/generated.mlir";
 const SOURCE: &str = r#"component Child inherits Rectangle {
-    in-out property <int> count: 0;
+    in-out property <int> count = 0;
     callback bump();
 }
 component Host inherits Window {
-    in-out property <int> count: 1;
+    in-out property <int> count = 1;
     out property <int> observed: item.count + root.count;
     item := Child { count: root.count; }
     view := ScrollView { field := LineEdit {} }

@@ -1,7 +1,7 @@
 export component DamageDemo inherits Window {
-    in property <length> tile-x: 34px;
-    in property <bool> show-tile: true;
-    in property <bool> show-custom: false;
+    in property <length> tile-x = 34px;
+    in property <bool> show-tile = true;
+    in property <bool> show-custom = false;
 
     width: 320px;
     height: 200px;
@@ -53,9 +53,9 @@ export component DamageDemo inherits Window {
 }
 
 export component FixedCaptionDemo inherits Window {
-    in property <string> caption: "Ready";
-    in property <length> caption-width: 84px;
-    in property <length> caption-height: 24px;
+    in property <string> caption = "Ready";
+    in property <length> caption-width = 84px;
+    in property <length> caption-height = 24px;
 
     width: 320px;
     height: 200px;
@@ -74,7 +74,7 @@ export component MixedDamageDemo inherits Window {
     width: 400px;
     height: 240px;
     background: #18202b;
-    in property <[string]> rows: ["One", "Two", "Three", "Four"];
+    in property <[string]> rows = ["One", "Two", "Three", "Four"];
 
     Pane {
         width: 400px; height: 240px;

@@ -14,7 +14,7 @@ struct Actor {
 }
 
 export component SurfaceQuery inherits Window {
-    in-out property <[Actor]> scene: [];
+    in-out property <[Actor]> scene = [];
     out property <hit3d> hit: Scene3D.ray-hit(
         root.scene, Point3D.new(0, 0, 8), Vector3D.new(0, 0, -2), 40);
     out property <vector3d> normal: root.hit.normal;

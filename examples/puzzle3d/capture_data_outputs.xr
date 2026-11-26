@@ -15,8 +15,8 @@ struct CaptureDataEffect { shader: string, buffers: [CaptureDataInput] }
 export component CaptureDataOutputsDemo inherits Window {
     title: "XRack · 多附件材质数据";
     width: 240px; height: 142px; background: #000;
-    in-out property <bool> extra: false;
-    in-out property <bool> wide: false;
+    in-out property <bool> extra = false;
+    in-out property <bool> wide = false;
 
     property <CaptureDataActor> unit: CaptureDataActor {
         id: "", mesh: "primitive:box", color: #fff,

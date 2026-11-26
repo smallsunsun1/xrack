@@ -3,10 +3,10 @@ export component SoundDemo inherits Window {
     width: 400px;
     height: 310px;
 
-    in property <string> sound-source: "click.wav";
-    in-out property <bool> muted: false;
-    in-out property <bool> repeat-effect: false;
-    in property <int> loop-count: 1;
+    in property <string> sound-source = "click.wav";
+    in-out property <bool> muted = false;
+    in-out property <bool> repeat-effect = false;
+    in property <int> loop-count = 1;
     out property <bool> sound-ready: confirmation.ready;
     out property <bool> sound-playing: confirmation.playing;
     out property <string> sound-status: confirmation.status;

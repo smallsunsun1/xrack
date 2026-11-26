@@ -14,12 +14,12 @@ export component PhysicsKinematicDemo inherits Window {
     property <point3d> start: Point3D.new(-1.05, 0.9, 0);
     property <vector3d> pivot: Vector3D.new(-0.8, 0, 0);
     property <point3d> hinge: Point3D.new(root.start.x + root.pivot.x, root.start.y, root.start.z);
-    out property <int> arm: 0;
-    out property <int> sensor: 0;
-    out property <int> entries: 0;
-    out property <int> ticks: 0;
-    out property <float> target-yaw: 0;
-    in-out property <bool> running: false;
+    out property <int> arm = 0;
+    out property <int> sensor = 0;
+    out property <int> entries = 0;
+    out property <int> ticks = 0;
+    out property <float> target-yaw = 0;
+    in-out property <bool> running = false;
     out property <bool> controlled: Physics3D.is-kinematic(root.world, root.arm);
     out property <float> mass: Physics3D.mass(root.world, root.arm);
     out property <point3d> position: root.arm == 0 ? root.start : Physics3D.position(root.world, root.arm);

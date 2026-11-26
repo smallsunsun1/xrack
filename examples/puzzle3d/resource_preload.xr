@@ -14,11 +14,11 @@ struct PreloadActor {
 export component ResourcePreloadDemo inherits Window {
     title: "XRack · 3D 资源预加载";
     width: 480px; height: 300px; background: #182535;
-    in-out property <bool> warm: true;
-    in-out property <bool> show-gallery: false;
-    in-out property <int> detail: 0;
-    in-out property <bool> automatic: false;
-    in-out property <float> force-lod: -1;
+    in-out property <bool> warm = true;
+    in-out property <bool> show-gallery = false;
+    in-out property <int> detail = 0;
+    in-out property <bool> automatic = false;
+    in-out property <float> force-lod = -1;
 
     property <PreloadShape> shape: PreloadShape {
         shape: "", radius: 0.55, tube-radius: 0.17, segments: 24, rings: 16,

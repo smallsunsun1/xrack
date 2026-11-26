@@ -33,14 +33,14 @@ export component PhysicsRayDemo inherits Window {
         ProbeShape { shape: "box", position: Point3D.new(0, 0, 0.48), size: root.twin-size },
     ];
     property <[ProbeShape]> sweep-probe: root.mode == 2 ? root.twin-probe : root.sphere-probe;
-    in-out property <int> mode: 0;
-    out property <int> ledge-body: 0;
-    out property <int> sensor-body: 0;
-    out property <int> moving-body: 0;
-    out property <int> back-body: 0;
-    in-out property <bool> include-sensors: false;
-    in-out property <bool> group-only: false;
-    in-out property <bool> skip-moving: false;
+    in-out property <int> mode = 0;
+    out property <int> ledge-body = 0;
+    out property <int> sensor-body = 0;
+    out property <int> moving-body = 0;
+    out property <int> back-body = 0;
+    in-out property <bool> include-sensors = false;
+    in-out property <bool> group-only = false;
+    in-out property <bool> skip-moving = false;
     property <int> groups: root.group-only ? 2 : 4294967295;
     property <int> ignored: root.skip-moving ? root.moving-body : 0;
     property <physicshit3d> miss;

@@ -1,7 +1,7 @@
 import { CounterLabel } from "label.xr";
 
 export component Counter inherits Window {
-    in-out property <int> count: 0;
+    in-out property <int> count = 0;
     out property <int> doubled: root.count * 2;
     width: 240px; height: 120px;
     VerticalLayout {

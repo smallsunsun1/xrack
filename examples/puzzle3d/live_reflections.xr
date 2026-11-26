@@ -20,18 +20,18 @@ export component LiveReflectionsDemo inherits Window {
     resizable: false;
     background: #141d29;
 
-    in-out property <bool> warm: true;
-    in-out property <bool> casts: true;
-    in-out property <bool> receives: true;
-    in-out property <float> orbit: 0;
-    in-out property <float> probe-x: 0;
-    in-out property <float> probe-box-x: 0;
-    in-out property <bool> debug-view: false;
-    in-out property <bool> antialias: false;
-    in-out property <float> guide-resolution-scale: 1.0;
-    in-out property <int> revision: 0;
-    in-out property <string> refresh: "on-change";
-    in-out property <string> slicing: "none";
+    in-out property <bool> warm = true;
+    in-out property <bool> casts = true;
+    in-out property <bool> receives = true;
+    in-out property <float> orbit = 0;
+    in-out property <float> probe-x = 0;
+    in-out property <float> probe-box-x = 0;
+    in-out property <bool> debug-view = false;
+    in-out property <bool> antialias = false;
+    in-out property <float> guide-resolution-scale = 1.0;
+    in-out property <int> revision = 0;
+    in-out property <string> refresh = "on-change";
+    in-out property <string> slicing = "none";
     property <CaptureActor> defaults: CaptureActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,

@@ -10,15 +10,15 @@ export component InstancePickingDemo inherits Window {
     width: 640px; height: 374px;
     background: #1a2638;
 
-    in-out property <int> target-row: 1;
-    in-out property <int> target-node: 2;
-    in-out property <int> target-instance: 1;
-    in-out property <int> mask: 3;
-    in-out property <float> near: 0.1;
-    in-out property <float> distance-limit: -1;
-    in-out property <bool> covered: false;
-    in-out property <bool> pickable: true;
-    in-out property <point2d> pointer: Point2D.new(320px, 160px);
+    in-out property <int> target-row = 1;
+    in-out property <int> target-node = 2;
+    in-out property <int> target-instance = 1;
+    in-out property <int> mask = 3;
+    in-out property <float> near = 0.1;
+    in-out property <float> distance-limit = -1;
+    in-out property <bool> covered = false;
+    in-out property <bool> pickable = true;
+    in-out property <point2d> pointer = Point2D.new(320px, 160px);
     property <point2d> viewport: Point2D.new(640px, 320px);
     property <point3d> origin: Point3D.new(0, 0, 8);
     property <vector3d> direction: Vector3D.new(0, 0, -1);

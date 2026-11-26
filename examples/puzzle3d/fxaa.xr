@@ -9,14 +9,14 @@ export component FxaaDemo inherits Window {
     title: "XRack · FXAA";
     width: 384px; height: 242px; resizable: false;
     background: #3a6688;
-    in-out property <bool> smooth-edges: true;
-    in-out property <bool> multisample: false;
-    in-out property <bool> transparent: false;
-    in-out property <bool> coverage-only: false;
-    in-out property <bool> hdr: false;
-    in-out property <bool> float-output: false;
-    in-out property <bool> dithering: false;
-    in-out property <float> strength: 1;
+    in-out property <bool> smooth-edges = true;
+    in-out property <bool> multisample = false;
+    in-out property <bool> transparent = false;
+    in-out property <bool> coverage-only = false;
+    in-out property <bool> hdr = false;
+    in-out property <bool> float-output = false;
+    in-out property <bool> dithering = false;
+    in-out property <float> strength = 1;
 
     property <EdgeActor> panel: EdgeActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,

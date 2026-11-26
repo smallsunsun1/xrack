@@ -12,10 +12,10 @@ export component EffectBufferFormatsDemo inherits Window {
     width: 480px; height: 344px; resizable: false;
     background: #172332;
 
-    in-out property <string> buffer-format: "r8";
-    in-out property <bool> linear-filter: false;
-    in-out property <bool> precision-check: false;
-    in-out property <string> addressing: "clamp";
+    in-out property <string> buffer-format = "r8";
+    in-out property <bool> linear-filter = false;
+    in-out property <bool> precision-check = false;
+    in-out property <string> addressing = "clamp";
 
     property <vector3d> format-parameters: Vector3D.new(root.precision-check ? 1 : 0, 0, 0);
 

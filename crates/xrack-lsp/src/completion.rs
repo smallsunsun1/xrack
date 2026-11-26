@@ -1567,7 +1567,7 @@ fn member_head<'a, 't>(
     }
     let Some(binding) = previous
         .iter()
-        .position(|token| matches!(token.text, ":" | "<=>"))
+        .position(|token| matches!(token.text, ":" | "<=>" | "="))
     else {
         return head;
     };

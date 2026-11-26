@@ -1,9 +1,9 @@
 // RAW: value = "quaternion-look-rotation"
 // RAW: value = "quaternion-look-at"
 // CHECK: %[[IDENTITY:[0-9]+]] = "xr.literal"() <{value = "0 0 0 1"}> : () -> !xr.quaternion3d
-// CHECK: "xr.property"(%[[IDENTITY]]) <{name = "forward", visibility = "out"}>
-// CHECK: "xr.property"(%[[IDENTITY]]) <{name = "coincident", visibility = "out"}>
-// CHECK: "xr.property"(%[[IDENTITY]]) <{name = "aligned", visibility = "out"}>
+// CHECK: "xr.property"(%[[IDENTITY]]) <{mode = "formula", name = "forward", visibility = "out"}>
+// CHECK: "xr.property"(%[[IDENTITY]]) <{mode = "formula", name = "coincident", visibility = "out"}>
+// CHECK: "xr.property"(%[[IDENTITY]]) <{mode = "formula", name = "aligned", visibility = "out"}>
 // CHECK: "xr.geometry_function"{{.*}}value = "quaternion-look-at"
 // CHECK: "xr.property"{{.*}}name = "dynamic"
 

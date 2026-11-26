@@ -52,7 +52,7 @@ EXTENSION_FILES = (
 SAMPLE = """export component PreviewProbe inherits Window {
     width: 120px;
     height: 80px;
-    in-out property <int> count: 21;
+    in-out property <int> count = 21;
     out property <int> doubled: count * 2;
     Text { text: "Count: " + root.doubled; }
 }

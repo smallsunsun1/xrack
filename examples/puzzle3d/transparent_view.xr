@@ -25,14 +25,14 @@ export component TransparentViewDemo inherits Window {
     width: 600px; height: 354px; resizable: false;
     background: #172332;
 
-    in-out property <bool> alternate: false;
-    in-out property <bool> models-visible: true;
-    in-out property <bool> glass: false;
-    in-out property <bool> fog: false;
-    in-out property <bool> sky: false;
-    in-out property <string> clear-mode: "transparent";
-    in-out property <string> quality: "normal";
-    in-out property <string> camera-id: "eye";
+    in-out property <bool> alternate = false;
+    in-out property <bool> models-visible = true;
+    in-out property <bool> glass = false;
+    in-out property <bool> fog = false;
+    in-out property <bool> sky = false;
+    in-out property <string> clear-mode = "transparent";
+    in-out property <string> quality = "normal";
+    in-out property <string> camera-id = "eye";
 
     property <OverlaySurface> opaque: OverlaySurface {
         base-color: #ffe690, unlit: true, alpha-mode: "opaque",

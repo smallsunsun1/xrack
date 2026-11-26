@@ -11,16 +11,16 @@ struct Scissor { x: length, y: length, width: length, height: length, enabled: b
 export component InlineViewDemo inherits Window {
     title: "XRack · 窗口内联 3D";
     width: 408px; height: 292px; background: #192838;
-    in-out property <bool> inline: true;
-    in-out property <bool> msaa: false;
-    in-out property <bool> transparent: false;
-    in-out property <bool> dimmed: false;
-    in-out property <bool> second: false;
-    in-out property <bool> prepass: false;
-    in-out property <bool> scissored: false;
-    in-out property <bool> supersampled: false;
-    in-out property <bool> cached: false;
-    in-out property <length> scissor-width: 136px;
+    in-out property <bool> inline = true;
+    in-out property <bool> msaa = false;
+    in-out property <bool> transparent = false;
+    in-out property <bool> dimmed = false;
+    in-out property <bool> second = false;
+    in-out property <bool> prepass = false;
+    in-out property <bool> scissored = false;
+    in-out property <bool> supersampled = false;
+    in-out property <bool> cached = false;
+    in-out property <length> scissor-width = 136px;
 
     property <InlineActor> base: InlineActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,

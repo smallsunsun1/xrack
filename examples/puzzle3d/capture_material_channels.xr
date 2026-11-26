@@ -20,9 +20,9 @@ export component CaptureMaterialChannelsDemo inherits Window {
     title: "XRack · 延迟光照";
     width: 540px; height: 372px; resizable: false;
     background: #172437;
-    in-out property <float> light-x: -2;
-    in-out property <float> metalness: 0.25;
-    in-out property <bool> emission-only: false;
+    in-out property <float> light-x = -2;
+    in-out property <float> metalness = 0.25;
+    in-out property <bool> emission-only = false;
 
     property <SurfaceInput> base-input: SurfaceInput {
         capture: "surface", attachment: "base-color-metalness", filter: "nearest",

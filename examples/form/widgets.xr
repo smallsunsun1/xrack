@@ -1,6 +1,6 @@
 export component LabelCard inherits Rectangle {
-    in property <string> caption: "字段";
-    out property <int> activations: 0;
+    in property <string> caption = "字段";
+    out property <int> activations = 0;
     callback record;
     record => { root.activations += 1; }
     pure callback preview-text(string) -> string;
@@ -17,15 +17,15 @@ export component LabelCard inherits Rectangle {
 
 export component DateField inherits Rectangle {
     height: 40px;
-    in property <string> caption: "日期";
-    in property <Date> initial-date: Date { year: 1970, month: 1, day: 1 };
-    in property <Date> minimum-date: Date { year: 1, month: 1, day: 1 };
-    in property <Date> maximum-date: Date { year: 9999, month: 12, day: 31 };
-    in property <[int]> disabled-weekdays: [];
-    in property <[Date]> disabled-dates: [];
-    out property <Date> date: root.initial-date;
-    out property <string> draft-text: Dates.is-valid(root.initial-date) ? "" + root.initial-date : "";
-    private property <bool> picker-open: false;
+    in property <string> caption = "日期";
+    in property <Date> initial-date = Date { year: 1970, month: 1, day: 1 };
+    in property <Date> minimum-date = Date { year: 1, month: 1, day: 1 };
+    in property <Date> maximum-date = Date { year: 9999, month: 12, day: 31 };
+    in property <[int]> disabled-weekdays = [];
+    in property <[Date]> disabled-dates = [];
+    out property <Date> date = root.initial-date;
+    out property <string> draft-text = Dates.is-valid(root.initial-date) ? "" + root.initial-date : "";
+    private property <bool> picker-open = false;
     private property <Date> invalid-date: Date { year: 0, month: 1, day: 1 };
     private property <Date> draft-date: Dates.parse-iso(root.draft-text, root.invalid-date);
     out property <bool> acceptable-input: root.available(root.draft-date);
@@ -88,16 +88,16 @@ export component DateField inherits Rectangle {
 
 export component TimeField inherits Rectangle {
     height: 40px;
-    in property <string> caption: "时间";
-    in property <Time> initial-time: Time { hour: 0, minute: 0, second: 0 };
-    in property <Time> minimum-time: Time { hour: 0, minute: 0, second: 0 };
-    in property <Time> maximum-time: Time { hour: 23, minute: 59, second: 59 };
-    in property <bool> show-seconds: false;
-    in property <bool> use-24-hour-format: true;
-    out property <Time> time: root.initial-time;
-    private property <string> minute-text: Times.format-iso(root.initial-time, false);
-    private property <string> second-text: Times.format-iso(root.initial-time, true);
-    private property <bool> picker-open: false;
+    in property <string> caption = "时间";
+    in property <Time> initial-time = Time { hour: 0, minute: 0, second: 0 };
+    in property <Time> minimum-time = Time { hour: 0, minute: 0, second: 0 };
+    in property <Time> maximum-time = Time { hour: 23, minute: 59, second: 59 };
+    in property <bool> show-seconds = false;
+    in property <bool> use-24-hour-format = true;
+    out property <Time> time = root.initial-time;
+    private property <string> minute-text = Times.format-iso(root.initial-time, false);
+    private property <string> second-text = Times.format-iso(root.initial-time, true);
+    private property <bool> picker-open = false;
     out property <string> draft-text: root.show-seconds ? root.second-text : root.minute-text;
     private property <Time> parsed-time: Times.parse-iso(root.draft-text, root.time);
     private property <Time> draft-time: Time {

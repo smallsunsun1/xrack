@@ -24,21 +24,21 @@ export component ParticleAffectorsDemo inherits Window {
     width: 670px; height: 462px;
     background: #182333;
 
-    in-out property <string> field-kind: "attractor";
-    in-out property <bool> enabled-fields: true;
-    in-out property <bool> hide: false;
-    in-out property <bool> secondary: false;
-    in-out property <bool> reverse-order: false;
-    in-out property <float> time: 0.58;
-    in-out property <float> begin: 0.2;
-    in-out property <float> travel: 0.77;
-    in-out property <float> variation: 0;
-    in-out property <float> radius: 0.4;
-    in-out property <float> outer-radius: 2.2;
-    in-out property <float> strength: 2;
-    in-out property <int> layers: 1;
-    in-out property <int> visible-layers: 3;
-    in-out property <int> population: 480;
+    in-out property <string> field-kind = "attractor";
+    in-out property <bool> enabled-fields = true;
+    in-out property <bool> hide = false;
+    in-out property <bool> secondary = false;
+    in-out property <bool> reverse-order = false;
+    in-out property <float> time = 0.58;
+    in-out property <float> begin = 0.2;
+    in-out property <float> travel = 0.77;
+    in-out property <float> variation = 0;
+    in-out property <float> radius = 0.4;
+    in-out property <float> outer-radius = 2.2;
+    in-out property <float> strength = 2;
+    in-out property <int> layers = 1;
+    in-out property <int> visible-layers = 3;
+    in-out property <int> population = 480;
 
     property <Field3D> main-field: Field3D {
         affector-kind: root.field-kind, position: Point3D.new(0.65, 0.70, 0),
@@ -126,18 +126,18 @@ export component ParticleWavesDemo inherits Window {
     title: "XRack · 粒子游动与缩放";
     width: 624px; height: 406px; background: #182333;
 
-    in-out property <float> time: 0.5;
-    in-out property <bool> wander: true;
-    in-out property <bool> pulse: true;
-    in-out property <bool> attached: false;
-    in-out property <bool> trail: false;
-    in-out property <bool> model-particles: false;
-    in-out property <float> jitter: 0.3;
-    in-out property <int> population: 24;
-    in-out property <int> seed: 17;
-    in-out property <float> fade-out: 0.75;
-    in-out property <string> scale-mode: "triangle";
-    in-out property <string> scale-easing: "linear";
+    in-out property <float> time = 0.5;
+    in-out property <bool> wander = true;
+    in-out property <bool> pulse = true;
+    in-out property <bool> attached = false;
+    in-out property <bool> trail = false;
+    in-out property <bool> model-particles = false;
+    in-out property <float> jitter = 0.3;
+    in-out property <int> population = 24;
+    in-out property <int> seed = 17;
+    in-out property <float> fade-out = 0.75;
+    in-out property <string> scale-mode = "triangle";
+    in-out property <string> scale-easing = "linear";
     property <WaveField> defaults;
 
     property <FieldCamera> eye: FieldCamera {

@@ -11,18 +11,18 @@ export component DialogDemo inherits Window {
     height: 390px;
     background: #182331;
 
-    in-out property <bool> rename-open: false;
-    in-out property <bool> help-open: false;
-    in-out property <bool> outside-closes: true;
-    in-out property <string> draft: "项目笔记";
-    out property <string> saved: "项目笔记";
-    out property <int> accepted-count: 0;
-    out property <int> rejected-count: 0;
-    out property <int> background-clicks: 0;
-    in-out property <bool> drawer-open: false;
-    in-out property <DrawerEdge> drawer-edge: left;
-    out property <int> drawer-opens: 0;
-    out property <int> drawer-closes: 0;
+    in-out property <bool> rename-open = false;
+    in-out property <bool> help-open = false;
+    in-out property <bool> outside-closes = true;
+    in-out property <string> draft = "项目笔记";
+    out property <string> saved = "项目笔记";
+    out property <int> accepted-count = 0;
+    out property <int> rejected-count = 0;
+    out property <int> background-clicks = 0;
+    in-out property <bool> drawer-open = false;
+    in-out property <DrawerEdge> drawer-edge = left;
+    out property <int> drawer-opens = 0;
+    out property <int> drawer-closes = 0;
 
     VerticalLayout {
         padding: 16px;
@@ -101,19 +101,19 @@ export component StandardDialogDemo inherits Window {
     width: 620px; height: 380px;
     background: #182331;
 
-    in-out property <bool> settings-open: false;
-    in-out property <bool> show-editor: true;
-    in-out property <bool> danger-only: false;
-    in-out property <StandardButtonKind> preferred-kind: save;
-    in-out property <bool> save-enabled: true;
-    in-out property <string> draft: "工作区";
-    out property <string> saved: "工作区";
-    out property <int> accepts: 0;
-    out property <int> rejects: 0;
-    out property <int> applies: 0;
-    out property <int> resets: 0;
-    out property <int> helps: 0;
-    out property <int> discards: 0;
+    in-out property <bool> settings-open = false;
+    in-out property <bool> show-editor = true;
+    in-out property <bool> danger-only = false;
+    in-out property <StandardButtonKind> preferred-kind = save;
+    in-out property <bool> save-enabled = true;
+    in-out property <string> draft = "工作区";
+    out property <string> saved = "工作区";
+    out property <int> accepts = 0;
+    out property <int> rejects = 0;
+    out property <int> applies = 0;
+    out property <int> resets = 0;
+    out property <int> helps = 0;
+    out property <int> discards = 0;
 
     Text { x: 24px; y: 24px; text: "已保存 · " + root.saved; font-size: 22px; }
     Text { x: 24px; y: 62px; text: "确认 " + root.accepts + " · 取消 " + root.rejects + " · 丢弃 " + root.discards; }
@@ -152,13 +152,13 @@ export component PopupDemo inherits Window {
     width: 480px; height: 300px;
     background: #182331;
 
-    in-out property <bool> filters-open: false;
-    in-out property <bool> modal: false;
-    in-out property <bool> close-outside: true;
-    in-out property <string> query: "";
-    out property <int> opens: 0;
-    out property <int> closes: 0;
-    out property <int> background-clicks: 0;
+    in-out property <bool> filters-open = false;
+    in-out property <bool> modal = false;
+    in-out property <bool> close-outside = true;
+    in-out property <string> query = "";
+    out property <int> opens = 0;
+    out property <int> closes = 0;
+    out property <int> background-clicks = 0;
 
     background-action := Button {
         x: 24px; y: 24px; width: 165px; height: 44px;

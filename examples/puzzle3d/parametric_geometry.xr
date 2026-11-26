@@ -15,14 +15,14 @@ export component ParametricGeometryDemo inherits Window {
     title: "XRack · Parametric geometry";
     width: 600px; height: 372px; background: #192330;
 
-    in-out property <string> shape: "torus";
-    in-out property <float> radius: 0.9;
-    in-out property <int> resolution: 32;
-    in-out property <float> offset: 0.0;
-    in-out property <color> tint: #ec843f;
-    in-out property <bool> shadows: false;
-    in-out property <bool> duplicate: false;
-    in-out property <bool> auxiliary: false;
+    in-out property <string> shape = "torus";
+    in-out property <float> radius = 0.9;
+    in-out property <int> resolution = 32;
+    in-out property <float> offset = 0.0;
+    in-out property <color> tint = #ec843f;
+    in-out property <bool> shadows = false;
+    in-out property <bool> duplicate = false;
+    in-out property <bool> auxiliary = false;
 
     property <ShapeSpec> input: ShapeSpec {
         shape: root.shape, width: 2.2, height: 2.25, depth: 0.75,

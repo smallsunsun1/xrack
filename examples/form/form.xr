@@ -9,13 +9,13 @@ export component FileDialogDemo inherits Window {
     title: "XRack · 系统文件对话框";
     width: 548px; height: 286px;
 
-    in-out property <string> start-directory: "";
-    in-out property <FileDialogMode> mode: FileDialogMode.open-file;
+    in-out property <string> start-directory = "";
+    in-out property <FileDialogMode> mode = FileDialogMode.open-file;
     out property <[string]> paths: picker.selected-files;
     out property <string> first-path: picker.selected-file;
     out property <bool> pending: picker.pending;
-    out property <string> callback-path: "";
-    out property <string> status: "请选择一个操作";
+    out property <string> callback-path = "";
+    out property <string> status = "请选择一个操作";
 
     callback choose(next: FileDialogMode);
     choose(next) => { root.mode = next; picker.open(); }
@@ -62,11 +62,11 @@ export component MessageDialogDemo inherits Window {
     title: "XRack · 系统消息对话框";
     width: 490px; height: 206px;
 
-    in-out property <bool> confirm-enabled: true;
-    out property <int> accepts: 0;
-    out property <int> rejects: 0;
-    out property <StandardButtonKind> answer: StandardButtonKind.cancel;
-    out property <string> status: "请选择一个操作";
+    in-out property <bool> confirm-enabled = true;
+    out property <int> accepts = 0;
+    out property <int> rejects = 0;
+    out property <StandardButtonKind> answer = StandardButtonKind.cancel;
+    out property <string> status = "请选择一个操作";
 
     callback ask;
     ask => { confirmation.open(); }
@@ -111,10 +111,10 @@ export component CloseGuardDemo inherits Window {
     title: "XRack · 草稿窗口";
     width: 510px; height: 318px;
 
-    in-out property <bool> dirty: false;
-    in-out property <string> draft: "";
-    out property <string> status: "输入一些文字，再试着关闭窗口";
-    out property <int> requests: 0;
+    in-out property <bool> dirty = false;
+    in-out property <string> draft = "";
+    out property <string> status = "输入一些文字，再试着关闭窗口";
+    out property <int> requests = 0;
     callback close-from-rust;
     callback ask-discard() -> bool;
     ask-discard() => { discard.open(); false }
@@ -157,8 +157,8 @@ export component BidiEditorDemo inherits Window {
     title: "XRack · 双向文字编辑";
     width: 520px;
     height: 300px;
-    in-out property <string> line: "Order אבג 123 — مرحبا";
-    in-out property <string> document: "Order אבג 123 — مرحبا\nעברית 45 text — العربية";
+    in-out property <string> line = "Order אבג 123 — مرحبا";
+    in-out property <string> document = "Order אבג 123 — مرحبا\nעברית 45 text — العربية";
 
     VerticalLayout {
         padding: 16px; spacing: 10px;
@@ -183,8 +183,8 @@ export component EditorCommandsDemo inherits Window {
     title: "XRack · 编辑命令";
     width: 620px;
     height: 240px;
-    in property <bool> locked: false;
-    in-out property <string> document: "任务：在这里编辑文本";
+    in property <bool> locked = false;
+    in-out property <string> document = "任务：在这里编辑文本";
     callback select-prefix;
     select-prefix => { entry.focus(); entry.set-selection-offsets(0, 9); }
     callback paste-selected;
@@ -220,9 +220,9 @@ export component EditorMenuDemo inherits Window {
     title: "XRack · 编辑器右键菜单";
     width: 540px; height: 420px;
     background: #182331;
-    in-out property <string> document: "Select a word, then right-click";
-    in-out property <int> quantity: 42;
-    out property <int> custom-actions: 0;
+    in-out property <string> document = "Select a word, then right-click";
+    in-out property <int> quantity = 42;
+    out property <int> custom-actions = 0;
 
     VerticalLayout {
         padding: 16px; spacing: 8px;
@@ -241,12 +241,12 @@ export component EditorMenuDemo inherits Window {
 }
 
 export component FormDemo inherits Window {
-    in-out property <string> query: "";
-    out property <int> edits: 0;
-    out property <int> submissions: 0;
-    out property <int> last-result: 0;
-    in-out property <[string]> suggestions: ["设计系统", "构建工具", "文本编辑", "组件组合", "GPU 绘制"];
-    in-out property <bool> show-suggestions: true;
+    in-out property <string> query = "";
+    out property <int> edits = 0;
+    out property <int> submissions = 0;
+    out property <int> last-result = 0;
+    in-out property <[string]> suggestions = ["设计系统", "构建工具", "文本编辑", "组件组合", "GPU 绘制"];
+    in-out property <bool> show-suggestions = true;
     callback result-length(value: int) -> int;
     result-length(value) => { value + root.submissions }
     callback record-submit;
@@ -339,11 +339,11 @@ export component DateFieldDemo inherits Window {
     height: 464px;
     background: #162034;
 
-    in-out property <[Date]> closed-dates: [Date { year: 2024, month: 2, day: 29 }];
+    in-out property <[Date]> closed-dates = [Date { year: 2024, month: 2, day: 29 }];
     out property <Date> committed-date: booking.date;
     out property <string> draft: booking.draft-text;
     out property <bool> acceptable: booking.acceptable-input;
-    out property <int> commits: 0;
+    out property <int> commits = 0;
 
     Label { x: 24px; y: 18px; text: "预约日期"; font-size: 20px; }
     booking := DateField {
@@ -377,12 +377,12 @@ export component TimeFieldDemo inherits Window {
     height: 440px;
     background: #162034;
 
-    in-out property <bool> show-seconds: false;
-    in-out property <Time> latest: Time { hour: 17, minute: 0, second: 0 };
+    in-out property <bool> show-seconds = false;
+    in-out property <Time> latest = Time { hour: 17, minute: 0, second: 0 };
     out property <Time> committed-time: appointment.time;
     out property <string> draft: appointment.draft-text;
     out property <bool> acceptable: appointment.acceptable-input;
-    out property <int> commits: 0;
+    out property <int> commits = 0;
 
     Label { x: 24px; y: 18px; text: "预约时间"; font-size: 20px; }
     appointment := TimeField {
@@ -414,9 +414,9 @@ export component EditorInsetsDemo inherits Window {
     width: 432px;
     height: 350px;
 
-    in-out property <bool> spacious: true;
-    in-out property <color> hint: #ffb554;
-    in-out property <string> account: "";
+    in-out property <bool> spacious = true;
+    in-out property <color> hint = #ffb554;
+    in-out property <string> account = "";
 
     account-field := LineEdit {
         x: 24px; y: 42px; width: 384px; height: 64px;
@@ -460,11 +460,11 @@ export component PasswordDemo inherits Window {
     height: 254px;
     background: #162034;
 
-    in-out property <string> secret: "";
-    in-out property <bool> reveal: false;
-    in-out property <string> mask-character: "•";
-    in-out property <bool> briefly-reveal: false;
-    out property <int> submissions: 0;
+    in-out property <string> secret = "";
+    in-out property <bool> reveal = false;
+    in-out property <string> mask-character = "•";
+    in-out property <bool> briefly-reveal = false;
+    out property <int> submissions = 0;
 
     Text { x: 24px; y: 18px; text: "密码输入"; font-size: 22px; }
     passphrase := LineEdit {
@@ -502,12 +502,12 @@ export component ValidationDemo inherits Window {
     height: 338px;
     background: #162034;
 
-    in-out property <string> code: "12";
-    in-out property <string> amount: "";
-    in-out property <string> note: "";
-    in-out property <int> note-limit: 6;
-    out property <int> amount-edits: 0;
-    out property <string> submitted-amount: "";
+    in-out property <string> code = "12";
+    in-out property <string> amount = "";
+    in-out property <string> note = "";
+    in-out property <int> note-limit = 6;
+    out property <int> amount-edits = 0;
+    out property <string> submitted-amount = "";
 
     Text { x: 24px; y: 16px; text: "表单输入限制"; font-size: 22px; }
     code-field := LineEdit {
@@ -547,12 +547,12 @@ export component SubmissionValidationDemo inherits Window {
     width: 420px; height: 300px;
     background: #162034;
 
-    in-out property <string> code: "";
-    in-out property <string> note: "";
-    in-out property <bool> accepting: true;
+    in-out property <string> code = "";
+    in-out property <string> note = "";
+    in-out property <bool> accepting = true;
     out property <bool> can-send: entry.acceptable-input;
     out property <bool> note-ready: note-field.acceptable-input;
-    out property <int> submissions: 0;
+    out property <int> submissions = 0;
 
     callback submit();
     submit => { root.submissions += 1; }
@@ -591,13 +591,13 @@ export component NumericValidationDemo inherits Window {
     width: 440px; height: 260px;
     background: #162034;
 
-    in-out property <string> draft: "";
-    in-out property <InputType> mode: decimal;
-    in-out property <float> lower: -20.50;
-    in-out property <float> upper: 100.25;
-    in-out property <int> fraction-digits: 2;
+    in-out property <string> draft = "";
+    in-out property <InputType> mode = decimal;
+    in-out property <float> lower = -20.50;
+    in-out property <float> upper = 100.25;
+    in-out property <int> fraction-digits = 2;
     out property <bool> can-submit: field.acceptable-input;
-    out property <string> submitted: "";
+    out property <string> submitted = "";
 
     VerticalLayout {
         padding: 24px;
@@ -628,12 +628,12 @@ export component InputMaskDemo inherits Window {
     width: 440px; height: 320px;
     background: #162034;
 
-    in-out property <string> date: "";
-    in-out property <string> device: "";
-    in-out property <string> date-mask: "9999-99-99";
+    in-out property <string> date = "";
+    in-out property <string> device = "";
+    in-out property <string> date-mask = "9999-99-99";
     out property <bool> date-ready: date-field.acceptable-input;
     out property <bool> device-ready: device-field.acceptable-input;
-    out property <string> submitted: "";
+    out property <string> submitted = "";
 
     VerticalLayout {
         padding: 24px;
@@ -667,12 +667,12 @@ export component EditingLifecycleDemo inherits Window {
     width: 488px; height: 386px;
     background: #162034;
 
-    in-out property <string> code: "";
-    in-out property <string> note: "";
-    out property <int> finishes: 0;
-    out property <int> accepts: 0;
-    out property <string> trace: "";
-    out property <string> last-result: "";
+    in-out property <string> code = "";
+    in-out property <string> note = "";
+    out property <int> finishes = 0;
+    out property <int> accepts = 0;
+    out property <string> trace = "";
+    out property <string> last-result = "";
     callback finish(string, bool);
 
     finish(text, acceptable) => {
@@ -723,10 +723,10 @@ export component EditorSelectionDemo inherits Window {
     width: 456px; height: 330px;
     background: #162034;
 
-    in-out property <string> document: "任务：é👩‍💻";
-    in-out property <bool> concealed: false;
-    in-out property <bool> overwrite: false;
-    in-out property <MouseSelectionMode> mouse-mode: MouseSelectionMode.characters;
+    in-out property <string> document = "任务：é👩‍💻";
+    in-out property <bool> concealed = false;
+    in-out property <bool> overwrite = false;
+    in-out property <MouseSelectionMode> mouse-mode = MouseSelectionMode.characters;
     out property <int> caret: entry.cursor-offset;
     out property <int> selection-start: entry.selection-start-offset;
     out property <int> selection-end: entry.selection-end-offset;
@@ -779,12 +779,12 @@ export component PersistentSelectionDemo inherits Window {
     title: "XRack · 保留文本选区";
     width: 480px; height: 264px;
     background: #162034;
-    in-out property <string> document: "éclair 和猫";
-    in-out property <bool> retain: true;
+    in-out property <string> document = "éclair 和猫";
+    in-out property <bool> retain = true;
     out property <string> selected: entry.selected-text;
     out property <int> selection-start: entry.selection-start-offset;
     out property <int> selection-end: entry.selection-end-offset;
-    out property <string> recorded: "";
+    out property <string> recorded = "";
     entry := TextArea {
         x: 20px; y: 16px; width: 440px; height: 104px;
         accessible-name: "正文";
@@ -821,12 +821,12 @@ export component LongTextSelectionDemo inherits Window {
     title: "XRack · 滚动选取长文本";
     width: 496px; height: 342px;
     background: #162034;
-    in-out property <MouseSelectionMode> mouse-mode: MouseSelectionMode.characters;
+    in-out property <MouseSelectionMode> mouse-mode = MouseSelectionMode.characters;
     out property <string> selected: entry.selected-text;
     out property <string> line-selected: single-line.selected-text;
-    in-out property <string> line:
+    in-out property <string> line =
         "Project Atlas • éclair 👩‍💻 • Select across a long line and keep the pointer held past the edge • Displayed scroll follows the selection";
-    in-out property <string> document:
+    in-out property <string> document =
         "01  Project Atlas    Review: éclair emoji 👩‍💻 and Unicode in a long source line\n"
         + "02  Project Atlas    Design review and integration tests across the desktop backend\n"
         + "03  Project Atlas    Release artifacts and the nightly preview are ready for check\n"
@@ -880,8 +880,8 @@ export component SelectionColorsDemo inherits Window {
     title: "XRack · 文字选区配色";
     width: 496px; height: 316px;
     background: #142035;
-    in-out property <color> highlight: #7046bf;
-    in-out property <color> selected-ink: #ffeb9a;
+    in-out property <color> highlight = #7046bf;
+    in-out property <color> selected-ink = #ffeb9a;
 
     LineEdit {
         x: 20px; y: 20px; width: 456px; height: 38px;
@@ -926,9 +926,9 @@ export component TextOperationsDemo inherits Window {
     title: "XRack · 程序化文本编辑";
     width: 520px; height: 238px;
     background: #142035;
-    in-out property <string> document: "éclair 👩‍💻";
-    in-out property <string> date: "2026-11-17";
-    out property <string> edits: "";
+    in-out property <string> document = "éclair 👩‍💻";
+    in-out property <string> date = "2026-11-17";
+    out property <string> edits = "";
 
     body := LineEdit {
         x: 20px; y: 18px; width: 480px; height: 36px;
@@ -977,11 +977,11 @@ export component PatternValidationDemo inherits Window {
     title: "XRack · 正则输入校验";
     width: 488px; height: 224px;
     background: #142035;
-    in-out property <string> code: "";
-    in-out property <string> pattern: "[A-Z]{2}-[0-9]{3}";
+    in-out property <string> code = "";
+    in-out property <string> pattern = "[A-Z]{2}-[0-9]{3}";
     out property <bool> ready: field.acceptable-input;
     out property <InputValidity> validation: field.input-validity;
-    out property <int> submissions: 0;
+    out property <int> submissions = 0;
 
     Label {
         x: 20px; y: 18px; width: 448px;
@@ -1021,15 +1021,15 @@ export component DragDropDemo inherits Window {
     title: "XRack · 拖放";
     width: 560px; height: 258px;
     background: #141d2c;
-    in-out property <string> payload: "XR-42";
-    in-out property <bool> source-enabled: true;
-    in-out property <bool> target-enabled: true;
-    in-out property <bool> card-present: true;
-    out property <int> clicks: 0;
-    out property <string> received: "";
-    out property <string> trace: "";
-    out property <DragAction> result: DragAction.none;
-    out property <length> last-x: 0px;
+    in-out property <string> payload = "XR-42";
+    in-out property <bool> source-enabled = true;
+    in-out property <bool> target-enabled = true;
+    in-out property <bool> card-present = true;
+    out property <int> clicks = 0;
+    out property <string> received = "";
+    out property <string> trace = "";
+    out property <DragAction> result = DragAction.none;
+    out property <length> last-x = 0px;
 
     Label {
         x: 24px; y: 24px;
@@ -1090,7 +1090,7 @@ export component DragDropDemo inherits Window {
 
 component DragInboxRow inherits DropArea {
     in property <string> title;
-    property <string> received: "";
+    property <string> received = "";
     keys: ["inventory"];
     dropped(data, action) => { root.received = data; }
     Label { text: root.title + ":" + root.received; }
@@ -1098,7 +1098,7 @@ component DragInboxRow inherits DropArea {
 
 export component VirtualDragDemo inherits Window {
     width: 360px; height: 180px;
-    in-out property <[string]> items: ["old", "new"];
+    in-out property <[string]> items = ["old", "new"];
     source := DragArea {
         x: 12px; y: 12px; width: 128px; height: 54px;
         data: "ticket"; drag-key: "inventory"; allow-copy: true;
@@ -1114,13 +1114,13 @@ export component VirtualDragDemo inherits Window {
 export component FileDropDemo inherits Window {
     title: "XRack · 拖入文件";
     width: 536px; height: 310px;
-    in-out property <bool> images-enabled: true;
-    out property <[string]> paths: [];
-    out property <[string]> preview: [];
-    out property <int> batches: 0;
-    out property <string> zone: "";
-    out property <string> failure: "";
-    private property <string> hovered-zone: "";
+    in-out property <bool> images-enabled = true;
+    out property <[string]> paths = [];
+    out property <[string]> preview = [];
+    out property <int> batches = 0;
+    out property <string> zone = "";
+    out property <string> failure = "";
+    private property <string> hovered-zone = "";
     VerticalLayout {
         padding: 24px;
         spacing: 12px;
@@ -1203,9 +1203,9 @@ export component TextAlignmentDemo inherits Window {
     width: 500px; height: 300px;
     background: #162034;
 
-    in-out property <LayoutDirection> direction: right-to-left;
-    in-out property <string> line: "abc";
-    in-out property <string> notes: "abc\nxyz";
+    in-out property <LayoutDirection> direction = right-to-left;
+    in-out property <string> line = "abc";
+    in-out property <string> notes = "abc\nxyz";
     out property <int> line-offset: line-edit.cursor-offset;
     out property <int> notes-offset: notes-edit.cursor-offset;
     layout-direction: root.direction;

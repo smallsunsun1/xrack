@@ -14,11 +14,11 @@ export component PhysicsMassDemo inherits Window {
     property <vector3d> size: Vector3D.new(1, 1, 1);
     property <point3d> amber-start: Point3D.new(-1.75, 0.72, -0.85);
     property <point3d> teal-start: Point3D.new(-1.75, 0.72, 0.85);
-    out property <int> mode: 0;
-    out property <int> amber: 0;
-    out property <int> teal: 0;
-    out property <int> ticks: 0;
-    in-out property <bool> running: false;
+    out property <int> mode = 0;
+    out property <int> amber = 0;
+    out property <int> teal = 0;
+    out property <int> ticks = 0;
+    in-out property <bool> running = false;
     out property <float> density: Physics3D.default-density(root.world);
     out property <float> amber-mass: Physics3D.mass(root.world, root.amber);
     out property <float> teal-mass: Physics3D.mass(root.world, root.teal);

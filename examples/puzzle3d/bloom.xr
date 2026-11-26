@@ -11,16 +11,16 @@ export component BloomDemo inherits Window {
     height: 300px;
     background: #141d29;
 
-    in-out property <bool> glow: true;
-    in-out property <bool> hdr: true;
-    in-out property <bool> covered: false;
-    in-out property <bool> glass: false;
-    in-out property <bool> probe: false;
-    in-out property <float> strength: 0.75;
-    in-out property <float> threshold: 1;
-    in-out property <int> levels: 5;
-    in-out property <float> exposure: 1;
-    in-out property <length> view-width: 480px;
+    in-out property <bool> glow = true;
+    in-out property <bool> hdr = true;
+    in-out property <bool> covered = false;
+    in-out property <bool> glass = false;
+    in-out property <bool> probe = false;
+    in-out property <float> strength = 0.75;
+    in-out property <float> threshold = 1;
+    in-out property <int> levels = 5;
+    in-out property <float> exposure = 1;
+    in-out property <length> view-width = 480px;
 
     property <BloomActor> defaults: BloomActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,

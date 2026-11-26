@@ -1,6 +1,6 @@
 component SettingsPanel inherits VerticalLayout {
-    in property <string> heading: "Settings";
-    in property <color> panel-accent: #34788a;
+    in property <string> heading = "Settings";
+    in property <color> panel-accent = #34788a;
     padding: 16px;
     spacing: 10px;
 
@@ -16,10 +16,10 @@ export component SlotDemo inherits Window {
     title: "XRack — replaceable control parts";
     width: 480px;
     height: 270px;
-    in-out property <int> applied: 0;
-    in-out property <float> volume: 40;
-    in-out property <string> caption: "Audio settings";
-    in-out property <bool> controls-enabled: true;
+    in-out property <int> applied = 0;
+    in-out property <float> volume = 40;
+    in-out property <string> caption = "Audio settings";
+    in-out property <bool> controls-enabled = true;
 
     panel := SettingsPanel {
         heading: root.caption;
@@ -53,7 +53,7 @@ export component SlotDemo inherits Window {
 }
 
 export global SharedSettings {
-    in-out property <int> count: 2;
+    in-out property <int> count = 2;
     out property <int> doubled: root.count * 2;
     callback increment();
     increment => { root.count += 1; }
@@ -87,10 +87,10 @@ export component ToggleIndicatorDemo inherits Window {
     title: "XRack — custom toggle indicators";
     width: 420px;
     height: 260px;
-    in-out property <CheckState> tri: CheckState.unchecked;
-    in-out property <bool> option-enabled: true;
-    in-out property <bool> network: false;
-    in-out property <int> profile: 0;
+    in-out property <CheckState> tri = CheckState.unchecked;
+    in-out property <bool> option-enabled = true;
+    in-out property <bool> network = false;
+    in-out property <int> profile = 0;
     out property <CheckState> observed-state: master.check-state;
     out property <bool> observed-checked: master.checked;
     out property <bool> observed-network: online.checked;
@@ -144,11 +144,11 @@ export component SpinIndicatorDemo inherits Window {
     title: "XRack — custom stepper indicators";
     width: 440px;
     height: 250px;
-    in-out property <int> quantity: 2;
-    in-out property <float> price: 1.25;
-    in-out property <bool> rtl: false;
-    in-out property <bool> locked: false;
-    out property <int> edits: 0;
+    in-out property <int> quantity = 2;
+    in-out property <float> price = 1.25;
+    in-out property <bool> rtl = false;
+    in-out property <bool> locked = false;
+    out property <int> edits = 0;
 
     VerticalLayout {
         padding: 16px;
@@ -198,12 +198,12 @@ export component RangeHandleDemo inherits Window {
     title: "XRack — custom range handles";
     width: 440px;
     height: 300px;
-    in-out property <float> low: 20;
-    in-out property <float> high: 80;
-    in-out property <float> vertical-high: 70;
-    in property <bool> rtl: false;
-    out property <int> changes: 0;
-    out property <int> releases: 0;
+    in-out property <float> low = 20;
+    in-out property <float> high = 80;
+    in-out property <float> vertical-high = 70;
+    in property <bool> rtl = false;
+    out property <int> changes = 0;
+    out property <int> releases = 0;
     out property <float> preview-lower: band.lower-position;
     out property <float> horizontal-visual: band.lower-visual-position;
     out property <float> vertical-visual: column.upper-visual-position;
@@ -249,7 +249,7 @@ export component RangeHandleDemo inherits Window {
 
 component NavigationBadge inherits Rectangle {
     in property <string> caption;
-    in property <bool> marked: false;
+    in property <bool> marked = false;
     width: 100px;
     height: 24px;
     border-radius: 6px;
@@ -265,8 +265,8 @@ export component TabContentDemo inherits Window {
     title: "XRack — custom tab content";
     width: 432px;
     height: 246px;
-    in-out property <int> selected: 0;
-    in property <[string]> sections: ["Overview", "Reports", "Settings"];
+    in-out property <int> selected = 0;
+    in property <[string]> sections = ["Overview", "Reports", "Settings"];
 
     tabs := TabBar {
         x: 18px; y: 18px; width: 192px; height: 48px;

@@ -22,11 +22,11 @@ export component EffectSurfaceDemo inherits Window {
     title: "XRack · 后处理表面数据";
     width: 520px; height: 362px; resizable: false;
     background: #182437;
-    in-out property <bool> inspect-surfaces: true;
-    in-out property <bool> use-perspective: false;
-    in-out property <bool> glass: true;
-    in-out property <int> mode: 0;
-    in-out property <float> lift: 0.5;
+    in-out property <bool> inspect-surfaces = true;
+    in-out property <bool> use-perspective = false;
+    in-out property <bool> glass = true;
+    in-out property <int> mode = 0;
+    in-out property <float> lift = 0.5;
 
     property <InspectStyle> standard: InspectStyle {
         unlit: false, roughness: 0.76, material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),

@@ -8,18 +8,18 @@ export component LensFlareDemo inherits Window {
     title: "XRack · 镜头光晕";
     width: 384px; height: 224px; resizable: false;
     background: #182334;
-    in-out property <bool> flare-enabled: true;
-    in-out property <bool> glow: false;
-    in-out property <bool> covered: false;
-    in-out property <bool> artwork: false;
-    in-out property <bool> grading: false;
-    in-out property <float> gain: 1.25;
-    in-out property <float> threshold: 1;
-    in-out property <int> ghost-count: 4;
-    in-out property <float> halo: 0.65;
-    in-out property <float> distortion: 1;
-    in-out property <float> spin: 0;
-    in-out property <float> emitter-x: -2.2;
+    in-out property <bool> flare-enabled = true;
+    in-out property <bool> glow = false;
+    in-out property <bool> covered = false;
+    in-out property <bool> artwork = false;
+    in-out property <bool> grading = false;
+    in-out property <float> gain = 1.25;
+    in-out property <float> threshold = 1;
+    in-out property <int> ghost-count = 4;
+    in-out property <float> halo = 0.65;
+    in-out property <float> distortion = 1;
+    in-out property <float> spin = 0;
+    in-out property <float> emitter-x = -2.2;
 
     property <LensActor> unit: LensActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,

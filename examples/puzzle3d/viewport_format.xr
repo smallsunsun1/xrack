@@ -4,10 +4,10 @@ struct FormatEffect { shader: string, buffers: [FormatInput] }
 export component ViewportFormatDemo inherits Window {
     title: "XRack · 视口浮点输出";
     width: 272px; height: 152px; background: #000;
-    in-out property <string> format: "rgba16f";
-    in-out property <bool> hidden: false;
-    in-out property <bool> show-image: true;
-    in-out property <bool> mips: false;
+    in-out property <string> format = "rgba16f";
+    in-out property <bool> hidden = false;
+    in-out property <bool> show-image = true;
+    in-out property <bool> mips = false;
 
     source-view := SceneView3D {
         x: 8px; y: 32px; width: 80px; height: 64px;

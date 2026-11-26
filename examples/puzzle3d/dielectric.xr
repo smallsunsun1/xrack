@@ -20,8 +20,8 @@ export component DielectricDemo inherits Window {
     height: 290px;
     background: #141d29;
 
-    in-out property <bool> studio: false;
-    in-out property <float> light-yaw: 0;
+    in-out property <bool> studio = false;
+    in-out property <float> light-yaw = 0;
     property <[ReflectionSwatch]> model: [
         ReflectionSwatch {
             id: "swatches", mesh: @mesh-url("models/dielectric.gltf"),

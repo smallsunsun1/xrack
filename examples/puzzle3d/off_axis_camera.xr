@@ -15,14 +15,14 @@ export component OffAxisCameraDemo inherits Window {
     resizable: false;
     background: #141d29;
 
-    in-out property <float> horizontal: 0.25;
-    in-out property <float> vertical: 0.125;
-    in-out property <float> half-width: 0.75;
-    in-out property <float> half-height: 0.5;
-    in-out property <bool> parallel: false;
-    in-out property <bool> culling: true;
-    in-out property <bool> effects: true;
-    in-out property <point2d> cursor: Point2D.new(120px, 150px);
+    in-out property <float> horizontal = 0.25;
+    in-out property <float> vertical = 0.125;
+    in-out property <float> half-width = 0.75;
+    in-out property <float> half-height = 0.5;
+    in-out property <bool> parallel = false;
+    in-out property <bool> culling = true;
+    in-out property <bool> effects = true;
+    in-out property <point2d> cursor = Point2D.new(120px, 150px);
     property <point2d> viewport-size: Point2D.new(360px, 240px);
     property <float> lens-scale: root.parallel ? 8.0 : 1.0;
     property <FrustumActor> defaults: FrustumActor {

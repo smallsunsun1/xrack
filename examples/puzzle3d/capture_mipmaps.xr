@@ -21,15 +21,15 @@ struct CaptureMipEffect { shader: string, parameters: vector3d, buffers: [Captur
 export component CaptureMipmapsDemo inherits Window {
     title: "XRack · 捕获 mip 层";
     width: 256px; height: 256px; background: #000;
-    in-out property <bool> mipmaps: false;
-    in-out property <bool> green: false;
-    in-out property <float> lod: 8;
-    in-out property <bool> gradients: false;
-    in-out property <float> frequency: 1024;
-    in-out property <bool> nearest-min: true;
-    in-out property <int> max-anisotropy: 1;
-    in-out property <bool> oblique: false;
-    in-out property <bool> horizontal: false;
+    in-out property <bool> mipmaps = false;
+    in-out property <bool> green = false;
+    in-out property <float> lod = 8;
+    in-out property <bool> gradients = false;
+    in-out property <float> frequency = 1024;
+    in-out property <bool> nearest-min = true;
+    in-out property <int> max-anisotropy = 1;
+    in-out property <bool> oblique = false;
+    in-out property <bool> horizontal = false;
 
     property <vector3d> sampling: Vector3D.new(
         root.gradients && root.oblique ? (root.horizontal ? -1 : 1) : root.lod,

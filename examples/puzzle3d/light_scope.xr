@@ -13,8 +13,8 @@ struct Lamp {
 export component LightScopeDemo inherits Window {
     title: "XRack · 灯光作用域";
     width: 432px; height: 254px; resizable: false; background: #182438;
-    in-out property <int> scope-mode: 0;
-    in-out property <bool> reparent: false;
+    in-out property <int> scope-mode = 0;
+    in-out property <bool> reparent = false;
 
     property <Actor> stand: Actor {
         id: "", parent: "", mesh: "", x: 0, y: 0, z: 0,

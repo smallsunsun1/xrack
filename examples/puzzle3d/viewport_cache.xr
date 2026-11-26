@@ -12,17 +12,17 @@ export component ViewportCacheDemo inherits Window {
     resizable: false;
     background: #141d29;
 
-    in-out property <bool> use-cache: true;
-    in-out property <bool> reference: true;
-    in-out property <int> tick: 0;
-    in-out property <bool> ticking: false;
-    in-out property <float> angle: 0;
-    in-out property <length> offset: 0px;
-    in-out property <float> scene-alpha: 1;
-    in-out property <color> ball-color: #e8b158;
-    in-out property <int> fixed-size: 0;
-    in-out property <bool> effects: true;
-    in-out property <float> light-angle: -34;
+    in-out property <bool> use-cache = true;
+    in-out property <bool> reference = true;
+    in-out property <int> tick = 0;
+    in-out property <bool> ticking = false;
+    in-out property <float> angle = 0;
+    in-out property <length> offset = 0px;
+    in-out property <float> scene-alpha = 1;
+    in-out property <color> ball-color = #e8b158;
+    in-out property <int> fixed-size = 0;
+    in-out property <bool> effects = true;
+    in-out property <float> light-angle = -34;
     clock := Timer {
         interval: 90;
         repeat: true;

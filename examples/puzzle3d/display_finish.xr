@@ -10,19 +10,19 @@ export component DisplayFinishDemo inherits Window {
     width: 392px; height: 190px; resizable: false;
     background: #253045;
 
-    in-out property <float> vignette: 0;
-    in-out property <float> radius: 0.45;
-    in-out property <color> tint: #691735;
-    in-out property <float> sharpness: 0;
-    in-out property <bool> dithering: false;
-    in-out property <bool> hdr: true;
-    in-out property <bool> transparent: false;
-    in-out property <bool> reuse-inputs: true;
-    in-out property <bool> glow: false;
-    in-out property <bool> filter: false;
-    in-out property <bool> focus: false;
-    in-out property <color> reference-color: #677b95;
-    in-out property <float> panel-offset: 0;
+    in-out property <float> vignette = 0;
+    in-out property <float> radius = 0.45;
+    in-out property <color> tint = #691735;
+    in-out property <float> sharpness = 0;
+    in-out property <bool> dithering = false;
+    in-out property <bool> hdr = true;
+    in-out property <bool> transparent = false;
+    in-out property <bool> reuse-inputs = true;
+    in-out property <bool> glow = false;
+    in-out property <bool> filter = false;
+    in-out property <bool> focus = false;
+    in-out property <color> reference-color = #677b95;
+    in-out property <float> panel-offset = 0;
     property <color> backdrop: root.transparent ? #00000000 : #677b95;
     property <string> grade-shader: root.filter ? @shader-url("effects/grade.wgsl") : "";
 

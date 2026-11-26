@@ -7,11 +7,11 @@ export component BakedRoomDemo inherits Window {
     resizable: false;
     background: #141d29;
 
-    in-out property <bool> baked: true;
-    in-out property <bool> live-shadows: false;
-    in-out property <bool> fill-on: true;
-    in-out property <float> sphere-shift: 0;
-    in-out property <float> key-intensity: BakeRoom.key.intensity;
+    in-out property <bool> baked = true;
+    in-out property <bool> live-shadows = false;
+    in-out property <bool> fill-on = true;
+    in-out property <float> sphere-shift = 0;
+    in-out property <float> key-intensity = BakeRoom.key.intensity;
     property <[BakeLamp]> lights: [
         BakeLamp { intensity: root.key-intensity, ..BakeRoom.key },
         BakeLamp { intensity: root.fill-on ? BakeRoom.fill.intensity : 0, ..BakeRoom.fill },

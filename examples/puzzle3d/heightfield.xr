@@ -11,10 +11,10 @@ export component HeightfieldDemo inherits Window {
     width: 600px; height: 422px;
     resizable: false;
     background: #17283b;
-    in-out property <bool> flat: false;
-    in-out property <float> marker-x: -0.6;
-    in-out property <float> marker-z: 0.2;
-    in-out property <float> azimuth: 30;
+    in-out property <bool> flat = false;
+    in-out property <float> marker-x = -0.6;
+    in-out property <float> marker-z = 0.2;
+    in-out property <float> azimuth = 30;
     property <float> inclination: 37;
     property <float> distance: 11;
     property <TerrainActor> defaults: TerrainActor {

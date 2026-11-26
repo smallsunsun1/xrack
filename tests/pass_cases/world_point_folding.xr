@@ -2,7 +2,7 @@
 // RAW: "xr.point3d_field"{{.*}}value = "z"
 
 // CHECK: %[[WORLD:[0-9]+]] = "xr.literal"() <{value = "1.5 -2 7.25"}> : () -> !xr.point3d
-// CHECK: "xr.property"(%[[WORLD]]) <{name = "world", visibility = "out"}>
+// CHECK: "xr.property"(%[[WORLD]]) <{mode = "formula", name = "world", visibility = "out"}>
 // CHECK-NOT: "xr.point3d_field"
 // CHECK: "xr.literal"() <{value = "7.25"}> : () -> !xr.float
 // CHECK-NOT: "xr.point3d_field"

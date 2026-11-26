@@ -13,9 +13,9 @@ struct MistRecord {
 
 export component VolumetricFogPlan inherits Window {
     in property <[MistRecord]> regions;
-    in property <float> scattering: 1;
-    in property <float> asymmetry: 0.2;
-    in property <int> samples: 8;
+    in property <float> scattering = 1;
+    in property <float> asymmetry = 0.2;
+    in property <int> samples = 8;
     SceneView3D {
         width: 100px; height: 100px;
         fog-volumes: root.regions;

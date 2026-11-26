@@ -24,12 +24,12 @@ export component ParticleTrailsDemo inherits Window {
     width: 670px; height: 457px;
     background: #182333;
 
-    in-out property <float> time: 0.9;
-    in-out property <int> segments: 12;
-    in-out property <float> history: 0.8;
-    in-out property <bool> rotate-trails: false;
-    in-out property <bool> retain-trails: true;
-    in-out property <int> population: 1;
+    in-out property <float> time = 0.9;
+    in-out property <int> segments = 12;
+    in-out property <float> history = 0.8;
+    in-out property <bool> rotate-trails = false;
+    in-out property <bool> retain-trails = true;
+    in-out property <int> population = 1;
 
     property <TrailEmitter> comet: TrailEmitter {
         position: Point3D.new(-2.2, -0.4, 0), color: #48d9ffff, size: 0.22, lifetime: 1.25,
@@ -97,14 +97,14 @@ export component ParticleBirthTrackDemo inherits Window {
     title: "XRack · 粒子出生轨道";
     width: 624px; height: 396px; background: #182333;
 
-    in-out property <float> time: 1.75;
-    in-out property <float> start: 0;
-    in-out property <bool> running: false;
-    in-out property <bool> loop-births: false;
-    in-out property <int> ribbons: 0;
-    in-out property <string> particle-mesh: "";
+    in-out property <float> time = 1.75;
+    in-out property <float> start = 0;
+    in-out property <bool> running = false;
+    in-out property <bool> loop-births = false;
+    in-out property <int> ribbons = 0;
+    in-out property <string> particle-mesh = "";
     property <quaternion3d> upward: Quaternion3D.from-axis-angle(Vector3D.new(0, 0, 1), 90);
-    in-out property <[EmissionKey]> keys: [
+    in-out property <[EmissionKey]> keys = [
         EmissionKey { time: 0, position: Point3D.new(-3, 0, 0.7), orientation: root.upward },
         EmissionKey { time: 1, position: Point3D.new(0, 0, 0.7), orientation: root.upward },
         EmissionKey { time: 2, position: Point3D.new(3, 0, 0.7), orientation: Quaternion3D.identity() },
@@ -205,18 +205,18 @@ export component ParticleImpactDemo inherits Window {
     title: "XRack · 点击发射粒子";
     width: 624px; height: 402px; background: #182333;
 
-    in-out property <float> time: 0.2;
-    in-out property <float> burst-duration: 0.4;
-    in-out property <int> count: 36;
-    in-out property <bool> spread: true;
-    in-out property <bool> upward: true;
-    in-out property <bool> running: false;
-    in-out property <bool> ribbons: false;
-    in-out property <bool> model-particles: false;
-    in-out property <float> rate: 0;
-    in-out property <bool> track: false;
-    in-out property <string> parent-name: "";
-    in-out property <[ImpactBurst]> impacts: [];
+    in-out property <float> time = 0.2;
+    in-out property <float> burst-duration = 0.4;
+    in-out property <int> count = 36;
+    in-out property <bool> spread = true;
+    in-out property <bool> upward = true;
+    in-out property <bool> running = false;
+    in-out property <bool> ribbons = false;
+    in-out property <bool> model-particles = false;
+    in-out property <float> rate = 0;
+    in-out property <bool> track = false;
+    in-out property <string> parent-name = "";
+    in-out property <[ImpactBurst]> impacts = [];
     out property <int> impact-count: Model.count(root.impacts);
     property <[EmissionKey]> no-track: [];
 

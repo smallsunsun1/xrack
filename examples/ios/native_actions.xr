@@ -5,10 +5,10 @@ struct Sample {
 
 export component KeyboardOptionsDemo inherits Dialog {
     title: "Keyboard assistance";
-    in-out property <bool> shown: true;
+    in-out property <bool> shown = true;
     open <=> root.shown;
     width: 350px; height: 320px;
-    private property <bool> identifier-mode: false;
+    private property <bool> identifier-mode = false;
     callback focus-title();
     focus-title => { draft-title.focus(); }
 
@@ -83,11 +83,11 @@ component NavigationInstrument inherits Button {
 
 export component LongNoteDemo inherits Dialog {
     title: "Inspection narrative";
-    in-out property <bool> shown: true;
+    in-out property <bool> shown = true;
     open <=> root.shown;
     width: 350px;
     height: 310px;
-    private property <string> draft: "";
+    private property <string> draft = "";
 
     callback focus-note();
     focus-note => { long-note.focus(); }
@@ -121,9 +121,9 @@ export component EditMenuEscapeDemo inherits Window {
     title: "Edit menu demo";
     width: 390px;
     height: 480px;
-    private property <bool> draft-open: true;
-    private property <bool> shift-pending: false;
-    private property <bool> draft-shifted: false;
+    private property <bool> draft-open = true;
+    private property <bool> shift-pending = false;
+    private property <bool> draft-shifted = false;
     shift := Timer {
         interval: 4200;
         running: root.shift-pending;
@@ -190,10 +190,10 @@ export component ChoicePopupDemo inherits Dialog {
     title: "Inspection choices";
     width: 356px;
     height: 340px;
-    in-out property <bool> shown: true;
+    in-out property <bool> shown = true;
     open <=> root.shown;
-    private property <string> query: "";
-    out property <string> submitted: "";
+    private property <string> query = "";
+    out property <string> submitted = "";
 
     VerticalLayout {
         padding: 12px;
@@ -225,7 +225,7 @@ export component AdjustableValuesDemo inherits Dialog {
     title: "Instrument settings";
     width: 348px;
     height: 360px;
-    in-out property <bool> shown: true;
+    in-out property <bool> shown = true;
     open <=> root.shown;
 
     VerticalLayout {
@@ -273,12 +273,12 @@ export component AdjustableValuesDemo inherits Dialog {
 export component NativeNavigationDemo inherits VerticalLayout {
     width: 100%; height: 100%;
     padding: 20px; spacing: 8px; alignment: start;
-    private property <bool> tool-active: true;
-    private property <string> tool: "pressure";
-    private property <string> reading: "No samples";
-    private property <bool> back-locked: false;
-    private property <int> blocked: 0;
-    private property <bool> dialog-open: false;
+    private property <bool> tool-active = true;
+    private property <string> tool = "pressure";
+    private property <string> reading = "No samples";
+    private property <bool> back-locked = false;
+    private property <int> blocked = 0;
+    private property <bool> dialog-open = false;
     callback closed();
 
     tool-state := Label { text: "Tool " + instrument.status; }
@@ -344,7 +344,7 @@ export component HardwareCommandsDemo inherits Window {
     private property <int> releases;
     private property <int> snapshots;
     private property <int> runbooks;
-    private property <string> last-key: "Ready";
+    private property <string> last-key = "Ready";
 
     Shortcut { sequence: "F2"; activated => { root.refreshes += 1; } }
     Shortcut { sequence: "Primary+F12"; activated => { root.snapshots += 1; } }
@@ -385,7 +385,7 @@ export component TouchTooltipDemo inherits Window {
     title: "Inspection controls";
     width: 390px;
     height: 500px;
-    private property <int> inspections: 0;
+    private property <int> inspections = 0;
 
     VerticalLayout {
         padding: 16px;
@@ -417,8 +417,8 @@ export component ClipboardAuthorizationDemo inherits Window {
     title: "Cross-app paste";
     width: 390px;
     height: 320px;
-    private property <string> draft: "A🧪B";
-    private property <int> edits: 0;
+    private property <string> draft = "A🧪B";
+    private property <int> edits = 0;
 
     VerticalLayout {
         padding: 20px;
@@ -456,9 +456,9 @@ export component TextDropDemo inherits Window {
     title: "Text drop";
     width: 440px;
     height: 400px;
-    private property <string> draft: "A🧪B";
-    private property <string> notes: "";
-    private property <int> edits: 0;
+    private property <string> draft = "A🧪B";
+    private property <string> notes = "";
+    private property <int> edits = 0;
 
     ScrollView {
         width: 100%;
@@ -513,8 +513,8 @@ export component PointerStyleDemo inherits Window {
     width: 390px;
     height: 460px;
     background: #f1f5fa;
-    private property <string> inspection-name: "Pump inspection";
-    private property <string> last-input: "";
+    private property <string> inspection-name = "Pump inspection";
+    private property <string> last-input = "";
 
     VerticalLayout {
         padding: 24px;
@@ -683,8 +683,8 @@ export component SystemDirectionDemo inherits Window {
     title: "Inspection sequence";
     width: 390px;
     height: 380px;
-    private property <string> selected: "None";
-    private property <float> progress: 25;
+    private property <string> selected = "None";
+    private property <float> progress = 25;
 
     VerticalLayout {
         width: 100%;
@@ -764,10 +764,10 @@ export component NativeSelectionDemo inherits Window {
     title: "Keyboard selection";
     width: 390px;
     height: 480px;
-    private property <string> line-value: "A🧪B";
-    private property <string> notes-value: "First\nA🧪B";
-    private property <int> line-edits: 0;
-    private property <int> notes-edits: 0;
+    private property <string> line-value = "A🧪B";
+    private property <string> notes-value = "First\nA🧪B";
+    private property <int> line-edits = 0;
+    private property <int> notes-edits = 0;
 
     VerticalLayout {
         padding: 16px;
@@ -839,10 +839,10 @@ export component MobileAppearance inherits Window {
     width: 390px;
     height: 520px;
 
-    in-out property <ColorScheme> scheme: ColorScheme.system;
-    in-out property <string> draft: "Inspection draft";
-    private property <bool> reminders: false;
-    private property <bool> show-details: false;
+    in-out property <ColorScheme> scheme = ColorScheme.system;
+    in-out property <string> draft = "Inspection draft";
+    private property <bool> reminders = false;
+    private property <bool> show-details = false;
 
     color-scheme: root.scheme;
 
@@ -961,7 +961,7 @@ export component ButtonShapesDemo inherits Window {
     width: 390px;
     height: 480px;
     background: #203047;
-    private property <int> actions: 0;
+    private property <int> actions = 0;
 
     VerticalLayout {
         padding: 20px;
@@ -991,8 +991,8 @@ export component SelectionMarksDemo inherits Window {
     title: "Selection markers";
     width: 390px;
     height: 480px;
-    private property <int> page: 0;
-    private property <int> interval: 0;
+    private property <int> page = 0;
+    private property <int> interval = 0;
 
     VerticalLayout {
         padding: 20px;
@@ -1026,8 +1026,8 @@ export component MenuPagingDemo inherits Window {
     title: "Menu paging";
     width: 390px;
     height: 540px;
-    private property <string> result: "Ready";
-    private property <string> interval: "Daily";
+    private property <string> result = "Ready";
+    private property <string> interval = "Daily";
     private property <[PagingInterval]> intervals: [
         PagingInterval { title: "Daily", available: true },
         PagingInterval { title: "Weekly", available: true },
@@ -1115,7 +1115,7 @@ export component MenuPagingDemo inherits Window {
 component SwipeDocumentRow inherits SwipeDelegate {
     in property <string> document-name;
     in property <bool> can-pin;
-    private property <SwipeSide> side: closed;
+    private property <SwipeSide> side = closed;
     callback action(string);
 
     width: 100%;
@@ -1163,7 +1163,7 @@ export component SwipeActionsDemo inherits Window {
     title: "Document actions";
     width: 390px;
     height: 500px;
-    private property <string> result: "Ready";
+    private property <string> result = "Ready";
 
     VerticalLayout {
         padding: 20px;
@@ -1188,8 +1188,8 @@ export component GroupTitlesDemo inherits Window {
     width: 390px;
     height: 620px;
 
-    private property <bool> checked: true;
-    private property <string> result: "Ready";
+    private property <bool> checked = true;
+    private property <string> result = "Ready";
 
     VerticalLayout {
         padding: 20px;
@@ -1225,9 +1225,9 @@ export component ModalTitlesDemo inherits Window {
     width: 390px;
     height: 520px;
 
-    private property <bool> review-open: false;
-    private property <bool> evidence-open: false;
-    private property <string> result: "Ready";
+    private property <bool> review-open = false;
+    private property <bool> evidence-open = false;
+    private property <string> result = "Ready";
 
     VerticalLayout {
         padding: 20px;
@@ -1281,8 +1281,8 @@ export component CompactTogglesDemo inherits Window {
     width: 390px;
     height: 480px;
 
-    private property <bool> include: false;
-    private property <bool> alerts: false;
+    private property <bool> include = false;
+    private property <bool> alerts = false;
 
     VerticalLayout {
         padding: 20px;
@@ -1330,13 +1330,13 @@ export component CompactRowsDemo inherits Window {
     title: "Inspection rows";
     width: 390px;
     height: 520px;
-    private property <int> selected: 0;
+    private property <int> selected = 0;
     private property <[InspectionListEntry]> inspections: [
         InspectionListEntry { group: "Daily inspections requiring follow-up", title: "Pump calibration due tomorrow" },
         InspectionListEntry { group: "Daily inspections requiring follow-up", title: "Replace the intake valve filter" },
         InspectionListEntry { group: "Scheduled maintenance", title: "Review the cooling station checklist" },
     ];
-    private property <[InspectionBranch]> branches: [
+    private property <[InspectionBranch]> branches = [
         InspectionBranch { id: 1, parent: -1, title: "Cooling system", note: "" },
         InspectionBranch { id: 2, parent: 1, title: "Intake valve", note: "Verify the pressure calibration" },
         InspectionBranch { id: 3, parent: 1, title: "Return valve", note: "Replace the seal" },
@@ -1394,60 +1394,60 @@ export component NativeActionsDemo inherits Window {
     height: 720px;
     background: #f1f6f4;
 
-    private property <[Sample]> samples: [
+    private property <[Sample]> samples = [
         Sample { instrument: "Gauge", location: "Pump room" },
         Sample { instrument: "Valve", location: "East riser" },
         Sample { instrument: "Sensor", location: "Tank A" },
     ];
-    private property <[InspectionBranch]> branches: [
+    private property <[InspectionBranch]> branches = [
         InspectionBranch { id: 1, parent: -1, title: "Pump area", note: "" },
         InspectionBranch { id: 2, parent: 1, title: "Intake valve", note: "Service note" },
         InspectionBranch { id: 3, parent: 1, title: "Return valve", note: "Checked" },
         InspectionBranch { id: 4, parent: -1, title: "Tank area", note: "" },
     ];
-    private property <bool> show-tabs: false;
-    private property <bool> tools-open: false;
-    out property <int> drawer-opens: 0;
-    out property <int> drawer-closes: 0;
-    out property <int> tool-runs: 0;
-    private property <bool> show-disclosures: false;
-    private property <bool> details-expanded: false;
-    private property <bool> optional-enabled: true;
-    out property <int> checks: 0;
-    private property <bool> show-overflow-tabs: false;
-    private property <bool> show-inspection-cards: false;
-    private property <bool> show-service-log: false;
-    private property <bool> show-report-pages: false;
-    private property <bool> show-sign-in: false;
-    private property <bool> show-keyboard-options: false;
-    private property <bool> show-popup-choices: false;
-    private property <bool> show-adjustable-values: false;
-    private property <bool> resize-table-headers: false;
-    private property <bool> show-long-note: false;
-    private property <bool> show-native-navigation: false;
-    private property <bool> report-pages-enabled: true;
-    private property <int> report-page: 0;
-    private property <int> report-page-changes: 0;
-    private property <bool> cards-mirrored: false;
-    private property <int> card-index: 0;
-    private property <int> card-changes: 0;
-    private property <bool> overflow-draft-visible: true;
-    private property <string> overflow-selected: "overview";
-    private property <string> overflow-movement: "No tabs moved";
-    private property <[InspectionTab]> overflow-documents: [
+    private property <bool> show-tabs = false;
+    private property <bool> tools-open = false;
+    out property <int> drawer-opens = 0;
+    out property <int> drawer-closes = 0;
+    out property <int> tool-runs = 0;
+    private property <bool> show-disclosures = false;
+    private property <bool> details-expanded = false;
+    private property <bool> optional-enabled = true;
+    out property <int> checks = 0;
+    private property <bool> show-overflow-tabs = false;
+    private property <bool> show-inspection-cards = false;
+    private property <bool> show-service-log = false;
+    private property <bool> show-report-pages = false;
+    private property <bool> show-sign-in = false;
+    private property <bool> show-keyboard-options = false;
+    private property <bool> show-popup-choices = false;
+    private property <bool> show-adjustable-values = false;
+    private property <bool> resize-table-headers = false;
+    private property <bool> show-long-note = false;
+    private property <bool> show-native-navigation = false;
+    private property <bool> report-pages-enabled = true;
+    private property <int> report-page = 0;
+    private property <int> report-page-changes = 0;
+    private property <bool> cards-mirrored = false;
+    private property <int> card-index = 0;
+    private property <int> card-changes = 0;
+    private property <bool> overflow-draft-visible = true;
+    private property <string> overflow-selected = "overview";
+    private property <string> overflow-movement = "No tabs moved";
+    private property <[InspectionTab]> overflow-documents = [
         InspectionTab { title: "Overview", key: "overview" },
         InspectionTab { title: "Draft", key: "draft" },
         InspectionTab { title: "Results", key: "results" },
         InspectionTab { title: "Archive", key: "archive" },
     ];
-    private property <string> selected-tab: "draft";
-    private property <[InspectionTab]> tabs: [
+    private property <string> selected-tab = "draft";
+    private property <[InspectionTab]> tabs = [
         InspectionTab { title: "Pinned", key: "pinned" },
         InspectionTab { title: "Draft", key: "draft" },
         InspectionTab { title: "Results", key: "results" },
     ];
-    out property <int> reviews: 0;
-    out property <string> movement: "No rows moved";
+    out property <int> reviews = 0;
+    out property <string> movement = "No rows moved";
 
     if root.show-native-navigation : navigation-demo := NativeNavigationDemo {
         closed => { root.show-native-navigation = false; }

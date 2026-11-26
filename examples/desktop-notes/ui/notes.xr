@@ -6,16 +6,16 @@ export component FieldNotes inherits Window {
     min-height: 280px;
     color-scheme: system;
 
-    in-out property <string> content: "";
-    in property <string> saved-content: "";
-    in property <string> path: "";
-    in property <string> document-name: "未命名";
-    in-out property <string> status: "支持 UTF-8 文本与 Markdown";
-    in property <bool> working: false;
+    in-out property <string> content = "";
+    in property <string> saved-content = "";
+    in property <string> path = "";
+    in property <string> document-name = "未命名";
+    in-out property <string> status = "支持 UTF-8 文本与 Markdown";
+    in property <bool> working = false;
     out property <bool> dirty: root.content != root.saved-content;
     private property <bool> locked: root.working || open-picker.pending || save-picker.pending || discard.pending;
-    private property <bool> opening: false;
-    private property <bool> confirmed-close: false;
+    private property <bool> opening = false;
+    private property <bool> confirmed-close = false;
     callback open-document(path: string);
     callback save-document(path: string);
 

@@ -123,7 +123,17 @@ pub(crate) fn program(
             _ => return Err(unsupported(op, op.name())),
         }
     }
+    let initialize_once = components
+        .values()
+        .filter_map(|component| component.as_ref().ok())
+        .any(|component| {
+            component
+                .properties
+                .values()
+                .any(|property| property.mode == xrack_syntax::ast::PropertyMode::Once)
+        });
     Ok(Program {
+        initialize_once,
         #[cfg(all(feature = "live-reload", unix))]
         update_plan: Rc::new(module.update_plan()),
         components: Rc::new(components),
@@ -463,7 +473,15 @@ impl<'m> Loader<'m> {
         } else {
             PropertySource::Initial(self.expression(input, &[])?)
         };
+        use xrack_syntax::ast::PropertyMode;
+        let mode = match op.attribute("mode") {
+            Some("stored") => PropertyMode::Stored,
+            Some("formula") => PropertyMode::Formula,
+            Some("once") => PropertyMode::Once,
+            _ => PropertyMode::Stored,
+        };
         let property = PropertyDef {
+            mode,
             #[cfg(all(feature = "live-reload", unix))]
             location: crate::live_inspect::Source::from_operation(op),
             #[cfg(all(feature = "live-reload", unix))]
@@ -471,7 +489,7 @@ impl<'m> Loader<'m> {
             ty: value_kind(op, input)?,
             source,
             public: owner == "root" && visibility != "private",
-            writable: matches!(visibility, "in" | "in-out"),
+            writable: mode != PropertyMode::Formula && matches!(visibility, "in" | "in-out"),
         };
         self.properties.insert(Member::new(owner, name), property);
         Ok(())
@@ -1070,6 +1088,7 @@ impl<'m> Loader<'m> {
             None
         };
         let mut bindings = Vec::new();
+        let mut read_only_bindings = BTreeSet::new();
         let mut offsets = Vec::new();
         let mut scroll_target = None;
         let mut initial_focus = None;
@@ -1248,10 +1267,14 @@ impl<'m> Loader<'m> {
                         render_selector = Some(self.state_selector(child, result)?);
                     }
                 }
-                "xr.state_set" => state_bindings
-                    .entry(property_name(child)?)
-                    .or_default()
-                    .push(self.state_case(child)?),
+                "xr.state_set" => {
+                    let name = property_name(child)?;
+                    read_only_bindings.insert(name);
+                    state_bindings
+                        .entry(name)
+                        .or_default()
+                        .push(self.state_case(child)?);
+                }
                 "xr.instance_state" => {}
                 "xr.scroll_target" => {
                     let target = attribute(child, "target")?.to_owned();
@@ -1325,6 +1348,7 @@ impl<'m> Loader<'m> {
                         }
                         _ => None,
                     };
+                    read_only_bindings.insert(name);
                     bindings.push(Binding {
                         name,
                         expression,
@@ -1470,6 +1494,7 @@ impl<'m> Loader<'m> {
             }),
             static_hidden,
             bindings,
+            read_only_bindings,
             controls,
             offsets,
             scroll_target,

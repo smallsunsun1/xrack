@@ -297,6 +297,11 @@ LogicalResult GeometryReadOp::verify() {
 }
 
 LogicalResult PropertyOp::verify() {
+  auto mode = getMode().value_or("");
+  if (!mode.empty() && mode != "stored" && mode != "formula" && mode != "once")
+    return emitOpError("unknown property mode ") << mode;
+  if (getAlias() && (mode == "formula" || mode == "once"))
+    return emitOpError("an alias cannot supply its own initializer");
   if (!getAlias())
     return success();
   if (getAlias().value_or("") != "true" ||
@@ -5287,7 +5292,8 @@ static LogicalResult verifyReference(Operation *op, const Owners &owners,
     if (external && visibility == "private")
       return op->emitOpError("cannot access private property ") << name;
     if (write &&
-        (external ? !writableFromParent(visibility) : visibility == "in"))
+        (property.getMode().value_or("") == "formula" ||
+         (external ? !writableFromParent(visibility) : visibility == "in")))
       return op->emitOpError("cannot write read-only property ") << name;
     if (property.getInitial().getType() != type)
       return op->emitOpError("property type mismatch for ")

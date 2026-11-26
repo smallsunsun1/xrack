@@ -4,11 +4,11 @@ export component NotesDemo inherits Window {
     height: 376px;
     background: #182331;
 
-    in-out property <string> note: "项目笔记\n\n这里可以混合输入中文和 English。试着拖动鼠标跨行选择文字，或用 Shift 加方向键扩展选区。\n\nEnter 插入换行。Home 和 End 移到当前显示行的起点和终点。\n\n在长文档中，滚轮浏览内容。键盘移动时，视口会跟随光标。";
-    in-out property <TextWrap> wrap-mode: TextWrap.word-wrap;
-    in-out property <bool> locked: false;
-    out property <int> edits: 0;
-    out property <string> last-edit: "";
+    in-out property <string> note = "项目笔记\n\n这里可以混合输入中文和 English。试着拖动鼠标跨行选择文字，或用 Shift 加方向键扩展选区。\n\nEnter 插入换行。Home 和 End 移到当前显示行的起点和终点。\n\n在长文档中，滚轮浏览内容。键盘移动时，视口会跟随光标。";
+    in-out property <TextWrap> wrap-mode = TextWrap.word-wrap;
+    in-out property <bool> locked = false;
+    out property <int> edits = 0;
+    out property <string> last-edit = "";
 
     VerticalLayout {
         padding: 16px;

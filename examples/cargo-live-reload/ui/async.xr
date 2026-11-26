@@ -4,21 +4,22 @@ export component AsyncDemo inherits Window {
     height: 350px;
     background: #182331;
 
-    in-out property <string> query: "XRack";
-    in-out property <string> local-status: "等待 UI 任务";
-    in-out property <[string]> results: [];
-    in-out property <[string]> suggestions: [];
-    in-out property <string> result-query: "";
-    in-out property <int> selection: -1;
-    in-out property <bool> loading: false;
+    in-out property <string> query = "XRack";
+    in-out property <string> local-status = "等待 UI 任务";
+    in-out property <[string]> results = [];
+    in-out property <[string]> suggestions = [];
+    in-out property <string> result-query = "";
+    in-out property <int> selection = -1;
+    in-out property <bool> loading = false;
     callback search(string);
     callback start-local();
     pure callback result-label(string) -> string;
     result-label(label) => { label }
 
+    private property <bool> startup-running = true;
     startup := Timer {
         interval: 1;
-        running: true;
+        running <=> root.startup-running;
         repeat: false;
         triggered() => {
             root.start-local();

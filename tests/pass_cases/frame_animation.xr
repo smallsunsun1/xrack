@@ -9,9 +9,9 @@
 
 export component App inherits Window {
     property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.02);
-    out property <int> steps: 0;
-    out property <float> seconds: 0;
-    out property <int> frames: 0;
+    out property <int> steps = 0;
+    out property <float> seconds = 0;
+    out property <int> frames = 0;
 
     callback restart-motion();
     restart-motion() => { motion.restart(); }

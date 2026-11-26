@@ -31,7 +31,7 @@ export component App inherits Window {
     title: "Hello XRack";
     width: 320px;
     height: 160px;
-    in-out property <int> count: 0;
+    in-out property <int> count = 0;
 
     VerticalLayout {
         padding: 16px;

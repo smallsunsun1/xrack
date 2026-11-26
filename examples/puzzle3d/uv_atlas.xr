@@ -20,9 +20,9 @@ export component UvAtlasDemo inherits Window {
     height: 288px;
     background: #141d29;
 
-    in-out property <float> light-yaw: -40;
-    in-out property <bool> shadows: false;
-    in-out property <bool> shadow-screen: false;
+    in-out property <float> light-yaw = -40;
+    in-out property <bool> shadows = false;
+    in-out property <bool> shadow-screen = false;
     in-out property <point2d> pointer;
     property <[AtlasObject]> scene: [
         AtlasObject {

@@ -12,9 +12,9 @@ export component InstanceDataDemo inherits Window {
     title: "XRack · Instance data";
     width: 600px; height: 356px;
     background: #172538;
-    in-out property <float> phase: 0;
-    in-out property <bool> shadow: false;
-    in-out property <bool> temporal: false;
+    in-out property <float> phase = 0;
+    in-out property <bool> shadow = false;
+    in-out property <bool> temporal = false;
 
     property <DataActor> base: DataActor {
         id: "", mesh: "", x: 0, y: 0, z: 0,

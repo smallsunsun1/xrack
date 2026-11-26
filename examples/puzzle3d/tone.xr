@@ -11,14 +11,14 @@ export component ToneDemo inherits Window {
     height: 300px;
     background: #141d29;
 
-    in-out property <SceneToneMap> curve: SceneToneMap.reinhard;
-    in-out property <float> brightness: 1;
-    in-out property <float> contrast: 1;
-    in-out property <float> saturation: 1;
-    in-out property <float> exposure: 0.7;
-    in-out property <float> white-point: 11.2;
-    in-out property <bool> glow: false;
-    in-out property <bool> guide-blur: false;
+    in-out property <SceneToneMap> curve = SceneToneMap.reinhard;
+    in-out property <float> brightness = 1;
+    in-out property <float> contrast = 1;
+    in-out property <float> saturation = 1;
+    in-out property <float> exposure = 0.7;
+    in-out property <float> white-point = 11.2;
+    in-out property <bool> glow = false;
+    in-out property <bool> guide-blur = false;
 
     pure function curve-title() -> string {
         root.curve == SceneToneMap.reinhard ? "Reinhard"

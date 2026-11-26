@@ -16,7 +16,7 @@ impl TextMeasurer for Measure {
 }
 
 #[test]
-fn exported_property_alias_uses_and_resets_the_leaf_control_storage() {
+fn exported_property_alias_writes_to_leaf_control_storage() {
     let mut ui = AliasDefaultsDemo::new();
     assert_eq!(ui.get_document(), "编辑器默认值");
     ui.set_document("外部设置".into());
@@ -25,7 +25,7 @@ fn exported_property_alias_uses_and_resets_the_leaf_control_storage() {
     assert_eq!(scene.at_path(&path).unwrap().text("text"), Some("外部设置"));
     assert!(ui.edit_at(&scene, &path, "控件写入".into()));
     assert_eq!(ui.get_document(), "控件写入");
-    ui.reset_document();
+    ui.set_document("编辑器默认值".into());
     assert_eq!(ui.get_document(), "编辑器默认值");
     let scene = ui.render();
     assert!(ui.dispatch_at(&scene, &path, "accepted"));

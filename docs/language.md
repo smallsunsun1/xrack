@@ -4,7 +4,7 @@
 
 ```text
 export component Counter inherits Window {
-    in-out property <int> count: 0;
+    in-out property <int> count = 0;
     out property <int> doubled: count * 2;
     callback increment(step: int);
     increment(step) => { root.count += step; }
@@ -35,7 +35,7 @@ export component Counter inherits Window {
 
 属性 getter 首次读取时求值并缓存结果。运行时记录绑定本次实际读取的属性，依赖变化时沿组件关系标记失效，等下一次读取才重算。条件切换会替换订阅，未执行分支中的属性变化不会使缓存失效。
 
-setter 和 DSL 赋值覆盖绑定并解除订阅，`reset_*()` 恢复默认绑定。已知值相同的写入不会使下游失效。`in` 和 `in-out` 属性提供公开 setter，`out` 提供公开 getter，`private` 仅供组件内部访问。
+属性赋值只改变可写存储里的值。已知值相同的写入不会使下游失效。可写的 `in` 和 `in-out` 属性提供公开 Rust setter，`out` 提供公开 getter，`private` 仅供组件内部访问。
 
 结构体更新表达式用 `..` 从同类型的结构体取出未列出的字段。它先按书写顺序计算显式字段，再求值一次 `..` 后的表达式，得到一个新的结构体值。可以用它在回调中修改几个字段，再把整个值写回属性。
 
@@ -45,7 +45,7 @@ rename(new-name) => {
 }
 ```
 
-这里的赋值遵循整属性写入规则，会覆盖 `user` 原有的绑定。直接给 `root.user.name` 赋值仍不支持。
+这里的赋值遵循整属性写入规则。`user` 须声明为可写存储。直接给 `root.user.name` 赋值仍不支持。
 
 直接写在元素上的普通计算绑定也使用缓存，例如 `Text { text: "计数：" + root.count; }`。纯回调被 Rust 重新注册时，依赖它的绑定会失效。生成组件通过 `Component::render_shared()` 复用干净的 `Node` 快照。
 
@@ -88,6 +88,51 @@ DSL 调用与 Rust 的 `invoke_*()` 共用同一处理逻辑。注册了 Rust `o
 
 实例处理器和 Rust `on_*()` 设置目标回调的实现。声明上已有的普通 DSL 回调语句仍先执行，返回值以当前注册实现为准。别名上声明的处理器可作为默认实现。纯回调的注册变化会让依赖该回调的绑定失效。运行 `bazel run //examples/stepper:stepper -- --linked`，在共享编辑器或任务行按 Enter 体验转发。
 
+### 属性初始化与绑定
+
+| 声明 | 行为 |
+| --- | --- |
+| `property <T> name: expression;` | 持续从表达式取值。读取时求值，依赖变化后重新求值。公式属性只读。 |
+| `property <T> name = expression;` | 在实例及其输入连接完成后计算一次，把结果存入可写属性。读写权限仍由 `in`、`out` 等可见性限定。 |
+| `property <T> name;` | 分配可写存储，初始值为该类型的默认值。 |
+| `property <T> name <=> target;` | 别名沿着连接读写目标，目标必须是可写存储。 |
+
+例如，编辑器同时保留上游文档名和自己的草稿。
+
+```xr
+enum TitleMode { Follow, Custom(string) }
+
+component DocumentEditor inherits Rectangle {
+    in property <string> document-title;
+    out property <string> live-title: root.document-title;
+    private property <string> draft = root.document-title;
+
+    private property <TitleMode> title-mode = TitleMode::Follow;
+    out property <string> display-title: match root.title-mode {
+        Follow => root.document-title,
+        Custom(text) => text,
+    };
+
+    TextInput { text <=> root.draft; }
+
+    callback rename(string);
+    rename(text) => { root.title-mode = TitleMode::Custom(text); }
+    callback restore-default();
+    restore-default => { root.title-mode = TitleMode::Follow; }
+}
+
+export component App inherits Window {
+    in-out property <string> title-source = "A";
+    DocumentEditor { document-title: root.title-source; }
+}
+```
+
+父组件把 `"A"` 接入编辑器。Rust 调用 `app.set_title_source("B".into())` 后，`live-title` 变成 `"B"`，草稿保留 `"A"`。如果用户显式使用 `rename("A")` 接管标题，`display-title` 就保留 `"A"`，直到调用 `restore-default()` 后重新显示最新的上游名称。公式属性没有 Rust setter，一次性初始化属性没有重新执行初始化表达式的 reset 方法。
+
+实例上的 `document-title: root.title-source` 由提供输入的组件拥有。即使接收端声明为 `in-out`，从接收端写入也无法替换这条绑定。双方需要共享可写存储时，使用 `<=>`。
+
+`TextEdit { text: root.title-source; }` 持续显示上游值，`edited(value)` 仍会报告输入，应用可以在事件处理器里更新上游。需要独立草稿时，可以把文本双向绑定到 `=` 初始化的属性。类似地，`ScrollView` 的单向 `content-y:` 保留计算绑定，`content-y <=>` 会把滚动偏移写回可写属性。
+
 ## 局部变量、纯函数和枚举
 
 回调和纯函数中可用 `let name = expression;` 声明不可写的局部变量。初始化表达式执行一次，后续语句和末尾表达式均可读取它。内层块可以声明同名变量，离开该块后外层变量恢复可见。`pure function` 在同一处声明返回类型和实现，调用方式与纯度检查沿用 `pure callback`。
@@ -100,7 +145,7 @@ export enum RequestState {
 }
 
 component StatusLine inherits VerticalLayout {
-    in property <RequestState> state: RequestState::Idle;
+    in property <RequestState> state = RequestState::Idle;
     pure function status-text(value: RequestState) -> string {
         let caption = match value {
             Idle => "等待",
@@ -139,7 +184,7 @@ component Panel inherits VerticalLayout {
 }
 
 export global Session {
-    in-out property <string> user-name: "Guest";
+    in-out property <string> user-name = "Guest";
 }
 
 export component App inherits Window {
@@ -204,7 +249,7 @@ export component ResultsDemo inherits Window {
 
 ```xr
 export component TransformExample inherits Window {
-    in-out property <float> angle: 30;
+    in-out property <float> angle = 30;
     property <transform2d> tilt: Transform2D.around(
         Transform2D.rotation(root.angle),
         Point2D.new(40px, 20px),
@@ -255,7 +300,7 @@ Rectangle {
 `Times.parse-iso(text, fallback)` 和 `Times.is-valid-iso(text)` 接受 ASCII `HH:mm` 或 `HH:mm:ss`，省略秒时解析为零。解析失败时才求值 `fallback`。`Times.format-iso(time, show-seconds)` 返回补零后的 24 小时制文本。`Times.in-range(time, minimum, maximum)` 检查闭区间，起点晚于终点时没有可选时间。
 
 ```xr
-in property <Date> selected: Date { year: 2024, month: 1, day: 31 };
+in property <Date> selected = Date { year: 2024, month: 1, day: 31 };
 out property <Date> next-month: Dates.add-months(root.selected, 1, root.selected);
 out property <int> weekday: Dates.weekday(root.next-month);
 ```
@@ -296,7 +341,7 @@ clicked => {
 translations "i18n/catalog.toml";
 
 export component Counter inherits Window {
-    in-out property <int> count: 0;
+    in-out property <int> count = 0;
     Text { text: @tr("counter-count", count: root.count); }
 }
 ```
