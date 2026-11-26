@@ -300,6 +300,8 @@ LogicalResult PropertyOp::verify() {
   auto mode = getMode().value_or("");
   if (!mode.empty() && mode != "stored" && mode != "formula" && mode != "once")
     return emitOpError("unknown property mode ") << mode;
+  if (mode == "formula" && getVisibility() == "in-out")
+    return emitOpError("in-out property requires writable storage");
   if (getAlias() && (mode == "formula" || mode == "once"))
     return emitOpError("an alias cannot supply its own initializer");
   if (!getAlias())

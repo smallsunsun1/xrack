@@ -2280,7 +2280,7 @@ pub fn resolve_symbols(
 ) -> std::result::Result<Vec<SymbolReference>, Vec<Diagnostic>> {
     let references = SymbolReferences::default();
     let doc = crate::declare_handles(doc);
-    analyze_components(&doc, Some(references.clone()), |_, _| {})?;
+    analyze_components(&doc, Some(references.clone()), &mut Vec::new(), |_, _| {})?;
     Ok(std::rc::Rc::unwrap_or_clone(references).into_inner())
 }
 
@@ -2289,12 +2289,22 @@ pub fn for_each_component(
     doc: &ast::Document,
     emit: impl FnMut(&ast::Component, Vec<LoweredMember<'_>>),
 ) -> std::result::Result<(), Vec<Diagnostic>> {
-    analyze_components(doc, None, emit)
+    analyze_components(doc, None, &mut Vec::new(), emit)
+}
+
+/// Validate the same source compiled by the CLI and return potential ownership conflicts.
+pub fn validate_with_warnings(
+    doc: &ast::Document,
+) -> std::result::Result<Vec<Diagnostic>, Vec<Diagnostic>> {
+    let mut warnings = Vec::new();
+    analyze_components(doc, None, &mut warnings, |_, _| {})?;
+    Ok(warnings)
 }
 
 fn analyze_components(
     doc: &ast::Document,
     references: Option<SymbolReferences>,
+    warnings: &mut Vec<Diagnostic>,
     mut emit: impl FnMut(&ast::Component, Vec<LoweredMember<'_>>),
 ) -> std::result::Result<(), Vec<Diagnostic>> {
     if !doc.imports.is_empty() {
@@ -2452,7 +2462,7 @@ fn analyze_components(
     if !errors.is_empty() {
         return Err(errors);
     }
-    check_composition(&validated).map_err(|error| vec![error])?;
+    check_composition(&validated, &doc.source_files, warnings).map_err(|error| vec![error])?;
     for (c, members) in validated {
         emit(c, members);
     }
@@ -3115,6 +3125,15 @@ fn inherit<'a>(
                         return fail(
                             binding.span,
                             format!("cannot override inherited property `{}`", binding.name),
+                        );
+                    }
+                    if property.visibility == "in-out" {
+                        return fail(
+                            binding.span,
+                            format!(
+                                "binding inherited in-out property `{}` would make it read-only; declare a separate `in` property for the supplied value",
+                                binding.name
+                            ),
                         );
                     }
                     if let Some(references) = references {
@@ -6986,6 +7005,15 @@ fn alias_initializer(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Resul
 }
 
 fn property(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Result<ir::Property> {
+    if p.visibility == "in-out" && p.mode == ast::PropertyMode::Formula {
+        return fail(
+            p.span,
+            format!(
+                "in-out property `{}` has a read-only formula; use `out ... : expression` for a formula or `in-out ... = expression` for writable storage",
+                p.name
+            ),
+        );
+    }
     let caller = scope.for_caller(owner, &p.name);
     let scope = caller.as_ref().unwrap_or(scope);
     let init = match &p.value {
@@ -12623,7 +12651,11 @@ pub fn qualify_global_dependency(component: &str, path: &str) -> String {
     )
 }
 
-fn check_composition(components: &[(&ast::Component, Vec<LoweredMember<'_>>)]) -> Result<()> {
+fn check_composition(
+    components: &[(&ast::Component, Vec<LoweredMember<'_>>)],
+    source_files: &[String],
+    warnings: &mut Vec<Diagnostic>,
+) -> Result<()> {
     let definitions: BTreeMap<_, _> = components
         .iter()
         .map(|(c, members)| (c.name.as_str(), members.as_slice()))
@@ -12656,7 +12688,7 @@ fn check_composition(components: &[(&ast::Component, Vec<LoweredMember<'_>>)]) -
             "",
             &mut edges,
             &mut links,
-            &mut GeometryFlow::default(),
+            &mut BindingChecks::default(),
             false,
         );
         for (key, (span, dependencies)) in edges {
@@ -12676,14 +12708,14 @@ fn check_composition(components: &[(&ast::Component, Vec<LoweredMember<'_>>)]) -
     for members in definitions.values() {
         let mut edges = Dependencies::new();
         let mut links = BTreeMap::new();
-        let mut geometry = GeometryFlow::default();
+        let mut checks = BindingChecks::default();
         collect_bindings(
             members,
             &definitions,
             "",
             &mut edges,
             &mut links,
-            &mut geometry,
+            &mut checks,
             false,
         );
         let overlays: Vec<_> = edges
@@ -12703,9 +12735,20 @@ fn check_composition(components: &[(&ast::Component, Vec<LoweredMember<'_>>)]) -
                 .extend(dependencies);
         }
         check_cycles(&edges, "property binding or callback call")?;
-        geometry.validate(&edges)?;
+        checks.geometry.validate(&edges)?;
+        checks.ownership.validate(
+            |endpoint| terminal_binding(endpoint, &links),
+            source_files,
+            warnings,
+        )?;
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct BindingChecks {
+    geometry: GeometryFlow,
+    ownership: crate::ownership::OwnershipChecks,
 }
 
 #[derive(Default)]
@@ -12843,7 +12886,7 @@ fn collect_bindings(
     prefix: &str,
     edges: &mut Dependencies,
     links: &mut BTreeMap<String, String>,
-    geometry: &mut GeometryFlow,
+    checks: &mut BindingChecks,
     inherited_overlay: bool,
 ) {
     let instances: BTreeSet<_> = members
@@ -13164,7 +13207,7 @@ fn collect_bindings(
                 let overlay =
                     binding_scope(&layout_scopes).1 || matches!(*kind, "PopupWindow" | "Tooltip");
                 layout_scopes.push((kind, overlay));
-                geometry.overlays.insert(scope_path(key), overlay);
+                checks.geometry.overlays.insert(scope_path(key), overlay);
                 if *instance {
                     collect_bindings(
                         definitions[kind],
@@ -13172,7 +13215,7 @@ fn collect_bindings(
                         &format!("{prefix}{key}/"),
                         edges,
                         links,
-                        geometry,
+                        checks,
                         overlay,
                     );
                 } else if viewport_kind(kind) {
@@ -13249,7 +13292,10 @@ fn collect_bindings(
                 {
                     inputs.push(key.clone());
                 }
-                geometry.sinks.push((scope_path(owner), key, value.span));
+                checks
+                    .geometry
+                    .sinks
+                    .push((scope_path(owner), key, value.span));
                 continue;
             }
             LoweredMember::StateSelection(selection) => {
@@ -13298,7 +13344,10 @@ fn collect_bindings(
                     let mut deps = vec![path(&state.owner, "@state")];
                     dependencies(&binding.value, &path, &mut deps);
                     edges.insert(key.clone(), (binding.span, deps));
-                    geometry.sinks.push((scope_path(owner), key, binding.span));
+                    checks
+                        .geometry
+                        .sinks
+                        .push((scope_path(owner), key, binding.span));
                 }
                 continue;
             }
@@ -13309,7 +13358,10 @@ fn collect_bindings(
                     let mut deps = Vec::new();
                     dependencies(&binding.value, &path, &mut deps);
                     edges.insert(key.clone(), (binding.span, deps));
-                    geometry.sinks.push((scope_path(owner), key, binding.span));
+                    checks
+                        .geometry
+                        .sinks
+                        .push((scope_path(owner), key, binding.span));
                 }
                 continue;
             }
@@ -13328,7 +13380,8 @@ fn collect_bindings(
                     let mut deps = Vec::new();
                     dependencies(enabled, &path, &mut deps);
                     edges.insert(key.clone(), (animation.span, deps));
-                    geometry
+                    checks
+                        .geometry
                         .sinks
                         .push((scope_path(owner), key, animation.span));
                 }
@@ -13355,14 +13408,27 @@ fn collect_bindings(
                         dependencies(enabled, &path, &mut deps);
                     }
                     edges.insert(key.clone(), (animation.span, deps));
-                    geometry
+                    checks
+                        .geometry
                         .sinks
                         .push((scope_path(owner), key, animation.span));
                 }
                 continue;
             }
             LoweredMember::Property(p) => (&p.name, &p.init, p.span),
+            LoweredMember::Handler(callback) => {
+                checks
+                    .ownership
+                    .callback(None, callback, prefix.is_empty(), &path);
+                continue;
+            }
             LoweredMember::Callback(callback) | LoweredMember::InstanceHandler(callback) => {
+                let owner = binding_scope(&owners);
+                let endpoint = matches!(m, LoweredMember::Callback(_))
+                    .then(|| format!("{}()", path(owner, &callback.name)));
+                checks
+                    .ownership
+                    .callback(endpoint, callback, prefix.is_empty(), &path);
                 let mut deps = Vec::new();
                 for statement in ir::walk_statements(&callback.body) {
                     match statement {
@@ -13540,14 +13606,16 @@ fn collect_bindings(
                 fixed_labels.contains(owner),
             )
         {
-            geometry
+            checks
+                .geometry
                 .sinks
                 .push((scope_path(owner), destination.clone(), span));
         }
         if value.op == "control_read"
             && let Some(target) = &value.owner
         {
-            geometry
+            checks
+                .geometry
                 .sinks
                 .push((scope_path(target), path(target, &value.value), span));
         }
@@ -13555,6 +13623,9 @@ fn collect_bindings(
             // Keep alias edges in the instance. The caller replaces the
             // initializer at the storage endpoint reached by those edges.
             destination = instance_storage(destination, &format!("{prefix}{owner}/"), links);
+            if matches!(m, LoweredMember::Binding(_)) {
+                checks.ownership.inputs.insert(destination.clone(), span);
+            }
         }
         let forwards = matches!(m, LoweredMember::Property(p) if p.alias)
             || matches!(
@@ -13565,6 +13636,12 @@ fn collect_bindings(
             && value.op != "check_group_read"
             && let [target] = deps.as_slice()
         {
+            if prefix.is_empty() {
+                checks
+                    .ownership
+                    .links
+                    .push(crate::ownership::Access::new(target.clone(), span));
+            }
             links.insert(destination.clone(), target.clone());
         }
         edges.insert(destination, (span, deps));

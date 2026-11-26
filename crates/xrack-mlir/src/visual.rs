@@ -494,6 +494,7 @@ fn verify_property_and_callback_dependencies(module: &Module) -> Result<(), Stri
         if component.attribute("global") != Some("true") {
             let mut bindings = ComponentBindingEdges::default();
             graph.collect(name, *component, "", "root", false, &mut bindings)?;
+            graph.verify_instance_writes(name, *component, &bindings.edges)?;
             for (slot, (operation, dependencies)) in bindings.state_inputs {
                 // An incoming link and a state in a nested component can reach
                 // the same storage even when their instance operations differ.
@@ -551,6 +552,63 @@ struct ComponentBindingEdges<'m> {
 }
 
 impl<'m> ComponentDependencies<'m> {
+    fn verify_instance_writes(
+        &self,
+        component: &str,
+        scope: OperationRef<'m>,
+        bindings: &DependencyEdges<'m>,
+    ) -> Result<(), String> {
+        let properties = &self.aliases.properties[component];
+        let mut pending = vec![scope];
+        while let Some(op) = pending.pop() {
+            pending.extend(op.children());
+            let reference = match op.name() {
+                "xr.assign" => Some((op.attribute("owner").unwrap_or("root"), op.attr("name")?)),
+                "xr.instance_link" | "xr.control_link" | "xr.property" => {
+                    if op.name() == "xr.property" && op.attribute("alias") != Some("true") {
+                        continue;
+                    }
+                    op.operand(0)
+                        .and_then(ValueRef::defining_operation)
+                        .filter(|read| matches!(read.name(), "xr.read" | "xr.control_read"))
+                        .map(|read| {
+                            Ok::<_, String>((
+                                read.attribute("owner").unwrap_or("root"),
+                                read.attr("value")?,
+                            ))
+                        })
+                        .transpose()?
+                }
+                _ => None,
+            };
+            let Some(reference) = reference else {
+                continue;
+            };
+            let (owner, name) = properties.resolve(&self.aliases.properties, reference)?;
+            let slot = if let Some(child) = properties.instance(owner) {
+                instance_dependency_slot("", owner, child, &self.aliases.properties, name)?
+            } else if properties.is_control((owner, name)) {
+                format!("{owner}.@control:{name}")
+            } else {
+                continue;
+            };
+            if let Some((binding, _)) = bindings.get(&slot)
+                && binding.name() == "xr.bind"
+            {
+                return Err(at(
+                    op,
+                    &format!(
+                        "cannot write read-only property `{}.{}`: {}",
+                        reference.0,
+                        reference.1,
+                        at(*binding, "storage supplied by a one-way input"),
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn collect(
         &self,
         component: &str,

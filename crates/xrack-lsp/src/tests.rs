@@ -10512,3 +10512,53 @@ fn initializers_format_and_formulas_report_read_only_writes() {
     let formatted = edits[0]["newText"].as_str().unwrap();
     assert!(formatted.contains(r#"draft = "A";"#));
 }
+
+#[test]
+fn cross_file_ownership_diagnostics_distinguish_definite_and_possible_writes() {
+    let entry = fixture_uri("ownership-app.xr");
+    let dependency = fixture_uri("ownership-editor.xr");
+    let editor = r#"export component Editor inherits Rectangle {
+        in-out property <string> value;
+        in-out property <string> alternate <=> root.value;
+        callback rename(string);
+        rename(text) => { root.value = text; }
+        callback maybe-rename(string);
+        maybe-rename(text) => { if text != "" { root.value = text; } }
+    }"#;
+    for (write, severity, message) in [
+        (
+            r#"editor.value = "X";"#,
+            1,
+            "cannot write read-only property",
+        ),
+        (r#"editor.rename("X");"#, 1, "writes read-only property"),
+        (
+            r#"editor.maybe-rename("X");"#,
+            2,
+            "may write read-only property",
+        ),
+    ] {
+        let source = format!(
+            r#"import {{ Editor }} from "ownership-editor.xr";
+export component App inherits Window {{
+    editor := Editor {{ alternate: "A"; }}
+    callback act();
+    act => {{ {write} }}
+}}"#
+        );
+        let workspace =
+            completion::Workspace::new(&entry, [(dependency.as_str(), editor)].into_iter())
+                .unwrap();
+        let report = analysis::analyze(&entry, &source, Some(&workspace));
+        let diagnostics = &report.diagnostics[&entry];
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0]["range"]["start"]["line"], 4);
+        assert_eq!(diagnostics[0]["severity"], severity);
+        assert!(
+            diagnostics[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains(message)
+        );
+    }
+}

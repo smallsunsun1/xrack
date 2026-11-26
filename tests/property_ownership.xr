@@ -23,7 +23,7 @@ component DocumentEditor inherits Rectangle {
 component InputProbe inherits Rectangle {
     in-out property <string> supplied;
     callback attempt(string);
-    attempt(value) => { root.supplied = value; }
+    attempt(value) => { if value != "" { root.supplied = value; } }
 }
 
 export component PropertyOwnership inherits Window {

@@ -6,7 +6,7 @@ export component VideoDemo inherits Window {
     in property <bool> start-playing = false;
     in property <string> subtitles-file = "";
     in-out property <float> speed = 1;
-    in-out property <bool> muted = false;
+    in property <bool> muted = false;
     in property <int> audio-track = -1;
     in-out property <float> sound-level = 0.65;
     in property <bool> network-controls = false;

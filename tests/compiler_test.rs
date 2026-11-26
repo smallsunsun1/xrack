@@ -12826,7 +12826,7 @@ fn rejects_writes_and_links_to_formula_properties() {
     ] {
         let source = format!(
             r#"component App inherits Window {{
-                in-out property <string> source: "A";
+                out property <string> source: "A";
                 {statement}
             }}"#
         );
@@ -12853,7 +12853,7 @@ fn rejects_writes_and_links_to_formula_properties() {
 fn rust_api_only_exposes_writable_property_setters() {
     let compilation = compile(
         r#"export component App inherits Window {
-            in-out property <string> formula: "A";
+            out property <string> formula: "A";
             in-out property <string> stored = root.formula;
         }"#,
         "setters.xr",
@@ -12864,4 +12864,127 @@ fn rust_api_only_exposes_writable_property_setters() {
     assert!(!rust.contains("pub fn set_formula"));
     assert!(rust.contains("pub fn set_stored"));
     assert!(!rust.contains("pub fn reset_stored"));
+}
+
+#[test]
+fn in_out_formulas_require_writable_storage_in_source_and_mlir() {
+    let source = r#"export component App inherits Window {
+        out property <string> display: "A";
+    }"#;
+    let error = compile(
+        &source.replace("out property", "in-out property"),
+        "formula.xr",
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error.contains("in-out property `display` has a read-only formula"),
+        "{error}"
+    );
+    let raw =
+        lower(source, "formula.xr").replace(r#"visibility = "out""#, r#"visibility = "in-out""#);
+    let error = mlir::Module::parse(&raw).err().unwrap();
+    assert!(
+        error.contains("in-out property requires writable storage"),
+        "{error}"
+    );
+}
+
+#[test]
+fn cross_file_writes_use_instance_storage_and_resolve_callback_effects() {
+    let directory = std::env::current_dir().unwrap();
+    let filename = directory.join("ownership-app.xr");
+    let editor = r#"export component Editor inherits Rectangle {
+        in-out property <string> value;
+        in-out property <string> alternate <=> root.value;
+        callback rename(string);
+        rename(text) => { root.value = text; }
+        callback rename-again(string);
+        rename-again(text) => { root.rename(text); }
+        callback maybe-rename(string);
+        maybe-rename(text) => { if text != "" { root.value = text; } }
+    }"#;
+    for (binding, statement, diagnostic) in [
+        (
+            "alternate: root.source;",
+            r#"editor.value = "X";"#,
+            Some("cannot write read-only property `editor.value`"),
+        ),
+        (
+            "alternate: root.source;",
+            r#"if false { editor.value = "X"; }"#,
+            Some("cannot write read-only property `editor.value`"),
+        ),
+        (
+            "value: root.source;",
+            r#"editor.rename("X");"#,
+            Some("callback `editor.rename()` writes"),
+        ),
+        (
+            "alternate: root.source;",
+            r#"editor.rename-again("X");"#,
+            Some("callback `editor.rename-again()` writes"),
+        ),
+        ("alternate: root.source;", r#"other.rename("X");"#, None),
+        (
+            "alternate: root.source;",
+            r#"editor.maybe-rename("X");"#,
+            None,
+        ),
+        ("alternate <=> root.source;", r#"editor.rename("X");"#, None),
+    ] {
+        let source = format!(
+            r#"import {{ Editor }} from "ownership-editor.xr";
+            export component App inherits Window {{
+                in-out property <string> source = "A";
+                editor := Editor {{ {binding} }}
+                other := Editor {{ value <=> root.source; }}
+                callback act();
+                act => {{ {statement} }}
+            }}"#
+        );
+        let result = xrack_compiler::prepare_preview(
+            &source,
+            &filename.to_string_lossy(),
+            [(directory.join("ownership-editor.xr"), editor.to_owned())].into(),
+        );
+        if let Some(diagnostic) = diagnostic {
+            let error = result.err().unwrap().to_string();
+            assert!(error.contains(diagnostic), "{error}");
+            assert!(
+                error.contains("ownership-app.xr") && error.contains("one-way input"),
+                "{error}"
+            );
+            if diagnostic.starts_with("callback") {
+                assert!(error.contains("ownership-editor.xr"), "{error}");
+            }
+        } else if let Err(error) = result {
+            panic!("{statement}: {error}");
+        }
+    }
+}
+
+#[test]
+fn raw_mlir_rejects_writes_through_a_second_name_for_one_way_input_storage() {
+    let raw = lower(
+        r#"component Editor inherits Rectangle {
+            in-out property <string> value;
+            in-out property <string> alternate <=> root.value;
+        }
+        export component App inherits Window {
+            editor := Editor { alternate: "A"; }
+            other := Editor {}
+            callback act();
+            act => { other.value = "X"; }
+        }"#,
+        "alias-input.mlir",
+    );
+    assert!(mlir::Module::parse(&raw).is_ok());
+    let invalid = raw.replace(r#"owner = "other""#, r#"owner = "editor""#);
+    assert_ne!(raw, invalid);
+    let error = mlir::Module::parse(&invalid).err().unwrap();
+    assert!(
+        error.contains("read-only property `editor.value`") && error.contains("one-way input"),
+        "{error}"
+    );
 }

@@ -129,7 +129,9 @@ export component App inherits Window {
 
 父组件把 `"A"` 接入编辑器。Rust 调用 `app.set_title_source("B".into())` 后，`live-title` 变成 `"B"`，草稿保留 `"A"`。如果用户显式使用 `rename("A")` 接管标题，`display-title` 就保留 `"A"`，直到调用 `restore-default()` 后重新显示最新的上游名称。公式属性没有 Rust setter，一次性初始化属性没有重新执行初始化表达式的 reset 方法。
 
-实例上的 `document-title: root.title-source` 由提供输入的组件拥有。即使接收端声明为 `in-out`，从接收端写入也无法替换这条绑定。双方需要共享可写存储时，使用 `<=>`。
+实例上的 `document-title: root.title-source` 由提供输入的组件拥有。即使接收端声明为 `in-out`，从接收端写入也无法替换这条绑定。双方需要共享可写存储时，使用 `<=>`。给实例接上单向绑定后，经由同一存储的其他别名写入也会报错。如果显式调用的 DSL 回调会写入这个输入，编译器会指出调用、写入和绑定的位置。写入只在条件分支里发生时，LSP 会提示可能的冲突。
+
+`in-out` 属性需有可写存储或可写别名。用 `out property <T> value: expression;` 公开计算结果，用 `in-out property <T> value = expression;` 声明可写的初值。
 
 `TextEdit { text: root.title-source; }` 持续显示上游值，`edited(value)` 仍会报告输入，应用可以在事件处理器里更新上游。需要独立草稿时，可以把文本双向绑定到 `=` 初始化的属性。类似地，`ScrollView` 的单向 `content-y:` 保留计算绑定，`content-y <=>` 会把滚动偏移写回可写属性。
 
