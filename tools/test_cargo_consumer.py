@@ -63,8 +63,10 @@ fn main() {
     interpreted.set("count", HostValue::Int(21)).unwrap();
     compiled.set_count(21);
     check(&interpreted, &compiled, 21);
-    interpreted.reset("count").unwrap();
-    compiled.reset_count();
+    assert!(interpreted.reset("count").is_err());
+    check(&interpreted, &compiled, 21);
+    interpreted.set("count", HostValue::Int(0)).unwrap();
+    compiled.set_count(0);
     check(&interpreted, &compiled, 0);
     assert_eq!(interpreted.take_error(), None);
 
