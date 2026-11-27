@@ -87,7 +87,9 @@ test('keeps the activated frame interactive when a newer edit fails', { timeout:
     await openPreview();
     try {
         const activating = once(events, 'activating');
-        const script = panel.webview.html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1];
+        const script = [...panel.webview.html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)]
+            .find(([, body]) => body.includes('acquireVsCodeApi()'))?.[1];
+        assert.ok(script, 'missing the inline preview webview script');
         runInNewContext(script, {
             acquireVsCodeApi: () => ({ postMessage: message => events.emit('incoming', message) }),
             document: { getElementById: () => ({ addEventListener() {} }) },

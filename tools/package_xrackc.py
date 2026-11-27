@@ -57,9 +57,9 @@ def cargo_licenses(host, roots=("xrack-compiler",)):
         name = f'{package["name"]}-{package["version"]}'
         # Some crates omit the license from their crates.io archive. Use the
         # original license from the exact source revision in .cargo_vcs_info.json.
-        bundled_license = ROOT / "tools" / "licenses" / name / "LICENSE-MIT"
-        if not files and bundled_license.is_file():
-            files.add(bundled_license)
+        if not files:
+            bundled_licenses = ROOT / "tools" / "licenses" / name
+            files.update(file for file in bundled_licenses.glob("LICENSE*") if file.is_file())
         if not files:
             repository = package["repository"]
             if (
