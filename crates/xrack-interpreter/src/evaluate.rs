@@ -6866,6 +6866,7 @@ impl ValueType {
                 | (Self::Instance3D, Value::Instance3D(_))
                 | (Self::InstanceTable3D, Value::InstanceTable3D(_))
                 | (Self::TextureData2D, Value::TextureData2D(_))
+                | (Self::TextureData3D, Value::TextureData3D(_))
                 | (Self::MeshAsset3D, Value::MeshAsset3D(_))
                 | (Self::MeshNode3D, Value::MeshNode3D(_))
                 | (Self::Bounds3D, Value::Bounds3D(_))
@@ -7980,6 +7981,24 @@ fn geometry_function(
                 Value::IntList(pixels),
             ],
         ) => xrack_runtime::TextureData2D::from_ints(*width, *height, pixels).into(),
+        (
+            VolumeRgba8,
+            [
+                Value::Int(w),
+                Value::Int(h),
+                Value::Int(d),
+                Value::IntModel(voxels),
+            ],
+        ) => xrack_runtime::TextureData3D::from_model(*w, *h, *d, voxels).into(),
+        (
+            VolumeRgba8,
+            [
+                Value::Int(w),
+                Value::Int(h),
+                Value::Int(d),
+                Value::IntList(voxels),
+            ],
+        ) => xrack_runtime::TextureData3D::from_ints(*w, *h, *d, voxels).into(),
         (PrepareInstanceTable3D, [Value::RecordList(rows)]) => {
             program.scene_projections.record_instance_table(rows).into()
         }

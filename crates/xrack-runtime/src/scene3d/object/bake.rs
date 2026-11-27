@@ -78,7 +78,7 @@ impl SceneObject {
         let mut diffuse = color.component_mul(&tint);
         let mut emission = Vector3::zeros();
         if let Some(material) = material {
-            if !material.depth_covers(uv, alpha, f32::from(self.color.0 as u8) / 255.0) {
+            if !material.depth_covers([uv, interpolate_uv(1)], alpha, self.tint_alpha()) {
                 return None;
             }
             if !material.vertex_colors {
@@ -118,7 +118,7 @@ impl SceneObject {
                 } else {
                     let metallic = pbr.metallic
                         * material.vertex_masks.metalness(rgba)
-                        * pbr.surface_texture.as_ref().map_or(1.0, |map| {
+                        * pbr.metalness_texture().map_or(1.0, |map| {
                             map.scalar_at(
                                 interpolate_uv(map.uv_slot),
                                 material.channels.channel(MaterialChannel::Metalness),

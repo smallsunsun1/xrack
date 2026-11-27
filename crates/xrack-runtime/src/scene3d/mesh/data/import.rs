@@ -180,10 +180,15 @@ impl Mesh3D {
             return Err("mesh tangent data does not match the vertex buffer");
         }
         if materials.iter().any(|material| {
-            !material
-                .base_color
-                .iter()
-                .all(|channel| (0.0..=1.0).contains(channel))
+            !(0.0..=1.0).contains(&material.opacity)
+                || material
+                    .opacity_texture
+                    .as_ref()
+                    .is_some_and(|texture| !texture.is_valid())
+                || !material
+                    .base_color
+                    .iter()
+                    .all(|channel| (0.0..=1.0).contains(channel))
                 || material
                     .alpha_mode
                     .cutoff()

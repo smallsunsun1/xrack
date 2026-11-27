@@ -536,6 +536,9 @@ impl MaterialLoader<'_> {
             emissive: material.emissive,
             occlusion_strength: 1.0,
             surface_texture: None,
+            separate_surface_maps: None,
+            specular_reflection: None,
+            height_map: None,
             emissive_texture: None,
             occlusion_texture: None,
             normal_map: None,
@@ -571,6 +574,9 @@ impl MaterialLoader<'_> {
         };
         let transparent = base_color[3] < 1.0 || image_transparent;
         Ok(MeshMaterial {
+            opacity: 1.0,
+            opacity_texture: None,
+            invert_opacity_map_value: false,
             base_color,
             base_texture,
             base_item: None,

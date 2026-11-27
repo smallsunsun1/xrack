@@ -62,6 +62,7 @@ export component HostValues inherits Window {
     in-out property <styled-text> label: @markdown("**XRack**");
     in-out property <image> icon: @image-url("");
     in-out property <texturedata2d> pixel-data;
+    in-out property <texturedata3d> volume-data;
     in-out property <[SearchRow]> rows: [];
     in-out property <[TouchPoint]> contacts;
     in-out property <[string]> names: ["one"];
@@ -286,13 +287,22 @@ class BindingTest(unittest.TestCase):
             path = Path(directory) / "values.xr"
             path.write_text(HOST_VALUES_UI, encoding="utf-8")
             ui = xrack.load_file(path).create("HostValues")
-            texture: xrack.TextureData2D = xrack.TextureData2D.rgba8(2, 1, bytes([16, 32, 48, 255] * 2))
+            texture: xrack.TextureData2D = xrack.TextureData2D.rgba8(
+                2, 1, bytes([16, 32, 48, 255] * 2)
+            )
             self.assertTrue(texture.valid)
             ui.set("pixel-data", texture)
             self.assertEqual(ui.get("pixel-data"), texture)
             self.assertEqual((texture.width, texture.height), (2, 1))
             ui.set("pixel-data", xrack.TextureData2D.rgba8(1, 1, b""))
             self.assertEqual(ui.get("pixel-data"), xrack.TextureData2D())
+            volume: xrack.TextureData3D = xrack.TextureData3D.rgba8(
+                1, 1, 2, bytes([16, 32, 48, 255, 64, 80, 96, 255])
+            )
+            self.assertTrue(volume.valid)
+            self.assertEqual(volume.depth, 2)
+            ui.set("volume-data", volume)
+            self.assertEqual(ui.get("volume-data"), volume)
 
     def test_file_instance_table_reads_source_rows_without_a_scene(self) -> None:
         source = """

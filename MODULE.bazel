@@ -260,6 +260,8 @@ crate.annotation(
         "//bazel:femtovg_xrack_zzzzzzzzz_batch_short_words.patch",
         "//bazel:femtovg_xrack_zzzzzzzzzz_word_cache_metrics.patch",
         "//bazel:femtovg_xrack_zzzzzzzzzzz_skip_blank_glyph_clears.patch",
+        "//bazel:femtovg_xrack_zzzzzzzzzzzz_batch_short_word_clusters.patch",
+        "//bazel:femtovg_xrack_zzzzzzzzzzzzz_prepare_window_text_pipelines.patch",
     ],
 )
 

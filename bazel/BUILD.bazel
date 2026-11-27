@@ -60,6 +60,8 @@ exports_files([
     "femtovg_xrack_zzzzzzzzz_batch_short_words.patch",
     "femtovg_xrack_zzzzzzzzzz_word_cache_metrics.patch",
     "femtovg_xrack_zzzzzzzzzzz_skip_blank_glyph_clears.patch",
+    "femtovg_xrack_zzzzzzzzzzzz_batch_short_word_clusters.patch",
+    "femtovg_xrack_zzzzzzzzzzzzz_prepare_window_text_pipelines.patch",
     "ffmpeg_windows_probes.patch",
     "openssl_windows_ssize_max.patch",
     "openssl_windows_winstore.patch",

@@ -4040,6 +4040,54 @@ fn rotation_tracks_complete_and_report_bad_key_types() {
 }
 
 #[test]
+fn volume_texture_completes_the_constructor_and_depth() {
+    for (source, label) in [
+        (
+            "component App inherits Window { property <texturedata3|",
+            "texturedata3d",
+        ),
+        (
+            "component App inherits Window { property <texturedata3d> density <- TextureData3D.rgb|",
+            "rgba8",
+        ),
+        (
+            "component App inherits Window { property <texturedata3d> density; property <int> d <- root.density.de| }",
+            "depth",
+        ),
+    ] {
+        assert!(
+            complete_at(source)
+                .iter()
+                .any(|item| item["label"] == label),
+            "{source}"
+        );
+    }
+    let source =
+        "component App inherits Window { property <texturedata3d> density <- TextureData3D.rgba8(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "TextureData3D.rgba8(width: int, height: int, depth: int, voxels: [int]) -> texturedata3d"
+    );
+    let invalid = r#"
+        export component App inherits Window {
+            property <texturedata3d> density <- TextureData3D.rgba8(1, 2, 3, true);
+        }
+    "#;
+    assert!(
+        analysis::analyze(URI, invalid, None)
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|issue| {
+                issue["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("expected intlist, found bool"))
+            })
+    );
+}
+
+#[test]
 fn procedural_texture_types_complete_and_validate_pixel_models() {
     for (source, label) in [
         (
@@ -4246,6 +4294,7 @@ fn scene_hierarchy_record_fields_complete_with_their_types() {
     for (prefix, field, ty) in [
         ("par", "parent", "string"),
         ("vis", "visible", "bool"),
+        ("opac", "opacity", "float"),
         ("pivot-", "pivot-x", "float"),
         ("camera-look-", "camera-look-at", "string"),
         ("camera-look-at-p", "camera-look-at-point", "point3d"),
@@ -4269,7 +4318,7 @@ fn scene_hierarchy_record_fields_complete_with_their_types() {
         ("camera-lod-", "camera-lod-bias", "float"),
         ("morph-w", "morph-weights", "PanelWeights"),
     ] {
-        let source = format!("struct PanelWeights {{ extend: float }} struct Actor {{ parent: string, visible: bool, pivot-x: float, camera-look-at: string, camera-look-at-point: point3d, camera-up: vector3d, camera-clip-normal: vector3d, camera-reverse-depth: bool, camera-width: float, camera-left: float, camera-right: float, camera-bottom: float, camera-top: float, animation: string, animation-time: float, animation-loop: bool, animation-to: string, animation-to-time: float, animation-to-loop: bool, animation-blend: float, lod-of: string, lod-max-size: length, camera-lod-bias: float, morph-weights: PanelWeights }} component App inherits Window {{
+        let source = format!("struct PanelWeights {{ extend: float }} struct Actor {{ parent: string, visible: bool, opacity: float, pivot-x: float, camera-look-at: string, camera-look-at-point: point3d, camera-up: vector3d, camera-clip-normal: vector3d, camera-reverse-depth: bool, camera-width: float, camera-left: float, camera-right: float, camera-bottom: float, camera-top: float, animation: string, animation-time: float, animation-loop: bool, animation-to: string, animation-to-time: float, animation-to-loop: bool, animation-blend: float, lod-of: string, lod-max-size: length, camera-lod-bias: float, morph-weights: PanelWeights }} component App inherits Window {{
             property <Actor> node: Actor {{ {prefix}| }}
         }}");
         let items = complete_at(&source);
@@ -4596,10 +4645,25 @@ fn authored_texture_maps_complete_wrapping_and_sampler_filtering() {
         component App inherits Window {
             property <Material> style: Material { base-color-map: Map { PREFIX } };
         }"#;
-    let wrapping = complete_at(&source.replace("PREFIX", r#"wrap-u: "mi|""#));
-    assert!(wrapping.iter().any(|item| item["label"] == "mirror"));
-    let filtering = complete_at(&source.replace("PREFIX", r#"mip-filter: "no|""#));
-    assert!(filtering.iter().any(|item| item["label"] == "none"));
+    for field in [
+        "base-color-map",
+        "metalness-map",
+        "roughness-map",
+        "specular-reflection-map",
+        "height-map",
+    ] {
+        let source = source.replace("base-color-map", field);
+        let wrapping = complete_at(&source.replace("PREFIX", r#"wrap-u: "mi|""#));
+        assert!(
+            wrapping.iter().any(|item| item["label"] == "mirror"),
+            "{field}"
+        );
+        let filtering = complete_at(&source.replace("PREFIX", r#"mip-filter: "no|""#));
+        assert!(
+            filtering.iter().any(|item| item["label"] == "none"),
+            "{field}"
+        );
+    }
     let expression = "component App inherits Window { property <string> map: @texture-url(";
     let help = completion::signature_help(expression, (0, expression.len()), None);
     assert_eq!(
@@ -4623,6 +4687,8 @@ fn authored_scene_material_uses_typed_fields_and_alpha_options() {
     );
     let modes = complete_at(&source.replace("PREFIX", r#"alpha-mode: "bl|""#));
     assert!(modes.iter().any(|item| item["label"] == "blend"));
+    let modes = complete_at(&source.replace("PREFIX", r#"alpha-mode: "def|""#));
+    assert!(modes.iter().any(|item| item["label"] == "default"));
 }
 
 #[test]
@@ -9234,6 +9300,28 @@ fn material_workflow_and_glossiness_channel_complete_and_type_check() {
     );
     assert!(items.iter().any(|item| item["label"] == "a"));
     assert!(!items.iter().any(|item| item["label"] == "rgb"));
+    let items = complete_at(
+        r#"struct Finish { opacity-channel: string } component App inherits Window {
+            property <Finish> finish: Finish { opacity-channel: "|" }
+        }"#,
+    );
+    for channel in ["r", "g", "b", "a"] {
+        assert!(
+            items.iter().any(|item| item["label"] == channel),
+            "{items:?}"
+        );
+    }
+    assert!(!items.iter().any(|item| item["label"] == "rgb"));
+    let fields = complete_at(
+        r#"struct Finish { invert-opacity-map-value: bool } component App inherits Window {
+            property <Finish> finish: Finish { invert-op| }
+        }"#,
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|item| item["label"] == "invert-opacity-map-value" && item["detail"] == "bool")
+    );
     let source = r#"
         struct Finish { glossiness: string }
         struct Actor {
@@ -9253,6 +9341,59 @@ fn material_workflow_and_glossiness_channel_complete_and_type_check() {
             .is_some_and(|message| message.contains("glossiness") && message.contains("float"))
     });
     assert!(invalid_glossiness, "{:?}", result.diagnostics);
+    let invalid = source.replace("glossiness: string", "opacity: bool");
+    let result = analysis::analyze(URI, &invalid, None);
+    assert!(result.diagnostics.values().flatten().any(|issue| {
+        issue["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("opacity") && message.contains("float"))
+    }));
+    for field in [
+        "opacity-map",
+        "metalness-map",
+        "roughness-map",
+        "specular-reflection-map",
+        "height-map",
+    ] {
+        let invalid = source.replace("glossiness: string", &format!("{field}: bool"));
+        let result = analysis::analyze(URI, &invalid, None);
+        assert!(result.diagnostics.values().flatten().any(|issue| {
+            issue["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(field))
+        }));
+    }
+    let valid = source.replace("glossiness: string", "invert-opacity-map-value: bool");
+    let result = analysis::analyze(URI, &valid, None);
+    assert!(
+        result.diagnostics.values().flatten().next().is_none(),
+        "{:?}",
+        result.diagnostics
+    );
+    let invalid = valid.replace(
+        "invert-opacity-map-value: bool",
+        "invert-opacity-map-value: float",
+    );
+    let result = analysis::analyze(URI, &invalid, None);
+    assert!(result.diagnostics.values().flatten().any(|issue| {
+        issue["message"].as_str().is_some_and(|message| {
+            message.contains("invert-opacity-map-value") && message.contains("bool")
+        })
+    }));
+    let hints = complete_at(
+        r#"struct Finish { height-channel: string } component App inherits Window {
+            property <Finish> finish: Finish { height-channel: "|" }
+        }"#,
+    );
+    assert!(hints.iter().any(|item| item["label"] == "r"));
+    assert!(!hints.iter().any(|item| item["label"] == "rgb"));
+    let invalid = source.replace("glossiness: string", "max-height-map-samples: float");
+    let result = analysis::analyze(URI, &invalid, None);
+    assert!(result.diagnostics.values().flatten().any(|issue| {
+        issue["message"].as_str().is_some_and(|message| {
+            message.contains("max-height-map-samples") && message.contains("int")
+        })
+    }));
 }
 
 #[test]
@@ -10124,8 +10265,7 @@ component App inherits Window {
     );
     assert_eq!(viewport.len(), 1, "{viewport:?}");
     assert_eq!(viewport[0]["label"], "security-feed");
-    let mapped = complete_at(
-        r#"
+    let sampler = r#"
         struct PanelMap { source: string, uv-flip-u: bool }
         struct Finish { base-item: PanelMap }
         component Other inherits Window { Rectangle { texture-source <- "dashboard-other"; } }
@@ -10135,10 +10275,12 @@ component App inherits Window {
                 base-item: PanelMap { source: "dash|", uv-flip-u: true },
             };
         }
-        "#,
-    );
-    assert_eq!(mapped.len(), 1, "{mapped:?}");
-    assert_eq!(mapped[0]["label"], "dashboard");
+        "#;
+    for field in ["base-item", "specular-reflection-item"] {
+        let mapped = complete_at(&sampler.replace("base-item", field));
+        assert_eq!(mapped.len(), 1, "{mapped:?}");
+        assert_eq!(mapped[0]["label"], "dashboard");
+    }
     let image_names = complete_at(
         r#"
         component App inherits Window {

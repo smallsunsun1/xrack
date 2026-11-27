@@ -14,6 +14,8 @@ override CAPTURE_MATERIAL_OCCLUSION: bool = false;
 override USE_VERTEX_COLORS: bool = true;
 override APPLY_VERTEX_MASKS: bool = false;
 override REMAP_MATERIAL_CHANNELS: bool = false;
+override SEPARATE_SURFACE_MAPS: bool = false;
+override HEIGHT_MAPPED: bool = false;
 override NO_DEPTH_EFFECTS: bool = false;
 override LIMIT_BLEND_TINT: bool = false;
 override TANGENT_VERTEX: bool = false;
@@ -75,6 +77,8 @@ struct Material {
     base_uv: TextureTransform,
     channels: vec4<u32>,
     shader_parameters: vec4<f32>,
+    opacity_uv: TextureTransform,
+    opacity_sampling: vec4<u32>,
     // Metallic, roughness, occlusion strength, shading workflow (0 unlit, 1 MR, 2 SG).
     pbr: vec4<f32>,
     // Emissive RGB and normal strength.
@@ -101,6 +105,15 @@ struct Material {
     anisotropy: vec4<f32>,
     anisotropy_uv: TextureTransform,
     shader_texture_flags: vec4<u32>,
+    metalness_uv: TextureTransform,
+    roughness_uv: TextureTransform,
+    metalness_sampling: vec4<u32>,
+    roughness_sampling: vec4<u32>,
+    reflection_uv: TextureTransform,
+    reflection_options: vec4<f32>,
+    height_uv: TextureTransform,
+    height_sampling: vec4<u32>,
+    height_parameters: vec4<f32>,
 }
 
 struct ClearcoatSettings {
@@ -958,13 +971,30 @@ fn box_reflection(world: vec3<f32>, direction: vec3<f32>) -> vec3<f32> {
     return select(direction, adjusted, dot(adjusted, adjusted) > 1e-12);
 }
 
+const MATERIAL_REFLECTION_MAP: bool = false;
+
+fn reflection_panorama_uv(lookup: vec3<f32>) -> vec2<f32> {
+    let axis = normalize(lookup);
+    return texture_uv(material.reflection_uv, vec2(
+        atan2(axis.x, axis.z) * (0.5 / 3.14159265359) + 0.5,
+        acos(clamp(axis.y, -1.0, 1.0)) / 3.14159265359));
+}
+
+fn sample_probe(lookup: vec3<f32>, lod: f32) -> vec3<f32> {
+    return textureSampleLevel(probe, probe_sampler, lookup, lod).rgb;
+}
+
 fn environment_specular(world: vec3<f32>, direction: vec3<f32>, f0: vec3<f32>, f90: f32,
     nv: f32, roughness: f32, curve: vec4<f32>, custom: bool) -> vec3<f32> {
-    if environment.specular.y < 0.0 {
+    if !MATERIAL_REFLECTION_MAP && environment.specular.y < 0.0 {
         return vec3<f32>(0.0);
     }
+    if MATERIAL_REFLECTION_MAP {
+        let radiance = sample_probe(direction, roughness * f32(textureNumLevels(probe) - 1u));
+        return radiance * reflection_response(f0, f90, nv, roughness, curve, custom);
+    }
     let lookup = probe_dir(box_reflection(world, direction), environment.specular_basis);
-    let radiance = textureSampleLevel(probe, probe_sampler, lookup, roughness * environment.specular.y).rgb;
+    let radiance = sample_probe(lookup, roughness * environment.specular.y);
     return radiance * reflection_response(f0, f90, nv, roughness, curve, custom) * environment.specular.x;
 }
 
@@ -1069,10 +1099,10 @@ fn sky_color(vertex: SkyVertex) -> vec4<f32> {
         if environment.sky.sun_curve.y > 0.5 && lod < 1.0 {
             color = xr_sky_radiance(environment.sky, lookup);
             if lod > 0.0 {
-                color = mix(color, textureSampleLevel(probe, probe_sampler, lookup, 1.0).rgb, lod);
+                color = mix(color, sample_probe(lookup, 1.0), lod);
             }
         } else {
-            color = textureSampleLevel(probe, probe_sampler, lookup, lod).rgb;
+            color = sample_probe(lookup, lod);
         }
         color *= environment.skybox[0].w;
         alpha = 1.0;
@@ -1557,6 +1587,8 @@ fn shade_pbr(
     let roughness_mask = vertex_mask(vertex.color, VERTEX_ROUGHNESS);
     var metallic = material.pbr.x * vertex_mask(vertex.color, VERTEX_METALNESS);
     var roughness = material.pbr.y * roughness_mask;
+    let independent_metalness = SEPARATE_SURFACE_MAPS && material.metalness_sampling.w != 0u;
+    let independent_roughness = SEPARATE_SURFACE_MAPS && material.roughness_sampling.w != 0u;
     if material.map_slots.x >= 0.0 {
         let texel = sample_material_map(mr_texture, mr_sampler, vertex, uv, material.map_slots.x, material.transforms[0]);
         if glossy {
@@ -1564,9 +1596,21 @@ fn shade_pbr(
                 * roughness_mask;
         } else {
             // glTF stores roughness in G and metallic in B, both linear.
-            roughness *= scalar_texel(texel, 3u, 1u);
-            metallic *= scalar_texel(texel, 2u, 2u);
+            if !independent_roughness {
+                roughness *= scalar_texel(texel, 3u, 1u);
+            }
+            if !independent_metalness {
+                metallic *= scalar_texel(texel, 2u, 2u);
+            }
         }
+    }
+    if independent_metalness {
+        metallic *= xr_sample_scalar_map(METALNESS_MAP, material.metalness_uv,
+            material.metalness_sampling, vertex.uvs, vec4(uv.dx0, uv.dx1), vec4(uv.dy0, uv.dy1));
+    }
+    if independent_roughness {
+        roughness *= xr_sample_scalar_map(ROUGHNESS_MAP, material.roughness_uv,
+            material.roughness_sampling, vertex.uvs, vec4(uv.dx0, uv.dx1), vec4(uv.dy0, uv.dy1));
     }
     var emissive = material.emissive.rgb;
     if material.map_slots.y >= 0.0 {
@@ -1937,17 +1981,73 @@ fn weighted_color(premultiplied: vec4<f32>, world: vec3<f32>) -> WeightedColor {
     return WeightedColor(premultiplied * weight, premultiplied.a);
 }
 
+// Intersect the view ray with the sampled height field in tangent space.
+// Keep the original derivatives for stable filtering as the ray crosses texels.
+fn parallax_vertex(vertex: VertexOut, front_facing: bool, uv: UvDerivatives) -> VertexOut {
+    if !HEIGHT_MAPPED {
+        return vertex;
+    }
+    let use_uv1 = material.height_sampling.x == 1u;
+    let slot = f32(material.height_sampling.x);
+    let normal = normalize(select(-vertex.normal, vertex.normal, front_facing));
+    let frame = alternate_tangent_frame(vertex, normal, uv, slot, TextureTransform(vec4(0.0), vec4(0.0)));
+    if abs(frame.sign) < 0.5 {
+        return vertex;
+    }
+    let tangent = normalize(frame.tangent - normal * dot(frame.tangent, normal));
+    let bitangent = cross(normal, tangent) * frame.sign;
+    let view = material_view_direction(vertex.world_and_lightmap_v.xyz);
+    let nv = clamp(dot(view, normal), 0.0, 1.0);
+    let travel = -vec2(dot(view, tangent), dot(view, bitangent))
+        * (material.height_parameters.x / max(nv, 0.08));
+    if dot(travel, travel) < 1e-12 {
+        return vertex;
+    }
+    let steps = u32(round(mix(material.height_parameters.z, material.height_parameters.y, nv)));
+    let step = 1.0 / f32(steps);
+    let size = xr_scalar_size(HEIGHT_MAP);
+    let mapping = material.height_uv;
+    let start = texture_uv(mapping, select(vertex.uvs.xy, vertex.uvs.zw, use_uv1));
+    let delta = texture_gradient(mapping, travel);
+    let du = texture_gradient(mapping, select(uv.dx0, uv.dx1, use_uv1));
+    let dv = texture_gradient(mapping, select(uv.dy0, uv.dy1, use_uv1));
+    let footprint = max(length(du * vec2<f32>(size)), length(dv * vec2<f32>(size)));
+    let flags = material.height_sampling.y;
+    let level = material.height_sampling.z;
+    var previous = xr_scalar_filter(HEIGHT_MAP, size, start, footprint, flags, level);
+    if previous <= 0.0 {
+        return vertex;
+    }
+    var hit = 1.0;
+    for (var i = 1u; i <= steps; i += 1u) {
+        let layer = f32(i) * step;
+        let gap = xr_scalar_filter(HEIGHT_MAP, size, start + layer * delta, footprint, flags, level) - layer;
+        if gap <= 0.0 {
+            let between = clamp(previous / max(previous - gap, 1e-6), 0.0, 1.0);
+            hit = layer - (1.0 - between) * step;
+            break;
+        }
+        previous = gap;
+    }
+    let offset = travel * hit;
+    var shifted = vertex;
+    shifted.uvs += select(vec4(offset, vec2(0.0)), vec4(vec2(0.0), offset), use_uv1);
+    return shifted;
+}
+
 fn plain_surface(vertex: VertexOut, front_facing: bool) -> vec4<f32> {
     // XRack wireframe distance
     var uv: UvDerivatives;
-    if (DEBUG_MATERIAL && debug_tangent_mode()) || XRACK_MATERIAL_UV_GRADIENTS
+    if HEIGHT_MAPPED || SEPARATE_SURFACE_MAPS || xr_has_opacity_map(material.channels.w)
+        || (DEBUG_MATERIAL && debug_tangent_mode()) || XRACK_MATERIAL_UV_GRADIENTS
         || (CAPTURE_AUGMENT && XRACK_AUGMENT_UV_GRADIENTS)
         || (material.pbr.w > 0.5 && (any(material.map_slots >= vec4<f32>(0.0)) ||
             any(material.dielectric.yz >= vec2<f32>(0.0)) || material.transmission.y >= 0.0 ||
             (VOLUME_MATERIAL && material.volume.y >= 0.0))) {
         uv = uv_derivatives(vertex);
     }
-    let color = fragment_surface(vertex, front_facing, uv, CoatSurface(vec3<f32>(0.0), 0.0, 0.0, vec4<f32>(5.0, 1.0, 0.0, 0.0)));
+    let shifted = parallax_vertex(vertex, front_facing, uv);
+    let color = fragment_surface(shifted, vertex.uvs, front_facing, uv, CoatSurface(vec3<f32>(0.0), 0.0, 0.0, vec4<f32>(5.0, 1.0, 0.0, 0.0)));
     if LOD_FADE && !xr_lod_covered(vertex.instance_metadata.x, vertex.position.xy) {
         discard;
     }
@@ -1958,8 +2058,9 @@ fn plain_surface(vertex: VertexOut, front_facing: bool) -> vec4<f32> {
 fn coated_surface(vertex: VertexOut, front_facing: bool) -> vec4<f32> {
     // XRack wireframe distance
     let uv = uv_derivatives(vertex);
-    let coat = coat_surface(vertex, uv, front_facing);
-    let color = fragment_surface(vertex, front_facing, uv, coat);
+    let shifted = parallax_vertex(vertex, front_facing, uv);
+    let coat = coat_surface(shifted, uv, front_facing);
+    let color = fragment_surface(shifted, vertex.uvs, front_facing, uv, coat);
     if LOD_FADE && !xr_lod_covered(vertex.instance_metadata.x, vertex.position.xy) {
         discard;
     }
@@ -2063,7 +2164,8 @@ fn fog_curve(amount: f32, curve: f32) -> f32 {
     return pow(amount, curve);
 }
 
-fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, coat: CoatSurface) -> vec4<f32> {
+fn fragment_surface(vertex: VertexOut, coverage_uvs: vec4<f32>, front_facing: bool,
+                    uv: UvDerivatives, coat: CoatSurface) -> vec4<f32> {
     let normal = normalize(vertex.normal);
     let filter_specular = material.pbr.w > 0.5 && globals.specular_aa > 0.5;
     let geometric_normal = select(-normal, normal, front_facing);
@@ -2100,13 +2202,21 @@ fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, co
     }
     var base: vec3<f32>;
     var alpha = 1.0;
+    let fades = xr_has_opacity_map(material.channels.w) || xr_scalar_opacity(material.channels.w) < 1.0;
+    let opacity = xr_material_opacity(material.channels.w, material.opacity_uv, material.opacity_sampling,
+        coverage_uvs, vec4(uv.dx0, uv.dx1), vec4(uv.dy0, uv.dy1));
     var transmitted = vec3<f32>(0.0);
     var background_weight = vec3<f32>(0.0);
     var uncovered = 0.0;
     if material.params.y > 0.5 {
         var texel = vec4<f32>(1.0);
         if material.params.z > 0.5 {
-            var base_sample = sample_base_texture(base_texture, base_sampler, material.base_uv, vertex.uvs.xy);
+            var base_sample: vec4<f32>;
+            if HEIGHT_MAPPED {
+                base_sample = sample_material_map(base_texture, base_sampler, vertex, uv, 0.0, material.base_uv);
+            } else {
+                base_sample = sample_base_texture(base_texture, base_sampler, material.base_uv, vertex.uvs.xy);
+            }
             if material.params.z > 1.5 {
                 // Live layers use premultiplied alpha. A mip view decodes
                 // premultiplied linear RGB in hardware.
@@ -2117,21 +2227,26 @@ fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, co
                 base_sample = vec4<f32>(straight, base_sample.a);
             }
             texel = color_texel(base_sample, 0u);
+            if HEIGHT_MAPPED && material.height_sampling.x == 0u && base_texture_uses_alpha(material.channels)
+                && (material.params.x >= 0.0 || (material.params.w > 0.5 && material.params.w < 1.5)) {
+                // Cutout and picking keep their geometric coverage, independent of the view ray.
+                texel.a = sample_base_texture(base_texture, base_sampler, material.base_uv, coverage_uvs.xy).a;
+            }
         }
         let vertex_color = select(vec4<f32>(1.0), vertex.color, USE_VERTEX_COLORS);
         let surface = material.base * vertex_color * texel;
-        let coverage = material_coverage(material.params.w, surface.a, vertex.tint.a);
+        let coverage = material_coverage(material.params.w, surface.a, vertex.tint.a, opacity, fades);
         let cutout = select(coverage.y, surface.a, MODEL_PARTICLES);
         if material.params.x >= 0.0 && cutout < material.params.x {
             discard;
         }
-        if material.params.w > 0.5 {
+        if MODEL_PARTICLES && material.params.w < 0.5 {
+            alpha = vertex.tint.a * opacity;
+        } else if material.params.w > 0.5 || fades {
             alpha = coverage.x;
-            if alpha <= 0.0 {
-                discard;
-            }
-        } else if MODEL_PARTICLES {
-            alpha = vertex.tint.a;
+        }
+        if alpha <= 0.0 {
+            discard;
         }
         let albedo = srgb_to_linear(vertex.tint.rgb) * surface.rgb;
         if DEBUG_MATERIAL && debug_tangent_mode() {
@@ -2181,7 +2296,9 @@ fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, co
             }
         }
         if MODEL_PARTICLES || material.params.w > 0.5 {
-            alpha = vertex.tint.a;
+            alpha = vertex.tint.a * opacity;
+        } else {
+            alpha = opacity;
         }
         if DEBUG_MATERIAL {
             let surface = XrMaterialSurface(srgb_to_linear(vertex.tint.rgb), vec3(0.0),

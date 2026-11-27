@@ -15,6 +15,8 @@ struct Material {
     base_uv: TextureTransform,
     channels: vec4<u32>,
     shader_parameters: vec4<f32>,
+    opacity_uv: TextureTransform,
+    opacity_sampling: vec4<u32>,
 }
 
 @group(0) @binding(0) var<uniform> clip: Projection;
@@ -46,14 +48,15 @@ fn vertex_opaque(vertex: Geometry) -> @builtin(position) vec4<f32> {
 
 struct MaskVertex {
     @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
+    @location(0) uv: vec4<f32>,
     @location(1) alpha: vec2<f32>,
     @location(2) @interpolate(flat) metadata: u32,
 }
 
 @vertex
-fn vertex_mask(vertex: Geometry, @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>) -> MaskVertex {
-    return MaskVertex(project(vertex), uv, vec2<f32>(color.a, vertex.tint.a), vertex.metadata.x);
+fn vertex_mask(vertex: Geometry, @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>,
+    @location(9) uv1: vec2<f32>) -> MaskVertex {
+    return MaskVertex(project(vertex), vec4(uv, uv1), vec2<f32>(color.a, vertex.tint.a), vertex.metadata.x);
 }
 
 // Instance alpha also covers particles hidden by an affector or lifetime fade.
@@ -70,8 +73,9 @@ fn vertex_particle_opaque(vertex: Geometry) -> @builtin(position) vec4<f32> {
 }
 
 @vertex
-fn vertex_particle_mask(vertex: Geometry, @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>) -> MaskVertex {
-    return MaskVertex(particle_shadow_position(vertex, vertex.tint.a), uv, vec2<f32>(color.a, 1.0), vertex.metadata.x);
+fn vertex_particle_mask(vertex: Geometry, @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>,
+    @location(9) uv1: vec2<f32>) -> MaskVertex {
+    return MaskVertex(particle_shadow_position(vertex, vertex.tint.a), vec4(uv, uv1), vec2<f32>(color.a, 1.0), vertex.metadata.x);
 }
 
 @vertex
@@ -83,10 +87,11 @@ fn vertex_skin_opaque(vertex: Geometry, weights: SkinWeights) -> @builtin(positi
 
 @vertex
 fn vertex_skin_mask(vertex: Geometry, weights: SkinWeights, @location(2) uv: vec2<f32>,
-                    @location(3) color: vec4<f32>) -> MaskVertex {
+                    @location(3) color: vec4<f32>,
+    @location(9) uv1: vec2<f32>) -> MaskVertex {
     var deformed = vertex;
     deformed.position = skin_point(skin_transform(weights), vertex.position);
-    return MaskVertex(project(deformed), uv, vec2<f32>(color.a, vertex.tint.a), vertex.metadata.x);
+    return MaskVertex(project(deformed), vec4(uv, uv1), vec2<f32>(color.a, vertex.tint.a), vertex.metadata.x);
 }
 
 @vertex
@@ -98,11 +103,12 @@ fn vertex_morph_opaque(vertex: Geometry, @builtin(vertex_index) index: u32) -> @
 
 @vertex
 fn vertex_morph_mask(vertex: Geometry, @builtin(vertex_index) index: u32, @location(2) uv: vec2<f32>,
-                     @location(3) color: vec4<f32>) -> MaskVertex {
+                     @location(3) color: vec4<f32>,
+    @location(9) uv1: vec2<f32>) -> MaskVertex {
     let delta = morph_displacement(index, MORPH_COVERAGE);
     var deformed = vertex;
     deformed.position = vertex.position + delta.position;
-    return MaskVertex(project(deformed), uv + delta.uvs.xy, vec2<f32>(clamp(color.a + delta.color.a, 0.0, 1.0), vertex.tint.a), vertex.metadata.x);
+    return MaskVertex(project(deformed), vec4(uv, uv1) + delta.uvs, vec2<f32>(clamp(color.a + delta.color.a, 0.0, 1.0), vertex.tint.a), vertex.metadata.x);
 }
 
 @vertex
@@ -115,20 +121,28 @@ fn vertex_skin_morph_opaque(vertex: Geometry, weights: SkinWeights,
 
 @vertex
 fn vertex_skin_morph_mask(vertex: Geometry, weights: SkinWeights, @builtin(vertex_index) index: u32,
-                          @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>) -> MaskVertex {
+                          @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>,
+    @location(9) uv1: vec2<f32>) -> MaskVertex {
     let delta = morph_displacement(index, MORPH_COVERAGE);
     var deformed = vertex;
     deformed.position = skin_point(skin_transform(weights), vertex.position + delta.position);
-    return MaskVertex(project(deformed), uv + delta.uvs.xy, vec2<f32>(clamp(color.a + delta.color.a, 0.0, 1.0), vertex.tint.a), vertex.metadata.x);
+    return MaskVertex(project(deformed), vec4(uv, uv1) + delta.uvs, vec2<f32>(clamp(color.a + delta.color.a, 0.0, 1.0), vertex.tint.a), vertex.metadata.x);
 }
 
 fn test_material_depth(vertex: MaskVertex) {
     var surface = material.base.a * coverage_vertex_alpha(material.channels, vertex.alpha.x);
     if material.params.z > 0.5 && base_texture_uses_alpha(material.channels)
         && (material.params.w < 1.5 || material.params.x >= 0.0) {
-        surface *= sample_base_texture(base_texture, base_sampler, material.base_uv, vertex.uv).a;
+        surface *= sample_base_texture(base_texture, base_sampler, material.base_uv, vertex.uv.xy).a;
     }
-    let coverage = material_coverage(material.params.w, surface, vertex.alpha.y);
+    let has_map = xr_has_opacity_map(material.channels.w);
+    var opacity = xr_scalar_opacity(material.channels.w);
+    let fades = has_map || opacity < 1.0;
+    if has_map {
+        opacity = xr_material_opacity(material.channels.w, material.opacity_uv, material.opacity_sampling,
+            vertex.uv, dpdx(vertex.uv), dpdy(vertex.uv));
+    }
+    let coverage = material_coverage(material.params.w, surface, vertex.alpha.y, opacity, fades);
     if coverage.y < material.params.x {
         discard;
     }

@@ -398,7 +398,8 @@ export component SceneParticleDemo inherits Window {
     in-out property <int> count: 6;
     in-out property <bool> from-scene: true;
     in-out property <string> debug: "none";
-    in-out property <scenemodel3d> prototype: root.authored;
+    in-out property <scenemodel3d> prototype;
+    in-out property <bool> use-prototype: false;
     property <scenemodel3d> empty;
     property <MorphSurfaceDelta> delta <- MorphSurfaceDelta {
         target: "bend", vertex: 0, u: 0.5, v1: 0.6,
@@ -444,7 +445,9 @@ export component SceneParticleDemo inherits Window {
             position: Point3D.new(0, -0.1, 0), color: #fff, size: 0.8, lifetime: 4,
             bursts: [SceneParticleBurst { time: 0, count: root.count }],
             particle-model: root.from-scene ? "" : "primitive:box",
-            particle-model-scene: root.from-scene ? root.prototype : root.empty,
+            particle-model-scene: root.from-scene
+                ? (root.use-prototype ? root.prototype : root.authored)
+                : root.empty,
             velocity: Vector3D.new(0.15, 0.15, 0),
             emitter-shape: "box", emitter-extents: Vector3D.new(1.7, 0.8, 0.1), seed: 59,
             fade-in: 0, fade-out: 0, particle-casts-shadow: true,

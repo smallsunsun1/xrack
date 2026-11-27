@@ -11,6 +11,31 @@ use crate::scene3d::{
 };
 
 impl SceneObject {
+    pub fn with_collidable(mut self, enabled: bool) -> Self {
+        self.collidable = enabled;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_trigger(mut self, enabled: bool) -> Self {
+        self.trigger = enabled
+            && matches!(
+                self.mesh.primitive(),
+                Some(
+                    Primitive::Box
+                        | Primitive::Sphere
+                        | Primitive::Cylinder
+                        | Primitive::Cone
+                        | Primitive::Capsule
+                )
+            );
+        self
+    }
+
+    pub(crate) fn is_trigger(&self) -> bool {
+        self.trigger
+    }
+
     pub(crate) fn sweep_contact(&self, sweep: ShapeSweep, max: f64) -> Option<MeshContact> {
         if !self.collidable || self.trigger {
             return None;

@@ -3034,7 +3034,21 @@ fn validate_shader_texture_inputs(
         return fail(value.span, format!("3D {property} requires a record list"));
     };
     let ty = |name| record_field_type(&scope.records, inputs, name);
-    if ty("data") != Some(Type::TextureData2D)
+    let valid_data = |ty| {
+        ty == Type::TextureData2D || (property == "shader-textures" && ty == Type::TextureData3D)
+    };
+    if ty("data").is_some_and(|ty| !valid_data(ty)) {
+        let expected = if property == "shader-textures" {
+            "texturedata2d or texturedata3d"
+        } else {
+            "texturedata2d"
+        };
+        return fail(
+            value.span,
+            format!("3D {input} field `data` requires {expected}"),
+        );
+    }
+    if !ty("data").is_some_and(valid_data)
         && ["texture", "item", "capture"]
             .into_iter()
             .all(|name| ty(name) != Some(Type::String))
@@ -3042,7 +3056,7 @@ fn validate_shader_texture_inputs(
         return fail(
             value.span,
             format!(
-                "3D {input} requires a texturedata2d field named data or a string field named texture, item or capture"
+                "3D {input} requires a shader texture data field or a string field named texture, item or capture"
             ),
         );
     }
@@ -3061,11 +3075,8 @@ fn validate_shader_texture_inputs(
     ]
     .map(|name| (name, Type::String))
     .into_iter()
-    .chain([
-        ("enabled", Type::Bool),
-        ("max-anisotropy", Type::Int),
-        ("data", Type::TextureData2D),
-    ]) {
+    .chain([("enabled", Type::Bool), ("max-anisotropy", Type::Int)])
+    {
         if ty(name).is_some_and(|actual| actual != expected) {
             return fail(
                 value.span,
@@ -3122,12 +3133,13 @@ fn validate_scene_material(value: &ir::Expr, scope: &Scope<'_>, material: &str) 
     for name in builtins::SCENE_MATERIAL_MAP_FIELDS
         .iter()
         .copied()
-        .chain(["base-item"])
+        .chain(["base-item", "specular-reflection-item"])
     {
         let Some(field) = schema.fields.iter().find(|field| field.name == name) else {
             continue;
         };
-        if field.ty == Type::String || (name != "base-item" && field.ty == Type::TextureData2D) {
+        let item_source = matches!(name, "base-item" | "specular-reflection-item");
+        if field.ty == Type::String || (!item_source && field.ty == Type::TextureData2D) {
             continue;
         }
         let Type::Record(texture) = &field.ty else {
@@ -3148,7 +3160,7 @@ fn validate_scene_material(value: &ir::Expr, scope: &Scope<'_>, material: &str) 
                 format!("3D texture `{texture}` requires a record"),
             );
         };
-        let has_data = name != "base-item"
+        let has_data = !item_source
             && texture_fields
                 .fields
                 .iter()
@@ -3158,10 +3170,10 @@ fn validate_scene_material(value: &ir::Expr, scope: &Scope<'_>, material: &str) 
                 .fields
                 .iter()
                 .find(|field| field.name == *setting);
-            if *setting == "data" && name == "base-item" && field.is_some() {
+            if *setting == "data" && item_source && field.is_some() {
                 return fail(
                     value.span,
-                    "3D base-item requires a named 2D texture source",
+                    format!("3D {name} requires a named 2D texture source"),
                 );
             }
             if ((*setting == "source" && !has_data) || field.is_some())
@@ -9375,8 +9387,8 @@ fn element<'a>(
                             && !matches!(buffers, Type::RecordList(buffer)
                                 if (["name", "texture", "item", "capture"].iter().any(|field|
                                         record_field_type(&scope.records, &buffer, field) == Some(Type::String))
-                                    || record_field_type(&scope.records, &buffer, "data") == Some(Type::TextureData2D))
-                                    && record_field_type(&scope.records, &buffer, "data").is_none_or(|ty| ty == Type::TextureData2D)
+                                    || matches!(record_field_type(&scope.records, &buffer, "data"), Some(Type::TextureData2D | Type::TextureData3D)))
+                                    && record_field_type(&scope.records, &buffer, "data").is_none_or(|ty| matches!(ty, Type::TextureData2D | Type::TextureData3D))
                                     && ["previous-frame", "enabled"].iter().all(|field|
                                         record_field_type(&scope.records, &buffer, field).is_none_or(|ty| ty == Type::Bool))
                                     && record_field_type(&scope.records, &buffer, "max-anisotropy").is_none_or(|ty| ty == Type::Int)
@@ -9386,7 +9398,7 @@ fn element<'a>(
                         {
                             return fail(
                                 value.span,
-                                "3D effect pass buffers requires a record list with a string field named `name`, `texture`, `item` or `capture` or a texturedata2d field named `data`, optional bool fields `previous-frame` and `enabled`, and optional string fields `filter`, `wrap-u` and `wrap-v`, string settings for mip and texel filters, and an optional int field `max-anisotropy`",
+                                "3D effect pass buffers requires a record list with a string field named `name`, `texture`, `item` or `capture` or a texturedata2d or texturedata3d field named `data`, optional bool fields `previous-frame` and `enabled`, and optional string fields `filter`, `wrap-u` and `wrap-v`, string settings for mip and texel filters, and an optional int field `max-anisotropy`",
                             );
                         }
                     } else if b.name == "reflection-probes" {
@@ -11039,6 +11051,7 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::Instance3D
         | Type::InstanceTable3D
         | Type::TextureData2D
+        | Type::TextureData3D
         | Type::MeshAsset3D
         | Type::RotationTrack3D => "",
         Type::Point2D | Type::Vector2D => "0 0",
@@ -12262,6 +12275,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                                 | Type::Instance3D
                                 | Type::InstanceTable3D
                                 | Type::TextureData2D
+                                | Type::TextureData3D
                                 | Type::Bounds3D
                                 | Type::MeshAsset3D
                                 | Type::MeshNode3D

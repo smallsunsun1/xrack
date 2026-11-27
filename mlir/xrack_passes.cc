@@ -510,8 +510,9 @@ struct FoldGeometryFunction : OpRewritePattern<GeometryFunctionOp> {
   LogicalResult matchAndRewrite(GeometryFunctionOp op, PatternRewriter &rewriter) const override {
     auto operation = op.getValue();
     auto inputs = op.getInputs();
-    if (operation == "texture-rgba8" && inputs.size() == 3) {
-      auto pixels = inputs[2].getDefiningOp<IntArrayOp>();
+    const bool volume = operation == "volume-rgba8";
+    if ((operation == "texture-rgba8" || volume) && inputs.size() == (volume ? 4 : 3)) {
+      auto pixels = inputs.back().getDefiningOp<IntArrayOp>();
       auto integer = [](Value value) -> std::optional<int64_t> {
         auto literal = value.getDefiningOp<LiteralOp>();
         int64_t number;
@@ -519,18 +520,29 @@ struct FoldGeometryFunction : OpRewritePattern<GeometryFunctionOp> {
           return std::nullopt;
         return number;
       };
-      const auto width = integer(inputs[0]);
-      const auto height = integer(inputs[1]);
-      if (!pixels || !inputs[2].hasOneUse() || !width || !height ||
-          !staticGeometryArgument(inputs[2]))
+      if (!pixels || !inputs.back().hasOneUse() || !staticGeometryArgument(inputs.back()))
         return failure();
-      if (*width < 1 || *height < 1 || *width > MaxTextureDataDimension ||
-          *height > MaxTextureDataDimension ||
-          size_t(*width * *height * 4) != pixels.getItems().size()) {
+      const auto limit = volume ? MaxVolumeDataDimension : MaxTextureDataDimension;
+      bool valid = true;
+      size_t byteCount = 4;
+      std::string packed;
+      for (Value input : inputs.drop_back()) {
+        const auto side = integer(input);
+        if (!side)
+          return failure();
+        if (*side < 1 || *side > limit)
+          valid = false;
+        else
+          byteCount *= *side;
+        if (!packed.empty())
+          packed += 'x';
+        packed += std::to_string(*side);
+      }
+      if (!valid || byteCount > MaxProceduralTextureBytes || byteCount != pixels.getItems().size()) {
         replaceLiteral(rewriter, op, "");
         return success();
       }
-      std::string packed = std::to_string(*width) + "x" + std::to_string(*height) + ":";
+      packed += ':';
       packed.reserve(packed.size() + pixels.getItems().size() * 2);
       for (Value byte : pixels.getItems()) {
         const auto value = integer(byte);

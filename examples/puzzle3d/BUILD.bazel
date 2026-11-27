@@ -2684,6 +2684,55 @@ rust_binary(
     ],
 )
 
+VOLUME_TEXTURE_ASSETS = [
+    "effects/volume_effect.wgsl",
+    "effects/volume_material.wgsl",
+    "models/channel-swatch.png",
+]
+
+exports_files(
+    ["volume_texture.xr", "effects/volume_effect.wgsl", "effects/volume_material.wgsl"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "volume_texture_ui",
+    src = "volume_texture.xr",
+    assets = VOLUME_TEXTURE_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_volume_texture",
+    srcs = ["play_volume_texture.rs"],
+    edition = "2024",
+    deps = [
+        ":volume_texture_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(
+    ["node_opacity.xr"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "node_opacity_ui",
+    src = "node_opacity.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_node_opacity",
+    srcs = ["play_node_opacity.rs"],
+    edition = "2024",
+    deps = [
+        ":node_opacity_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
 exports_files(["text_geometry.xr", "fonts/xrack-outline-example.ttf"], visibility = ["//tests:__pkg__"])
 
 xr_ui_library(

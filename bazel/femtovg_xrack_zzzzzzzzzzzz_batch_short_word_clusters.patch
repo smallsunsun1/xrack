@@ -1,0 +1,147 @@
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -225,6 +225,16 @@
+     }
+ }
+ 
++fn safe_word_boundary(infos: &[rustybuzz::GlyphInfo], offset: usize) -> bool {
++    infos
++        .first()
++        .is_some_and(|info| info.cluster as usize == offset)
++        && infos
++            .iter()
++            .take_while(|info| info.cluster as usize == offset)
++            .all(|info| !info.unsafe_to_break())
++}
++
+ fn split_ink_prefix(text: &str) -> Option<usize> {
+     let bytes = text.as_bytes();
+     if !(4..=40).contains(&bytes.len()) {
+@@ -450,28 +460,114 @@
+         let direction = rustybuzz::Direction::LeftToRight;
+         let latin = rustybuzz::ShapePlan::new(&face, direction, Some(rustybuzz::script::LATIN), None, &[]);
+         let common = rustybuzz::ShapePlan::new(&face, direction, None, None, &[]);
++        let prepare_word = |text: &str,
++                            base: usize,
++                            infos: &[rustybuzz::GlyphInfo],
++                            positions: &[rustybuzz::GlyphPosition]| {
++            let glyphs = positions
++                .iter()
++                .zip(infos.iter().zip(text.chars()))
++                .map(|(position, (info, character))| {
++                    let mut glyph = ShapedGlyph::from_shaping(font_id, character, info, position);
++                    glyph.byte_index -= base;
++                    glyph
++                })
++                .collect();
++            let mut bytes = [0; 8];
++            bytes[..text.len()].copy_from_slice(text.as_bytes());
++            PreparedWord {
++                text: bytes,
++                len: text.len() as u8,
++                shaped: ShapedWord {
++                    glyphs,
++                    units_per_em,
++                    ascii_slice: None,
++                    has_ink: false,
++                },
++            }
++        };
+         let shape = |words: &[(WordId, &str)]| {
++            // Bounded runs share shaper setup without paying the font's cost
++            // of processing a long, synthetic line.
++            const WORDS_PER_RUN: usize = 8;
++            let mut input = String::with_capacity(WORDS_PER_RUN * 9);
++            let mut ranges = Vec::with_capacity(WORDS_PER_RUN);
++            let mut retry = Vec::new();
+             let mut buffer = rustybuzz::UnicodeBuffer::new();
+             let mut results = Vec::with_capacity(words.len());
+-            for &(id, text) in words {
++            for (chunk, is_latin) in words
++                .chunks(WORDS_PER_RUN)
++                .flat_map(|chunk| [(chunk, false), (chunk, true)])
++            {
++                input.clear();
++                ranges.clear();
++                for &(id, word) in chunk {
++                    if word.bytes().any(|byte| byte.is_ascii_alphabetic()) == is_latin {
++                        let start = input.len();
++                        input.push_str(word);
++                        ranges.push((id, word, start, input.len()));
++                        input.push(' ');
++                    }
++                }
++                if ranges.len() < 2 {
++                    retry.extend(ranges.iter().map(|&(id, word, _, _)| (id, word)));
++                    continue;
++                }
++                buffer.push_str(&input);
++                buffer.set_direction(direction);
++                buffer.guess_segment_properties();
++                let plan = if is_latin { &latin } else { &common };
++                let output = rustybuzz::shape_with_plan(&face, plan, buffer);
++                let infos = output.glyph_infos();
++                let positions = output.glyph_positions();
++                if infos
++                    .windows(2)
++                    .all(|pair| pair[0].cluster <= pair[1].cluster)
++                {
++                    let mut rest = 0;
++                    for &(id, word, start, end) in &ranges {
++                        while rest < infos.len() && (infos[rest].cluster as usize) < start {
++                            rest += 1;
++                        }
++                        let left = rest;
++                        while rest < infos.len() && (infos[rest].cluster as usize) < end {
++                            rest += 1;
++                        }
++                        let word_infos = &infos[left..rest];
++                        // Both cuts must be at safe clusters. In particular,
++                        // a missing separator cluster can mean a substitution
++                        // crossed into the next word.
++                        if safe_word_boundary(word_infos, start)
++                            && safe_word_boundary(&infos[rest..], end)
++                            && word_infos.iter().all(|info| info.glyph_id != 0)
++                        {
++                            results.push((
++                                id,
++                                prepare_word(word, start, word_infos, &positions[left..rest]),
++                            ));
++                        } else {
++                            retry.push((id, word));
++                        }
++                    }
++                } else {
++                    retry.extend(ranges.iter().map(|&(id, word, _, _)| (id, word)));
++                }
++                buffer = output.clear();
++            }
++            for (id, text) in retry {
+                 buffer.push_str(text);
+                 buffer.set_direction(direction);
+                 buffer.guess_segment_properties();
+-                let plan = if buffer.script() == rustybuzz::script::LATIN { &latin } else { &common };
++                let plan = if buffer.script() == rustybuzz::script::LATIN {
++                    &latin
++                } else {
++                    &common
++                };
+                 let output = rustybuzz::shape_with_plan(&face, plan, buffer);
+                 let infos = output.glyph_infos();
+                 // Missing glyphs must follow the original ordered font fallback.
+                 if infos.iter().all(|info| info.glyph_id != 0) {
+-                    let glyphs = output.glyph_positions().iter().zip(infos.iter().zip(text.chars()))
+-                        .map(|(position, (info, character))| ShapedGlyph::from_shaping(font_id, character, info, position))
+-                        .collect();
+-                    let mut bytes = [0; 8];
+-                    bytes[..text.len()].copy_from_slice(text.as_bytes());
+-                    results.push((id, PreparedWord {
+-                        text: bytes,
+-                        len: text.len() as u8,
+-                        shaped: ShapedWord { glyphs, units_per_em, ascii_slice: None, has_ink: false },
+-                    }));
++                    results.push((id, prepare_word(text, 0, infos, output.glyph_positions())));
+                 }
+                 buffer = output.clear();
+             }

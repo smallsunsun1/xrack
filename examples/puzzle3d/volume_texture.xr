@@ -1,0 +1,82 @@
+struct VolumeSampler { data: texturedata3d, texture: string, enabled: bool }
+struct VolumePass { shader: string, parameters: vector3d, buffers: [VolumeSampler] }
+struct VolumeStyle {
+    material-shader: string, shader-parameters: vector3d, shader-textures: [VolumeSampler],
+    unlit: bool,
+}
+struct VolumeOrb {
+    id: string, mesh: string, x: float, y: float, z: float, color: color,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    material: VolumeStyle,
+}
+
+export component VolumeTextureDemo inherits Window {
+    title <- "XRack · Volume texture";
+    width <- 448px; height <- 266px; background <- #172332; resizable <- false;
+    in-out property <float> u: 0.75;
+    in-out property <float> v: 0.25;
+    in-out property <float> w: 0.25;
+    in-out property <bool> preset: false;
+    in-out property <bool> enabled: true;
+    in-out property <[int]> voxels: [
+        0, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 255, 255, 0, 255,
+        0, 0, 255, 255, 255, 0, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255,
+    ];
+    property <texturedata3d> painted <- TextureData3D.rgba8(2, 2, 2, root.voxels);
+    property <texturedata3d> packed <- TextureData3D.rgba8(1, 1, 1, [23, 147, 251, 255]);
+    property <texturedata3d> empty;
+    out property <texturedata3d> current <- root.preset ? root.packed : root.painted;
+    property <vector3d> coordinates <- Vector3D.new(root.u, root.v, root.w);
+    property <[VolumeSampler]> inputs <- [
+        VolumeSampler { data: root.current, texture: "", enabled: root.enabled },
+        VolumeSampler { data: root.empty, texture: @texture-url("models/channel-swatch.png"), enabled: true },
+    ];
+    callback set-byte(int, int);
+    set-byte(index, value) => { Model.set(root.voxels, index, value); }
+
+    SceneView3D {
+        width <- 224px; height <- 200px; cache-rendering <- true;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 4;
+        scene-background <- #192b40; scene-tone-map <- none;
+        model <- [
+            VolumeOrb {
+                id: "volume-sphere", mesh: "primitive:sphere", x: 0, y: 0, z: 0, color: #fff,
+                scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+                material: VolumeStyle {
+                    material-shader: @material-shader-url("effects/volume_material.wgsl"),
+                    shader-parameters: root.coordinates, shader-textures: root.inputs, unlit: true,
+                },
+            },
+        ];
+    }
+    SceneView3D {
+        x <- 224px; width <- 224px; height <- 200px; cache-rendering <- true;
+        scene-background <- #192b40; scene-tone-map <- none;
+        scene-effects <- [
+            VolumePass {
+                shader: @shader-url("effects/volume_effect.wgsl"),
+                parameters: root.coordinates, buffers: root.inputs,
+            },
+        ];
+    }
+
+    Label { x <- 12px; y <- 202px; width <- 208px; height <- 28px; text <- "Volume material"; }
+    Label { x <- 236px; y <- 202px; width <- 208px; height <- 28px; text <- "Volume post-effect"; }
+    slice-button := Button {
+        x <- 10px; y <- 232px; width <- 104px; height <- 28px; text <- "Z slice";
+        clicked => { root.w = root.w == 0.25 ? 0.75 : 0.25; }
+    }
+    center-button := Button {
+        x <- 122px; y <- 232px; width <- 98px; height <- 28px; text <- "Center";
+        clicked => { root.u = 0.5; root.v = 0.5; root.w = 0.5; }
+    }
+    edit-button := Button {
+        x <- 232px; y <- 232px; width <- 100px; height <- 28px; text <- "Edit voxel";
+        clicked => { root.set-byte(4, Model.at(root.voxels, 4, 0) == 255 ? 128 : 255); }
+    }
+    preset-button := Button {
+        x <- 344px; y <- 232px; width <- 94px; height <- 28px;
+        text <- root.preset ? "Preset" : "Volume";
+        clicked => { root.preset = !root.preset; }
+    }
+}

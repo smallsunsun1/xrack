@@ -76,7 +76,10 @@ use custom_effect::EffectSurface;
 use deform::{Deformation, DeformationBinding, DeformationBuffers, GeometryBindings};
 use depth::{DepthPass, DepthPipelines};
 use depth_of_field::FocusDepth;
-use environment::{EnvironmentGpu, EnvironmentInput, LocalReflections, SkyboxInput};
+use environment::{
+    ColorEnvironments, EnvironmentGpu, EnvironmentInput, LocalReflections, MaterialReflections,
+    SkyboxInput,
+};
 use fog::Fog;
 use instances::{ColorPlan, InstanceBuffers, InstanceSet};
 use item_textures::{FrozenItemTextures, ItemTextureViews};
@@ -638,6 +641,7 @@ struct GpuPart {
     vertices: Range<u32>,
     material: MaterialBindings,
     surface: Surface,
+    visible: bool,
     mask: bool,
     depth_coverage: Option<MeshDepthCoverage>,
 }
@@ -824,6 +828,7 @@ impl SceneGpu {
             parts: vec![GpuPart {
                 vertices: 0..mesh.vertices().len() as u32,
                 material: default.clone(),
+                visible: true,
                 mask: false,
                 depth_coverage: Some(MeshDepthCoverage::Opaque),
                 surface: Surface {
@@ -831,6 +836,9 @@ impl SceneGpu {
                     blend_mode: Default::default(),
                     depth_draw: Default::default(),
                     channel_remapping: false,
+                    separate_surface_maps: false,
+                    reflection_map: false,
+                    height_mapped: false,
                     vertex_colors: true,
                     vertex_masks: false,
                     custom_base_fresnel: false,
@@ -1047,6 +1055,8 @@ impl MeshCache {
                                         .and_then(|pbr| pbr.anisotropy.as_deref())
                                         .is_some_and(|term| term.strength > 0.0);
                                     let clearcoat = binding.coated;
+                                    let reflection_map = binding.reflection_map.is_some();
+                                    let height_mapped = binding.height_mapped;
                                     let transmission = material.transmission_blur().is_some();
                                     (
                                         binding,
@@ -1056,6 +1066,11 @@ impl MeshCache {
                                             blend_mode: material.blend_mode,
                                             depth_draw: material.depth_draw_mode,
                                             channel_remapping: material.channels.has_remapping(),
+                                            reflection_map,
+                                            height_mapped,
+                                            separate_surface_maps: pbr.is_some_and(|pbr| {
+                                                pbr.separate_surface_maps.is_some()
+                                            }),
                                             vertex_colors: material.vertex_colors,
                                             vertex_masks: pbr.is_some()
                                                 && material.vertex_masks.uses_vertex_masks(),
@@ -1100,6 +1115,7 @@ impl MeshCache {
                                 vertices: part.vertices.start as u32..part.vertices.end as u32,
                                 material: material.clone(),
                                 surface: *surface,
+                                visible: kind.materials()[part.material].is_visible(),
                                 mask: *mask,
                                 depth_coverage: kind.materials()[part.material].depth_coverage(),
                             }
@@ -3267,7 +3283,20 @@ impl SceneRenderer {
             .as_deref()
             .zip(local_bindings.as_deref())
             .map(|(slots, bindings)| LocalReflections { slots, bindings });
-        let reflections = local.as_ref().map(|local| (local, &environment_bindings));
+        let panoramas = MaterialReflections::new(
+            ctx.device,
+            scene.pipelines.panorama.clone(),
+            environment.as_ref(),
+        );
+        let reflections = ColorEnvironments {
+            fallback: &environment_bindings,
+            local: local.as_ref(),
+            material: &panoramas,
+        };
+        let global_reflections = ColorEnvironments {
+            local: None,
+            ..reflections
+        };
         if let Some(named) = named_geometry {
             let mut pass = named.begin(
                 ctx.encoder,
@@ -3290,6 +3319,7 @@ impl SceneRenderer {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.set_bind_group(2, &environment_bindings, &[]);
             draw_model_particles(
+                global_reflections,
                 (&particles.models, geometry.zero_data),
                 (&mut scene.meshes, &mut scene.pipelines),
                 (ctx.device, queue),
@@ -3305,7 +3335,11 @@ impl SceneRenderer {
                     &mut self.stats,
                     capture,
                     (
-                        reflections.filter(|_| named.combined),
+                        if named.combined {
+                            reflections
+                        } else {
+                            global_reflections
+                        },
                         lightmaps.as_ref().filter(|_| named.combined),
                     ),
                 );
@@ -3348,6 +3382,7 @@ impl SceneRenderer {
             };
             self.stats.custom_effect_surface_passes += 1;
             draw_model_particles(
+                global_reflections,
                 (&particles.models, geometry.zero_data),
                 (&mut scene.meshes, &mut scene.pipelines),
                 (ctx.device, queue),
@@ -3362,7 +3397,7 @@ impl SceneRenderer {
                     &mut pass,
                     &mut self.stats,
                     capture,
-                    (None, None),
+                    (global_reflections, None),
                 );
             }
         }
@@ -3374,6 +3409,7 @@ impl SceneRenderer {
                 pass.set_bind_group(0, globals, &[]);
                 pass.set_bind_group(2, &environment_bindings, &[]);
                 draw_model_particles(
+                    global_reflections,
                     (&particles.models, geometry.zero_data),
                     meshes,
                     (ctx.device, queue),
@@ -3507,6 +3543,7 @@ impl SceneRenderer {
             prepare_pass(&mut pass);
         }
         draw_model_particles(
+            global_reflections,
             (&particles.models, geometry.zero_data),
             (&mut scene.meshes, &mut scene.pipelines),
             (ctx.device, queue),
@@ -3724,6 +3761,7 @@ impl SceneRenderer {
                 pass.set_bind_group(0, resumed_group, &[]);
                 pass.set_bind_group(2, &environment_bindings, &[]);
                 draw_model_particles(
+                    global_reflections,
                     (&particles.models, geometry.zero_data),
                     (&mut scene.meshes, &mut scene.pipelines),
                     (ctx.device, queue),
@@ -3779,6 +3817,7 @@ impl SceneRenderer {
                 pass.set_bind_group(0, transparency_group, &[]);
                 pass.set_bind_group(2, &environment_bindings, &[]);
                 draw_model_particles(
+                    global_reflections,
                     (&particles.models, geometry.zero_data),
                     (&mut scene.meshes, &mut scene.pipelines),
                     (ctx.device, queue),
@@ -4153,17 +4192,14 @@ impl MeshColorDraws<'_> {
         pass: &mut wgpu::RenderPass<'_>,
         stats: &mut SceneDrawStats,
         output: ColorOutput,
-        (reflections, lightmaps): (
-            Option<(&LocalReflections<'_>, &wgpu::BindGroup)>,
-            Option<&LightmapBindings<'_>>,
-        ),
+        (reflections, lightmaps): (ColorEnvironments<'_>, Option<&LightmapBindings<'_>>),
     ) {
         if !output.draws_geometry() {
             return;
         }
         let mut bound_instances = None;
         let mut active = None;
-        let mut active_probe = None;
+        let mut active_environment = reflections.fallback.clone();
         let mut active_lightmap = None;
         for draw in self.set.color_draws(self.plan, self.visibility) {
             let object = &self.objects[draw.source as usize];
@@ -4175,13 +4211,6 @@ impl MeshColorDraws<'_> {
             };
             if !has_parts {
                 continue;
-            }
-            if let Some((local, fallback)) = reflections {
-                let slot = local.slot(draw.source);
-                if active_probe != Some(slot) {
-                    local.bind(pass, slot, fallback);
-                    active_probe = Some(slot);
-                }
             }
             self.bind_instances(pass, &mut bound_instances, &draw);
             let mesh = meshes.get_for_raster(device, queue, kind, output.raster);
@@ -4202,10 +4231,13 @@ impl MeshColorDraws<'_> {
                     mesh.bind_lightmap_uv(device, pass, kind);
                 }
             }
-            for part in mesh.parts.iter().filter(|part| match output.pass {
-                ColorPass::Opaque => !part.surface.blend && !part.surface.transmission,
-                ColorPass::Transmission => !part.surface.blend && part.surface.transmission,
-                ColorPass::Transparent | ColorPass::Weighted => part.surface.blend,
+            for part in mesh.parts.iter().filter(|part| {
+                part.visible
+                    && match output.pass {
+                        ColorPass::Opaque => !part.surface.blend && !part.surface.transmission,
+                        ColorPass::Transmission => !part.surface.blend && part.surface.transmission,
+                        ColorPass::Transparent | ColorPass::Weighted => part.surface.blend,
+                    }
             }) {
                 if output.capture_geometry.is_some() {
                     if part.depth_coverage.is_none()
@@ -4225,6 +4257,12 @@ impl MeshColorDraws<'_> {
                 if lightmapped {
                     stats.lightmapped_draws += 1;
                 }
+                reflections.bind(
+                    pass,
+                    &mut active_environment,
+                    Some(draw.source),
+                    part.material.reflection_map.as_ref(),
+                );
                 draw_part(
                     device,
                     pipelines,
@@ -4243,6 +4281,7 @@ impl MeshColorDraws<'_> {
                 );
             }
         }
+        reflections.restore(pass, &active_environment);
     }
 
     fn sorted_transparency(
@@ -4253,7 +4292,7 @@ impl MeshColorDraws<'_> {
         stats: &mut SceneDrawStats,
         output: ColorOutput,
         camera: &SceneCamera,
-        reflections: Option<(&LocalReflections<'_>, &wgpu::BindGroup)>,
+        reflections: ColorEnvironments<'_>,
     ) {
         let mut draws = self
             .set
@@ -4265,17 +4304,10 @@ impl MeshColorDraws<'_> {
         let mut bound_instances = None;
         let mut active_mesh = None;
         let mut active = None;
-        let mut active_probe = None;
+        let mut active_environment = reflections.fallback.clone();
         while let Some(draw) = draws.next() {
             self.geometry
                 .bind_instance_range(pass, &mut bound_instances, draw.instance);
-            if let Some((local, fallback)) = reflections {
-                let slot = local.slot(draw.instance);
-                if active_probe != Some(slot) {
-                    local.bind(pass, slot, fallback);
-                    active_probe = Some(slot);
-                }
-            }
             let object = &self.objects[draw.instance as usize];
             let kind = &object.mesh;
             let mesh = meshes.get_for_raster(device, queue, kind, output.raster);
@@ -4302,7 +4334,7 @@ impl MeshColorDraws<'_> {
                             .is_some_and(|next| next.group == order.group)
                         && self.geometry.deformation(next.instance).is_none()
                         && self.geometry.offset(next.instance) == offset
-                        && reflections.is_none_or(|(local, _)| {
+                        && reflections.local.is_none_or(|local| {
                             local.slot(next.instance) == local.slot(draw.instance)
                         })
                 }) {
@@ -4311,6 +4343,12 @@ impl MeshColorDraws<'_> {
                 }
             }
             stats.submit(&range, &part.vertices);
+            reflections.bind(
+                pass,
+                &mut active_environment,
+                Some(draw.instance),
+                part.material.reflection_map.as_ref(),
+            );
             draw_part(
                 device,
                 pipelines,
@@ -4324,6 +4362,7 @@ impl MeshColorDraws<'_> {
                 },
             );
         }
+        reflections.restore(pass, &active_environment);
     }
 }
 
@@ -4345,7 +4384,7 @@ fn linked_texture_budget(
     particles: Option<&ParticleDraw<'_>>,
 ) -> bool {
     let limits = device.limits();
-    if limits.max_storage_buffers_per_shader_stage < 5 {
+    if limits.max_storage_buffers_per_shader_stage < 5 + material::SCALAR_MAP_SLOTS {
         return false;
     }
     let slots = limits.max_sampled_textures_per_shader_stage;
@@ -4434,6 +4473,7 @@ fn viewport_pass<'a>(
 }
 
 fn draw_model_particles(
+    reflections: ColorEnvironments<'_>,
     (batches, zero_data): (&[ModelParticleBatch], &wgpu::Buffer),
     (meshes, pipelines): (&mut MeshCache, &mut Pipelines),
     (device, queue): (&wgpu::Device, &wgpu::Queue),
@@ -4450,12 +4490,13 @@ fn draw_model_particles(
         ..output
     };
     let mut active = None;
+    let mut active_environment = reflections.fallback.clone();
     for batch in batches {
         deform::bind_instance_streams(pass, &batch.instances, zero_data);
         for prototype in batch.meshes.iter() {
             let mesh = meshes.get_for_raster(device, queue, prototype, output.raster);
             mesh.bind(pass);
-            for part in &mesh.parts {
+            for part in mesh.parts.iter().filter(|part| part.visible) {
                 let translucent = batch.fading || part.surface.blend;
                 let draw = match output.pass {
                     ColorPass::Opaque => !translucent && !part.surface.transmission,
@@ -4482,6 +4523,12 @@ fn draw_model_particles(
                     stats.submit(&range, &part.vertices);
                     stats.particle_model_draws += 1;
                 }
+                reflections.bind(
+                    pass,
+                    &mut active_environment,
+                    None,
+                    part.material.reflection_map.as_ref(),
+                );
                 draw_part(
                     device,
                     pipelines,
@@ -4494,6 +4541,7 @@ fn draw_model_particles(
             }
         }
     }
+    reflections.restore(pass, &active_environment);
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -4502,7 +4550,11 @@ struct MeshPipelineKey {
     deformation: Deformation,
     lightmapped: bool,
     reverse_winding: bool,
-    shader: Option<(usize, usize, u8)>,
+    shader: Option<(
+        usize,
+        usize,
+        xrack_runtime::scene_effect::ShaderTextureKinds,
+    )>,
 }
 
 fn draw_part(
@@ -4514,6 +4566,9 @@ fn draw_part(
     (instances, deformation): (Range<u32>, Option<&DeformationBinding>),
     output: ColorOutput,
 ) {
+    if !part.visible {
+        return;
+    }
     let mode = deformation.map_or(Deformation::Rigid, |binding| binding.mode);
     let binormals = if !part.surface.vertex_tangents {
         BinormalSource::Derived
@@ -4541,7 +4596,7 @@ fn draw_part(
             (
                 Arc::as_ptr(program.source) as *const () as usize,
                 program.slots,
-                program.cubemaps,
+                program.kinds,
             )
         }),
     };

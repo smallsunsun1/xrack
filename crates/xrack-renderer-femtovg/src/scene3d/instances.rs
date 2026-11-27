@@ -758,6 +758,7 @@ struct InstanceKey {
 struct InstanceVertex {
     transform: [[f32; 4]; 3],
     color: Color,
+    tint_alpha: f32,
     metadata: u32,
     lighting_index: u32,
 }
@@ -771,6 +772,7 @@ impl InstanceVertex {
         Self {
             transform: object.transform_rows(),
             color: object.color,
+            tint_alpha: object.tint_alpha(),
             metadata: (u32::from(object.lod_coverage()) << 16)
                 | (object.shader_instance_index() << 3)
                 | flags(object, selected),
@@ -783,9 +785,9 @@ impl InstanceStreamRow for InstanceVertex {
     const STRIDE: u64 = INSTANCE_STRIDE;
 
     fn pack(self, bytes: &mut Vec<u8>) {
-        let [r, g, b, a] = self.color.0.to_be_bytes().map(|c| f32::from(c) / 255.0);
+        let [r, g, b, _] = self.color.0.to_be_bytes().map(|c| f32::from(c) / 255.0);
         append_floats(bytes, self.transform.into_iter().flatten());
-        append_floats(bytes, [r, g, b, a]);
+        append_floats(bytes, [r, g, b, self.tint_alpha]);
         bytes.extend_from_slice(&self.metadata.to_ne_bytes());
         bytes.extend_from_slice(&self.lighting_index.to_ne_bytes());
     }
@@ -808,6 +810,7 @@ pub(super) fn mesh_material_prepass(
     mesh.parts().iter().any(|part| {
         let material = &mesh.materials()[part.material];
         renderables.includes(material.is_blended())
+            && material.depth_coverage().is_some()
             && material.depth_draw_mode == MeshDepthDraw::OpaquePrepass
             && usize::from(material.transmission_blur().is_some()) == stage
     })
@@ -1024,7 +1027,7 @@ impl InstanceSet {
                     object.mesh.has_volume(),
                 ));
             }
-            if object.color.0 as u8 != 0 && !object.mesh.blended_parts().is_empty() {
+            if object.tint_alpha() > 0.0 && !object.mesh.blended_parts().is_empty() {
                 let draws = if let Some(order) = object.instance_order() {
                     let table = *table_indices.entry(order.group).or_insert_with(|| {
                         transparent_tables.push(Vec::new());

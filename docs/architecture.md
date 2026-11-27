@@ -23,6 +23,18 @@
 
 MLIR 的 native 实现在 `mlir/`。模块及其 context 由 `xrack-mlir` 管理，操作和 SSA 值引用只在模块存活期间有效。
 
+## 内建控件的 Item 接口
+
+`xrack-layout/src/item/mod.rs` 定义 `Item`。控件通过 `measure`、`arrange`、`paint` 和 `event` 提供尺寸、部件摆放、绘制请求和特有事件。新内建控件在 `item/builtin.rs` 按场景节点的 `kind` 登记，并在相应模块覆盖需要的方法。`item/combo_box.rs` 包含一个同时用到四个方法的例子。使用普通绝对布局和通用绘制的节点共用默认实现。
+
+`Item::layout` 为共享排版器选择容器算法。`Item` 也提供焦点资格、命中范围和特殊读取顺序。例如树控件计算展开或选择动作，输入路由器处理焦点、滚动和按下目标的身份校验。菜单项通过 `MenuItem` 提供行类型和键盘导航。拖拽控件声明源或落点角色，捕获和取消由拖拽会话管理。
+
+`ItemRef` 借用当前帧中配对的 `Node` 和 `LayoutNode`。普通绘制、批处理、保留层和损伤重绘通过同一个 `ItemPaint` 判断控件的绘制方式。渲染端执行绘制请求，所属 `Component` 执行属性更新和回调。
+
+`ItemRef::local_rect()` 和 `ItemEvent` 中的指针位置以控件左上角为原点。`local_to_window()` 和 `window_to_local()` 使用准备好的祖先变换。`map_to_item()` 转换同一窗口帧内两项之间的坐标。逆向映射在变换不可逆时返回 `None`。布局和裁剪算法继续通过 `LayoutNode` 访问排版坐标。
+
+布局 crate 的 `input/`、`overlay/`、`view/`、`text/` 和 `engine/` 存放这些共用实现。渲染 crate 用 `items/`、`frame/`、`text/`、`image/` 和 `scene3d/` 组织绘制。运行时的选值、模型和回调语义分别可从 `controls/`、`views/` 和 `component/` 找到，例如 `xrack-runtime/src/controls/combo.rs` 处理下拉选项的模型和提交规则。
+
 ## MLIR 阶段
 
 ```text

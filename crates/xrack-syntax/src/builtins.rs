@@ -848,6 +848,7 @@ pub const NAMESPACES: &[&str] = &[
     "Vector2D",
     "Transform2D",
     "TextureData2D",
+    "TextureData3D",
     "Scene3D",
     "Physics3D",
 ];
@@ -939,6 +940,7 @@ operations!(GeometryFunction {
     MeshAnimationDuration3D => "mesh-animation-duration-3d",
     PrepareInstanceTable3D => "prepare-instance-table-3d",
     TextureRgba8 => "texture-rgba8",
+    VolumeRgba8 => "volume-rgba8",
     RandomInstanceTable3D => "random-instance-table-3d",
     TableInstance3D => "table-instance-3d",
     Pick3D => "pick-3d",
@@ -1016,6 +1018,7 @@ impl GeometryFunction {
             Self::MeshAnimationDuration3D => Type::Float,
             Self::PrepareInstanceTable3D | Self::RandomInstanceTable3D => Type::InstanceTable3D,
             Self::TextureRgba8 => Type::TextureData2D,
+            Self::VolumeRgba8 => Type::TextureData3D,
             Self::TableInstance3D
             | Self::SceneInstance3D
             | Self::SceneInstanceCamera3D
@@ -1702,6 +1705,8 @@ pub const SCENE_MATERIAL_CHANNEL_FIELDS: &[(&str, bool)] = &[
     ("metalness-channel", false),
     ("roughness-channel", false),
     ("glossiness-channel", false),
+    ("opacity-channel", false),
+    ("height-channel", false),
     ("occlusion-channel", false),
     ("specular-channel", false),
     ("specular-color-channel", true),
@@ -1748,6 +1753,11 @@ pub const SCENE_VERTEX_MASK_CHANNELS: &[(&str, &str)] = &[
 ];
 
 pub const SCENE_MATERIAL_FIELDS: &[(&str, Type)] = &[
+    ("opacity", Type::Float),
+    ("invert-opacity-map-value", Type::Bool),
+    ("height-amount", Type::Float),
+    ("min-height-map-samples", Type::Int),
+    ("max-height-map-samples", Type::Int),
     ("material-shader", Type::String),
     ("shader-parameters", Type::Vector3D),
     ("shader-displacement", Type::Float),
@@ -1793,7 +1803,11 @@ pub const SCENE_MATERIAL_FIELDS: &[(&str, Type)] = &[
 
 pub const SCENE_MATERIAL_MAP_FIELDS: &[&str] = &[
     "base-color-map",
+    "opacity-map",
+    "height-map",
     "metallic-roughness-map",
+    "metalness-map",
+    "roughness-map",
     "glossiness-map",
     "emissive-map",
     "occlusion-map",
@@ -1804,6 +1818,7 @@ pub const SCENE_MATERIAL_MAP_FIELDS: &[&str] = &[
     "transmission-map",
     "specular-map",
     "specular-color-map",
+    "specular-reflection-map",
     "thickness-map",
     "anisotropy-map",
 ];
@@ -1903,6 +1918,10 @@ pub const SCENE_MATERIAL_WORKFLOWS: &[(&str, &str)] = &[
 ];
 
 pub const SCENE_ALPHA_MODES: &[(&str, &str)] = &[
+    (
+        "default",
+        "Keep source alpha when other settings enable blending",
+    ),
     ("opaque", "Opaque surface with depth writes"),
     ("mask", "Cut out surfaces below alpha-cutoff"),
     ("blend", "Composite partially transparent surfaces"),
@@ -2084,6 +2103,7 @@ pub const SCENE_OBJECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("parent", Type::String),
     ("parent-node", Type::String),
     ("visible", Type::Bool),
+    ("opacity", Type::Float),
     ("lod-of", Type::String),
     ("lod-max-size", Type::Length),
     ("lod-bias", Type::Float),
@@ -3233,6 +3253,7 @@ const fn geometry(
         GeometryFunction::MeshAnimationDuration3D => {
             ("Scene3D", "mesh-animation-duration", "float")
         }
+        GeometryFunction::VolumeRgba8 => ("TextureData3D", "rgba8", "texturedata3d"),
         GeometryFunction::TextureRgba8 => ("TextureData2D", "rgba8", "texturedata2d"),
         GeometryFunction::PrepareInstanceTable3D => {
             ("Scene3D", "instance-table", "instancetable3d")
@@ -4663,6 +4684,16 @@ pub const FUNCTIONS: &[Function] = &[
             Parameter::with_type("local: scenemodel3d", &Type::SceneModel3D),
         ],
         "Combines two prepared scenes in shared-then-local row order. The views and spatial queries share the result, and each input keeps its own resolved hierarchy.",
+    ),
+    geometry(
+        GeometryFunction::VolumeRgba8,
+        &[
+            Parameter::with_type("width: int", &Type::Int),
+            Parameter::with_type("height: int", &Type::Int),
+            Parameter::with_type("depth: int", &Type::Int),
+            Parameter::with_type("voxels: [int]", &Type::IntList),
+        ],
+        "Prepares a 3D RGBA8 texture snapshot in X, Y, Z order with X changing fastest. Supply width × height × depth × 4 bytes, at most 16 MiB, with dimensions in 1..256. Invalid data returns an invalid texture. Bind it to the data field of a shader input.",
     ),
     geometry(
         GeometryFunction::TextureRgba8,

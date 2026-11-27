@@ -201,17 +201,18 @@ fn project_scene_material(
             quote!(shader_textures: ::core::option::Option::Some((#inputs).into()),)
         });
     let maps = project_scene_maps(fields, records);
-    let base_item = fields
-        .iter()
-        .find(|field| field.name == "base-item")
-        .and_then(|field| {
-            project_scene_texture(
+    let item_inputs = ["base-item", "specular-reflection-item"]
+        .into_iter()
+        .filter_map(|name| {
+            let field = fields.iter().find(|field| field.name == name)?;
+            let texture = project_scene_texture(
                 field,
                 records,
                 quote!(::xrack_runtime::scene3d::SceneTexture::item_defaults()),
-            )
-        })
-        .map(|texture| quote!(base_item: ::core::option::Option::Some(#texture.prepare_item()),));
+            )?;
+            let member = ident(name);
+            Some(quote!(#member: ::core::option::Option::Some(#texture.prepare_item()),))
+        });
     let alpha_mode = has("alpha-mode").then(|| {
             let threshold = if has("alpha-cutoff") {
                 quote!(::core::option::Option::Some(__style.alpha_cutoff))
@@ -252,7 +253,7 @@ fn project_scene_material(
             #cull_mode
             #workflow
             #shader_textures
-            #base_item
+            #(#item_inputs)*
             maps: #maps,
             vertex_masks: ::xrack_runtime::scene3d::VertexColorMasks::from_fields([#(#vertex_masks),*]),
             channels: ::xrack_runtime::scene3d::MaterialChannels::from_fields([#(#channels),*]),
@@ -758,6 +759,7 @@ fn project_scene_objects(
     let [pivot_x, pivot_y, pivot_z] =
         ["pivot-x", "pivot-y", "pivot-z"].map(|name| field(name, quote!(0.0)));
     let visible = field("visible", quote!(true));
+    let opacity = field("opacity", quote!(1.0));
     let camera = if fields.iter().any(|param| param.name == "camera-kind") {
         let fov = field("camera-fov", quote!(45.0));
         let height = field("camera-height", quote!(10.0));
@@ -881,6 +883,7 @@ fn project_scene_objects(
                 parent_node: #parent_node,
                 physics_body: &(#physics_body),
                 visible: #visible,
+                opacity: #opacity,
                 camera: #camera,
                 look_at: #look_at,
                 look_at_point: #look_at_point,
@@ -1182,10 +1185,18 @@ fn project_buffer_inputs(model: &TokenStream, fields: &[Parameter], named: bool)
         )
     };
     let texture = string("texture");
-    let data = if fields.iter().any(|field| field.name == "data") {
-        quote!(::core::option::Option::Some(&buffer.data))
-    } else {
-        quote!(::core::option::Option::None)
+    let data = match fields
+        .iter()
+        .find(|field| field.name == "data")
+        .map(|field| &field.ty)
+    {
+        Some(Type::TextureData2D) => quote!(::core::option::Option::Some(
+            ::xrack_runtime::scene_effect::ShaderInputData::Plane(&buffer.data)
+        )),
+        Some(Type::TextureData3D) => quote!(::core::option::Option::Some(
+            ::xrack_runtime::scene_effect::ShaderInputData::Volume(&buffer.data)
+        )),
+        _ => quote!(::core::option::Option::None),
     };
     let item = string("item");
     let capture = string("capture");
@@ -1667,6 +1678,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::Instance3D => quote!(::xrack_runtime::Instance3D),
         Type::InstanceTable3D => quote!(::xrack_runtime::InstanceTable3D),
         Type::TextureData2D => quote!(::xrack_runtime::TextureData2D),
+        Type::TextureData3D => quote!(::xrack_runtime::TextureData3D),
         Type::MeshAsset3D => quote!(::xrack_runtime::MeshAsset3D),
         Type::MeshNode3D => quote!(::xrack_runtime::MeshNode3D),
         Type::Bounds3D => quote!(::xrack_runtime::Bounds3D),
@@ -1892,6 +1904,16 @@ fn literal(spelling: &str, ty: Type) -> Result<TokenStream, String> {
                         ::xrack_runtime::TextureData2D::from_rgba8(#width, #height, (#pixels).to_vec())
                     });
                 ::core::clone::Clone::clone(&*__XR_TEXTURE_DATA)
+            })
+        }
+        XrLiteral::TextureData3D([w, h, d], voxels) => {
+            let voxels = Literal::byte_string(&voxels);
+            quote!({
+                static __XR_VOLUME_DATA: ::std::sync::LazyLock<::xrack_runtime::TextureData3D> =
+                    ::std::sync::LazyLock::new(|| {
+                        ::xrack_runtime::TextureData3D::from_rgba8(#w, #h, #d, (#voxels).to_vec())
+                    });
+                ::core::clone::Clone::clone(&*__XR_VOLUME_DATA)
             })
         }
         XrLiteral::Vector2D(value) => {
@@ -3966,6 +3988,7 @@ impl<'a> Generator<'a> {
             | "xr.instance3d_field"
             | "xr.instance_table3d_field"
             | "xr.texture_data2d_field"
+            | "xr.texture_data3d_field"
             | "xr.walk_result3d_field"
             | "xr.vector2d_field"
             | "xr.key_field"
@@ -4002,6 +4025,7 @@ impl<'a> Generator<'a> {
                     "xr.quaternion3d_field"
                         | "xr.rotation_track3d_field"
                         | "xr.texture_data2d_field"
+                        | "xr.texture_data3d_field"
                         | "xr.bounds3d_field"
                         | "xr.mesh_asset3d_field"
                 ) {
@@ -4811,6 +4835,9 @@ impl<'a> Generator<'a> {
                     }
                     (TextureRgba8, [width, height, pixels]) => {
                         quote!(::xrack_runtime::TextureData2D::from_model(#width, #height, &(#pixels)))
+                    }
+                    (VolumeRgba8, [width, height, depth, voxels]) => {
+                        quote!(::xrack_runtime::TextureData3D::from_model(#width, #height, #depth, &(#voxels)))
                     }
                     (PrepareInstanceTable3D, [model]) => {
                         let ty = value_type(self.operand(op, 0)?)?;
@@ -17914,6 +17941,9 @@ fn embed_mesh_geometry(
         .map(|material| {
             let [r, g, b, a] = material.base_color;
             let alpha_mode = match material.alpha_mode {
+                MeshAlphaMode::Default => {
+                    quote!(::xrack_runtime::scene3d::MeshAlphaMode::Default)
+                }
                 MeshAlphaMode::Opaque => {
                     quote!(::xrack_runtime::scene3d::MeshAlphaMode::Opaque)
                 }
@@ -17923,18 +17953,20 @@ fn embed_mesh_geometry(
                 MeshAlphaMode::Blend => {
                     quote!(::xrack_runtime::scene3d::MeshAlphaMode::Blend)
                 }
-                MeshAlphaMode::InstanceBlend { cutoff, builtin } => {
+                MeshAlphaMode::InstanceBlend { cutoff, builtin, source_alpha } => {
                     let cutoff = cutoff.map_or_else(
                         || quote!(::core::option::Option::None),
                         |cutoff| quote!(::core::option::Option::Some(#cutoff)),
                     );
                     quote!(::xrack_runtime::scene3d::MeshAlphaMode::InstanceBlend {
-                        cutoff: #cutoff, builtin: #builtin,
+                        cutoff: #cutoff, builtin: #builtin, source_alpha: #source_alpha,
                     })
                 }
             };
             let base_texture =
                 embed_optional_mesh_texture(&material.base_texture, images, declarations)?;
+            let opacity_texture =
+                embed_optional_mesh_texture(&material.opacity_texture, images, declarations)?;
             let pbr = if let Some(pbr) = &material.pbr {
                 let [mr, emissive_texture, occlusion] = [
                     &pbr.surface_texture,
@@ -17943,6 +17975,41 @@ fn embed_mesh_geometry(
                 ]
                 .map(|texture| embed_optional_mesh_texture(texture, images, declarations));
                 let (mr, emissive_texture, occlusion) = (mr?, emissive_texture?, occlusion?);
+                let separate_surface_maps = if let Some(maps) = pbr.separate_surface_maps.as_deref() {
+                    let metalness = embed_optional_mesh_texture(&maps.metalness, images, declarations)?;
+                    let roughness = embed_optional_mesh_texture(&maps.roughness, images, declarations)?;
+                    quote!(::core::option::Option::Some(::std::boxed::Box::new(
+                        ::xrack_runtime::scene3d::MeshSurfaceMaps {
+                            metalness: #metalness,
+                            roughness: #roughness,
+                        }
+                    )))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
+                let height_map = if let Some(map) = pbr.height_map.as_deref() {
+                    let texture = embed_mesh_texture(&map.texture, images, declarations)?;
+                    let amount = map.amount;
+                    let [min, max] = map.samples;
+                    quote!(::core::option::Option::Some(::std::boxed::Box::new(
+                        ::xrack_runtime::scene3d::MeshHeightMap {
+                            texture: #texture, amount: #amount, samples: [#min, #max],
+                        }
+                    )))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
+                let specular_reflection = if let Some(reflection) = pbr.specular_reflection.as_deref() {
+                    let image = embed_optional_mesh_texture(&reflection.image, images, declarations)?;
+                    quote!(::core::option::Option::Some(::std::boxed::Box::new(
+                        ::xrack_runtime::scene3d::MeshSpecularReflection {
+                            image: #image,
+                            item: ::core::option::Option::None,
+                        }
+                    )))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
                 let anisotropy = if let Some(term) = pbr.anisotropy.as_deref() {
                     let strength = term.strength;
                     let rotation = term.rotation;
@@ -18042,6 +18109,9 @@ fn embed_mesh_geometry(
                     metallic: #metallic, roughness: #roughness, emissive: [#r, #g, #b],
                     occlusion_strength: #occlusion_strength,
                     surface_texture: #mr,
+                    separate_surface_maps: #separate_surface_maps,
+                    height_map: #height_map,
+                    specular_reflection: #specular_reflection,
                     emissive_texture: #emissive_texture,
                     occlusion_texture: #occlusion,
                     normal_map: #normal_map,
@@ -18071,7 +18141,12 @@ fn embed_mesh_geometry(
             let channels = material.channels.authored_fields().map(|(name, value)| quote!((#name, #value)));
             let vertex_colors = material.vertex_colors;
             let vertex_masks = material.vertex_masks.authored_fields().map(|(name, value)| quote!((#name, #value)));
+            let opacity = material.opacity;
+            let invert_opacity_map_value = material.invert_opacity_map_value;
             Ok(quote!(::xrack_runtime::scene3d::MeshMaterial {
+                opacity: #opacity,
+                opacity_texture: #opacity_texture,
+                invert_opacity_map_value: #invert_opacity_map_value,
                 shader: ::core::option::Option::None,
                 blend_mode: ::xrack_runtime::scene3d::MeshBlendMode::#blend_mode,
                 depth_draw_mode: ::xrack_runtime::scene3d::MeshDepthDraw::#depth_draw_mode,

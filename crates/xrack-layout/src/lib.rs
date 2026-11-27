@@ -1,69 +1,11 @@
 //! Logical-pixel layout shared by software rendering and input hit testing.
-mod button;
-mod calendar;
-mod choice;
-mod clip;
-mod delay_button;
-mod drag;
-mod edit;
-mod file_drop;
-mod flow;
-mod focus_observers;
-mod focus_scope;
-mod frame;
-mod frame_projection;
-mod geometry;
-mod grid;
-mod group_box;
-mod history;
-mod hover_observers;
-mod image;
+mod engine;
 mod input;
-mod keyboard;
-mod label;
-mod linear;
-mod scene_texture_input;
-pub use linear::IntrinsicMeasurements;
-pub use scene_texture_input::{SceneTouches, scene_texture_source_active};
-mod list_anchor;
-mod menu;
-mod modal;
-mod overscroll;
-mod page;
-mod page_indicator;
-mod password;
-mod path_view;
-mod pointer_events;
-mod popup;
-mod range;
-mod row_layout;
-mod scale_rotate;
 #[doc(hidden)]
-pub mod scale_rotate_gestures;
-mod scroll_bar;
-mod scroll_gesture;
-mod search;
-mod selection;
-mod shortcut;
-mod spin;
-mod split;
-mod stack_transition;
-mod styled_fragments;
-mod styled_text;
-mod swipe_delegate;
-mod swipe_gesture;
-mod tab_move;
-mod table;
-mod table_drag_selection;
-mod text_area;
-mod tooltip;
-mod transform;
-mod tree;
-mod tumbler;
-mod view_cells;
-mod viewport;
-mod visual_text;
-mod window_chrome;
+pub mod item;
+mod overlay;
+mod text;
+mod view;
 pub use button::{ButtonContent, ButtonPlacement};
 pub use calendar::{CalendarDay, CalendarGeometry, CalendarWeek};
 pub use choice::{ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry};
@@ -74,6 +16,7 @@ pub use drag::{DragDispatch, DragUpdate};
 #[doc(hidden)]
 pub use edit::selection_drag_axis;
 pub use edit::{EditAction, TextEdit, TextEditContext, TextPosition};
+use engine::{clip, flow, frame, frame_projection, geometry, grid, linear, transform};
 pub use file_drop::{FileDragInput, FileDropScope, TextDrop};
 pub use focus_observers::{FocusDelivery, FocusObservers};
 #[doc(hidden)]
@@ -83,18 +26,31 @@ pub use group_box::group_header;
 pub use history::EditSource;
 pub use hover_observers::{HoverDelivery, HoverObservers};
 pub use image::{ImagePlacement, ImagePresentation, ImageRegion, fitted_rect, tile_extent};
+#[doc(hidden)]
+pub use input::scale_rotate_gestures;
 pub use input::{
     ActivationKey, ControlInput, Interaction, NavigationKey, RangeInput, ScrollBarUpdate,
     SliderKey, SplitResize, TableEditCommit, TableEditTarget, TablePasteDestination,
     TableSelectionKey, Target, TextLinkTarget, WheelAdjustment, WheelRoute, swipe_view_selection,
+};
+use input::{
+    drag, edit, file_drop, focus_observers, focus_scope, history, hover_observers, keyboard,
+    pointer_events, scale_rotate, scroll_gesture, shortcut, swipe_gesture, tab_move, window_chrome,
+};
+use item::{
+    DeferredLayout, ItemLayout, OverlayLayout, PageLayout, RowLayout, ScrollContainer, button,
+    calendar, choice, delay_button, group_box, page, page_indicator, path_view, range, search,
+    selection, spin, swipe_delegate, tumbler,
 };
 pub use keyboard::KeyRoute;
 pub use label::{
     LabelLayout, LabelLine, LabelMeasurements, LabelPlan, LabelStyle, PlannedLabelLine,
     TextAlignment, elide_to_width, uses_label_layout,
 };
+pub use linear::IntrinsicMeasurements;
 pub use menu::{MenuEntry, MenuKey, MenuPanel, MenuRow, NativeTextMenu};
 pub use modal::{dialog_title_height, drawer_grip};
+use overlay::{menu, modal, popup, tooltip};
 pub use overscroll::OverscrollFrame;
 pub use page_indicator::{PageIndicatorGeometry, PageMarker};
 pub use password::PasswordMask;
@@ -103,6 +59,7 @@ pub use range::{ColorPlaneGeometry, DialGeometry, SliderGeometry, progress_fill_
 #[doc(hidden)]
 pub use row_layout::{RowLayoutCache, RowLayoutStats};
 pub use scale_rotate::{ScaleRotateTarget, TouchTransform, touch_centroid};
+pub use scene_texture_input::{SceneTouches, scene_texture_source_active};
 pub use scroll_bar::ScrollBarGeometry;
 pub use scroll_gesture::{ScrollGestureEnd, ScrollGestureKind};
 pub use search::SearchGeometry;
@@ -120,6 +77,7 @@ pub use styled_text::{
 pub use swipe_delegate::SwipeDelegateGeometry;
 pub use swipe_gesture::SwipeDelivery;
 pub use table::{TableGeometry, table_heading_font_size};
+use text::{label, password, styled_fragments, styled_text, text_area, visual_text};
 #[doc(hidden)]
 pub use text_area::is_basic_han_text;
 pub use text_area::{
@@ -130,6 +88,10 @@ use transform::TransformSpace;
 pub use transform::{LayoutSpace, Transform2D, WindowSpace};
 pub use tree::TreeRowGeometry;
 pub use tumbler::{TumblerGeometry, TumblerRow, TumblerScroll};
+use view::{
+    image, list_anchor, overscroll, row_layout, scene_texture_input, scroll_bar, split,
+    stack_transition, table, table_drag_selection, tree, view_cells, viewport,
+};
 pub use view_cells::ListSectionHeader;
 use view_cells::ViewCells;
 pub use viewport::{LayoutObservers, ScrollDelivery, ViewportObservers};
@@ -137,8 +99,7 @@ pub use visual_text::{VisualGrapheme, VisualTextLine};
 pub use window_chrome::WindowResizeEdge;
 use xrack_runtime::{
     Component, LayoutDirection, ListMetrics, Node, Orientation, RowKey, SelectionTarget,
-    group_index, is_font_family_choice, is_modal_overlay, is_window_overlay,
-    set_font_family_choices,
+    group_index, is_font_family_choice, is_window_overlay, set_font_family_choices,
 };
 
 #[cfg(test)]
@@ -984,6 +945,25 @@ impl LayoutNode {
         self.world_transform().map_point(point)
     }
 
+    pub(crate) fn layout_to_local(&self, point: Point) -> Point {
+        Point {
+            x: point.x - self.bounds.x,
+            y: point.y - self.bounds.y,
+        }
+    }
+
+    pub(crate) fn local_to_layout(&self, point: Point) -> Point {
+        Point {
+            x: point.x + self.bounds.x,
+            y: point.y + self.bounds.y,
+        }
+    }
+
+    pub(crate) fn window_to_local(&self, point: Point) -> Option<Point> {
+        let local = self.layout_to_local(self.map_from_window(point)?);
+        (local.x.is_finite() && local.y.is_finite()).then_some(local)
+    }
+
     pub fn window_bounds(&self, rect: Rect) -> Rect {
         self.world_transform().map_rect(rect)
     }
@@ -1354,9 +1334,9 @@ fn dimension(node: &Node, name: &str) -> Option<f32> {
 }
 
 fn default_toggle_indicator_size(node: &Node) -> Size {
-    match node.kind {
-        "Switch" => Size::new(36.0, 18.0),
-        "RadioButton" => Size::new(16.0, 16.0),
+    match item::paint(node) {
+        item::ItemPaint::Toggle(item::ToggleStyle::Switch) => Size::new(36.0, 18.0),
+        item::ItemPaint::Toggle(item::ToggleStyle::Radio) => Size::new(16.0, 16.0),
         _ => Size::new(18.0, 18.0),
     }
 }
@@ -1466,43 +1446,22 @@ fn participates_in_flow(node: &Node) -> bool {
 
 pub fn is_layout(kind: &str) -> bool {
     matches!(
-        kind,
-        "GridLayout"
-            | "FlowLayout"
-            | "FlexboxLayout"
-            | "ToolBar"
-            | "Row"
-            | "RadioGroup"
-            | "SplitView"
-    ) || linear::Axis::for_layout(kind).is_some()
+        item::item(kind).layout(),
+        ItemLayout::Grid
+            | ItemLayout::Row
+            | ItemLayout::LineOrFlow(_)
+            | ItemLayout::Overlay(_)
+            | ItemLayout::Split
+    )
 }
 
 /// Child indices in visual reading order. Paths keep their original scene indices.
 pub fn child_reading_order(node: &Node) -> impl Iterator<Item = usize> {
     let slots @ [menu, header, footer] = page::slots(node);
     let count = node.table_column_window.logical_len(node.children.len());
-    let (ordered, len) =
-        if node.kind == "TableRow" && node.table_column_order.as_slice(count).is_some() {
-            let mut ordered: Vec<_> = node
-                .materialized_children()
-                .map(|(column, _)| column)
-                .collect();
-            ordered.sort_by_key(|&column| node.table_column_order.visual_index(count, column));
-            (ordered, 0)
-        } else if node.kind == "SplitView" {
-            let count = node.split_pane_count();
-            let ordered = (0..count)
-                .flat_map(|slot| [slot, count + slot])
-                .filter(|&slot| slot < node.children.len())
-                .collect();
-            (ordered, 0)
-        } else if matches!(node.kind, "DialogButtonBox" | "FlexboxLayout") {
-            let mut ordered = (0..node.children.len()).collect::<Vec<_>>();
-            ordered.sort_by_key(|&index| linear::item_order(node, &node.children[index]));
-            (ordered, 0)
-        } else {
-            (Vec::new(), node.children.len())
-        };
+    let (ordered, len) = item::item(node.kind)
+        .reading_order(node, count)
+        .map_or_else(|| (Vec::new(), node.children.len()), |order| (order, 0));
     ordered
         .into_iter()
         .chain(menu)
@@ -2728,27 +2687,36 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             }) => Some((*geometry, *has_children)),
             _ => None,
         };
+        let item = item::item(node.kind);
+        let item_layout = item.layout();
+        let flickable = item_layout == ItemLayout::Scroll(ScrollContainer::Flickable);
+        let popup = item_layout == ItemLayout::Overlay(OverlayLayout::Popup);
+        let modal = matches!(
+            item_layout,
+            ItemLayout::Overlay(OverlayLayout::Modal | OverlayLayout::Drawer)
+        );
+        let shortcut = item_layout == ItemLayout::Deferred(DeferredLayout::Shortcut);
         let font_size = self.text.font_size(node);
         let children_enabled = parent_enabled && node.enables_children();
         let enabled =
             children_enabled && (node.kind != "TouchArea" || node.boolean("enabled", true));
         let mut visible = parent_visible
             && node.is_visible()
-            && (node.kind != "PopupWindow" || enabled && self.anchor.is_some())
+            && (!popup || enabled && self.anchor.is_some())
             && xrack_runtime::indicator_state(node) != Some(xrack_runtime::IndicatorState::Hidden);
-        let (bounds, clip) = if node.kind == "Shortcut" {
+        let (bounds, clip) = if shortcut {
             (Rect::new(bounds.x, bounds.y, 0.0, 0.0), clip)
         } else if visible
-            && node.kind == "PopupWindow"
+            && popup
             && let Some(anchor) = self.anchor
         {
             (
                 popup::bounds(node, anchor, self.viewport, self.text),
                 self.viewport,
             )
-        } else if visible && is_modal_overlay(node.kind) {
+        } else if visible && modal {
             let panel = modal::bounds(node, self.viewport, self.text);
-            let reveal = (node.kind == "Drawer")
+            let reveal = (item_layout == ItemLayout::Overlay(OverlayLayout::Drawer))
                 .then(|| {
                     self.input?.closing_drawer_reveal(
                         node,
@@ -2766,7 +2734,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         } else {
             (bounds, clip)
         };
-        if is_window_overlay(node.kind) {
+        if matches!(item_layout, ItemLayout::Overlay(_)) {
             self.ancestor_shapes = None;
             self.space = None;
         }
@@ -2788,7 +2756,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         let ancestor_shapes = self.ancestor_shapes.clone();
         // Only a child popup can read this anchor. Tab previews and option
         // delegates can place children outside the ordinary scene child list.
-        if node.kind != "Shortcut"
+        if !shortcut
             && (!node.children.is_empty()
                 || node.swipe_preview.is_some()
                 || node.combo_option_renderer.is_some())
@@ -2802,7 +2770,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 self.anchor = (clipped.width > 0.0 && clipped.height > 0.0).then_some(clipped);
             }
         }
-        if matches!(node.kind, "Menu" | "Tooltip" | "Shortcut") {
+        if let ItemLayout::Deferred(kind) = item_layout {
             // Menus and tooltips lay out their children in the overlay presenter.
             return LayoutNode {
                 ancestor_shapes,
@@ -2817,7 +2785,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     node,
                     bounds,
                     clip,
-                    visible && node.kind != "Tooltip",
+                    visible && kind != DeferredLayout::Tooltip,
                     enabled,
                     self.layout_direction,
                     font_size,
@@ -2853,9 +2821,9 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         } else {
             None
         };
-        let pane = xrack_runtime::is_pane(node.kind);
+        let pane = item_layout == ItemLayout::Pane;
         let overflow =
-            (matches!(node.kind, "Rectangle" | "Flickable") || pane) && !node.boolean("clip", true);
+            (node.kind == "Rectangle" || flickable || pane) && !node.boolean("clip", true);
         let clipping = ((node.kind == "Rectangle" || pane) && node.boolean("clip", false))
             .then(|| RoundedClip::content_box(node, bounds));
         let child_shape = clipping.filter(|shape| shape.radii.iter().any(|radius| *radius > 0.0));
@@ -2872,12 +2840,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         } else {
             clip.intersect(clipping.map_or(viewport, |shape| shape.bounds))
         };
-        if matches!(
-            node.kind,
-            "TabWidget" | "SwipeView" | "StackView" | "StackLayout"
-        ) && visible
-        {
-            let tabs = (node.kind == "TabWidget").then(|| {
+        if visible && let ItemLayout::Pages(mode) = item_layout {
+            let tabs = (mode == PageLayout::Tabs).then(|| {
                 selection::TabGeometry::new(
                     node,
                     bounds,
@@ -2885,13 +2849,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     self.text,
                 )
             });
-            let stack_layout = node.kind == "StackLayout";
+            let stack_layout = mode == PageLayout::StackLayout;
             let page_bounds = if stack_layout {
                 linear::Padding::read(node).inner_rect(bounds)
             } else {
                 tabs.as_ref().map_or(bounds, |geometry| geometry.content)
             };
-            let selected = if node.kind == "StackView" {
+            let selected = if mode == PageLayout::Stack {
                 node.stack_page_index()
             } else {
                 group_index(node)
@@ -3015,9 +2979,9 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         let mut scroll_area = None;
         let mut cached_scroll_children = false;
         let mut scroll_rects = None;
-        let horizontal_scroll_reversed = matches!(node.kind, "ScrollView" | "Flickable")
+        let horizontal_scroll_reversed = matches!(item_layout, ItemLayout::Scroll(_))
             && self.layout_direction == Some(LayoutDirection::RightToLeft);
-        let (split, split_rects) = if visible && node.kind == "SplitView" {
+        let (split, split_rects) = if visible && item_layout == ItemLayout::Split {
             let (geometry, rects) = SplitGeometry::new(
                 node,
                 bounds,
@@ -3029,11 +2993,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             (None, None)
         };
         let table_cells = node.kind == "TableRow" && row_children.is_some();
-        let mut row_children = row_children;
         let content_bounds = window_safe_area(node, bounds);
-        let page = (visible && (node.kind == "Page" || node.application_window))
+        let page = (visible && (item_layout == ItemLayout::Page || node.application_window))
             .then(|| page::Regions::new(node, content_bounds, self.text));
-        let swipe_delegate = (visible && node.kind == "SwipeDelegate").then(|| {
+        let swipe_delegate = (visible && item_layout == ItemLayout::SwipeDelegate).then(|| {
             let mut geometry = SwipeDelegateGeometry::new(node, bounds, self.text);
             if enabled
                 && let Some(offset) = self.input.and_then(|input| {
@@ -3044,7 +3007,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             }
             Box::new(geometry)
         });
-        let switch_position = if enabled && visible && node.kind == "Switch" {
+        let switch_position = if enabled && visible && item_layout == ItemLayout::Switch {
             self.input.and_then(|input| {
                 input.switch_position(
                     node,
@@ -3066,7 +3029,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 )
             })
             .flatten();
-        let modal_title = if visible && is_modal_overlay(node.kind) {
+        let modal_title = if visible && modal {
             modal::title_layout(
                 node,
                 Size::new(bounds.width, bounds.height),
@@ -3112,288 +3075,43 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .collect()
         } else if let Some(rects) = split_rects {
             rects.into_iter().map(grid::Placement::plain).collect()
-        } else if node.kind == "MonthGrid" && node.calendar_cells().is_some() {
-            node.children
-                .iter()
-                .map(|child| {
-                    grid::Placement::plain(if child.kind == "CalendarCells" {
-                        bounds
-                    } else {
-                        self.absolute_child(child, bounds)
-                    })
-                })
-                .collect()
-        } else if node.has_progress_parts() {
-            let fill = progress_fill_bounds(
-                bounds,
-                self.layout_direction.unwrap_or_default(),
-                xrack_runtime::indicator_state(node)
-                    .unwrap_or(xrack_runtime::IndicatorState::Hidden),
-                None,
-            );
-            node.children
-                .iter()
-                .map(|child| {
-                    grid::Placement::plain(match child.kind {
-                        "ProgressTrack" => bounds,
-                        "ProgressFill" => fill,
-                        _ => self.absolute_child(child, bounds),
-                    })
-                })
-                .collect()
-        } else if node.control_part("SliderHandle").is_some() {
-            let geometry = SliderGeometry::with_layout_direction(
-                bounds,
-                node,
-                self.layout_direction.unwrap_or_default(),
-            );
-            let range = xrack_runtime::SliderRange::from_node(node);
-            let fraction = self
-                .input
-                .and_then(|input| {
-                    (!node.boolean("live", true))
-                        .then(|| input.slider_preview(&self.path))
-                        .flatten()
-                })
-                .map_or_else(|| range.fraction(), |value| range.preview_fraction(value));
-            node.children
-                .iter()
-                .map(|child| {
-                    let rect = if child.kind == "SliderHandle" {
-                        geometry.thumb_bounds(0, fraction)
-                    } else {
-                        self.absolute_child(child, bounds)
-                    };
-                    grid::Placement::plain(rect)
-                })
-                .collect()
-        } else if node.kind == "ComboBox" && !node.children.is_empty() {
-            let direction = self.layout_direction.unwrap_or_default();
-            let geometry = ComboGeometry::for_control(node, bounds, direction);
-            node.children
-                .iter()
-                .map(|child| match child.kind {
-                    "ComboIndicator" => grid::Placement::plain(geometry.indicator_bounds(child)),
-                    "ComboPopup" => grid::Placement::plain(Rect::new(bounds.x, bounds.y, 0.0, 0.0)),
-                    "ComboContent" => {
-                        let bounds = geometry.label_bounds(direction);
-                        grid::Placement {
-                            bounds,
-                            clip: Some(Rc::new(table::PaneClip {
-                                bounds,
-                                space: space.clone(),
-                            })),
-                            row_children: None,
-                        }
-                    }
-                    _ => grid::Placement::plain(self.absolute_child(child, bounds)),
-                })
-                .collect()
-        } else if xrack_runtime::is_spin_box(node.kind) && !node.children.is_empty() {
-            let geometry = SpinGeometry::with_layout_direction(
-                bounds,
-                node,
-                self.layout_direction.unwrap_or_default(),
-            );
-            node.children
-                .iter()
-                .map(|child| {
-                    grid::Placement::plain(match child.kind {
-                        "SpinUpIndicator" => geometry.up,
-                        "SpinDownIndicator" => geometry.down,
-                        _ => self.absolute_child(child, bounds),
-                    })
-                })
-                .collect()
-        } else if node.control_part("ToggleIndicator").is_some()
-            || node.control_part("SwitchThumb").is_some()
-        {
-            let geometry =
-                ToggleGeometry::new(node, bounds, self.layout_direction.unwrap_or_default());
-            let checked = node.boolean("checked", false);
-            node.children
-                .iter()
-                .map(|child| {
-                    grid::Placement::plain(match child.kind {
-                        "ToggleIndicator" => geometry.indicator,
-                        "SwitchThumb" => geometry.switch_thumb(checked, switch_position),
-                        _ => self.absolute_child(child, bounds),
-                    })
-                })
-                .collect()
-        } else if node.control_part("ButtonContent").is_some() {
-            let content = bounds.inset(ButtonContent::new(node).padding);
-            node.children
-                .iter()
-                .map(|child| {
-                    grid::Placement::plain(if child.kind == "ButtonContent" {
-                        content
-                    } else {
-                        self.absolute_child(child, bounds)
-                    })
-                })
-                .collect()
-        } else if node.kind == "SplitHandle" {
-            node.children
-                .iter()
-                .map(|_| grid::Placement::plain(bounds))
-                .collect()
-        } else if node.kind == "CalendarCells" {
-            (0..node.children.len())
-                .map(|slot| {
-                    let bounds = calendar::month_cell(
-                        bounds,
-                        slot,
-                        self.layout_direction.unwrap_or_default(),
-                    );
-                    grid::Placement {
-                        bounds,
-                        clip: Some(Rc::new(table::PaneClip {
-                            bounds,
-                            space: space.clone(),
-                        })),
-                        row_children: None,
-                    }
-                })
-                .collect()
+        } else if let Some(placements) = item.arrange(&mut item::ArrangeContext {
+            node,
+            bounds,
+            direction: self.layout_direction.unwrap_or_default(),
+            space: &space,
+            enabled,
+            input: self.input,
+            path: &self.path,
+            switch_position,
+            layout: self.text,
+        }) {
+            placements
         } else if let Some(list) = node.list {
             let cells = ViewCells::new(node, viewport.width);
             let axis = resolved_list_scroll
                 .unwrap_or_else(|| self.list_scroll(node, &cells, viewport.height, list.row_count));
             scroll = Some(axis);
             list_section_headers = cells.headers(viewport, axis.offset, list.row_count);
-            let panes = table.as_ref().and_then(|table| {
-                if table.row_header.width == 0.0 {
-                    table.frozen_boundary()?;
-                }
-                let pane = |bounds| {
-                    Rc::new(table::PaneClip {
-                        bounds,
-                        space: space.clone(),
-                    })
-                };
-                Some((pane(table.frozen_body()), pane(table.scrollable_body())))
-            });
-            node.children
-                .iter()
-                .enumerate()
-                .map(|(slot, row)| {
-                    if list.row_count == 0 && row.kind == "EmptyState" {
-                        return grid::Placement::plain(viewport);
-                    }
-                    let bounds = cells.bounds(list.first_row + slot, viewport, axis.offset);
-                    let bounds = if node.kind == "GridView" {
-                        place_in_direction(
-                            bounds,
-                            viewport,
-                            self.layout_direction.unwrap_or_default(),
-                        )
-                    } else {
-                        bounds
-                    };
-                    let delegate = if row.kind == "ListRow" {
-                        row.children.first()
-                    } else {
-                        Some(row)
-                    };
-                    grid::Placement {
-                        bounds,
-                        clip: None,
-                        row_children: table.as_ref().zip(delegate).map(|(table, row)| {
-                            grid::RowPlacements::Cells(
-                                row.materialized_children()
-                                    .filter_map(|(index, _)| {
-                                        let column = table.columns.get(index)?;
-                                        Some(grid::Placement {
-                                            bounds: Rect::new(
-                                                column.x,
-                                                bounds.y,
-                                                column.width,
-                                                bounds.height,
-                                            ),
-                                            clip: panes.as_ref().map(|(frozen, scrolling)| {
-                                                if table.is_frozen(index) {
-                                                    frozen.clone()
-                                                } else {
-                                                    scrolling.clone()
-                                                }
-                                            }),
-                                            row_children: None,
-                                        })
-                                    })
-                                    .collect(),
-                            )
-                        }),
-                    }
-                })
-                .collect()
-        } else if node.kind == "RangeSlider" {
-            let geometry = SliderGeometry::with_layout_direction(
-                bounds,
+            item::views::VisibleRows {
                 node,
-                self.layout_direction.unwrap_or_default(),
-            );
-            let interval = xrack_runtime::SliderInterval::from_node(node);
-            let preview = self
-                .input
-                .filter(|_| enabled)
-                .and_then(|input| input.interval_preview(node, &self.path));
-            let fractions = preview.map_or_else(
-                || interval.fractions(),
-                |(index, fraction)| interval.preview_fractions(index, fraction),
-            );
-            node.children
-                .iter()
-                .enumerate()
-                .map(|(index, child)| {
-                    let index = if index < Node::RANGE_THUMBS {
-                        Some(index)
-                    } else {
-                        Node::RANGE_HANDLE_PARTS
-                            .iter()
-                            .position(|kind| *kind == child.kind)
-                    };
-                    let rect = index.map_or(Rect::default(), |index| {
-                        geometry.thumb_bounds(index, fractions[index])
-                    });
-                    grid::Placement::plain(rect)
-                })
-                .collect()
-        } else if node.kind == "ListRow" {
-            let direction = self.layout_direction.unwrap_or_default();
-            let tree = TreeRowGeometry::with_layout_direction(node, bounds, direction);
-            node.children
-                .iter()
-                .map(|child| {
-                    if let Some(geometry) = tree
-                        && child.kind == "TreeRow"
-                        && child.control_part("TreeDisclosure").is_some()
-                    {
-                        grid::Placement {
-                            bounds,
-                            clip: None,
-                            row_children: Some(grid::RowPlacements::Tree {
-                                geometry,
-                                has_children: node.boolean("tree-has-children", false),
-                            }),
-                        }
-                    } else {
-                        grid::Placement {
-                            bounds: tree.map_or(bounds, |tree| tree.content),
-                            clip: None,
-                            row_children: row_children.take(),
-                        }
-                    }
-                })
-                .collect()
-        } else if node.kind == "GridLayout" {
-            grid::children(
+                viewport,
+                cells: &cells,
+                offset: axis.offset,
+                direction: self.layout_direction.unwrap_or_default(),
+                grid: item_layout == ItemLayout::Rows(RowLayout::Grid),
+                table: table.as_deref(),
+                space: &space,
+            }
+            .arrange(list)
+        } else if item_layout == ItemLayout::Rows(RowLayout::Row) {
+            item::views::arrange_row(
                 node,
                 bounds,
                 self.layout_direction.unwrap_or_default(),
-                self.text,
+                row_children,
             )
-        } else if node.kind == "TabBar" {
+        } else if item_layout == ItemLayout::TabBar {
             let orientation = node.orientation();
             let direction = self.layout_direction.unwrap_or_default();
             let requested = self.scroll_request(node, orientation);
@@ -3414,7 +3132,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 Orientation::Vertical => scroll = Some(axis),
             }
             rects.into_iter().map(grid::Placement::plain).collect()
-        } else if matches!(node.kind, "ScrollView" | "Flickable") {
+        } else if matches!(item_layout, ItemLayout::Scroll(_)) {
             let (rects, x, y, area, cache_ready) =
                 self.scroll_view_children(node, bounds, enabled, horizontal_scroll_reversed);
             cached_scroll_children = cache_ready;
@@ -3437,7 +3155,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         } else if let Some(grid::RowPlacements::Cells(placements)) = row_children {
             placements
         } else {
-            let mut content = if pane || matches!(node.kind, "Loader" | "Window") {
+            let mut content = if pane
+                || matches!(item_layout, ItemLayout::Fill { padded: true })
+                || item_layout == ItemLayout::Window
+            {
                 linear::Padding::read(node).inner_rect(content_bounds)
             } else {
                 content_bounds
@@ -3451,7 +3172,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             .min(bounds.height);
             content.y += title;
             content.height -= title;
-            if matches!(node.kind, "Loader" | "LoaderCandidate") {
+            if matches!(item_layout, ItemLayout::Fill { .. }) {
                 node.children
                     .iter()
                     .map(|_| grid::Placement::plain(content))
@@ -3485,27 +3206,14 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 self.text,
             ) {
                 rects.into_iter().map(grid::Placement::plain).collect()
-            } else if flow::uses_flow(node) {
-                flow::children(
-                    node,
-                    content,
-                    self.layout_direction.unwrap_or_default(),
-                    self.text,
-                )
-                .into_iter()
-                .map(grid::Placement::plain)
-                .collect()
-            } else if let Some(axis) = linear::Axis::for_node(node) {
-                linear::children(
-                    node,
-                    axis,
-                    content,
-                    self.layout_direction.unwrap_or_default(),
-                    self.text,
-                )
-                .into_iter()
-                .map(grid::Placement::plain)
-                .collect()
+            } else if let Some(placements) = item::container::arrange_content(
+                item_layout,
+                node,
+                content,
+                self.layout_direction.unwrap_or_default(),
+                self.text,
+            ) {
+                placements
             } else {
                 absolute_content = Some(content);
                 Vec::new()
@@ -3525,15 +3233,16 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .map_or_else(|| placements.len(), ExactSizeIterator::len);
             node.children.len().min(placed)
         };
-        // Project cached scroll children together. The cache only contains
-        // ordinary child layouts and leaves special children for placement.
-        let projected = if cached_scroll_children
+        let cached_scroll_projection = cached_scroll_children
             && self.row_key.is_none()
             && self.space.is_none()
             && page.is_none()
             && swipe_delegate.is_none()
             && tree_parts.is_none()
-            && list_section_headers.is_none()
+            && list_section_headers.is_none();
+        // Project cached scroll children together. The cache only contains
+        // ordinary child layouts and leaves special children for placement.
+        let projected = if cached_scroll_projection
             && let Some(rects) = scroll_rects.as_ref().filter(|rects| rects.len() == count)
             && let Some(cache) = self.row_layouts.as_deref_mut()
         {
@@ -3565,6 +3274,23 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         };
         let place_child = |context: &mut Self, index, child: &Node, placement: grid::Placement| {
             context.path.push(index);
+            if cached_scroll_projection
+                && child.kind == "StyledText"
+                && child.children.is_empty()
+                && placement.clip.is_none()
+            {
+                // Rich-text leaves use the viewport clip and inherited state.
+                let layout = context.place_scroll_child(
+                    node,
+                    child,
+                    placement.bounds,
+                    child_clip,
+                    visible,
+                    content_enabled,
+                );
+                context.path.pop();
+                return layout;
+            }
             let is_handle = child.kind == "SplitHandle";
             let closable = xrack_runtime::tab_is_closable(node, child);
             let clip = page.as_ref().map_or(child_clip, |page| {
@@ -3755,13 +3481,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             children.extend(placed);
             children
         });
-        let tumbler = (visible && matches!(node.kind, "Tumbler" | "PathView"))
-            .then(|| {
+        let tumbler = if visible && let ItemLayout::Wheel { path } = item_layout {
+            (|| {
                 let wheel = xrack_runtime::Tumbler::from_node(node);
                 let offset = self
                     .input
                     .map_or(0.0, |input| input.tumbler_offset(&wheel, &self.path));
-                let mut geometry = if node.kind == "PathView" {
+                let mut geometry = if path {
                     TumblerGeometry::along_path(
                         node,
                         &wheel,
@@ -3799,8 +3525,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     }
                 }
                 Some(Box::new(geometry))
-            })
-            .flatten();
+            })()
+        } else {
+            None
+        };
         LayoutNode {
             bounds,
             clip,
@@ -3833,10 +3561,9 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             scroll,
             missing_list_rows: false,
             missing_descendant_list_rows: false,
-            mouse_drag_pan: node.boolean("mouse-drag-pan-enabled", node.kind == "Flickable"),
-            middle_mouse_pan: node.kind != "Flickable"
-                || node.boolean("mouse-drag-pan-enabled", true),
-            pan_axes: if node.kind == "Flickable" {
+            mouse_drag_pan: node.boolean("mouse-drag-pan-enabled", flickable),
+            middle_mouse_pan: !flickable || node.boolean("mouse-drag-pan-enabled", true),
+            pan_axes: if flickable {
                 let direction = match node.properties.get("flick-direction") {
                     Some(xrack_runtime::Value::FlickDirection(direction)) => *direction,
                     _ => xrack_runtime::FlickDirection::Both,
@@ -4198,26 +3925,30 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
     }
 
     fn absolute_child(&mut self, child: &Node, content: Rect) -> Rect {
-        if !participates_in_flow(child) {
-            return Rect::new(content.x, content.y, 0.0, 0.0);
-        }
-        let available = Size::new(content.width, content.height);
-        let size = linear::fixed_size(child, available)
-            .or_else(|| linear::fill_size_with_fixed_cross_axis(child, available, self.text))
-            .unwrap_or_else(|| {
-                let metrics = linear::measure(child, available, self.text);
-                Size::new(
-                    absolute_width(child, metrics.x, content.width),
-                    absolute_height(child, metrics.y, content.height),
-                )
-            });
-        Rect::new(
-            content.x + child.length("x").unwrap_or(0.0),
-            content.y + child.length("y").unwrap_or(0.0),
-            size.width,
-            size.height,
-        )
+        absolute_child(self.text, child, content)
     }
+}
+
+fn absolute_child(text: &mut impl TextMeasurer, child: &Node, content: Rect) -> Rect {
+    if !participates_in_flow(child) {
+        return Rect::new(content.x, content.y, 0.0, 0.0);
+    }
+    let available = Size::new(content.width, content.height);
+    let size = linear::fixed_size(child, available)
+        .or_else(|| linear::fill_size_with_fixed_cross_axis(child, available, text))
+        .unwrap_or_else(|| {
+            let metrics = linear::measure(child, available, text);
+            Size::new(
+                absolute_width(child, metrics.x, content.width),
+                absolute_height(child, metrics.y, content.height),
+            )
+        });
+    Rect::new(
+        content.x + child.length("x").unwrap_or(0.0),
+        content.y + child.length("y").unwrap_or(0.0),
+        size.width,
+        size.height,
+    )
 }
 
 fn absolute_width(node: &Node, info: linear::AxisInfo, available: f32) -> f32 {

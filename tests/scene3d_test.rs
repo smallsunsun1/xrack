@@ -813,11 +813,12 @@ fn material_debug_views_use_resolved_channels_and_reuse_scene_resources() -> Tes
                 work.scene_capture_passes,
                 work.bloom_passes,
                 work.viewport_cache_hits,
+                work.scene_image_uploads,
             ]
         };
         assert_eq!(stats(&gpu), stats(&preview_gpu));
         let image = xrack_assets::decode_png(&png)?;
-        assert_eq!(image.size, [480, 332]);
+        assert_eq!(image.size, [480, 416]);
         Ok((
             image.rgba.as_chunks::<4>().0[..480 * 250].to_vec(),
             stats(&gpu),
@@ -914,6 +915,117 @@ fn material_debug_views_use_resolved_channels_and_reuse_scene_resources() -> Tes
         "the translucent blue material blends over the stock base color: {:?}",
         glass[pixel],
     );
+    let mut app = weak.upgrade().ok_or("missing independent maps demo")?;
+    app.set_use_packed_map(true);
+    dynamic.set("use-packed-map", Value::Bool(true))?;
+    let (packed_roughness, _) = draw(2, false, false, false)?;
+    let (packed_metalness, packed) = draw(3, false, false, false)?;
+    close(stock(&packed_roughness), [80; 3]);
+    close(stock(&packed_metalness), [64; 3]);
+
+    app.set_use_metalness_map(true);
+    dynamic.set("use-metalness-map", Value::Bool(true))?;
+    let (one_metal, metal) = draw(3, false, false, false)?;
+    let (still_packed, _) = draw(2, false, false, false)?;
+    let sides = |pixels: &[[u8; 4]]| [119, 185].map(|x| pixels[480 * 125 + x]);
+    for (actual, value) in sides(&one_metal).into_iter().zip([77, 179]) {
+        close(actual, [value; 3]);
+    }
+    close(stock(&still_packed), [80; 3]);
+    assert_eq!(metal[..3], packed[..3]);
+    assert_eq!(metal[6], packed[6] + 1);
+
+    app.set_use_roughness_map(true);
+    dynamic.set("use-roughness-map", Value::Bool(true))?;
+    let (roughness, both) = draw(2, false, false, false)?;
+    close(stock(&roughness), [112; 3]);
+    assert_eq!(both[..3], packed[..3]);
+    assert_eq!(both[6], metal[6] + 1);
+
+    app.set_metalness_offset(0.5);
+    dynamic.set("metalness-offset", Value::Float(0.5))?;
+    let (shifted, shifted_work) = draw(3, false, false, false)?;
+    assert_eq!(
+        sides(&shifted),
+        [sides(&one_metal)[1], sides(&one_metal)[0]]
+    );
+    let (still_roughness, _) = draw(2, false, false, false)?;
+    assert_eq!(stock(&still_roughness), stock(&roughness));
+    assert_eq!(shifted_work[..3], both[..3]);
+    assert_eq!(shifted_work[6], both[6]);
+
+    app.set_metalness_offset(0.0);
+    dynamic.set("metalness-offset", Value::Float(0.0))?;
+    app.set_second_metalness_uv(true);
+    dynamic.set("second-metalness-uv", Value::Bool(true))?;
+    let (uv1, work_uv1) = draw(3, false, false, false)?;
+    assert_eq!(sides(&uv1), [sides(&one_metal)[0]; 2]);
+    assert_eq!(work_uv1[6], both[6]);
+
+    app.set_metalness_channel("r".into());
+    dynamic.set("metalness-channel", Value::String("r".into()))?;
+    let (red, red_work) = draw(3, false, false, false)?;
+    close(stock(&red), [51; 3]);
+    app.set_metalness_channel("b".into());
+    dynamic.set("metalness-channel", Value::String("b".into()))?;
+    let (back_to_blue, blue_work) = draw(3, false, false, false)?;
+    assert_eq!(sides(&back_to_blue), sides(&uv1));
+    assert_eq!(red_work[6], both[6] + 1);
+    assert_eq!(blue_work[6], red_work[6]);
+
+    app.set_roughness_channel("r".into());
+    dynamic.set("roughness-channel", Value::String("r".into()))?;
+    let (red_roughness, _) = draw(2, false, false, false)?;
+    close(stock(&red_roughness), [16; 3]);
+    app.set_roughness_channel("g".into());
+    dynamic.set("roughness-channel", Value::String("g".into()))?;
+    app.set_use_metalness_map(false);
+    dynamic.set("use-metalness-map", Value::Bool(false))?;
+    app.set_use_roughness_map(false);
+    dynamic.set("use-roughness-map", Value::Bool(false))?;
+    let (restored_roughness, _) = draw(2, false, false, false)?;
+    let (restored_metalness, restored) = draw(3, false, false, false)?;
+    close(stock(&restored_roughness), [80; 3]);
+    close(stock(&restored_metalness), [64; 3]);
+    assert_eq!(restored[..3], packed[..3]);
+    app.set_reflection_sky(true);
+    dynamic.set("reflection-sky", Value::Bool(true))?;
+    let (world_specular, world) = draw(11, false, false, false)?;
+    let (world_diffuse, _) = draw(10, false, false, false)?;
+
+    app.set_material_reflection(true);
+    dynamic.set("material-reflection", Value::Bool(true))?;
+    let (mapped, mapped_work) = draw(11, false, false, false)?;
+    let (mapped_diffuse, _) = draw(10, false, false, false)?;
+    assert_ne!(stock(&world_specular), stock(&mapped));
+    assert_eq!(custom(&world_specular), custom(&mapped));
+    assert_eq!(stock(&world_diffuse), stock(&mapped_diffuse));
+    assert_eq!(mapped_work[..3], world[..3]);
+
+    app.set_reflection_offset(0.375);
+    dynamic.set("reflection-offset", Value::Float(0.375))?;
+    let (rotated, rotated_work) = draw(11, false, false, false)?;
+    assert_ne!(stock(&rotated), stock(&mapped));
+    assert_eq!(custom(&rotated), custom(&mapped));
+    assert_eq!(rotated_work[..3], mapped_work[..3]);
+    assert_eq!(rotated_work[6], mapped_work[6]);
+
+    app.set_reflection_item("studio-swatch".into());
+    dynamic.set("reflection-item", Value::String("studio-swatch".into()))?;
+    let (warm, live_work) = draw(11, false, false, false)?;
+    assert_ne!(stock(&warm), stock(&rotated));
+    app.set_warm_reflection(false);
+    dynamic.set("warm-reflection", Value::Bool(false))?;
+    let (cool, cool_work) = draw(11, false, false, false)?;
+    assert_ne!(stock(&warm), stock(&cool));
+    assert_eq!(custom(&warm), custom(&cool));
+    assert_eq!(cool_work[..3], live_work[..3]);
+    assert_eq!(cool_work[6], live_work[6]);
+
+    app.set_reflection_item("missing-source".into());
+    dynamic.set("reflection-item", Value::String("missing-source".into()))?;
+    let (fallback, _) = draw(11, false, false, false)?;
+    assert_eq!(stock(&fallback), stock(&rotated));
     Ok(())
 }
 
@@ -3661,7 +3773,7 @@ fn weighted_transparency_is_order_independent_and_reuses_opaque_depth() -> TestR
 fn linked_transparency_sorts_samples_on_both_sides_of_a_pixel_center() -> TestResult {
     const NAME: &str = "examples/puzzle3d/transparency.xr";
     // An odd viewport places the intersection of the two sheets at x=240.5.
-    let source = std::fs::read_to_string(NAME)?.replace("width: 480px;", "width: 481px;");
+    let source = std::fs::read_to_string(NAME)?.replace("width <- 480px;", "width <- 481px;");
     let prepared = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
     let (program, _) =
         xrack_interpreter::Program::from_module_with_file_resources(&prepared.module, NAME, None)?;
@@ -3844,8 +3956,8 @@ fn linked_transparency_compacts_scissored_heads_and_reuses_them_when_moved() -> 
     // the whole work budget even before allocating a fragment. A crop fits.
     if msaa {
         let source = source.replace(
-            "camera: \"eye\";",
-            "camera: \"eye\"; texture-width: 2048; texture-height: 2048;",
+            "camera <- \"eye\";",
+            "camera <- \"eye\"; texture-width <- 2048; texture-height <- 2048;",
         );
         let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
         let (prepared, _) = xrack_interpreter::Program::from_module_with_file_resources(
@@ -6623,10 +6735,11 @@ fn prepared_scene_models_supply_instanced_particles_and_keep_posed_surface_data(
     let dynamic_skin = program.create("AuthoredMorphDemo")?;
     dynamic_skin.set("extend", Value::Float(1.0))?;
     dynamic_skin.set("bend", Value::Float(90.0))?;
-    weak.upgrade()
-        .ok_or("missing scene particle demo")?
-        .set_prototype(skinned.get_world());
+    let mut particle_app = weak.upgrade().ok_or("missing scene particle demo")?;
+    particle_app.set_prototype(skinned.get_world());
+    particle_app.set_use_prototype(true);
     dynamic.set("prototype", dynamic_skin.get("world")?)?;
+    dynamic.set("use-prototype", Value::Bool(true))?;
     let bent = frame(0.7, 1.0, "none", true)?;
     assert_eq!(bent.1.len(), 1);
     let tip = bent.1[0]
@@ -7206,6 +7319,247 @@ fn shader_cubemaps_keep_mips_alpha_and_share_uploads() -> TestResult {
 }
 
 #[test]
+fn node_opacity_fades_scene_subtrees_without_changing_mask_coverage() -> TestResult {
+    use node_opacity_ui::NodeOpacityDemo;
+    use xrack_runtime::scene3d::{MeshDepthCoverage, SceneObject};
+
+    const NAME: &str = "examples/puzzle3d/node_opacity.xr";
+    let prepared =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&prepared.module, NAME, None)?;
+    let dynamic = program.create("NodeOpacityDemo")?;
+    let app = NodeOpacityDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let mut gpu = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut frame = || -> TestResult<_> {
+        let before = gpu.scene_draw_stats().material_depth_prepass_draws;
+        let png = aot.render(&mut gpu)?.to_vec();
+        let stats = gpu.scene_draw_stats();
+        assert_eq!(png, interpreted.render(&mut gpu)?);
+        let image = xrack_assets::decode_png(&png)?;
+        let sample = |x: usize| -> TestResult<[u8; 3]> {
+            let offset = (112 * 448 + x) * 4;
+            Ok(image.rgba[offset..offset + 3].try_into()?)
+        };
+        let depth_draws = stats.material_depth_prepass_draws - before;
+        Ok((sample(86)?, sample(148)?, stats, depth_draws))
+    };
+    let hits = |app: &NodeOpacityDemo, covered: &str| -> TestResult {
+        let (cutout, front) = (app.get_cutout_hit(), app.get_covered_hit());
+        assert_eq!(cutout.object_id, "back");
+        assert_eq!(front.object_id, covered);
+        assert_eq!(dynamic.get("cutout-hit")?, Value::Hit3D(cutout));
+        assert_eq!(dynamic.get("covered-hit")?, Value::Hit3D(front));
+        assert_eq!(app.get_collision_count(), 1);
+        assert_eq!(dynamic.get("collision-count")?, Value::Int(1));
+        Ok(())
+    };
+    let mut app = weak.upgrade().ok_or("missing node opacity demo")?;
+    let initial = frame()?;
+    assert_eq!((initial.0, initial.1), ([0, 0, 255], [255, 0, 0]));
+    assert!(initial.2.shadow_atlas_bytes > 0);
+    hits(&app, "front")?;
+    let original = app.get_world();
+    let front = original
+        .objects()
+        .iter()
+        .find(|node| node.id == "front")
+        .ok_or("missing opaque cutout")?;
+    assert_eq!(
+        front.mesh.materials()[0].depth_coverage(),
+        Some(MeshDepthCoverage::Mask)
+    );
+
+    app.set_group_opacity(0.5);
+    dynamic.set("group-opacity", Value::Float(0.5))?;
+    let half = frame()?;
+    assert!(
+        half.1
+            .into_iter()
+            .zip([188, 0, 188])
+            .all(|(a, b)| a.abs_diff(b) <= 1)
+    );
+    assert!(
+        half.3 < initial.3,
+        "a blended cutout leaves the opaque depth prepass"
+    );
+    hits(&app, "front")?;
+    app.set_child_opacity(0.5);
+    dynamic.set("child-opacity", Value::Float(0.5))?;
+    let quarter = frame()?;
+    assert_eq!(quarter.0, initial.0);
+    assert!(
+        quarter
+            .1
+            .into_iter()
+            .zip([137, 0, 225])
+            .all(|(a, b)| a.abs_diff(b) <= 1)
+    );
+    assert_eq!(
+        quarter.2.mesh_vertex_bytes_uploaded,
+        half.2.mesh_vertex_bytes_uploaded
+    );
+    assert_eq!(quarter.2.scene_image_uploads, half.2.scene_image_uploads);
+    let faded = app.get_world();
+    let front = faded
+        .objects()
+        .iter()
+        .find(|node| node.id == "front")
+        .ok_or("missing faded cutout")?;
+    assert_eq!(front.opacity(), 0.25);
+    assert_eq!(front.mesh.materials()[0].depth_coverage(), None);
+    let tiles: Vec<_> = faded
+        .objects()
+        .iter()
+        .filter(|node| node.id == "tiles")
+        .map(SceneObject::opacity)
+        .collect();
+    assert_eq!(tiles, [0.2; 2]);
+    hits(&app, "front")?;
+
+    app.set_group_opacity(0.0);
+    dynamic.set("group-opacity", Value::Float(0.0))?;
+    let hidden = frame()?;
+    assert_eq!((hidden.0, hidden.1), ([0, 0, 255], [0, 0, 255]));
+    assert_eq!(app.get_world().objects().len(), 1);
+    hits(&app, "back")?;
+    assert_eq!(
+        original
+            .objects()
+            .iter()
+            .find(|node| node.id == "front")
+            .ok_or("missing original snapshot")?
+            .opacity(),
+        1.0
+    );
+    Ok(())
+}
+
+#[test]
+fn volume_texture_interpolates_xyz_and_reuses_uploads() -> TestResult {
+    use volume_texture_ui::VolumeTextureDemo;
+
+    const NAME: &str = "examples/puzzle3d/volume_texture.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("VolumeTextureDemo")?;
+    let app = VolumeTextureDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut aot_gpu, mut live_gpu) = (renderer()?, renderer()?);
+    if aot_gpu.device.limits().max_texture_dimension_3d < 2 {
+        return Ok(());
+    }
+    let mut frame = || -> TestResult<_> {
+        let png = aot.render(&mut aot_gpu)?;
+        assert_eq!(png, interpreted.render(&mut live_gpu)?);
+        let stats = aot_gpu.scene_draw_stats();
+        assert_eq!(
+            stats.scene_image_uploads,
+            live_gpu.scene_draw_stats().scene_image_uploads
+        );
+        let image = xrack_assets::decode_png(png)?;
+        let sample = |x: usize| -> TestResult<[u8; 3]> {
+            let offset = (100 * 448 + x) * 4;
+            Ok(image.rgba[offset..offset + 3].try_into()?)
+        };
+        let material = sample(112)?;
+        let post = sample(336)?;
+        assert!(
+            material
+                .into_iter()
+                .zip(post)
+                .all(|(a, b)| a.abs_diff(b) <= 2),
+            "material {material:?}, effect {post:?}"
+        );
+        let work = [
+            stats.scene_image_uploads,
+            stats.mesh_vertex_bytes_uploaded,
+            stats.custom_material_pipeline_builds,
+            stats.custom_effect_pipelines,
+        ];
+        Ok((post, work))
+    };
+    let mut app = weak.upgrade().ok_or("missing volume demo")?;
+    assert_eq!(app.get_current().depth(), 2);
+    let initial = frame()?;
+    assert_eq!(
+        (initial.0, initial.1[0]),
+        ([255, 0, 0], 2),
+        "the volume and the 2D fallback each upload once across both stages"
+    );
+    let coordinates = |app: &mut VolumeTextureDemo, [u, v, w]: [f64; 3]| -> TestResult {
+        app.set_u(u);
+        app.set_v(v);
+        app.set_w(w);
+        dynamic.set("u", Value::Float(u))?;
+        dynamic.set("v", Value::Float(v))?;
+        dynamic.set("w", Value::Float(w))?;
+        Ok(())
+    };
+    for (position, color) in [
+        ([0.25, 0.75, 0.25], [0, 255, 0]),
+        ([0.25, 0.25, 0.75], [0, 0, 255]),
+        ([0.75, 0.75, 0.75], [255, 255, 255]),
+    ] {
+        coordinates(&mut app, position)?;
+        assert_eq!(frame()?, (color, initial.1));
+    }
+    coordinates(&mut app, [0.5; 3])?;
+    let midpoint = frame()?;
+    assert!(
+        midpoint
+            .0
+            .into_iter()
+            .all(|value| (187..=189).contains(&value)),
+        "{midpoint:?}"
+    );
+    assert_eq!(midpoint.1, initial.1);
+
+    coordinates(&mut app, [0.75, 0.25, 0.25])?;
+    let before = app.get_current();
+    app.invoke_set_byte(4, 128);
+    dynamic.invoke("set-byte", &[Value::Int(4), Value::Int(128)])?;
+    let mut edited_work = initial.1;
+    edited_work[0] += 1;
+    assert_eq!(frame()?, ([128, 0, 0], edited_work));
+    assert_eq!(
+        before.image().ok_or("missing original volume")?.rgba()[4],
+        255
+    );
+    app.set_enabled(false);
+    dynamic.set("enabled", Value::Bool(false))?;
+    let fallback = frame()?;
+    assert_ne!(fallback.0, [128, 0, 0]);
+    assert_eq!(fallback.1[0], 3);
+
+    app.set_enabled(true);
+    app.set_preset(true);
+    dynamic.set("enabled", Value::Bool(true))?;
+    dynamic.set("preset", Value::Bool(true))?;
+    assert_eq!(app.get_current().depth(), 1);
+    let (packed, work) = frame()?;
+    assert_eq!(packed, [23, 147, 251]);
+    assert_eq!(work[..2], [4, initial.1[1]]);
+    Ok(())
+}
+
+#[test]
 fn procedural_texture_tracks_pixels_across_render_paths() -> TestResult {
     use procedural_texture_ui::ProceduralTextureDemo;
 
@@ -7265,13 +7619,13 @@ fn procedural_texture_tracks_pixels_across_render_paths() -> TestResult {
     );
     assert_eq!(initial.4, 1, "all three views share one uploaded image");
     assert_eq!(frame()?.4, 1, "identical frames reuse the image");
-    let mut set = |index: i64, value: i64| -> TestResult {
+    let set = |app: &mut ProceduralTextureDemo, index: i64, value: i64| -> TestResult {
         app.invoke_set_byte(index, value);
         dynamic.invoke("set-byte", &[Value::Int(index), Value::Int(value)])?;
         Ok(())
     };
-    set(0, 28)?;
-    set(1, 215)?;
+    set(&mut app, 0, 28)?;
+    set(&mut app, 1, 215)?;
     let edited = frame()?;
     assert_eq!(edited.1, [28, 215, 36]);
     assert_eq!(edited.2, edited.1);
@@ -7291,7 +7645,7 @@ fn procedural_texture_tracks_pixels_across_render_paths() -> TestResult {
     );
     assert_ne!(app.get_current(), before);
 
-    set(3, 0)?;
+    set(&mut app, 3, 0)?;
     let alpha = frame()?;
     assert_eq!(alpha.1, [0, 0, 0]);
     assert_eq!(
@@ -7301,7 +7655,7 @@ fn procedural_texture_tracks_pixels_across_render_paths() -> TestResult {
     );
     assert_eq!(alpha.3, initial.3);
     assert_eq!(alpha.4, 3);
-    set(0, 256)?;
+    set(&mut app, 0, 256)?;
     assert!(!app.get_valid());
     assert_eq!(dynamic.get("valid")?, Value::Bool(false));
     assert_eq!(frame()?.4, 3, "invalid pixels do not trigger a GPU upload");
@@ -16395,6 +16749,9 @@ fn source_material_slots_isolate_color_and_picking_in_both_backends() -> TestRes
         patches: [Vec<[u8; 4]>; 3],
         picked: String,
         uploads: [u64; 3],
+        mesh_resources: [u64; 2],
+        body_opacity: f32,
+        blend_parts: usize,
     }
     let mut render = |target: &str, warm, cutout, accent, implicit| -> TestResult<Frame> {
         let mut app = weak.upgrade().ok_or("missing material slot demo")?;
@@ -16434,6 +16791,9 @@ fn source_material_slots_isolate_color_and_picking_in_both_backends() -> TestRes
         );
         assert_eq!(slots[0].name.as_deref(), Some("Body finish"));
         assert_eq!(slots[1].name.as_deref(), Some("Trim"));
+        let body = surface.mesh.parts().first().ok_or("missing body part")?;
+        let body_opacity = surface.mesh.materials()[body.material].opacity;
+        let blend_parts = surface.mesh.blended_parts().len();
 
         let raster = xrack_assets::decode_png(&png)?;
         let pixels = raster.rgba.as_chunks::<4>().0;
@@ -16445,10 +16805,16 @@ fn source_material_slots_isolate_color_and_picking_in_both_backends() -> TestRes
         Ok(Frame {
             patches,
             picked,
+            body_opacity,
+            blend_parts,
             uploads: [
                 gpu.scene_mesh_uploads(),
                 gpu.scene_instance_uploads(),
                 gpu.scene_shadow_passes(),
+            ],
+            mesh_resources: [
+                gpu.scene_draw_stats().mesh_vertex_bytes_uploaded,
+                gpu.scene_draw_stats().scene_image_uploads,
             ],
         })
     };
@@ -16481,6 +16847,51 @@ fn source_material_slots_isolate_color_and_picking_in_both_backends() -> TestRes
     assert_eq!(mask.patches[1..], by_index.patches[1..]);
     assert_eq!(mask.uploads[..2], by_index.uploads[..2]);
     assert!(mask.uploads[2] > by_index.uploads[2]);
+
+    let mut app = weak.upgrade().ok_or("missing material slot demo")?;
+    let set_opacity = |app: &mut MaterialSlotsDemo, body: f64, model: f64| -> TestResult {
+        app.set_body_opacity(body);
+        app.set_model_opacity(model);
+        dynamic.set("body-opacity", Value::Float(body))?;
+        dynamic.set("model-opacity", Value::Float(model))?;
+        Ok(())
+    };
+    app.set_mask_alpha(0.75);
+    dynamic.set("mask-alpha", Value::Float(0.75))?;
+    let solid = render("#2", false, true, true, true)?;
+    assert_eq!(solid.picked, "model");
+    set_opacity(&mut app, 0.5, 1.0)?;
+    let half = render("#2", false, true, true, true)?;
+    assert_eq!(half.picked, "model");
+    assert_eq!(half.body_opacity, 0.5);
+    assert_eq!(half.blend_parts, 1);
+    assert_ne!(half.patches[0], solid.patches[0]);
+    assert_eq!(half.patches[1..], solid.patches[1..]);
+    assert!(
+        half.uploads[2] > solid.uploads[2],
+        "the body leaves the default shadow pass"
+    );
+    set_opacity(&mut app, 0.25, 1.0)?;
+    let quarter = render("#2", false, true, true, true)?;
+    assert_eq!(
+        quarter.picked, "model",
+        "slot opacity leaves the base mask threshold intact"
+    );
+    assert_ne!(quarter.patches[0], half.patches[0]);
+    assert_eq!(quarter.patches[1..], solid.patches[1..]);
+    assert_eq!(quarter.mesh_resources, solid.mesh_resources);
+    assert_eq!(quarter.uploads[2], half.uploads[2]);
+
+    set_opacity(&mut app, 0.5, 0.5)?;
+    let multiplied = render("#2", false, true, true, true)?;
+    assert_eq!(multiplied.patches[0], quarter.patches[0]);
+    assert_ne!(multiplied.patches[1..], quarter.patches[1..]);
+    set_opacity(&mut app, 0.0, 1.0)?;
+    let hidden = render("#2", false, true, true, true)?;
+    assert_eq!(hidden.picked, "wall");
+    assert_eq!(hidden.blend_parts, 0);
+    assert_eq!(hidden.patches, mask.patches);
+    assert_eq!(hidden.mesh_resources, solid.mesh_resources);
     Ok(())
 }
 
@@ -16510,6 +16921,8 @@ fn authored_textures_share_mips_geometry_and_alpha_picking_in_both_backends() ->
         pixels: xrack_assets::Raster,
         picked: String,
         gpu: [u64; 5],
+        prepasses: u64,
+        height_steps: Option<[u8; 2]>,
     }
     let mut draw = |repeat,
                     rotation,
@@ -16566,6 +16979,12 @@ fn authored_textures_share_mips_geometry_and_alpha_picking_in_both_backends() ->
         Ok(Frame {
             pixels: xrack_assets::decode_png(&png)?,
             picked,
+            prepasses: gpu.scene_draw_stats().material_depth_prepass_draws,
+            height_steps: panel.mesh.materials()[0]
+                .pbr
+                .as_ref()
+                .and_then(|pbr| pbr.height_map.as_deref())
+                .map(|map| map.samples),
             gpu: [
                 gpu.scene_mesh_uploads(),
                 gpu.scene_instance_uploads(),
@@ -16634,6 +17053,185 @@ fn authored_textures_share_mips_geometry_and_alpha_picking_in_both_backends() ->
         gltf.gpu, gltf_flat.gpu,
         "the normal map never creates new imported vertex buffers"
     );
+    let mut app = weak.upgrade().ok_or("missing opacity map demo")?;
+    let unchanged = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    app.set_opacity_pattern(true);
+    dynamic.set("opacity-pattern", Value::Bool(true))?;
+    let patterned = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    assert_ne!(patch(&patterned, 145..285), patch(&initial, 145..285));
+    assert!(
+        patch(&patterned, 375..500) == patch(&unchanged, 375..500),
+        "the right mesh keeps its material"
+    );
+    assert_ne!(
+        patch(&patterned, 359..375),
+        patch(&unchanged, 359..375),
+        "the left panel leaves the default shadow pass"
+    );
+    assert_eq!(patterned.gpu[0], unchanged.gpu[0]);
+    assert!(patterned.gpu[4] > unchanged.gpu[4]);
+
+    app.set_shift_opacity(true);
+    dynamic.set("shift-opacity", Value::Bool(true))?;
+    let shifted = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    let [a, b] = [patterned.picked.as_str(), shifted.picked.as_str()];
+    assert!(matches!(
+        [a, b],
+        ["panel", "backdrop"] | ["backdrop", "panel"]
+    ));
+    assert_ne!(patch(&patterned, 145..285), patch(&shifted, 145..285));
+    assert_eq!(
+        patterned.gpu[4], shifted.gpu[4],
+        "offset reuses the packed data"
+    );
+
+    app.set_opacity_channel("r".into());
+    dynamic.set("opacity-channel", Value::String("r".into()))?;
+    let red = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    assert_eq!(red.picked, "panel");
+    assert_ne!(patch(&red, 145..285), patch(&shifted, 145..285));
+    assert_eq!(red.gpu[0], shifted.gpu[0]);
+
+    app.set_panel_opacity(0.5);
+    dynamic.set("panel-opacity", Value::Float(0.5))?;
+    let faded = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    assert_ne!(patch(&red, 145..285), patch(&faded, 145..285));
+    assert_eq!(
+        red.gpu[4], faded.gpu[4],
+        "scalar fade reuses the packed data"
+    );
+    app.set_opacity_channel("a".into());
+    dynamic.set("opacity-channel", Value::String("a".into()))?;
+    app.set_panel_depth("always".into());
+    dynamic.set("panel-depth", Value::String("always".into()))?;
+    let always = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    app.set_shift_opacity(false);
+    dynamic.set("shift-opacity", Value::Bool(false))?;
+    let always_shifted = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    assert!(
+        always_shifted.gpu[3] > always.gpu[3],
+        "UV changes invalidate sampled shadow coverage"
+    );
+    assert_eq!(
+        always_shifted.gpu[4], always.gpu[4],
+        "shadow and color reuse the same opacity buffer"
+    );
+    let set_inversion = |app: &mut AuthoredTextureDemo, enabled| -> TestResult {
+        app.set_invert_opacity(enabled);
+        dynamic.set("invert-opacity", Value::Bool(enabled))?;
+        Ok(())
+    };
+    app.set_panel_opacity(1.0);
+    dynamic.set("panel-opacity", Value::Float(1.0))?;
+    app.set_opacity_channel("g".into());
+    dynamic.set("opacity-channel", Value::String("g".into()))?;
+    app.set_panel_depth("opaque-only".into());
+    dynamic.set("panel-depth", Value::String("opaque-only".into()))?;
+
+    let mask = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    set_inversion(&mut app, true)?;
+    let inverted = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    let [a, b] = [mask.picked.as_str(), inverted.picked.as_str()];
+    assert!(matches!(
+        [a, b],
+        ["panel", "backdrop"] | ["backdrop", "panel"]
+    ));
+    assert!(patch(&mask, 145..285) != patch(&inverted, 145..285));
+    assert!(patch(&mask, 375..500) == patch(&inverted, 375..500));
+    assert_eq!(
+        mask.gpu, inverted.gpu,
+        "inversion only updates the material uniform"
+    );
+
+    for strategy in ["always", "opaque-prepass"] {
+        app.set_panel_depth(strategy.into());
+        dynamic.set("panel-depth", Value::String(strategy.into()))?;
+        set_inversion(&mut app, false)?;
+        let original = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+        set_inversion(&mut app, true)?;
+        let flipped = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+        assert_eq!(original.picked, mask.picked);
+        assert_eq!(flipped.picked, inverted.picked);
+        assert!(
+            flipped.gpu[3] > original.gpu[3],
+            "{strategy} invalidates the sampled shadow atlas"
+        );
+        assert_eq!(flipped.gpu[..3], original.gpu[..3]);
+        assert_eq!(flipped.gpu[4], original.gpu[4]);
+        if strategy == "opaque-prepass" {
+            assert!(flipped.prepasses > original.prepasses);
+        }
+    }
+
+    app.set_panel_depth("opaque-only".into());
+    dynamic.set("panel-depth", Value::String("opaque-only".into()))?;
+    app.set_opacity_channel("r".into());
+    dynamic.set("opacity-channel", Value::String("r".into()))?;
+    let hidden = draw(1.5, 90.0, true, true, false, "clamp", offset)?;
+    assert_eq!(hidden.picked, "backdrop", "inverted white is transparent");
+    set_inversion(&mut app, false)?;
+    let surviving = draw(1.5, 90.0, true, true, false, "clamp", offset)?;
+    assert_eq!(surviving.picked, "panel");
+    let discarded = draw(1.5, 90.0, true, true, false, "clamp", origin)?;
+    assert_eq!(
+        discarded.picked, "backdrop",
+        "a white opacity map cannot override the base cutoff"
+    );
+
+    app.set_opacity_pattern(false);
+    dynamic.set("opacity-pattern", Value::Bool(false))?;
+    let disabled = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    set_inversion(&mut app, true)?;
+    let no_map = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    assert!(no_map.pixels.rgba[..644 * 321 * 4] == disabled.pixels.rgba[..644 * 321 * 4]);
+    assert_eq!(no_map.gpu, disabled.gpu);
+    let set_relief = |app: &mut AuthoredTextureDemo, amount| -> TestResult {
+        app.set_relief(amount);
+        dynamic.set("relief", Value::Float(amount))?;
+        Ok(())
+    };
+    set_relief(&mut app, 0.17)?;
+    let frontal_relief = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    assert_eq!(frontal_relief.height_steps, Some([8, 32]));
+    assert!(patch(&no_map, 145..285) == patch(&frontal_relief, 145..285));
+    assert_eq!(frontal_relief.picked, no_map.picked);
+
+    app.set_panel_yaw(38.0);
+    dynamic.set("panel-yaw", Value::Float(38.0))?;
+    let oblique = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    set_relief(&mut app, 0.0)?;
+    let unshifted = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    assert!(patch(&oblique, 145..285) != patch(&unshifted, 145..285));
+    assert!(patch(&oblique, 375..500) == patch(&unshifted, 375..500));
+    assert_eq!(oblique.picked, unshifted.picked);
+    assert_eq!(oblique.gpu, unshifted.gpu);
+
+    set_relief(&mut app, 0.08)?;
+    app.set_relief_min_samples(-5);
+    dynamic.set("relief-min-samples", Value::Int(-5))?;
+    app.set_relief_max_samples(100);
+    dynamic.set("relief-max-samples", Value::Int(100))?;
+    let shallow = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    assert_eq!(shallow.height_steps, Some([1, 64]));
+    assert!(patch(&shallow, 145..285) != patch(&oblique, 145..285));
+    assert_eq!(shallow.gpu, unshifted.gpu);
+
+    app.set_relief_channel("b".into());
+    dynamic.set("relief-channel", Value::String("b".into()))?;
+    let zero_height = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    assert!(patch(&zero_height, 145..285) == patch(&unshifted, 145..285));
+
+    app.set_opacity_pattern(true);
+    dynamic.set("opacity-pattern", Value::Bool(true))?;
+    app.set_opacity_channel("g".into());
+    dynamic.set("opacity-channel", Value::String("g".into()))?;
+    let opacity_only = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    app.set_relief_channel("r".into());
+    dynamic.set("relief-channel", Value::String("r".into()))?;
+    let combined = draw(1.5, 0.0, true, false, false, "repeat", origin)?;
+    assert!(patch(&combined, 145..285) != patch(&opacity_only, 145..285));
+    assert_eq!(combined.picked, opacity_only.picked);
+    assert_eq!(combined.gpu[..2], opacity_only.gpu[..2]);
     Ok(())
 }
 
@@ -26662,6 +27260,9 @@ fn rigid_bvh_respects_masking_and_coplanar_draw_order() -> TestResult {
         let materials =
             [MeshAlphaMode::Mask(0.5), MeshAlphaMode::Blend, layer_mode].map(|alpha_mode| {
                 MeshMaterial {
+                    opacity: 1.0,
+                    opacity_texture: None,
+                    invert_opacity_map_value: false,
                     shader: None,
                     channels: Default::default(),
                     vertex_colors: true,
@@ -26736,6 +27337,9 @@ fn all_hits_keep_the_same_coplanar_priority_as_single_picking() -> TestResult {
                 volume_inverse: None,
             }],
             vec![MeshMaterial {
+                opacity: 1.0,
+                opacity_texture: None,
+                invert_opacity_map_value: false,
                 shader: None,
                 channels: Default::default(),
                 vertex_colors: true,
@@ -29198,6 +29802,11 @@ fn material_depth_modes_preserve_coverage_and_transmission_in_both_backends() ->
         shadows: bool,
         glass: bool,
         viewport_prepass: bool,
+        alpha: &'static str,
+        opacity: f64,
+        material_opacity: f64,
+        opacity_map: bool,
+        compositor: &'static str,
     }
     let initial = State {
         mode: "opaque-only",
@@ -29208,6 +29817,11 @@ fn material_depth_modes_preserve_coverage_and_transmission_in_both_backends() ->
         shadows: false,
         glass: false,
         viewport_prepass: false,
+        alpha: "",
+        opacity: 1.0,
+        material_opacity: 1.0,
+        opacity_map: false,
+        compositor: "source-over",
     };
     struct Frame {
         pixels: [[u8; 4]; 3],
@@ -29230,6 +29844,11 @@ fn material_depth_modes_preserve_coverage_and_transmission_in_both_backends() ->
         app.set_shadows(state.shadows);
         app.set_glass(state.glass);
         app.set_prepass(state.viewport_prepass);
+        app.set_stripes_alpha_mode(state.alpha.into());
+        app.set_stripes_opacity(state.opacity);
+        app.set_material_opacity(state.material_opacity);
+        app.set_opacity_map_enabled(state.opacity_map);
+        app.set_stripes_blend_mode(state.compositor.into());
         for (name, value) in [
             ("mode", Value::String(state.mode.into())),
             ("blended", Value::Bool(state.blended)),
@@ -29239,6 +29858,11 @@ fn material_depth_modes_preserve_coverage_and_transmission_in_both_backends() ->
             ("shadows", Value::Bool(state.shadows)),
             ("glass", Value::Bool(state.glass)),
             ("prepass", Value::Bool(state.viewport_prepass)),
+            ("stripes-alpha-mode", Value::String(state.alpha.into())),
+            ("stripes-opacity", Value::Float(state.opacity)),
+            ("material-opacity", Value::Float(state.material_opacity)),
+            ("opacity-map-enabled", Value::Bool(state.opacity_map)),
+            ("stripes-blend-mode", Value::String(state.compositor.into())),
         ] {
             dynamic.set(name, value)?;
         }
@@ -29258,7 +29882,7 @@ fn material_depth_modes_preserve_coverage_and_transmission_in_both_backends() ->
             assert_eq!(dynamic.get(name)?, Value::String(hit.clone()));
         }
         let raster = xrack_assets::decode_png(&png)?;
-        assert_eq!(raster.size, [600, 372]);
+        assert_eq!(raster.size, [600, 422]);
         let pixels = [88, 160, 232].map(|y| {
             let start = (y * 600 + 220) * 4;
             std::array::from_fn(|channel| raster.rgba[start + channel])
@@ -29427,6 +30051,83 @@ fn material_depth_modes_preserve_coverage_and_transmission_in_both_backends() ->
             );
         assert_eq!(optimized.prepass, ordinary.prepass + opaque_parts);
     }
+    let automatic = State {
+        alpha: "default",
+        shadows: true,
+        ..initial
+    };
+    let opaque = render(State {
+        alpha: "opaque",
+        ..automatic
+    })?;
+    let automatic_solid = render(automatic)?;
+    assert!(automatic_solid.viewport == opaque.viewport);
+    assert_eq!(automatic_solid.hits, opaque.hits);
+    assert_eq!(automatic_solid.shadows, opaque.shadows);
+    assert_eq!(automatic_solid.uploads, opaque.uploads);
+    let automatic_prepass = render(State {
+        viewport_prepass: true,
+        ..automatic
+    })?;
+    assert!(automatic_prepass.viewport == automatic_solid.viewport);
+    assert!(automatic_prepass.prepass > automatic_solid.prepass);
+
+    for state in [
+        State {
+            opacity: 0.65,
+            ..automatic
+        },
+        State {
+            material_opacity: 0.65,
+            ..automatic
+        },
+        State {
+            opacity_map: true,
+            ..automatic
+        },
+        State {
+            compositor: "screen",
+            ..automatic
+        },
+        State {
+            compositor: "multiply",
+            mode: "opaque-prepass",
+            ..automatic
+        },
+        State {
+            compositor: "screen",
+            mode: "always",
+            ..automatic
+        },
+    ] {
+        let tinted_solid = render(State {
+            alpha: "opaque",
+            ..state
+        })?;
+        let actual = render(state)?;
+        let forced_blend = render(State {
+            alpha: "blend",
+            ..state
+        })?;
+        assert!(
+            actual.viewport == forced_blend.viewport,
+            "implicit blend and explicit blend diverged in {}",
+            state.compositor
+        );
+        assert_eq!(actual.hits, ["stripes", "stripes", "late"]);
+        assert_eq!(actual.hits, forced_blend.hits);
+        assert_ne!(
+            tinted_solid.pixels[2], actual.pixels[2],
+            "zero alpha reveals the surface behind"
+        );
+        assert_eq!(actual.uploads, opaque.uploads);
+        assert_eq!(actual.prepass, forced_blend.prepass);
+        assert_eq!(actual.shadows, forced_blend.shadows);
+    }
+    let restored = render(automatic)?;
+    assert!(restored.viewport == automatic_solid.viewport);
+    assert_eq!(restored.hits, automatic_solid.hits);
+    assert_eq!(restored.uploads, automatic_solid.uploads);
     Ok(())
 }
 

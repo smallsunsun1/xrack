@@ -139,6 +139,7 @@ fn transcript_layout_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     let expect_deferral = matches!(rows, 2048 | 4096);
     let live_start = load_document || std::env::var_os("XRACK_PEER_LIVE_START").is_some();
     let trace_frames = std::env::var_os("XRACK_PEER_TRACE_FRAMES").is_some();
+    let prepare_pipelines = std::env::var_os("XRACK_PEER_LAZY_PIPELINES").is_none();
     let mut reference = if std::env::var_os("XRACK_PEER_VERIFY_LAYOUT").is_some() {
         let mut reference = pollster::block_on(Renderer::new(
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -161,6 +162,9 @@ fn transcript_layout_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         let mut times: [Vec<Duration>; 5] = std::array::from_fn(|_| Vec::new());
         for index in 0..70 {
             let start = Instant::now();
+            if prepare_pipelines && index == 0 {
+                renderer.prepare_window_text_pipelines(&scene, targets[0].format());
+            }
             if streaming {
                 writeln!(
                     source,

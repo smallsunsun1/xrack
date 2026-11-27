@@ -8,11 +8,7 @@ PATCHED_FEMTOVG_FLAGS = [
 
 rust_library(
     name = "xrack_renderer_femtovg",
-    srcs = glob([
-        "src/*.rs",
-        "src/scene3d/**/*.rs",
-        "src/text/**/*.rs",
-    ]),
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
     aliases = aliases(),
     compile_data = [
         "src/scene3d/bloom.wgsl",
@@ -41,7 +37,7 @@ rust_library(
         "src/scene3d/particle_trail_render.wgsl",
         "src/scene3d/physics_debug.wgsl",
         "src/scene3d/probe_debug.wgsl",
-        "src/pixel_blit.wgsl",
+        "src/frame/pixel_blit.wgsl",
         "src/scene3d/reflection_filter.wgsl",
         "src/scene3d/sky_cube.wgsl",
         "src/scene3d/sky_radiance.wgsl",

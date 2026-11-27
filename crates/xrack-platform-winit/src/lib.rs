@@ -2273,6 +2273,11 @@ impl<C: Component> Application<C> {
             insets
         };
         let base = self.transition.sample_shared(&self.base_scene, elapsed);
+        if self.layout.is_none() {
+            state
+                .renderer
+                .prepare_window_text_pipelines(&base, state.config.format);
+        }
         #[cfg(target_os = "ios")]
         let resized_base = self.layout.as_ref().and_then(|layout| {
             (previous_insets != insets

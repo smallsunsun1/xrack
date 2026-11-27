@@ -1,0 +1,67 @@
+struct FadeStyle { base-color: color, base-color-map: texturedata2d, alpha-mode: string, unlit: bool }
+struct FadeInstance { position: point3d, color: color }
+struct FadeNode {
+    id: string, parent: string, mesh: string, color: color, opacity: float,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, material: FadeStyle,
+    camera-kind: string, camera-height: float, collidable: bool, instance-table: instancetable3d,
+}
+
+export component NodeOpacityDemo inherits Window {
+    title <- "XRack · Scene node opacity";
+    width <- 448px; height <- 266px; resizable <- false; background <- #172332;
+    in-out property <float> group-opacity: 1;
+    in-out property <float> child-opacity: 1;
+    property <texturedata2d> empty;
+    property <instancetable3d> no-instances;
+    property <texturedata2d> cutout <- TextureData2D.rgba8(2, 1, [255, 255, 255, 0, 255, 255, 255, 255]);
+    property <instancetable3d> tiles <- Scene3D.instance-table([
+        FadeInstance { position: Point3D.new(-0.62, 0, 0), color: #84ffcd },
+        FadeInstance { position: Point3D.new(0.62, 0, 0), color: #8dcbff },
+    ]);
+    property <FadeNode> base <- FadeNode {
+        id: "", parent: "", mesh: "", color: #fff, opacity: 1,
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        material: FadeStyle { base-color: #fff, base-color-map: root.empty, alpha-mode: "opaque", unlit: true },
+        camera-kind: "", camera-height: 4, collidable: false, instance-table: root.no-instances,
+    };
+    property <[FadeNode]> nodes <- [
+        FadeNode { id: "camera", camera-kind: "orthographic", z: 8, ..root.base },
+        FadeNode { id: "group", opacity: root.group-opacity, ..root.base },
+        FadeNode { id: "child", parent: "group", opacity: root.child-opacity, ..root.base },
+        FadeNode { id: "back", mesh: "primitive:rectangle", x: -1.8, scale-x: 2.9, scale-y: 2.4,
+                   color: #0000ff, ..root.base },
+        FadeNode {
+            id: "front", parent: "child", mesh: "primitive:rectangle", x: -1.8, z: 0.8,
+            scale-x: 2.6, scale-y: 2.2, color: #ff0000, collidable: true,
+            material: FadeStyle { base-color-map: root.cutout, alpha-mode: "mask", ..root.base.material },
+            ..root.base
+        },
+        FadeNode {
+            id: "tiles", parent: "child", mesh: "primitive:box", x: 1.85, z: 0.5,
+            scale-x: 0.96, scale-y: 0.96, scale-z: 0.65,
+            opacity: 0.8, instance-table: root.tiles, ..root.base
+        },
+    ];
+    out property <scenemodel3d> world <- Scene3D.prepare(root.nodes);
+    out property <hit3d> cutout-hit <- view.hit(Point2D.new(86px, 112px));
+    out property <hit3d> covered-hit <- view.hit(Point2D.new(148px, 112px));
+    out property <int> collision-count <- Model.count(Scene3D.sphere-overlap(
+        root.world, Point3D.new(-1.8, 0, 0.8), 0.5));
+
+    view := SceneView3D {
+        width <- 448px; height <- 224px; model <- root.world; camera <- "camera";
+        scene-background <- #192b40; scene-tone-map <- none; depth-prepass <- true;
+        shadows <- true; shadow-map-size <- 128; cache-rendering <- true;
+    }
+    group-button := Button {
+        x <- 10px; y <- 232px; width <- 204px; height <- 28px;
+        text <- "Group " + root.group-opacity;
+        clicked => { root.group-opacity = root.group-opacity == 1 ? 0.5 : root.group-opacity == 0.5 ? 0 : 1; }
+    }
+    child-button := Button {
+        x <- 232px; y <- 232px; width <- 204px; height <- 28px;
+        text <- "Child " + root.child-opacity;
+        clicked => { root.child-opacity = root.child-opacity == 1 ? 0.5 : 1; }
+    }
+}

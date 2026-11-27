@@ -1,5 +1,16 @@
+struct ReflectionMap {
+    data: texturedata2d, uv-offset-u: float, mag-filter: string, mip-filter: string,
+}
+struct ReflectionSky { enabled: bool, sky-top-color: color, sky-horizon-color: color, sun-energy: float }
+struct ScalarMap {
+    data: texturedata2d, uv-set: int, uv-offset-u: float, wrap-u: string,
+    mag-filter: string, min-filter: string, mip-filter: string,
+}
 struct Style {
     base-color: color, roughness: float, metalness: float,
+    metallic-roughness-map: texturedata2d, metalness-map: ScalarMap, roughness-map: texturedata2d,
+    metalness-channel: string, roughness-channel: string,
+    specular-reflection-map: ReflectionMap, specular-reflection-item: string,
     emissive-color: color, emissive-strength: float, occlusion-strength: float,
     clearcoat: float, clearcoat-roughness: float, alpha-mode: string,
     material-shader: string, shader-parameters: vector3d,
@@ -20,22 +31,56 @@ struct Lamp {
 struct Feed { name: string, camera: string }
 
 export component MaterialDebugDemo inherits Window {
-    title <- "XRack · 材质调试"; width <- 480px; height <- 332px;
+    title <- "XRack · 材质调试"; width <- 480px; height <- 416px;
     background <- #172437; resizable <- false;
     in-out property <int> mode: 0;
     in-out property <bool> effects: false;
     in-out property <bool> reference: false;
     in-out property <bool> glass: false;
     in-out property <bool> wireframe: false;
+    in-out property <bool> material-reflection: false;
+    in-out property <string> reflection-item: "";
+    in-out property <bool> warm-reflection: true;
+    in-out property <float> reflection-offset: 0.125;
+    in-out property <bool> reflection-sky: false;
+    in-out property <bool> use-packed-map: false;
+    in-out property <bool> use-metalness-map: false;
+    in-out property <bool> use-roughness-map: false;
+    in-out property <bool> second-metalness-uv: false;
+    in-out property <float> metalness-offset: 0;
+    in-out property <string> metalness-channel: "b";
+    in-out property <string> roughness-channel: "g";
+    property <texturedata2d> empty-map;
+    property <texturedata2d> reflection-colors <- TextureData2D.rgba8(4, 2, [
+        230, 220, 35, 255, 224, 35, 21, 255, 30, 208, 82, 255, 34, 65, 235, 255,
+        230, 220, 35, 255, 224, 35, 21, 255, 30, 208, 82, 255, 34, 65, 235, 255,
+    ]);
+    property <texturedata2d> packed-map <- TextureData2D.rgba8(1, 1, [0, 160, 80, 255]);
+    property <texturedata2d> metal-map <- TextureData2D.rgba8(2, 1, [64, 0, 96, 255, 64, 0, 224, 255]);
+    property <texturedata2d> matte-map <- TextureData2D.rgba8(1, 1, [32, 224, 0, 255]);
     property <[string]> modes: [
         "none", "base-color", "roughness", "metalness", "emission", "ambient-occlusion",
         "normals", "tangents", "binormals", "f0", "diffuse", "specular", "shadow-occlusion"
     ];
 
     property <Style> stock <- Style {
-        base-color: #c08040, roughness: 0.25, metalness: 0,
+        base-color: #c08040,
+        roughness: root.use-packed-map || root.use-roughness-map ? 0.5 : 0.25,
+        metalness: root.use-packed-map || root.use-metalness-map ? 0.8 : 0,
+        metallic-roughness-map: root.use-packed-map ? root.packed-map : root.empty-map,
+        metalness-map: ScalarMap {
+            data: root.use-metalness-map ? root.metal-map : root.empty-map,
+            uv-set: root.second-metalness-uv ? 1 : 0, uv-offset-u: root.metalness-offset,
+            wrap-u: "repeat", mag-filter: "nearest", min-filter: "nearest", mip-filter: "none",
+        },
+        roughness-map: root.use-roughness-map ? root.matte-map : root.empty-map,
+        metalness-channel: root.metalness-channel, roughness-channel: root.roughness-channel,
         emissive-color: #000, emissive-strength: 1, occlusion-strength: 1,
         clearcoat: 0, clearcoat-roughness: 0.25, alpha-mode: "opaque",
+        specular-reflection-map: ReflectionMap {
+            data: root.empty-map, uv-offset-u: 0, mag-filter: "nearest", mip-filter: "none",
+        },
+        specular-reflection-item: "",
         material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
     };
     property <Actor> card <- Actor {
@@ -49,6 +94,9 @@ export component MaterialDebugDemo inherits Window {
         width <- 480px; height <- 250px; camera <- "eye"; cache-rendering <- true;
         scene-background <- #26354a; scene-tone-map <- none; ambient-intensity <- 0.28;
         material-debug <- Model.at(root.modes, root.mode, "none");
+        environment-sky <- ReflectionSky {
+            enabled: root.reflection-sky, sky-top-color: #375fb4, sky-horizon-color: #838caf, sun-energy: 0,
+        };
         debug-wireframe <- root.wireframe;
         shadows <- true; shadow-map-size <- 256;
         bloom <- root.effects; bloom-strength <- 0.42; bloom-threshold <- 0.13;
@@ -64,7 +112,18 @@ export component MaterialDebugDemo inherits Window {
         }];
         model <- [
             Actor { id: "eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.card },
-            Actor { id: "stock", x: -1.4, ..root.card },
+            Actor {
+                id: "stock", x: -1.4,
+                material: Style {
+                    specular-reflection-map: ReflectionMap {
+                        data: root.material-reflection ? root.reflection-colors : root.empty-map,
+                        uv-offset-u: root.reflection-offset,
+                        ..root.stock.specular-reflection-map
+                    },
+                    specular-reflection-item: root.reflection-item,
+                    ..root.stock
+                }, ..root.card
+            },
             Actor {
                 id: "sphere", mesh: "primitive:sphere", y: 0.92,
                 scale-x: 0.53, scale-y: 0.53, scale-z: 0.53,
@@ -115,4 +174,39 @@ export component MaterialDebugDemo inherits Window {
         x <- 291px; y <- 300px; width <- 91px; height <- 26px;
         text <- "透明面"; checked <-> root.glass;
     }
+    metalness-toggle := CheckBox {
+        x <- 12px; y <- 338px; width <- 132px; height <- 28px;
+        text <- "金属度贴图"; checked <-> root.use-metalness-map;
+    }
+    roughness-toggle := CheckBox {
+        x <- 153px; y <- 338px; width <- 132px; height <- 28px;
+        text <- "粗糙度贴图"; checked <-> root.use-roughness-map;
+    }
+    Label { x <- 292px; y <- 338px; width <- 58px; height <- 28px; text <- "U 偏移"; }
+    metalness-offset-control := Slider {
+        x <- 354px; y <- 338px; width <- 112px; height <- 28px;
+        minimum <- 0; maximum <- 1; step <- 0.05; value <-> root.metalness-offset;
+    }
+    Rectangle {
+        x <- 0px; y <- 0px; width <- 64px; height <- 32px;
+        texture-source <- "studio-swatch"; texture-only <- true;
+        background <- root.warm-reflection ? #ea3d23 : #2958e8;
+    }
+    reflection-toggle := CheckBox {
+        x <- 12px; y <- 380px; width <- 142px; height <- 28px;
+        text <- "材质反射贴图"; checked <-> root.material-reflection;
+    }
+    reflection-source-toggle := Button {
+        x <- 158px; y <- 380px; width <- 123px; height <- 28px; text <- "实时反射来源";
+        clicked => { root.reflection-item = root.reflection-item == "" ? "studio-swatch" : ""; }
+    }
+    reflection-color-toggle := Button {
+        x <- 287px; y <- 380px; width <- 84px; height <- 28px; text <- "切换色温";
+        clicked => { root.warm-reflection = !root.warm-reflection; }
+    }
+    reflection-shift-toggle := Button {
+        x <- 379px; y <- 380px; width <- 91px; height <- 28px; text <- "旋转贴图";
+        clicked => { root.reflection-offset = root.reflection-offset == 0.125 ? 0.375 : 0.125; }
+    }
+
 }

@@ -498,12 +498,18 @@ impl SceneTexture<'_> {
             Some(Value::Float(value)) => Some(*value),
             _ => None,
         };
+        let data = match record.field("data") {
+            Some(Value::TextureData2D(data)) => Some(data),
+            _ => defaults.data,
+        };
+        let source = match string("source") {
+            Some(source) => source,
+            None if data.is_some() => defaults.source,
+            None => return None,
+        };
         Some(SceneTexture {
-            data: match record.field("data") {
-                Some(Value::TextureData2D(data)) => Some(data),
-                _ => defaults.data,
-            },
-            source: string("source")?,
+            data,
+            source,
             wrap_u: string("wrap-u").unwrap_or(defaults.wrap_u),
             wrap_v: string("wrap-v").unwrap_or(defaults.wrap_v),
             min_filter: string("min-filter").unwrap_or(defaults.min_filter),
@@ -535,7 +541,11 @@ impl SceneTexture<'_> {
 pub struct SceneMaterialMaps {
     // None inherits. Some(None) clears the inherited map.
     pub base_color_map: Option<Option<MeshTexture>>,
+    pub opacity_map: Option<Option<MeshTexture>>,
+    pub height_map: Option<Option<MeshTexture>>,
     pub metallic_roughness_map: Option<Option<MeshTexture>>,
+    pub metalness_map: Option<Option<MeshTexture>>,
+    pub roughness_map: Option<Option<MeshTexture>>,
     pub glossiness_map: Option<Option<MeshTexture>>,
     pub emissive_map: Option<Option<MeshTexture>>,
     pub occlusion_map: Option<Option<MeshTexture>>,
@@ -547,6 +557,7 @@ pub struct SceneMaterialMaps {
     pub thickness_map: Option<Option<MeshTexture>>,
     pub anisotropy_map: Option<Option<MeshTexture>>,
     pub specular_color_map: Option<Option<MeshTexture>>,
+    pub specular_reflection_map: Option<Option<MeshTexture>>,
     pub specular_map: Option<Option<MeshTexture>>,
 }
 
@@ -562,7 +573,11 @@ impl SceneMaterialMaps {
         };
         let maps = Self {
             base_color_map: map("base-color-map"),
+            opacity_map: map("opacity-map"),
+            height_map: map("height-map"),
             metallic_roughness_map: map("metallic-roughness-map"),
+            metalness_map: map("metalness-map"),
+            roughness_map: map("roughness-map"),
             glossiness_map: map("glossiness-map"),
             emissive_map: map("emissive-map"),
             occlusion_map: map("occlusion-map"),
@@ -574,6 +589,7 @@ impl SceneMaterialMaps {
             thickness_map: map("thickness-map"),
             anisotropy_map: map("anisotropy-map"),
             specular_color_map: map("specular-color-map"),
+            specular_reflection_map: map("specular-reflection-map"),
             specular_map: map("specular-map"),
         };
         (maps != Self::default()).then(|| Arc::new(maps))
@@ -581,7 +597,7 @@ impl SceneMaterialMaps {
 }
 
 impl MeshTexture {
-    fn is_valid(&self) -> bool {
+    pub(super) fn is_valid(&self) -> bool {
         self.uv_slot <= 1 && self.transform.is_valid()
     }
 
@@ -794,9 +810,11 @@ pub enum MaterialChannel {
     Clearcoat,
     ClearcoatRoughness,
     Glossiness,
+    Opacity,
+    Height,
 }
 
-const CHANNEL_FIELDS: [(&str, TextureChannel); 12] = [
+const CHANNEL_FIELDS: [(&str, TextureChannel); 14] = [
     ("base-color-channel", TextureChannel::Rgb),
     ("emissive-channel", TextureChannel::Rgb),
     ("metalness-channel", TextureChannel::Blue),
@@ -809,6 +827,8 @@ const CHANNEL_FIELDS: [(&str, TextureChannel); 12] = [
     ("clearcoat-channel", TextureChannel::Red),
     ("clearcoat-roughness-channel", TextureChannel::Green),
     ("glossiness-channel", TextureChannel::Alpha),
+    ("opacity-channel", TextureChannel::Alpha),
+    ("height-channel", TextureChannel::Red),
 ];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -875,6 +895,8 @@ impl MaterialChannels {
         self.overrides
             .iter()
             .zip(CHANNEL_FIELDS)
+            // Opacity and height channel selection happen when packing their GPU buffer.
+            .take(MaterialChannel::Opacity as usize)
             .any(|(channel, (_, default))| channel.is_some_and(|value| value != default))
     }
 }
@@ -988,6 +1010,9 @@ impl VertexColorMasks {
 #[derive(Clone, Debug)]
 pub struct MeshMaterial {
     pub base_color: [f32; 4],
+    pub opacity: f32,
+    pub opacity_texture: Option<MeshTexture>,
+    pub invert_opacity_map_value: bool,
     pub base_texture: Option<MeshTexture>,
     pub base_item: Option<Arc<SceneItemTexture>>,
     pub channels: MaterialChannels,
@@ -1158,12 +1183,49 @@ pub struct MeshPbr {
     pub occlusion_strength: f32,
     /// Linear G/B roughness and metallic, or the selected glossiness channel.
     pub surface_texture: Option<MeshTexture>,
+    pub height_map: Option<Box<MeshHeightMap>>,
+    pub specular_reflection: Option<Box<MeshSpecularReflection>>,
+    pub separate_surface_maps: Option<Box<MeshSurfaceMaps>>,
     pub emissive_texture: Option<MeshTexture>,
     pub occlusion_texture: Option<MeshTexture>,
     pub normal_map: Option<MeshNormalMap>,
     pub clearcoat: Option<MeshClearcoat>,
     pub dielectric: Option<Box<MeshDielectric>>,
     pub transmission: Option<Box<MeshTransmission>>,
+}
+
+/// Linear height data and the bounded number of steps in its parallax ray.
+#[derive(Clone, Debug)]
+pub struct MeshHeightMap {
+    pub texture: MeshTexture,
+    pub amount: f32,
+    pub samples: [u8; 2],
+}
+
+impl MeshHeightMap {
+    const DEFAULT_SAMPLES: [u8; 2] = [8, 32];
+    const MAX_SAMPLES: u8 = 64;
+
+    fn is_valid(&self) -> bool {
+        self.texture.is_valid()
+            && (0.0..=1.0).contains(&self.amount)
+            && (1..=Self::MAX_SAMPLES).contains(&self.samples[1])
+            && (1..=self.samples[1]).contains(&self.samples[0])
+    }
+}
+
+/// A material-owned reflection panorama with an optional live UI source.
+#[derive(Clone, Debug)]
+pub struct MeshSpecularReflection {
+    pub image: Option<MeshTexture>,
+    pub item: Option<Arc<SceneItemTexture>>,
+}
+
+/// Individual metalness and roughness inputs, each with its own sampler.
+#[derive(Clone, Debug)]
+pub struct MeshSurfaceMaps {
+    pub metalness: Option<MeshTexture>,
+    pub roughness: Option<MeshTexture>,
 }
 
 #[derive(Clone, Debug)]
@@ -1324,6 +1386,13 @@ impl MeshPbr {
         )
     }
 
+    pub(in crate::scene3d) fn metalness_texture(&self) -> Option<&MeshTexture> {
+        self.separate_surface_maps
+            .as_deref()
+            .and_then(|maps| maps.metalness.as_ref())
+            .or(self.surface_texture.as_ref())
+    }
+
     /// Select the UV set of the mesh's authored or generated tangent frame.
     pub fn tangent_normal_map(&self) -> Option<&MeshNormalMap> {
         self.normal_map
@@ -1349,6 +1418,23 @@ impl MeshPbr {
             .into_iter()
             .flatten()
             .all(MeshTexture::is_valid)
+            && self.separate_surface_maps.as_deref().is_none_or(|maps| {
+                self.workflow == MeshWorkflow::MetallicRoughness
+                    && [&maps.metalness, &maps.roughness]
+                        .into_iter()
+                        .flatten()
+                        .all(MeshTexture::is_valid)
+            })
+            && self
+                .specular_reflection
+                .as_deref()
+                .is_none_or(|reflection| {
+                    reflection.image.as_ref().is_none_or(MeshTexture::is_valid)
+                })
+            && self
+                .height_map
+                .as_deref()
+                .is_none_or(MeshHeightMap::is_valid)
             && self.normal_map.as_ref().is_none_or(MeshNormalMap::is_valid)
             && self.clearcoat.as_ref().is_none_or(MeshClearcoat::is_valid)
             && self
@@ -1384,6 +1470,8 @@ impl MeshClearcoat {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MeshAlphaMode {
+    /// Preserve source alpha when another material or instance setting enables blending.
+    Default,
     Opaque,
     Mask(f32),
     Blend,
@@ -1391,6 +1479,7 @@ pub enum MeshAlphaMode {
     InstanceBlend {
         cutoff: Option<f32>,
         builtin: bool,
+        source_alpha: bool,
     },
 }
 
@@ -1512,6 +1601,7 @@ impl SceneAppearance {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SceneMaterial {
     pub base_item: Option<Option<Arc<SceneItemTexture>>>,
+    pub specular_reflection_item: Option<Option<Arc<SceneItemTexture>>>,
     pub channels: MaterialChannels,
     pub vertex_colors: Option<bool>,
     pub vertex_masks: VertexColorMasks,
@@ -1519,6 +1609,11 @@ pub struct SceneMaterial {
     pub normal_strength: Option<f64>,
     pub clearcoat_normal_strength: Option<f64>,
     pub base_color: Option<Color>,
+    pub opacity: Option<f64>,
+    pub invert_opacity_map_value: Option<bool>,
+    pub height_amount: Option<f64>,
+    pub min_height_map_samples: Option<i64>,
+    pub max_height_map_samples: Option<i64>,
     pub workflow: Option<MeshWorkflow>,
     pub glossiness: Option<f64>,
     pub metalness: Option<f64>,
@@ -1561,6 +1656,7 @@ pub struct SceneMaterial {
 impl SceneMaterial {
     pub fn alpha(name: &str, cutoff: Option<f64>) -> Option<MeshAlphaMode> {
         match name {
+            "default" => Some(MeshAlphaMode::Default),
             "opaque" => Some(MeshAlphaMode::Opaque),
             "mask" => Some(MeshAlphaMode::Mask(factor(cutoff, 0.5, 0.0, 1.0))),
             "blend" => Some(MeshAlphaMode::Blend),
@@ -1609,6 +1705,10 @@ impl SceneMaterial {
                 .field("base-item")
                 .and_then(|value| SceneTexture::authored(value, SceneTexture::item_defaults()))
                 .map(SceneTexture::prepare_item),
+            specular_reflection_item: record
+                .field("specular-reflection-item")
+                .and_then(|value| SceneTexture::authored(value, SceneTexture::item_defaults()))
+                .map(SceneTexture::prepare_item),
             maps: SceneMaterialMaps::from_record(record, textures),
             channels: MaterialChannels::from_fields(CHANNEL_FIELDS.iter().filter_map(
                 |(name, _)| match record.field(name)? {
@@ -1626,6 +1726,17 @@ impl SceneMaterial {
             normal_strength: number("normal-strength"),
             clearcoat_normal_strength: number("clearcoat-normal-strength"),
             base_color: color("base-color"),
+            opacity: number("opacity"),
+            invert_opacity_map_value: boolean("invert-opacity-map-value"),
+            height_amount: number("height-amount"),
+            min_height_map_samples: match record.field("min-height-map-samples") {
+                Some(Value::Int(value)) => Some(*value),
+                _ => None,
+            },
+            max_height_map_samples: match record.field("max-height-map-samples") {
+                Some(Value::Int(value)) => Some(*value),
+                _ => None,
+            },
             workflow: match record.field("material-workflow") {
                 Some(Value::String(name)) => MeshWorkflow::named(name),
                 _ => None,
@@ -1697,6 +1808,7 @@ impl SceneMaterial {
         self.normal_strength = clamp(self.normal_strength, -8.0, 8.0);
         self.clearcoat_normal_strength = clamp(self.clearcoat_normal_strength, -8.0, 8.0);
         self.alpha_cutoff = clamp(self.alpha_cutoff, 0.0, 1.0);
+        self.opacity = clamp(self.opacity, 0.0, 1.0);
         self.shader_displacement = clamp(self.shader_displacement, 0.0, 10_000.0);
         self.emissive_strength = clamp(self.emissive_strength, 0.0, 64.0);
         self.index_of_refraction = clamp(self.index_of_refraction, 1.0, 3.0);
@@ -1724,6 +1836,9 @@ impl SceneMaterial {
         if let Some(item) = &later.base_item {
             self.base_item = Some(item.clone());
         }
+        if let Some(item) = &later.specular_reflection_item {
+            self.specular_reflection_item = Some(item.clone());
+        }
         self.channels.overlay(later.channels);
         self.vertex_masks.overlay(later.vertex_masks);
         if let Some(shader) = &later.material_shader {
@@ -1740,6 +1855,11 @@ impl SceneMaterial {
         overlay_factors!(
             vertex_colors,
             base_color,
+            opacity,
+            invert_opacity_map_value,
+            height_amount,
+            min_height_map_samples,
+            max_height_map_samples,
             workflow,
             glossiness,
             metalness,
@@ -1791,7 +1911,11 @@ impl SceneMaterial {
             }
             overlay_maps!(
                 base_color_map,
+                opacity_map,
+                height_map,
                 metallic_roughness_map,
+                metalness_map,
+                roughness_map,
                 glossiness_map,
                 emissive_map,
                 occlusion_map,
@@ -1803,6 +1927,7 @@ impl SceneMaterial {
                 thickness_map,
                 anisotropy_map,
                 specular_color_map,
+                specular_reflection_map,
                 specular_map,
             );
         }
@@ -1856,6 +1981,10 @@ impl SceneMaterial {
         let empty = SceneMaterialMaps::default();
         let maps = self.maps.as_deref().unwrap_or(&empty);
         replace_map(&mut result.base_texture, &maps.base_color_map);
+        replace_map(&mut result.opacity_texture, &maps.opacity_map);
+        result.invert_opacity_map_value = self
+            .invert_opacity_map_value
+            .unwrap_or(result.invert_opacity_map_value);
         if let Some(item) = &self.base_item {
             result.base_item = item.clone();
         }
@@ -1865,6 +1994,7 @@ impl SceneMaterial {
         }
         result.cull_mode = self.cull_mode.unwrap_or(result.cull_mode);
         result.alpha_mode = self.alpha_mode.unwrap_or(result.alpha_mode);
+        result.opacity = factor(self.opacity, result.opacity, 0.0, 1.0);
         result.blend_mode = self.blend_mode.unwrap_or(result.blend_mode);
         result.depth_draw_mode = self.depth_draw_mode.unwrap_or(result.depth_draw_mode);
         if let MeshAlphaMode::Mask(cutoff) = &mut result.alpha_mode {
@@ -1876,6 +2006,53 @@ impl SceneMaterial {
             result.pbr = Some(MeshPbr::principled());
         }
         if let Some(pbr) = &mut result.pbr {
+            if maps.height_map.is_some()
+                || self.height_amount.is_some()
+                || self.min_height_map_samples.is_some()
+                || self.max_height_map_samples.is_some()
+            {
+                let previous = pbr.height_map.take();
+                let amount = factor(
+                    self.height_amount,
+                    previous.as_deref().map_or(0.0, |map| map.amount),
+                    0.0,
+                    1.0,
+                );
+                let [min, max] = previous
+                    .as_deref()
+                    .map_or(MeshHeightMap::DEFAULT_SAMPLES, |map| map.samples);
+                let steps = |value: Option<i64>, fallback| {
+                    value.map_or(fallback, |n| {
+                        n.clamp(1, i64::from(MeshHeightMap::MAX_SAMPLES)) as u8
+                    })
+                };
+                let min = steps(self.min_height_map_samples, min);
+                let max = steps(self.max_height_map_samples, max).max(min);
+                let texture = maps
+                    .height_map
+                    .clone()
+                    .unwrap_or_else(|| previous.map(|map| map.texture));
+                pbr.height_map = texture.map(|texture| {
+                    Box::new(MeshHeightMap {
+                        texture,
+                        amount,
+                        samples: [min, max],
+                    })
+                });
+            }
+            if maps.specular_reflection_map.is_some() || self.specular_reflection_item.is_some() {
+                let previous = pbr.specular_reflection.as_deref();
+                let image = maps
+                    .specular_reflection_map
+                    .clone()
+                    .unwrap_or_else(|| previous.and_then(|reflection| reflection.image.clone()));
+                let item = self
+                    .specular_reflection_item
+                    .clone()
+                    .unwrap_or_else(|| previous.and_then(|reflection| reflection.item.clone()));
+                pbr.specular_reflection = (image.is_some() || item.is_some())
+                    .then(|| Box::new(MeshSpecularReflection { image, item }));
+            }
             pbr.fresnel = pbr.fresnel.with_overrides(
                 self.fresnel_power,
                 self.fresnel_scale,
@@ -1886,12 +2063,31 @@ impl SceneMaterial {
             pbr.workflow = self.workflow.unwrap_or(previous);
             if pbr.workflow != previous {
                 pbr.surface_texture = None;
+                pbr.separate_surface_maps = None;
             }
             match pbr.workflow {
                 MeshWorkflow::MetallicRoughness => {
                     pbr.metallic = factor(self.metalness, pbr.metallic, 0.0, 1.0);
                     pbr.roughness = factor(self.roughness, pbr.roughness, 0.0, 1.0);
                     replace_map(&mut pbr.surface_texture, &maps.metallic_roughness_map);
+                    if maps.metalness_map.is_some() || maps.roughness_map.is_some() {
+                        let previous = pbr.separate_surface_maps.as_deref();
+                        let metalness = maps
+                            .metalness_map
+                            .clone()
+                            .unwrap_or_else(|| previous.and_then(|maps| maps.metalness.clone()));
+                        let roughness = maps
+                            .roughness_map
+                            .clone()
+                            .unwrap_or_else(|| previous.and_then(|maps| maps.roughness.clone()));
+                        pbr.separate_surface_maps = (metalness.is_some() || roughness.is_some())
+                            .then(|| {
+                                Box::new(MeshSurfaceMaps {
+                                    metalness,
+                                    roughness,
+                                })
+                            });
+                    }
                 }
                 MeshWorkflow::SpecularGlossiness => {
                     let inherited = if previous == pbr.workflow {
@@ -2092,6 +2288,9 @@ impl MeshPbr {
             emissive: [0.0; 3],
             occlusion_strength: 1.0,
             surface_texture: None,
+            height_map: None,
+            specular_reflection: None,
+            separate_surface_maps: None,
             emissive_texture: None,
             occlusion_texture: None,
             normal_map: None,
@@ -2115,18 +2314,43 @@ impl MeshMaterial {
     }
 
     pub fn is_blended(&self) -> bool {
-        matches!(
-            self.alpha_mode,
-            MeshAlphaMode::Blend | MeshAlphaMode::InstanceBlend { .. }
-        ) || self.blend_mode != MeshBlendMode::SourceOver
+        self.opacity < 1.0
+            || self.opacity_texture.is_some()
+            || matches!(
+                self.alpha_mode,
+                MeshAlphaMode::Blend | MeshAlphaMode::InstanceBlend { .. }
+            )
+            || self.blend_mode != MeshBlendMode::SourceOver
+    }
+
+    /// The coverage mode for this prepared material. Instance fades prepare their
+    /// own material variant before classification.
+    #[doc(hidden)]
+    pub fn effective_alpha_mode(&self) -> MeshAlphaMode {
+        match self.alpha_mode {
+            MeshAlphaMode::Default if self.is_blended() => MeshAlphaMode::Blend,
+            MeshAlphaMode::Default => MeshAlphaMode::Opaque,
+            MeshAlphaMode::InstanceBlend {
+                source_alpha: true, ..
+            } => MeshAlphaMode::Blend,
+            mode => mode,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn is_visible(&self) -> bool {
+        self.opacity > 0.0
     }
 
     #[doc(hidden)]
     pub fn transmission_blur(&self) -> Option<f32> {
+        if !self.is_visible() {
+            return None;
+        }
         let pbr = self.pbr.as_ref()?;
         pbr.transmission.as_ref().filter(|term| term.factor > 0.0)?;
         if pbr.metallic >= 1.0
-            && pbr.surface_texture.is_none()
+            && pbr.metalness_texture().is_none()
             && !self.vertex_masks.masks_metalness()
         {
             return None;
@@ -2142,14 +2366,25 @@ impl MeshMaterial {
 
     #[doc(hidden)]
     pub fn depth_coverage(&self) -> Option<MeshDepthCoverage> {
-        if self.depth_draw_mode == MeshDepthDraw::Never
+        if !self.is_visible()
+            || self.depth_draw_mode == MeshDepthDraw::Never
             || self.depth_draw_mode == MeshDepthDraw::OpaqueOnly
                 && (self.is_blended() || self.transmission_blur().is_some())
         {
             return None;
         }
-        Some(match self.alpha_mode {
-            MeshAlphaMode::Opaque => MeshDepthCoverage::Opaque,
+        if self.opacity < 1.0 {
+            return (self.depth_draw_mode == MeshDepthDraw::Always)
+                .then_some(MeshDepthCoverage::NonzeroAlpha);
+        }
+        if self.opacity_texture.is_some() {
+            return Some(match self.depth_draw_mode {
+                MeshDepthDraw::OpaquePrepass => MeshDepthCoverage::OpaqueAlpha,
+                _ => MeshDepthCoverage::NonzeroAlpha,
+            });
+        }
+        Some(match self.effective_alpha_mode() {
+            MeshAlphaMode::Default | MeshAlphaMode::Opaque => MeshDepthCoverage::Opaque,
             MeshAlphaMode::Mask(_) => MeshDepthCoverage::Mask,
             MeshAlphaMode::Blend | MeshAlphaMode::InstanceBlend { .. }
                 if self.depth_draw_mode == MeshDepthDraw::OpaquePrepass =>
@@ -2191,11 +2426,16 @@ impl MeshMaterial {
         coverage.is_none_or(|coverage| {
             self.cull_mode == other.cull_mode
                 && (!coverage.samples_alpha()
-                    || self.alpha_mode == other.alpha_mode
+                    || self.effective_alpha_mode() == other.effective_alpha_mode()
                         && self.base_color[3] == other.base_color[3]
                         && self.vertex_colors == other.vertex_colors
                         && self.base_item == other.base_item
-                        && self.alpha_texture() == other.alpha_texture())
+                        && self.alpha_texture() == other.alpha_texture()
+                        && self.opacity_texture == other.opacity_texture
+                        && (self.opacity_texture.is_none()
+                            || self.invert_opacity_map_value == other.invert_opacity_map_value
+                                && self.channels.channel(MaterialChannel::Opacity)
+                                    == other.channels.channel(MaterialChannel::Opacity)))
         })
     }
 
@@ -2222,14 +2462,37 @@ impl MeshMaterial {
         tint_alpha * (self.base_color[3] * alpha * map)
     }
 
+    fn mapped_opacity(&self, uv: [[f32; 2]; 2]) -> f32 {
+        self.opacity
+            * self.opacity_texture.as_ref().map_or(1.0, |texture| {
+                let value = texture.scalar_at(
+                    uv[usize::from(texture.uv_slot)],
+                    self.channels.channel(MaterialChannel::Opacity),
+                );
+                if self.invert_opacity_map_value {
+                    1.0 - value
+                } else {
+                    value
+                }
+            })
+    }
+
+    pub(in crate::scene3d) fn tests_fragment_coverage(&self) -> bool {
+        self.effective_alpha_mode() != MeshAlphaMode::Opaque || self.opacity_texture.is_some()
+    }
+
     pub(in crate::scene3d) fn covers(
         &self,
-        uv: [f32; 2],
+        uv: [[f32; 2]; 2],
         vertex_alpha: f32,
         tint_alpha: f32,
     ) -> bool {
-        match self.alpha_mode {
-            MeshAlphaMode::Opaque => true,
+        self.mapped_opacity(uv) > 0.0 && self.alpha_covers(uv[0], vertex_alpha, tint_alpha)
+    }
+
+    fn alpha_covers(&self, uv: [f32; 2], vertex_alpha: f32, tint_alpha: f32) -> bool {
+        match self.effective_alpha_mode() {
+            MeshAlphaMode::Default | MeshAlphaMode::Opaque => true,
             MeshAlphaMode::Mask(cutoff) => {
                 self.effective_alpha(uv, vertex_alpha, tint_alpha) >= cutoff
             }
@@ -2244,7 +2507,7 @@ impl MeshMaterial {
 
     pub(in crate::scene3d) fn depth_covers(
         &self,
-        uv: [f32; 2],
+        uv: [[f32; 2]; 2],
         vertex_alpha: f32,
         tint_alpha: f32,
     ) -> bool {
@@ -2252,11 +2515,13 @@ impl MeshMaterial {
             None => false,
             Some(MeshDepthCoverage::Opaque) => true,
             Some(MeshDepthCoverage::OpaqueAlpha) => {
-                if matches!(self.alpha_mode, MeshAlphaMode::InstanceBlend { .. }) {
-                    tint_alpha >= 1.0 && self.covers(uv, vertex_alpha, tint_alpha)
-                } else {
-                    self.effective_alpha(uv, vertex_alpha, tint_alpha) >= 1.0
-                }
+                let opacity = self.mapped_opacity(uv);
+                let coverage = match self.effective_alpha_mode() {
+                    MeshAlphaMode::InstanceBlend { .. } => tint_alpha,
+                    MeshAlphaMode::Blend => self.effective_alpha(uv[0], vertex_alpha, tint_alpha),
+                    _ => 1.0,
+                };
+                opacity * coverage >= 1.0 && self.alpha_covers(uv[0], vertex_alpha, tint_alpha)
             }
             Some(MeshDepthCoverage::Mask | MeshDepthCoverage::NonzeroAlpha) => {
                 self.covers(uv, vertex_alpha, tint_alpha)
@@ -2350,6 +2615,41 @@ mod material_slot_tests {
     }
 
     #[test]
+    fn inverted_opacity_changes_sampled_depth_and_respects_the_cutoff() {
+        let image =
+            Arc::new(MeshImage::new([2, 1], vec![255, 255, 255, 0, 255, 255, 255, 255]).unwrap());
+        let mut plain = crate::scene3d::Mesh3D::Box
+            .material_source()
+            .unwrap()
+            .materials[0]
+            .clone();
+        plain.opacity_texture = SceneTexture {
+            mag_filter: "nearest",
+            ..SceneTexture::default()
+        }
+        .prepare(false, |_| Some(Arc::clone(&image)));
+        plain.alpha_mode = MeshAlphaMode::Mask(0.5);
+        plain.depth_draw_mode = MeshDepthDraw::OpaquePrepass;
+        let mut inverted = plain.clone();
+        inverted.invert_opacity_map_value = true;
+
+        let left = [[0.25, 0.5], [0.0; 2]];
+        let right = [[0.75, 0.5], [0.0; 2]];
+        assert!(!plain.depth_covers(left, 1.0, 1.0));
+        assert!(plain.depth_covers(right, 1.0, 1.0));
+        assert!(inverted.depth_covers(left, 1.0, 1.0));
+        assert!(!inverted.depth_covers(right, 1.0, 1.0));
+        assert!(!plain.same_shadow_surface(&inverted));
+
+        inverted.base_color[3] = 0.25;
+        assert!(!inverted.covers(left, 1.0, 1.0));
+        assert!(!inverted.depth_covers(left, 1.0, 1.0));
+        plain.depth_draw_mode = MeshDepthDraw::OpaqueOnly;
+        inverted.depth_draw_mode = MeshDepthDraw::OpaqueOnly;
+        assert!(plain.same_shadow_surface(&inverted));
+    }
+
+    #[test]
     fn anisotropy_invalidates_alpha_sampled_shadow_surfaces() {
         let image = Arc::new(MeshImage::new([1, 1], vec![255; 4]).unwrap());
         let map = |max_anisotropy| {
@@ -2360,6 +2660,9 @@ mod material_slot_tests {
             .prepare(true, |_| Some(Arc::clone(&image)))
         };
         let mut base = MeshMaterial {
+            opacity: 1.0,
+            opacity_texture: None,
+            invert_opacity_map_value: false,
             shader: None,
             channels: Default::default(),
             vertex_colors: false,
@@ -2396,6 +2699,9 @@ mod material_slot_tests {
             ..SceneMaterial::default()
         };
         let base = MeshMaterial {
+            opacity: 1.0,
+            opacity_texture: None,
+            invert_opacity_map_value: false,
             shader: None,
             channels: Default::default(),
             vertex_colors: true,

@@ -359,6 +359,7 @@ pub struct SceneNodeDefinition<'a> {
     pub pivot: [f64; 3],
     pub orientation: Option<Quaternion3D>,
     pub visible: bool,
+    pub opacity: f64,
     pub camera: Option<SceneCameraSettings>,
     pub look_at: String,
     pub look_at_point: Option<Point3D>,
@@ -408,6 +409,7 @@ pub struct SceneNode {
     look_at_point: Option<Point3D>,
     camera_up: Option<Vector3D>,
     visible: bool,
+    opacity: f32,
     mesh: Option<MeshAsset>,
     geometry_status: GeometryStatus,
     node_catalog: Option<Arc<MeshNodeCatalog>>,
@@ -606,6 +608,11 @@ impl SceneNodeDefinition<'_> {
             animation: self.animation,
             morph_weights,
             visible: self.visible,
+            opacity: if self.opacity.is_finite() {
+                self.opacity.clamp(0.0, 1.0) as f32
+            } else {
+                1.0
+            },
             local,
             position: Vector3::from(narrow(self.position)),
             rotation,
@@ -730,18 +737,43 @@ impl SceneNode {
         }
     }
 
-    fn collision_row(&mut self, mount: MeshMount) -> Option<CollisionRow> {
+    fn collision_row(
+        &mut self,
+        mount: MeshMount,
+        cache: &mut SceneMeshCache,
+        hidden_budget: &mut usize,
+    ) -> Option<CollisionRow> {
         if self.instance_template {
             return None;
         }
-        let shapes = self.collision_shapes.take()?;
+        let geometry = if let Some(shapes) = self.collision_shapes.take() {
+            CollisionRowGeometry::Authored(shapes)
+        } else if self.opacity == 0.0 && (self.collidable || self.trigger) && *hidden_budget != 0 {
+            // With no authored shapes, the posed render mesh also defines collision.
+            let mut node = self.clone();
+            node.opacity = 1.0;
+            let asset = node.mesh.take()?;
+            let mut objects = Vec::new();
+            node.append_mesh(
+                asset,
+                mount,
+                Some(&mut objects),
+                ImportAttachments::default(),
+                cache,
+            );
+            objects.truncate(*hidden_budget);
+            *hidden_budget -= objects.len();
+            CollisionRowGeometry::Resolved(objects)
+        } else {
+            return None;
+        };
         Some(CollisionRow {
             row: self.row,
             id: self.id.clone(),
             world: mount.world,
             root: mount.root,
             placements: self.placements.clone(),
-            shapes,
+            geometry,
             layers: self.layers,
             collidable: self.collidable,
             trigger: self.trigger,
@@ -784,7 +816,7 @@ impl SceneNode {
                     mounts_attachments && asset.has_cameras() && world.rotation.is_some()
                 }),
             };
-            let objects = objects.filter(|_| mount.is_some());
+            let objects = objects.filter(|_| mount.is_some() && self.opacity > 0.0);
             let mount = mount.unwrap_or_else(|| MeshMount::at(world.transform));
             self.append_mesh(asset, mount, objects, attachments, cache);
         }
@@ -885,7 +917,8 @@ impl SceneNode {
             return;
         }
         let world = mount.world;
-        let blend_table = self.instance_has_transparency && self.placements.is_some();
+        let instance_blending =
+            self.opacity < 1.0 || self.instance_has_transparency && self.placements.is_some();
         let object = |id, mesh: crate::scene3d::Mesh3D, transform| {
             let (mesh, transform) =
                 mesh.with_model_blend(self.model_blend.as_deref(), transform, world);
@@ -907,6 +940,7 @@ impl SceneNode {
                 .with_trigger(self.trigger)
                 .with_source_row(self.row);
             object.receives_reflections = self.receives_reflections;
+            object.opacity = self.opacity;
             object.casts_reflections = self.casts_reflections;
             object.layers = self.layers;
             object.lighting_index = self.lighting_index;
@@ -936,7 +970,7 @@ impl SceneNode {
                             &mut cache.styles,
                             mesh,
                             self.appearance.as_ref(),
-                            blend_table,
+                            instance_blending,
                         ),
                         world,
                     );
@@ -1075,7 +1109,7 @@ impl SceneNode {
                     }
                     if let Some(mut placed) =
                         placed_mesh(&rig, placement, world, |mesh, transform| {
-                            let blend = blend_table
+                            let blend = instance_blending
                                 || self.instance_has_transparency && placement.source.1.is_some();
                             let mesh = styled_mesh(
                                 &mut cache.styles,
@@ -1757,10 +1791,16 @@ struct CollisionRow {
     world: SceneTransform,
     root: Option<SceneTransform>,
     placements: Option<InstancePlacements>,
-    shapes: Arc<[SceneCollisionShape]>,
+    geometry: CollisionRowGeometry,
     layers: u64,
     collidable: bool,
     trigger: bool,
+}
+
+#[derive(Debug, PartialEq)]
+enum CollisionRowGeometry {
+    Authored(Arc<[SceneCollisionShape]>),
+    Resolved(Vec<SceneObject>),
 }
 
 impl CollisionRow {
@@ -1768,8 +1808,20 @@ impl CollisionRow {
         if !self.collidable && !self.trigger {
             return;
         }
+        let shapes = match &self.geometry {
+            CollisionRowGeometry::Authored(shapes) => shapes,
+            CollisionRowGeometry::Resolved(objects) => {
+                colliders.extend(
+                    objects
+                        .iter()
+                        .take(MAX_NODES.saturating_sub(colliders.len()))
+                        .cloned(),
+                );
+                return;
+            }
+        };
         let Some(table) = &self.placements else {
-            return self.append_shapes(self.world, None, colliders);
+            return self.append_shapes(shapes, self.world, None, colliders);
         };
         let root = self.root.unwrap_or(self.world);
         let Some(relative) = self.world.relative_to(root) else {
@@ -1784,18 +1836,19 @@ impl CollisionRow {
                 .and_then(|placement| root.child(placement))
                 .and_then(|placement| placement.child(relative))
             {
-                self.append_shapes(world, Some(index as u32), colliders);
+                self.append_shapes(shapes, world, Some(index as u32), colliders);
             }
         }
     }
 
     fn append_shapes(
         &self,
+        shapes: &[SceneCollisionShape],
         mounted: SceneTransform,
         index: Option<u32>,
         colliders: &mut Vec<SceneObject>,
     ) {
-        for shape in self.shapes.iter() {
+        for shape in shapes {
             if colliders.len() >= MAX_NODES {
                 break;
             }
@@ -2592,6 +2645,7 @@ struct WorldPose {
     transform: SceneTransform,
     rotation: Option<UnitQuaternion<f32>>,
     visible: bool,
+    opacity: f32,
     aimed: bool,
 }
 
@@ -2600,6 +2654,7 @@ impl WorldPose {
         Self {
             transform: node.local,
             visible: node.visible,
+            opacity: node.opacity,
             aimed: false,
             rotation: track_cameras.then(|| UnitQuaternion::from_rotation_matrix(&node.rotation)),
         }
@@ -2609,6 +2664,7 @@ impl WorldPose {
         if node.world_locked {
             let mut pose = Self::root(node, camera_ancestor);
             pose.visible &= self.visible;
+            pose.opacity *= self.opacity;
             return Some(pose);
         }
         let transform = self.transform.child(node.local)?;
@@ -2620,6 +2676,7 @@ impl WorldPose {
             transform,
             rotation,
             visible: self.visible && node.visible,
+            opacity: self.opacity * node.opacity,
             aimed: false,
         })
     }
@@ -3076,6 +3133,7 @@ fn prepare_nodes(
     let mut imported_cameras = ImportedCameras::default();
     let mut imported_lights = None;
     let mut collision_rows = Vec::new();
+    let mut hidden_collider_budget = MAX_NODES;
     if !track_cameras
         && !track_imported_cameras
         && nodes.iter().all(|row| {
@@ -3091,7 +3149,11 @@ fn prepare_nodes(
         if renderables {
             for mut node in nodes.into_iter().filter(|node| node.visible) {
                 let world = WorldPose::root(&node, track_imported);
-                collision_rows.extend(node.collision_row(MeshMount::at(world.transform)));
+                collision_rows.extend(node.collision_row(
+                    MeshMount::at(world.transform),
+                    cache,
+                    &mut hidden_collider_budget,
+                ));
                 node.append_scene(
                     (world, Some(MeshMount::at(world.transform))),
                     Some(&mut objects),
@@ -3299,6 +3361,7 @@ fn prepare_nodes(
                 && world.visible
             {
                 node.lighting_index = subtrees[index][0];
+                node.opacity = world.opacity;
                 if let Some(blend) = node
                     .model_blend
                     .as_mut()
@@ -3349,7 +3412,11 @@ fn prepare_nodes(
                         (Vec::new(), false)
                     };
                 if renderables && let Some(mount) = mount {
-                    collision_rows.extend(node.collision_row(mount));
+                    collision_rows.extend(node.collision_row(
+                        mount,
+                        cache,
+                        &mut hidden_collider_budget,
+                    ));
                 }
                 let candidate = mount
                     .filter(|_| !levels.is_empty())
@@ -3699,6 +3766,7 @@ pub(crate) fn prepare_record_scene(
                 },
                 pivot: ["pivot-x", "pivot-y", "pivot-z"].map(|name| number(name).unwrap_or(0.0)),
                 visible: enabled("visible"),
+                opacity: number("opacity").unwrap_or(1.0),
                 look_at: string("camera-look-at").unwrap_or_default().to_owned(),
                 look_at_point: match row.field("camera-look-at-point") {
                     Some(Value::Point3D(point)) => Some(*point),

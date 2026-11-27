@@ -106,6 +106,12 @@ macro_rules! builtin_value_fields {
                 "width" => width: Int,
                 "height" => height: Int,
             }
+            TextureData3D, "texture_data3d_field" {
+                "valid" => is_valid: Bool,
+                "width" => width: Int,
+                "height" => height: Int,
+                "depth" => depth: Int,
+            }
             InstanceTable3D, "instance_table3d_field" {
                 "count" => count: Int,
                 "loaded" => loaded: Bool,

@@ -45,7 +45,7 @@ bool isExpression(Operation &op) {
              ListRowSelectedOp, StringifyOp, BinaryOp, ConcatOp, SelectOp, SolidBrushOp, GradientStopOp,
              LinearGradientOp, RadialGradientOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, TextureUrlOp, ShaderUrlOp, MaterialShaderUrlOp, InstanceTableUrlOp, ParticleShapeUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, Hit3DArrayOp, PointerButtonsOp, CallOp,
              RoundOp, MathFunctionOp, GeometryFunctionOp, PhysicsFunctionOp, Point2DFieldOp, Point3DFieldOp,
-             ProjectedPoint3DFieldOp, RenderStats3DFieldOp, Bounds3DFieldOp, MeshAsset3DFieldOp, MeshNode3DFieldOp, WalkResult3DOp, WalkResult3DFieldOp, Hit3DFieldOp, Instance3DFieldOp, InstanceTable3DFieldOp, TextureData2DFieldOp,
+             ProjectedPoint3DFieldOp, RenderStats3DFieldOp, Bounds3DFieldOp, MeshAsset3DFieldOp, MeshNode3DFieldOp, WalkResult3DOp, WalkResult3DFieldOp, Hit3DFieldOp, Instance3DFieldOp, InstanceTable3DFieldOp, TextureData2DFieldOp, TextureData3DFieldOp,
              PhysicsContact3DFieldOp, PhysicsContact3DArrayOp, PhysicsHit3DFieldOp, PhysicsHit3DArrayOp,
              Vector3DFieldOp, Vector2DFieldOp, Quaternion3DFieldOp, RotationTrack3DFieldOp,
              StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, UpdateRecordOp, DefaultRecordOp, RecordArrayOp,
@@ -4514,6 +4514,10 @@ LogicalResult GeometryFunctionOp::verify() {
     auto scene = SceneModel3DType::get(getContext());
     inputs = {scene, scene};
     output = scene;
+  } else if (operation == "volume-rgba8") {
+    auto integer = IntType::get(getContext());
+    inputs = {integer, integer, integer, IntListType::get(getContext())};
+    output = TextureData3DType::get(getContext());
   } else if (operation == "texture-rgba8") {
     inputs = {IntType::get(getContext()), IntType::get(getContext()), IntListType::get(getContext())};
     output = TextureData2DType::get(getContext());
@@ -4690,6 +4694,15 @@ LogicalResult RotationTrack3DFieldOp::verify() {
       (field == "duration" && isa<FloatType>(type)))
     return success();
   return emitOpError("invalid rotation track field or result type");
+}
+
+LogicalResult TextureData3DFieldOp::verify() {
+  auto type = getResult().getType();
+  auto field = getValue();
+  if (((field == "width" || field == "height" || field == "depth") && isa<IntType>(type)) ||
+      (field == "valid" && isa<BoolType>(type)))
+    return success();
+  return emitOpError("invalid volume data field or result type");
 }
 
 LogicalResult TextureData2DFieldOp::verify() {
@@ -4963,15 +4976,22 @@ LogicalResult LiteralOp::verify() {
     valid = parseFloatLiteral(spelling).has_value();
   } else if (isa<Point2DType, Vector2DType, Transform2DType, Point3DType, Vector3DType, Quaternion3DType>(type)) {
     valid = parseGeometryLiteral(type, spelling).has_value();
-  } else if (isa<TextureData2DType>(type)) {
+  } else if (isa<TextureData2DType, TextureData3DType>(type)) {
+    const bool volume = isa<TextureData3DType>(type);
     const auto [dimensions, hex] = spelling.split(':');
-    const auto [w, h] = dimensions.split('x');
-    unsigned width, height;
-    valid = spelling.empty() ||
-            (!w.getAsInteger(10, width) && width > 0 && width <= MaxTextureDataDimension &&
-             !h.getAsInteger(10, height) && height > 0 && height <= MaxTextureDataDimension &&
-             hex.size() == size_t(width) * height * 8 &&
-             llvm::all_of(hex, [](char byte) { return llvm::isHexDigit(byte); }));
+    llvm::SmallVector<llvm::StringRef, 3> fields;
+    dimensions.split(fields, 'x', 3);
+    size_t bytes = 4;
+    const auto limit = volume ? MaxVolumeDataDimension : MaxTextureDataDimension;
+    valid = fields.size() == (volume ? 3 : 2) && llvm::all_of(fields, [&](llvm::StringRef field) {
+      unsigned side;
+      if (field.getAsInteger(10, side) || side == 0 || side > limit)
+        return false;
+      bytes *= side;
+      return true;
+    });
+    valid = spelling.empty() || (valid && bytes <= MaxProceduralTextureBytes &&
+        hex.size() == 2 * bytes && llvm::all_of(hex, [](char c) { return llvm::isHexDigit(c); }));
   } else if (isa<RotationTrack3DType>(type)) {
     valid = parseRotationTrackLiteral(spelling).has_value();
   } else if (isa<ProjectedPoint3DType, RenderStats3DType, Hit3DType, Instance3DType, InstanceTable3DType, MeshAsset3DType, MeshNode3DType, Bounds3DType, WalkResult3DType, PhysicsWorld3DType, SceneModel3DType, PhysicsContact3DType, PhysicsHit3DType>(type)) {
@@ -6695,7 +6715,7 @@ static bool recordScalarType(llvm::StringRef type) {
       .Cases({"int", "float", "bool", "string", "styled-text", "length", "color", "brush",
               "point2d", "vector2d", "transform2d", "Point2D", "Vector2D", "Transform2D",
               "point3d", "Point3D", "vector3d", "Vector3D", "quaternion3d", "Quaternion3D", "rotationtrack3d", "RotationTrack3D", "hit3d", "Hit3D",
-              "projectedpoint3d", "ProjectedPoint3D", "renderstats3d", "RenderStats3D", "instance3d", "Instance3D", "instancetable3d", "InstanceTable3D", "texturedata2d", "TextureData2D", "meshasset3d", "MeshAsset3D", "meshnode3d", "MeshNode3D", "bounds3d", "Bounds3D", "walkresult3d", "WalkResult3D",
+              "projectedpoint3d", "ProjectedPoint3D", "renderstats3d", "RenderStats3D", "instance3d", "Instance3D", "instancetable3d", "InstanceTable3D", "texturedata2d", "TextureData2D", "texturedata3d", "TextureData3D", "meshasset3d", "MeshAsset3D", "meshnode3d", "MeshNode3D", "bounds3d", "Bounds3D", "walkresult3d", "WalkResult3D",
               "physicsworld3d", "PhysicsWorld3D", "scenemodel3d", "SceneModel3D", "physicscontact3d", "PhysicsContact3D",
               "physicshit3d", "PhysicsHit3D",
               "image", "LogLevel", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering", "ButtonDisplay",
@@ -7217,8 +7237,9 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
           {"material-shader", "string"}, {"shader-parameters", "vector3d"}, {"shader-displacement", "float"},
           {"roughness", "float"}, {"glossiness", "float"}, {"material-workflow", "string"},
           {"emissive-color", "color"}, {"emissive-strength", "float"},
-          {"alpha-mode", "string"}, {"blend-mode", "string"}, {"depth-draw-mode", "string"}, {"cull-mode", "string"}, {"alpha-cutoff", "float"},
-          {"unlit", "bool"}, {"clearcoat", "float"}, {"clearcoat-roughness", "float"},
+          {"alpha-mode", "string"}, {"blend-mode", "string"}, {"depth-draw-mode", "string"}, {"cull-mode", "string"}, {"alpha-cutoff", "float"}, {"opacity", "float"},
+          {"height-amount", "float"}, {"min-height-map-samples", "int"}, {"max-height-map-samples", "int"},
+          {"invert-opacity-map-value", "bool"}, {"unlit", "bool"}, {"clearcoat", "float"}, {"clearcoat-roughness", "float"},
           {"transmission", "float"}, {"index-of-refraction", "float"},
           {"occlusion-amount", "float"}, {"specular-amount", "float"},
           {"specular-color", "color"}, {"thickness", "float"},
@@ -7238,19 +7259,20 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
       auto element = recordListElement(*inputs);
       if (!element ||
           (recordFieldType(records, enums, *element, "data") != "texturedata2d" &&
+           recordFieldType(records, enums, *element, "data") != "texturedata3d" &&
            recordFieldType(records, enums, *element, "texture") != "string" &&
            recordFieldType(records, enums, *element, "item") != "string" &&
            recordFieldType(records, enums, *element, "capture") != "string"))
-        return op->emitOpError("3D material shader-textures requires a record list with texturedata2d data or a string texture, item or capture");
-      if (auto data = recordFieldType(records, enums, *element, "data"); data && *data != "texturedata2d")
-        return op->emitOpError("3D material shader texture requires a texturedata2d field named data");
+        return op->emitOpError("3D material shader-textures requires a record list with texturedata2d or texturedata3d data or a string texture, item or capture");
+      if (auto data = recordFieldType(records, enums, *element, "data"); data && *data != "texturedata2d" && *data != "texturedata3d")
+        return op->emitOpError("3D material shader texture requires a texturedata2d or texturedata3d field named data");
       for (llvm::StringRef name : {"texture", "item", "capture", "attachment", "filter", "wrap-u", "wrap-v", "color-space"})
         if (auto field = recordFieldType(records, enums, *element, name); field && *field != "string")
           return op->emitOpError("3D material shader texture requires a string field named ") << name;
       if (auto enabled = recordFieldType(records, enums, *element, "enabled"); enabled && *enabled != "bool")
         return op->emitOpError("3D material shader texture requires a bool field named enabled");
     }
-    for (llvm::StringRef name : {"base-color-channel", "emissive-channel", "metalness-channel", "roughness-channel", "glossiness-channel", "occlusion-channel", "specular-channel", "specular-color-channel", "transmission-channel", "thickness-channel", "clearcoat-channel", "clearcoat-roughness-channel"}) {
+    for (llvm::StringRef name : {"base-color-channel", "emissive-channel", "metalness-channel", "roughness-channel", "glossiness-channel", "opacity-channel", "height-channel", "occlusion-channel", "specular-channel", "specular-color-channel", "transmission-channel", "thickness-channel", "clearcoat-channel", "clearcoat-roughness-channel"}) {
       if (auto field = recordFieldType(records, enums, material, name);
           field && *field != "string")
         return op->emitOpError("invalid 3D material channel ") << name << ", expected string";
@@ -7265,19 +7287,21 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
           field && *field != "string")
         return op->emitOpError("invalid 3D vertex mask channel ") << name << ", expected string";
     }
-    for (llvm::StringRef name : {"base-item", "base-color-map", "metallic-roughness-map", "glossiness-map",
+    for (llvm::StringRef name : {"base-item", "specular-reflection-item", "base-color-map", "opacity-map", "height-map", "metallic-roughness-map", "metalness-map",
+                               "roughness-map", "glossiness-map",
                                "emissive-map", "occlusion-map", "normal-map",
                                "clearcoat-map", "clearcoat-roughness-map",
                                "clearcoat-normal-map", "transmission-map",
-                               "specular-map", "specular-color-map", "thickness-map", "anisotropy-map"}) {
+                               "specular-map", "specular-color-map", "specular-reflection-map", "thickness-map", "anisotropy-map"}) {
     auto texture = recordFieldType(records, enums, material, name);
-    if (!texture || *texture == "string" || (name != "base-item" && *texture == "texturedata2d"))
+    bool itemSource = name == "base-item" || name == "specular-reflection-item";
+    if (!texture || *texture == "string" || (!itemSource && *texture == "texturedata2d"))
       continue;
     auto schema = records.find(*texture);
     if (schema == records.end() || enums.contains(*texture))
       return op->emitOpError("3D material map requires a texture key, texturedata2d or sampler record");
     auto data = recordFieldType(records, enums, *texture, "data");
-    if (data && (*data != "texturedata2d" || name == "base-item"))
+    if (data && (*data != "texturedata2d" || itemSource))
       return op->emitOpError("invalid 3D sampler data field, expected texturedata2d on a material map");
     for (const auto &[setting, expected] :
          std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
@@ -7372,7 +7396,7 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
        {"pitch", "float"}, {"roll", "float"}, {"color", "color"}},
       {{"mesh", "string"}, {"mesh-asset", "meshasset3d"}, {"casts-shadow", "bool"}, {"receives-shadow", "bool"}, {"receives-reflections", "bool"},
        {"casts-reflections", "bool"}, {"parent", "string"}, {"parent-node", "string"}, {"layers", "int"},
-       {"physics-body", "string"}, {"visible", "bool"}, {"depth-bias", "float"},
+       {"physics-body", "string"}, {"visible", "bool"}, {"opacity", "float"}, {"depth-bias", "float"},
        {"motion-vector-enabled", "bool"}, {"motion-vector-scale", "float"},
        {"model-blend-mode", "string"}, {"model-blend-order", "string"},
        {"model-blend-end-node", "string"}, {"model-blend-activation-node", "string"},
@@ -7874,13 +7898,14 @@ static LogicalResult verifySceneEffects(BindOp effects, const Records &records,
     if (auto buffers = recordFieldType(records, enums, model.getName(), "buffers")) {
       if (!buffers->consume_front("[") || !buffers->consume_back("]") ||
           (recordFieldType(records, enums, *buffers, "data") != "texturedata2d" &&
+           recordFieldType(records, enums, *buffers, "data") != "texturedata3d" &&
            recordFieldType(records, enums, *buffers, "name") != "string" &&
            recordFieldType(records, enums, *buffers, "texture") != "string" &&
            recordFieldType(records, enums, *buffers, "item") != "string" &&
            recordFieldType(records, enums, *buffers, "capture") != "string"))
-        return effects.emitOpError("3D effect pass buffers require texturedata2d data or a string name, texture, item or capture");
-      if (auto data = recordFieldType(records, enums, *buffers, "data"); data && *data != "texturedata2d")
-        return effects.emitOpError("3D effect pass buffer requires a texturedata2d field named data");
+        return effects.emitOpError("3D effect pass buffers require texturedata2d or texturedata3d data or a string name, texture, item or capture");
+      if (auto data = recordFieldType(records, enums, *buffers, "data"); data && *data != "texturedata2d" && *data != "texturedata3d")
+        return effects.emitOpError("3D effect pass buffer requires a texturedata2d or texturedata3d field named data");
       for (llvm::StringRef name : {"previous-frame", "enabled"})
         if (auto type = recordFieldType(records, enums, *buffers, name); type && *type != "bool")
           return effects.emitOpError("3D effect pass buffer requires a bool field named ") << name;

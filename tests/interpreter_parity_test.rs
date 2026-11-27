@@ -15933,6 +15933,83 @@ fn interpret_controls_fixture(name: &str) -> Instance {
         .unwrap()
 }
 
+#[test]
+fn demo_range_controls_keep_interactive_writes_after_initialization() {
+    use xrack_runtime::RangeAction;
+
+    let mut interpreted = interpret_controls_fixture("ControlsDemo");
+    let mut generated = controls_ui::ControlsDemo::new();
+    for ui in [&mut interpreted as &mut dyn Component, &mut generated] {
+        let initial = ui.render();
+        assert_eq!(
+            initial.at_path(&[6, 1]).unwrap().number("upper-value"),
+            Some(70.0)
+        );
+        for (target, node, property, value) in [
+            (&[6, 1, 1][..], &[6, 1][..], "upper-value", 80.0),
+            (&[7, 4][..], &[7, 4][..], "value", 5.0),
+            (&[7, 5][..], &[7, 5][..], "value", 60.0),
+        ] {
+            assert!(ui.adjust_range_at(&ui.render(), target, RangeAction::SetValue(value)));
+            assert_eq!(
+                ui.render().at_path(node).unwrap().number(property),
+                Some(value)
+            );
+        }
+    }
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn demo_delegate_initializes_text_once_per_model_row() {
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::VecModel;
+
+    fn exercise(ui: &mut impl Component, model: &VecModel<String>) {
+        let input = Interaction::default();
+        let size = Size::new(630.0, 396.0);
+        let field = [0, 2, 0, 0, 1];
+        let (initial, _) = prepare_list(ui, &input, size);
+        assert_eq!(
+            initial.at_path(&field).unwrap().text("text"),
+            Some("Original")
+        );
+        assert!(ui.edit_at(&initial, &field, "Edited".into()));
+        assert!(model.insert(0, "Inserted".into()));
+        let (moved, _) = prepare_list(ui, &input, size);
+        assert_eq!(
+            moved.at_path(&field).unwrap().text("text"),
+            Some("Inserted")
+        );
+        assert_eq!(
+            moved.at_path(&[0, 2, 1, 0, 1]).unwrap().text("text"),
+            Some("Edited")
+        );
+    }
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/delegates/delegates.xr"),
+        "delegates.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("DelegatesDemo")
+        .unwrap();
+    let interpreted_model = VecModel::from(vec!["Original".into()]);
+    interpreted
+        .set("records", Value::StringModel(interpreted_model.clone()))
+        .unwrap();
+    exercise(&mut interpreted, &interpreted_model);
+    assert_eq!(interpreted.take_error(), None);
+
+    let mut generated = delegates_ui::DelegatesDemo::new();
+    generated.set_records(vec!["Original".into()]);
+    let generated_model = generated.model_records();
+    exercise(&mut generated, &generated_model);
+}
+
 fn sync_test_timers(
     queue: &mut xrack_runtime::TimerQueue,
     component: &impl Component,

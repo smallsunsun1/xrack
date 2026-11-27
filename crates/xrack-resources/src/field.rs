@@ -55,6 +55,9 @@ macro_rules! read_member {
     (WalkResult3D, $input:ident, contacts) => {
         $input.contacts()
     };
+    (TextureData3D, $input:ident, $member:ident) => {
+        $input.$member()
+    };
     (TextureData2D, $input:ident, $member:ident) => {
         $input.$member()
     };

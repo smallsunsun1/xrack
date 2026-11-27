@@ -9,7 +9,7 @@ component RecordEditor inherits HorizontalLayout {
     padding-right <- 12px;
     cross-axis-alignment <- center;
     Text { text <- "#" + (root.position + 1); width <- 54px; color <- #acc0db; }
-    name-field := LineEdit { text <- root.label; }
+    name-field := LineEdit { text: root.label; }
     pin := CheckBox { text <- "置顶"; checked <-> root.pinned; }
     bump := Button {
         text <- "加一 · " + root.clicks;

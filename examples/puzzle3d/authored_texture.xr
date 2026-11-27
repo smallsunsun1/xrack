@@ -5,11 +5,18 @@ struct SurfaceMap {
     uv-rotation: float, uv-pivot-u: float, uv-pivot-v: float,
     uv-flip-u: bool, uv-flip-v: bool,
 }
+struct OpacityMap {
+    data: texturedata2d, wrap-u: string, min-filter: string, mag-filter: string,
+    mip-filter: string, uv-offset-u: float,
+}
 struct TexturedStyle {
     enabled: bool, base-color: color, metalness: float, roughness: float,
     base-color-map: SurfaceMap, metallic-roughness-map: string, normal-map: string,
     normal-strength: float, alpha-mode: string, alpha-cutoff: float, unlit: bool,
-    cull-mode: string,
+    cull-mode: string, depth-draw-mode: string, opacity: float, opacity-channel: string, opacity-map: OpacityMap,
+    invert-opacity-map-value: bool,
+    height-map: OpacityMap, height-channel: string, height-amount: float,
+    min-height-map-samples: int, max-height-map-samples: int,
 }
 struct TexturedActor {
     id: string, mesh: string, x: float, y: float, z: float,
@@ -20,7 +27,7 @@ struct TexturedActor {
 
 export component AuthoredTextureDemo inherits Window {
     title <- "XRack · 材质贴图";
-    width <- 644px; height <- 478px;
+    width <- 644px; height <- 562px;
     resizable <- false; background <- #182535;
 
     in-out property <float> repeat: 1.5;
@@ -33,6 +40,24 @@ export component AuthoredTextureDemo inherits Window {
     in-out property <bool> offset-pivot: false;
     in-out property <bool> flip-u: false;
     in-out property <bool> flip-v: false;
+    in-out property <bool> opacity-pattern: false;
+    in-out property <bool> shift-opacity: false;
+    in-out property <bool> invert-opacity: false;
+    in-out property <string> opacity-channel: "a";
+    in-out property <float> panel-opacity: 1;
+    in-out property <float> relief: 0;
+    in-out property <float> panel-yaw: 0;
+    in-out property <string> relief-channel: "r";
+    in-out property <int> relief-min-samples: 8;
+    in-out property <int> relief-max-samples: 32;
+    in-out property <string> panel-depth: "opaque-only";
+    property <texturedata2d> empty-map;
+    property <texturedata2d> pattern <- TextureData2D.rgba8(2, 1, [
+        255, 0, 255, 0, 255, 255, 255, 128,
+    ]);
+    property <texturedata2d> relief-data <- TextureData2D.rgba8(4, 1, [
+        0, 0, 0, 255, 99, 0, 0, 255, 224, 0, 0, 255, 255, 0, 0, 255,
+    ]);
     property <SurfaceMap> tiles <- SurfaceMap {
         source: @texture-url("models/focus-grid.png"),
         wrap-u: root.wrap, wrap-v: root.wrap,
@@ -53,9 +78,24 @@ export component AuthoredTextureDemo inherits Window {
         metallic-roughness-map: "", normal-map: "", normal-strength: 1,
         alpha-mode: root.cutout ? "mask" : "opaque", alpha-cutoff: 0.5,
         unlit: false, cull-mode: "back",
+        depth-draw-mode: root.panel-depth, opacity: root.panel-opacity, opacity-channel: root.opacity-channel,
+        invert-opacity-map-value: root.invert-opacity,
+        height-map: OpacityMap {
+            data: root.relief-data, wrap-u: "repeat",
+            min-filter: "linear", mag-filter: "linear", mip-filter: "linear", uv-offset-u: 0,
+        },
+        height-channel: root.relief-channel, height-amount: root.relief,
+        min-height-map-samples: root.relief-min-samples, max-height-map-samples: root.relief-max-samples,
+        opacity-map: OpacityMap {
+            data: root.opacity-pattern ? root.pattern : root.empty-map,
+            wrap-u: "repeat", min-filter: "nearest", mag-filter: "nearest", mip-filter: "linear",
+            uv-offset-u: root.shift-opacity ? 0.5 : 0,
+        },
     };
     property <TexturedStyle> right <- TexturedStyle {
-        base-color: #efa868, alpha-mode: "opaque", cull-mode: "none",
+        base-color: #efa868, alpha-mode: "opaque", cull-mode: "none", depth-draw-mode: "opaque-only", opacity: 1,
+        opacity-map: OpacityMap { data: root.empty-map, ..root.left.opacity-map },
+        height-amount: 0,
         base-color-map: SurfaceMap { ..root.tiles },
         normal-map: root.bump ? @texture-url("models/coat-normal.png") : "",
         metallic-roughness-map: @texture-url("models/coat-channels.png"),
@@ -74,7 +114,7 @@ export component AuthoredTextureDemo inherits Window {
             color: #4a6078, casts-shadow: false, ..root.base
         },
         TexturedActor {
-            id: "panel", x: -2.02, y: 0.15, z: 0.38,
+            id: "panel", x: -2.02, y: 0.15, z: 0.38, yaw: root.panel-yaw,
             scale-x: 2.56, scale-y: 2.56, scale-z: 0.08, material: root.left, ..root.base
         },
         TexturedActor {
@@ -112,4 +152,20 @@ export component AuthoredTextureDemo inherits Window {
     pivot-toggle := CheckBox { x <- 14px; y <- 420px; width <- 139px; height <- 36px; text <- "偏心旋转"; checked <-> root.offset-pivot; }
     flip-u-toggle := CheckBox { x <- 153px; y <- 420px; width <- 124px; height <- 36px; text <- "水平翻转"; checked <-> root.flip-u; }
     flip-v-toggle := CheckBox { x <- 285px; y <- 420px; width <- 139px; height <- 36px; text <- "垂直翻转"; checked <-> root.flip-v; }
+    invert-opacity-toggle := CheckBox { x <- 447px; y <- 420px; width <- 181px; height <- 36px; text <- "反转透明度贴图"; checked <-> root.invert-opacity; }
+    opacity-toggle := CheckBox { x <- 14px; y <- 468px; width <- 139px; height <- 36px; text <- "透明度贴图"; checked <-> root.opacity-pattern; }
+    opacity-channel-toggle := Button {
+        x <- 153px; y <- 468px; width <- 124px; height <- 36px;
+        text <- root.opacity-channel == "a" ? "A 通道" : "R 通道";
+        clicked => { root.opacity-channel = root.opacity-channel == "a" ? "r" : "a"; }
+    }
+    opacity-shift-toggle := CheckBox { x <- 285px; y <- 468px; width <- 139px; height <- 36px; text <- "偏移贴图"; checked <-> root.shift-opacity; }
+    opacity-fade := Slider { x <- 447px; y <- 470px; width <- 181px; height <- 32px; minimum <- 0; maximum <- 1; value <-> root.panel-opacity; }
+    relief-angle := Button {
+        x <- 14px; y <- 518px; width <- 132px; height <- 30px; text <- "改变观察角度";
+        clicked => { root.panel-yaw = root.panel-yaw == 0 ? 38 : 0; }
+    }
+    Label { x <- 162px; y <- 518px; width <- 77px; height <- 30px; text <- "高度系数"; }
+    relief-amount := Slider { x <- 246px; y <- 518px; width <- 216px; height <- 30px; minimum <- 0; maximum <- 0.2; step <- 0.01; value <-> root.relief; }
+
 }

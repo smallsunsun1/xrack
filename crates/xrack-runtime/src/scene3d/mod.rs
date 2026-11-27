@@ -70,11 +70,12 @@ pub use crate::scene3d::mesh::indices::{MeshDrawIndices, MeshIndexElements};
 pub use crate::scene3d::mesh::material::{
     MAX_MESH_TEXTURE_DIMENSION, MaterialChannel, MaterialChannels, MeshAlphaMode, MeshAnisotropy,
     MeshBlendMode, MeshClearcoat, MeshCullMode, MeshDepthCoverage, MeshDepthDraw, MeshDielectric,
-    MeshFresnel, MeshImage, MeshMaterial, MeshMaterialSlot, MeshNormalMap, MeshPart, MeshPbr,
-    MeshShader, MeshTexture, MeshTransmission, MeshVolume, MeshWorkflow, RefractionChannels,
-    SceneItemTexture, SceneMaterial, SceneMaterialBinding, SceneMaterialMaps, SceneTexture,
-    TextureChannel, TextureColorSpace, TextureFilter, TextureSampling, TextureTransform,
-    TextureWrap, VertexColorMasks, texture_resource_key,
+    MeshFresnel, MeshHeightMap, MeshImage, MeshMaterial, MeshMaterialSlot, MeshNormalMap, MeshPart,
+    MeshPbr, MeshShader, MeshSpecularReflection, MeshSurfaceMaps, MeshTexture, MeshTransmission,
+    MeshVolume, MeshWorkflow, RefractionChannels, SceneItemTexture, SceneMaterial,
+    SceneMaterialBinding, SceneMaterialMaps, SceneTexture, TextureChannel, TextureColorSpace,
+    TextureFilter, TextureSampling, TextureTransform, TextureWrap, VertexColorMasks,
+    texture_resource_key,
 };
 pub use crate::scene3d::mesh::morph::{
     MAX_MORPH_DELTAS, MAX_MORPH_TARGETS, MorphDelta, MorphGeometry, MorphWeights,
@@ -129,7 +130,7 @@ pub use mesh::data::{
     mesh_resource_key,
 };
 pub use mesh::text::{PreparedText, SceneTextFonts};
-pub use mesh::texture_data::TextureData2D;
+pub use mesh::texture_data::{TextureData2D, TextureData3D, VolumeImage3D};
 pub(crate) use object::InstancingLodRange;
 pub use object::{InstanceOrder, SceneObject};
 

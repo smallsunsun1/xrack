@@ -1975,13 +1975,14 @@ pub(super) fn scene_item_texture_values(
         let [field, colon, literal] = window else {
             return None;
         };
-        ((field.text == "base-item"
+        ((matches!(field.text, "base-item" | "specular-reflection-item")
             || field.text == "texture-input"
             || field.text == "source"
                 && enclosing_block(tokens, index)
                     .and_then(|block| tokens.get(block.checked_sub(3)?..block))
                     .is_some_and(|prefix| {
-                        prefix[0].text == "base-item" && matches!(prefix[1].text, ":" | "<-")
+                        matches!(prefix[0].text, "base-item" | "specular-reflection-item")
+                            && matches!(prefix[1].text, ":" | "<-")
                     })
             || field.text == "item" && in_shader_texture_inputs(tokens, index))
             && matches!(colon.text, ":" | "<-")

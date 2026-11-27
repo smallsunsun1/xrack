@@ -4,16 +4,17 @@ struct DepthMap {
 struct DepthMaterial {
     base-color: color, base-color-map: DepthMap, alpha-mode: string, alpha-cutoff: float,
     depth-draw-mode: string, unlit: bool, transmission: float, roughness: float,
+    opacity: float, opacity-map: texturedata2d, blend-mode: string,
 }
 struct DepthActor {
     id: string, mesh: string, x: float, y: float, z: float,
     scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
-    color: color, camera-kind: string, camera-height: float, material: DepthMaterial, casts-shadow: bool,
+    color: color, camera-kind: string, camera-height: float, material: DepthMaterial, casts-shadow: bool, opacity: float,
 }
 
 export component MaterialDepthDemo inherits Window {
     title <- "XRack · Material depth";
-    width <- 600px; height <- 372px;
+    width <- 600px; height <- 422px;
     background <- #192330;
 
     in-out property <string> mode: "opaque-only";
@@ -24,6 +25,13 @@ export component MaterialDepthDemo inherits Window {
     in-out property <bool> shadows: false;
     in-out property <bool> glass: false;
     in-out property <bool> prepass: false;
+    in-out property <string> stripes-alpha-mode: "";
+    in-out property <float> stripes-opacity: 1;
+    in-out property <float> material-opacity: 1;
+    in-out property <bool> opacity-map-enabled: false;
+    in-out property <string> stripes-blend-mode: "source-over";
+    property <texturedata2d> empty-map;
+    property <texturedata2d> fade-map <- TextureData2D.rgba8(1, 1, [255, 255, 255, 128]);
 
     property <DepthMap> no-map: DepthMap {
         source: "", wrap-u: "clamp", wrap-v: "clamp", min-filter: "nearest",
@@ -32,21 +40,25 @@ export component MaterialDepthDemo inherits Window {
     property <DepthMaterial> flat <- DepthMaterial {
         base-color: #526681, base-color-map: root.no-map, alpha-mode: "opaque", alpha-cutoff: 0.75,
         depth-draw-mode: "opaque-only", unlit: true, transmission: 0.0, roughness: 0.25,
+        opacity: 1, opacity-map: root.empty-map, blend-mode: "source-over",
     };
     property <DepthActor> base <- DepthActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
-        color: #fff, camera-kind: "", camera-height: 4, material: root.flat, casts-shadow: false,
+        color: #fff, camera-kind: "", camera-height: 4, material: root.flat, casts-shadow: false, opacity: 1,
     };
     property <[DepthActor]> world <- [
         DepthActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
         DepthActor {
-            id: "stripes", yaw: 42, scale-x: 4, scale-y: 3, casts-shadow: true,
+            id: "stripes", yaw: 42, scale-x: 4, scale-y: 3, casts-shadow: true, opacity: root.stripes-opacity,
             material: DepthMaterial {
                 base-color: #d04d30, base-color-map: DepthMap {
                     source: @texture-url("models/depth-stripes.png"), ..root.no-map
                 },
-                alpha-mode: root.masked ? "mask" : root.blended ? "blend" : "opaque",
+                alpha-mode: root.stripes-alpha-mode != "" ? root.stripes-alpha-mode :
+                    root.masked ? "mask" : root.blended ? "blend" : "opaque",
+                opacity: root.material-opacity, blend-mode: root.stripes-blend-mode,
+                opacity-map: root.opacity-map-enabled ? root.fade-map : root.empty-map,
                 depth-draw-mode: root.mode, unlit: !root.glass, transmission: root.glass ? 0.6 : 0.0,
                 ..root.flat
             }, ..root.base
@@ -86,4 +98,11 @@ export component MaterialDepthDemo inherits Window {
     blend-toggle := CheckBox { x <- 186px; y <- 334px; width <- 122px; text <- "Alpha blend"; checked <-> root.blended; }
     shadow-toggle := CheckBox { x <- 318px; y <- 334px; width <- 98px; text <- "Shadows"; checked <-> root.shadows; }
     prepass-toggle := CheckBox { x <- 431px; y <- 334px; width <- 157px; text <- "Depth prepass"; checked <-> root.prepass; }
+    auto-alpha := Button {
+        x <- 12px; y <- 378px; width <- 162px; height <- 30px;
+        text <- root.stripes-alpha-mode == "default" ? "Default alpha" : "Choose alpha";
+        clicked => { root.stripes-alpha-mode = root.stripes-alpha-mode == "default" ? "" : "default"; }
+    }
+    Label { x <- 186px; y <- 378px; width <- 111px; height <- 30px; text <- "Node opacity"; }
+    node-opacity := Slider { x <- 298px; y <- 378px; width <- 280px; height <- 30px; minimum <- 0; maximum <- 1; value <-> root.stripes-opacity; }
 }

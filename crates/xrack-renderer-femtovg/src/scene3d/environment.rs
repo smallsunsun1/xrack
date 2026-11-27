@@ -1,5 +1,6 @@
 use std::{
-    collections::VecDeque,
+    cell::{OnceCell, RefCell},
+    collections::{HashMap, VecDeque},
     sync::{Arc, Weak},
 };
 
@@ -160,13 +161,94 @@ impl LocalReflections<'_> {
         self.slots[source as usize]
     }
 
-    pub fn bind(&self, pass: &mut wgpu::RenderPass<'_>, slot: u8, fallback: &wgpu::BindGroup) {
-        let binding = slot
-            .checked_sub(1)
+    fn binding<'a>(&'a self, slot: u8, fallback: &'a wgpu::BindGroup) -> &'a wgpu::BindGroup {
+        slot.checked_sub(1)
             .and_then(|i| self.bindings.get(usize::from(i)))
             .and_then(Option::as_ref)
-            .unwrap_or(fallback);
-        pass.set_bind_group(2, binding, &[]);
+            .unwrap_or(fallback)
+    }
+}
+
+type PanoramaKey = (wgpu::TextureView, wgpu::Sampler);
+
+pub(super) struct MaterialReflections<'a> {
+    device: &'a wgpu::Device,
+    layout: wgpu::BindGroupLayout,
+    global: Option<&'a EnvironmentInput<'a>>,
+    uniform: OnceCell<wgpu::Buffer>,
+    groups: RefCell<HashMap<PanoramaKey, wgpu::BindGroup>>,
+}
+
+impl<'a> MaterialReflections<'a> {
+    pub fn new(
+        device: &'a wgpu::Device,
+        layout: wgpu::BindGroupLayout,
+        global: Option<&'a EnvironmentInput<'a>>,
+    ) -> Self {
+        Self {
+            device,
+            layout,
+            global,
+            uniform: OnceCell::new(),
+            groups: RefCell::default(),
+        }
+    }
+
+    fn binding(&self, map: &PanoramaKey) -> wgpu::BindGroup {
+        self.groups
+            .borrow_mut()
+            .entry(map.clone())
+            .or_insert_with(|| {
+                let settings = self.uniform.get_or_init(|| {
+                    buffer(
+                        self.device,
+                        "XRack material reflection view lighting",
+                        &environment_uniforms(self.global, None),
+                        wgpu::BufferUsages::UNIFORM,
+                    )
+                });
+                bind_environment(self.device, &self.layout, &map.0, &map.1, settings)
+            })
+            .clone()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ColorEnvironments<'a> {
+    pub fallback: &'a wgpu::BindGroup,
+    pub local: Option<&'a LocalReflections<'a>>,
+    pub material: &'a MaterialReflections<'a>,
+}
+
+impl ColorEnvironments<'_> {
+    pub fn bind(
+        self,
+        pass: &mut wgpu::RenderPass<'_>,
+        active: &mut wgpu::BindGroup,
+        object: Option<u32>,
+        material: Option<&PanoramaKey>,
+    ) {
+        let map;
+        let binding = if let Some(reflection) = material {
+            map = self.material.binding(reflection);
+            &map
+        } else {
+            self.local
+                .zip(object)
+                .map_or(self.fallback, |(local, object)| {
+                    local.binding(local.slot(object), self.fallback)
+                })
+        };
+        if active != binding {
+            pass.set_bind_group(2, binding, &[]);
+            *active = binding.clone();
+        }
+    }
+
+    pub fn restore(self, pass: &mut wgpu::RenderPass<'_>, active: &wgpu::BindGroup) {
+        if active != self.fallback {
+            pass.set_bind_group(2, self.fallback, &[]);
+        }
     }
 }
 
@@ -732,6 +814,16 @@ fn bind_probe(
         bytes,
         wgpu::BufferUsages::UNIFORM,
     );
+    bind_environment(device, layout, texture, sampler, &settings)
+}
+
+fn bind_environment(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    texture: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    settings: &wgpu::Buffer,
+) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("XRack IBL bindings"),
         layout,

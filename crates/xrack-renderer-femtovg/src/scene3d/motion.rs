@@ -215,11 +215,12 @@ impl MotionPass {
                 let mesh = meshes.get_for_raster(device, queue, kind, raster);
                 let parts = mesh.parts.iter().enumerate().filter(|(_, part)| {
                     let surface = part.surface;
-                    match phase {
-                        Phase::Opaque => !surface.blend && !surface.transmission,
-                        Phase::Refraction => !surface.blend && surface.transmission,
-                        Phase::Translucent => surface.blend,
-                    }
+                    part.visible
+                        && match phase {
+                            Phase::Opaque => !surface.blend && !surface.transmission,
+                            Phase::Refraction => !surface.blend && surface.transmission,
+                            Phase::Translucent => surface.blend,
+                        }
                 });
                 let current = draws.geometry.deformation_for(source, raster);
                 let mode = current.map_or(Deformation::Rigid, |binding| binding.mode);

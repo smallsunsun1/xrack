@@ -16379,37 +16379,51 @@ fn moving_groups_share_an_opacity_atlas_under_a_rounded_viewport()
     // Changing every card's paint invalidates the retained captures. The
     // ordinary painter can still capture those groups together, then replay
     // them through the rounded viewport and its fractional scroll clip.
-    let mut live_batches = 0;
-    for (frame, offset) in [0.25, 2.0, 1.5, 0.75, 2.25, 0.0].into_iter().enumerate() {
-        for (index, card) in scene.children[0].children[0]
-            .children
-            .iter_mut()
-            .enumerate()
-        {
-            let red = ((frame * 41 + index * 17) % 256) as u32;
-            card.children[0]
-                .properties
-                .insert("background", Color((red << 24) | 0x8240ff).into());
+    for hinted in [false, true] {
+        if hinted {
+            for card in &mut scene.children[0].children[0].children {
+                card.properties.insert("cache-rendering-hint", true.into());
+            }
         }
-        input.accessibility_scroll_to(&layout, &[0, 0], Orientation::Vertical, offset);
-        let before = optimized.opacity_atlas_stats();
-        let actual = optimized.snapshot(&scene, 344, 224, 2.0, &input)?;
-        let expected = reference.snapshot(&scene, 344, 224, 2.0, &input)?;
-        let after = optimized.opacity_atlas_stats();
-        if after.groups > before.groups {
-            live_batches += 1;
-            assert_eq!(after.submissions - before.submissions, 1, "frame={frame}");
+        let mut live_batches = 0;
+        for (frame, offset) in [0.25, 2.0, 1.5, 0.75, 2.25, 0.0].into_iter().enumerate() {
+            for (index, card) in scene.children[0].children[0]
+                .children
+                .iter_mut()
+                .enumerate()
+            {
+                let red = ((frame * 41 + index * 17) % 256) as u32;
+                card.children[0]
+                    .properties
+                    .insert("background", Color((red << 24) | 0x8240ff).into());
+            }
+            input.accessibility_scroll_to(&layout, &[0, 0], Orientation::Vertical, offset);
+            let before = optimized.opacity_atlas_stats();
+            let actual = optimized.snapshot(&scene, 344, 224, 2.0, &input)?;
+            let expected = reference.snapshot(&scene, 344, 224, 2.0, &input)?;
+            let after = optimized.opacity_atlas_stats();
+            if after.groups > before.groups {
+                live_batches += 1;
+                assert_eq!(
+                    after.submissions - before.submissions,
+                    1,
+                    "hinted={hinted} frame={frame}"
+                );
+            }
+            assert_eq!(actual.layout, expected.layout);
+            for (byte, (&a, &b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+                assert!(
+                    a.abs_diff(b) <= 2,
+                    "hinted={hinted} frame={frame} byte={byte}: {a} vs {b}"
+                );
+            }
+            layout = actual.layout;
         }
-        assert_eq!(actual.layout, expected.layout);
-        for (byte, (&a, &b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
-            assert!(a.abs_diff(b) <= 2, "frame={frame} byte={byte}: {a} vs {b}");
-        }
-        layout = actual.layout;
+        assert!(
+            live_batches >= 5,
+            "hinted={hinted}: live paint batched on {live_batches} frames"
+        );
     }
-    assert!(
-        live_batches >= 5,
-        "live paint batched on {live_batches} frames"
-    );
     Ok(())
 }
 

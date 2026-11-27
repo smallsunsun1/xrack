@@ -32,6 +32,8 @@ using RotationTrackKeys = llvm::SmallVector<double, 10>;
 std::optional<RotationTrackKeys> parseRotationTrackLiteral(llvm::StringRef spelling);
 
 inline constexpr unsigned MaxTextureDataDimension = 2048;
+inline constexpr unsigned MaxVolumeDataDimension = 256;
+inline constexpr unsigned MaxProceduralTextureBytes = 16 * 1024 * 1024;
 
 /// Check the XR compiler's top-level contract, beyond the per-operation ODS
 /// checks.

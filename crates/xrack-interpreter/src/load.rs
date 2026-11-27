@@ -229,6 +229,7 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::Instance3D => ValueType::Instance3D,
         Type::InstanceTable3D => ValueType::InstanceTable3D,
         Type::TextureData2D => ValueType::TextureData2D,
+        Type::TextureData3D => ValueType::TextureData3D,
         Type::MeshAsset3D => ValueType::MeshAsset3D,
         Type::MeshNode3D => ValueType::MeshNode3D,
         Type::Bounds3D => ValueType::Bounds3D,
@@ -2363,6 +2364,7 @@ impl<'m> Loader<'m> {
             | "xr.instance3d_field"
             | "xr.instance_table3d_field"
             | "xr.texture_data2d_field"
+            | "xr.texture_data3d_field"
             | "xr.walk_result3d_field"
             | "xr.vector2d_field"
             | "xr.key_field"
@@ -2516,6 +2518,7 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         Instance3D,
         InstanceTable3D,
         TextureData2D,
+        TextureData3D,
         MeshAsset3D,
         MeshNode3D,
         Bounds3D,

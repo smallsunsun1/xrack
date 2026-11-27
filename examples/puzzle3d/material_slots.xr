@@ -1,5 +1,6 @@
 struct CoatStyle {
     enabled: bool, slot: string, base-color: color, alpha-mode: string, alpha-cutoff: float,
+    opacity: float,
 }
 struct ScenePalette {
     body: CoatStyle,
@@ -9,13 +10,13 @@ struct ScenePalette {
 struct PaletteActor {
     id: string, mesh: string, x: float, y: float, z: float,
     scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
-    color: color, material-slots: ScenePalette, casts-shadow: bool,
+    color: color, material-slots: ScenePalette, casts-shadow: bool, opacity: float,
     camera-kind: string, camera-height: float,
 }
 
 export component MaterialSlotsDemo inherits Window {
     title <- "XRack · 逐槽材质";
-    width <- 634px; height <- 420px;
+    width <- 634px; height <- 466px;
     resizable <- false; background <- #1a2638;
 
     in-out property <string> target: "Body finish";
@@ -23,8 +24,11 @@ export component MaterialSlotsDemo inherits Window {
     in-out property <bool> cutout: false;
     in-out property <bool> accent: true;
     in-out property <bool> implicit-style: true;
+    in-out property <float> body-opacity: 1;
+    in-out property <float> model-opacity: 1;
+    in-out property <float> mask-alpha: 40.0 / 255.0;
     property <CoatStyle> original: CoatStyle {
-        enabled: false, slot: "", base-color: #ffffff, alpha-mode: "opaque", alpha-cutoff: 0.5,
+        enabled: false, slot: "", base-color: #ffffff, alpha-mode: "opaque", alpha-cutoff: 0.5, opacity: 1,
     };
     property <ScenePalette> no-overrides <- ScenePalette {
         body: root.original, slot-0: root.original, default-slot: root.original,
@@ -32,7 +36,7 @@ export component MaterialSlotsDemo inherits Window {
     property <PaletteActor> base <- PaletteActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
-        color: #fff, material-slots: root.no-overrides, casts-shadow: true,
+        color: #fff, material-slots: root.no-overrides, casts-shadow: true, opacity: 1,
         camera-kind: "", camera-height: 5.4,
     };
     property <[PaletteActor]> world <- [
@@ -42,11 +46,12 @@ export component MaterialSlotsDemo inherits Window {
             color: #48627d, casts-shadow: false, ..root.base
         },
         PaletteActor {
-            id: "model", mesh: @mesh-url("models/material-slots.gltf"),
+            id: "model", mesh: @mesh-url("models/material-slots.gltf"), opacity: root.model-opacity,
             material-slots: ScenePalette {
                 body: CoatStyle {
                     enabled: true, slot: root.target,
-                    base-color: root.cutout ? #e0834e28 : root.warm ? #e0834e : #60bce9,
+                    base-color: root.cutout ? Colors.with-alpha(#e0834e, root.mask-alpha) : root.warm ? #e0834e : #60bce9,
+                    opacity: root.body-opacity,
                     alpha-mode: root.cutout ? "mask" : "opaque", ..root.original
                 },
                 slot-0: CoatStyle { enabled: root.accent, base-color: #8dd8a1, ..root.original },
@@ -73,5 +78,15 @@ export component MaterialSlotsDemo inherits Window {
         x <- 516px; y <- 370px; width <- 103px; height <- 35px;
         text <- root.target == "#2" ? "按索引" : "按名称";
         clicked => { root.target = root.target == "#2" ? "Body finish" : "#2"; }
+    }
+    Label { x <- 13px; y <- 421px; width <- 107px; height <- 32px; text <- "外壳不透明度"; }
+    body-fade := Slider {
+        x <- 125px; y <- 421px; width <- 169px; height <- 32px;
+        minimum <- 0; maximum <- 1; step <- 0.05; value <-> root.body-opacity;
+    }
+    Label { x <- 325px; y <- 421px; width <- 107px; height <- 32px; text <- "模型不透明度"; }
+    model-fade := Slider {
+        x <- 440px; y <- 421px; width <- 169px; height <- 32px;
+        minimum <- 0; maximum <- 1; step <- 0.05; value <-> root.model-opacity;
     }
 }

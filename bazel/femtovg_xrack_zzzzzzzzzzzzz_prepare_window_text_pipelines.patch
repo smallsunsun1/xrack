@@ -1,0 +1,372 @@
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -448,6 +448,48 @@
+ /// few frames.
+ const PIPELINE_RECENT_FLUSHES: u64 = 64;
+ 
++#[cfg(target_os = "macos")]
++#[derive(Debug)]
++struct PreparedTextPipelines {
++    keys: Vec<PipelineState>,
++    completed: std::sync::mpsc::Receiver<(PipelineState, wgpu::RenderPipeline)>,
++}
++
++#[cfg(target_os = "macos")]
++impl PreparedTextPipelines {
++    fn collect(
++        &mut self,
++        required: &PipelineState,
++        cache: &mut HashMap<PipelineState, CachedPipeline>,
++        epoch: u64,
++    ) {
++        use std::sync::mpsc::TryRecvError;
++
++        while !self.keys.is_empty() {
++            let next = if self.keys.contains(required) && !cache.contains_key(required) {
++                // An exact cache miss can wait for that pipeline. Draws with
++                // other states still follow the normal on-demand path.
++                self.completed
++                    .recv()
++                    .map_err(|_| TryRecvError::Disconnected)
++            } else {
++                self.completed.try_recv()
++            };
++            match next {
++                Ok((key, pipeline)) => {
++                    self.keys.retain(|pending| *pending != key);
++                    cache.entry(key).or_insert(CachedPipeline {
++                        pipeline,
++                        last_used: epoch,
++                    });
++                }
++                Err(TryRecvError::Empty) => return,
++                Err(TryRecvError::Disconnected) => self.keys.clear(),
++            }
++        }
++    }
++}
++
+ #[derive(Debug)]
+ struct CachedPipeline {
+     pipeline: wgpu::RenderPipeline,
+@@ -574,6 +616,8 @@
+     draw_layouts: [DrawLayout; 2],
+     pipelines: RefCell<HashMap<PipelineState, CachedPipeline>>,
+     epoch: Cell<u64>,
++    #[cfg(target_os = "macos")]
++    prepared_pipelines: RefCell<Option<PreparedTextPipelines>>,
+ }
+ 
+ #[derive(Debug)]
+@@ -696,6 +740,8 @@
+             draw_layouts,
+             pipelines: Default::default(),
+             epoch: Cell::new(0),
++            #[cfg(target_os = "macos")]
++            prepared_pipelines: RefCell::new(None),
+         }
+     }
+ 
+@@ -902,6 +948,117 @@
+         );
+         self.generate_mipmaps(texture);
+         Ok(())
++    }
++
++    /// Prepare the initial text pipelines during window layout on Metal.
++    #[cfg(target_os = "macos")]
++    #[doc(hidden)]
++    pub fn prepare_window_text_pipelines(&self, format: wgpu::TextureFormat) {
++        use wgpu::{
++            BlendComponent, BlendOperation, BlendState, Face,
++            PrimitiveTopology::{TriangleList, TriangleStrip},
++            TextureFormat,
++        };
++
++        let mut prepared = self.shared.prepared_pipelines.borrow_mut();
++        if prepared.is_some() || !self.shared.pipelines.borrow().is_empty() {
++            return;
++        }
++        if !matches!(
++            format,
++            TextureFormat::Bgra8Unorm
++                | TextureFormat::Bgra8UnormSrgb
++                | TextureFormat::Rgba8Unorm
++                | TextureFormat::Rgba8UnormSrgb
++        ) {
++            return;
++        }
++
++        let mut winding = PipelineState::new(
++            None,
++            fill_winding_stencil(false),
++            TextureFormat::Rgba8Unorm,
++            true,
++            TriangleList,
++            None,
++            true,
++        );
++        winding.stencil_only = true;
++        // Glyph masks accumulate alpha into the red channel of the atlas.
++        let additive = BlendComponent {
++            src_factor: wgpu::BlendFactor::SrcAlpha,
++            dst_factor: wgpu::BlendFactor::One,
++            operation: BlendOperation::Add,
++        };
++        let atlas_blend = Some(BlendState {
++            color: additive,
++            alpha: additive,
++        });
++        let mut cover = PipelineState::new(
++            atlas_blend,
++            fill_cover_stencil(false, FillRule::NonZero),
++            TextureFormat::Rgba8Unorm,
++            true,
++            TriangleStrip,
++            Some(Face::Back),
++            true,
++        );
++        cover.fragment_paint = FragmentPaint::SolidColor;
++        let mut convex = PipelineState::new(
++            atlas_blend,
++            StencilTest::Disabled,
++            TextureFormat::Rgba8Unorm,
++            true,
++            TriangleList,
++            Some(Face::Back),
++            true,
++        );
++        convex.fragment_paint = FragmentPaint::SolidColor;
++        let mut text = PipelineState::new(
++            Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
++            StencilTest::Disabled,
++            format,
++            false,
++            TriangleList,
++            Some(Face::Back),
++            false,
++        );
++        text.fragment_paint = FragmentPaint::AlphaGlyph;
++        let mut solid = text.clone();
++        solid.fragment_paint = FragmentPaint::SolidColor;
++        let mut solid_strip = solid.clone();
++        solid_strip.primitive_topology = TriangleStrip;
++
++        let jobs = [winding, cover, convex, text, solid, solid_strip];
++        let keys = jobs.to_vec();
++        let device = self.device.clone();
++        let main_layout = self.shared.draw_layouts[0].pipeline.clone();
++        let stencil_layout = self.shared.stencil_pipeline_layout.clone();
++        let main_shader = self.shared.shader_module.clone();
++        let stencil_shader = self
++            .shared
++            .shader_for(&device, false, false, false, true)
++            .clone();
++        let (send, completed) = std::sync::mpsc::channel();
++        if std::thread::Builder::new()
++            .name("femtovg-pipelines".into())
++            .spawn(move || {
++                for key in jobs {
++                    let (layout, shader) = if key.stencil_only {
++                        (&stencil_layout, &stencil_shader)
++                    } else {
++                        (&main_layout, &main_shader)
++                    };
++                    let pipeline = key.materialize(&device, layout, shader);
++                    if send.send((key, pipeline)).is_err() {
++                        break;
++                    }
++                }
++            })
++            .is_ok()
++        {
++            *prepared = Some(PreparedTextPipelines { keys, completed });
++        }
+     }
+ 
+     /// Creates a new renderer for the device.
+@@ -2697,6 +2854,81 @@
+     }
+ }
+ 
++fn fill_winding_stencil(clip_active: bool) -> StencilTest {
++    StencilTest::Enabled {
++        stencil_state: wgpu::StencilState {
++            front: wgpu::StencilFaceState {
++                // With a clip armed, winding accumulates only inside
++                // the clip and bit 7 stays write-protected.
++                compare: if clip_active {
++                    wgpu::CompareFunction::Equal
++                } else {
++                    wgpu::CompareFunction::Always
++                },
++                fail_op: wgpu::StencilOperation::Keep,
++                depth_fail_op: wgpu::StencilOperation::Keep,
++                pass_op: wgpu::StencilOperation::IncrementWrap,
++            },
++            back: wgpu::StencilFaceState {
++                compare: if clip_active {
++                    wgpu::CompareFunction::Equal
++                } else {
++                    wgpu::CompareFunction::Always
++                },
++                fail_op: wgpu::StencilOperation::Keep,
++                depth_fail_op: wgpu::StencilOperation::Keep,
++                pass_op: wgpu::StencilOperation::DecrementWrap,
++            },
++            read_mask: if clip_active { 0x80 } else { !0 },
++            write_mask: if clip_active { 0x7f } else { !0 },
++        },
++        stencil_reference: if clip_active { 0x80 } else { 0 },
++    }
++}
++
++fn fill_cover_stencil(clip_active: bool, fill_rule: FillRule) -> StencilTest {
++    StencilTest::Enabled {
++        stencil_state: wgpu::StencilState {
++            front: wgpu::StencilFaceState {
++                // Under a clip, only in-clip pixels can carry winding
++                // and 0x80|w > 0x80 exactly when w != 0, so LESS
++                // (reference < stencil) is the whole test; the ZERO
++                // ops are masked to the winding bits below.
++                compare: if clip_active {
++                    wgpu::CompareFunction::Less
++                } else {
++                    wgpu::CompareFunction::NotEqual
++                },
++                fail_op: wgpu::StencilOperation::Zero,
++                depth_fail_op: wgpu::StencilOperation::Zero,
++                pass_op: wgpu::StencilOperation::Zero,
++            },
++            back: wgpu::StencilFaceState {
++                compare: if clip_active {
++                    wgpu::CompareFunction::Less
++                } else {
++                    wgpu::CompareFunction::NotEqual
++                },
++                fail_op: wgpu::StencilOperation::Zero,
++                depth_fail_op: wgpu::StencilOperation::Zero,
++                pass_op: wgpu::StencilOperation::Zero,
++            },
++            read_mask: match (clip_active, fill_rule) {
++                (false, FillRule::NonZero) => 0xff,
++                (false, FillRule::EvenOdd) => 0x1,
++                (true, FillRule::NonZero) => 0xff,
++                (true, FillRule::EvenOdd) => 0x81,
++            },
++            // Even-odd reads only the parity bit, but the winding pass
++            // wrote the full count (2 in overlaps, 0xff for a wrapped
++            // -1); clear every winding bit so nothing leaks into the
++            // next fill. The clip bit stays write-protected.
++            write_mask: if clip_active { 0x7f } else { 0xff },
++        },
++        stencil_reference: if clip_active { 0x80 } else { 0 },
++    }
++}
++
+ fn concave_fill(
+     command: &super::Command,
+     fans: u32,
+@@ -2717,35 +2949,7 @@
+             render_pass_builder,
+             None,
+             wgpu::PrimitiveTopology::TriangleList,
+-            StencilTest::Enabled {
+-                stencil_state: wgpu::StencilState {
+-                    front: wgpu::StencilFaceState {
+-                        // With a clip armed, winding accumulates only inside
+-                        // the clip and bit 7 stays write-protected.
+-                        compare: if command.clip_active {
+-                            wgpu::CompareFunction::Equal
+-                        } else {
+-                            wgpu::CompareFunction::Always
+-                        },
+-                        fail_op: wgpu::StencilOperation::Keep,
+-                        depth_fail_op: wgpu::StencilOperation::Keep,
+-                        pass_op: wgpu::StencilOperation::IncrementWrap,
+-                    },
+-                    back: wgpu::StencilFaceState {
+-                        compare: if command.clip_active {
+-                            wgpu::CompareFunction::Equal
+-                        } else {
+-                            wgpu::CompareFunction::Always
+-                        },
+-                        fail_op: wgpu::StencilOperation::Keep,
+-                        depth_fail_op: wgpu::StencilOperation::Keep,
+-                        pass_op: wgpu::StencilOperation::DecrementWrap,
+-                    },
+-                    read_mask: if command.clip_active { 0x80 } else { !0 },
+-                    write_mask: if command.clip_active { 0x7f } else { !0 },
+-                },
+-                stencil_reference: if command.clip_active { 0x80 } else { 0 },
+-            },
++            fill_winding_stencil(command.clip_active),
+             None,
+             stencil_params,
+             images,
+@@ -2809,46 +3013,7 @@
+             render_pass_builder,
+             blend_state.into(),
+             wgpu::PrimitiveTopology::TriangleStrip,
+-            StencilTest::Enabled {
+-                stencil_state: wgpu::StencilState {
+-                    front: wgpu::StencilFaceState {
+-                        // Under a clip, only in-clip pixels can carry winding
+-                        // and 0x80|w > 0x80 exactly when w != 0, so LESS
+-                        // (reference < stencil) is the whole test; the ZERO
+-                        // ops are masked to the winding bits below.
+-                        compare: if command.clip_active {
+-                            wgpu::CompareFunction::Less
+-                        } else {
+-                            wgpu::CompareFunction::NotEqual
+-                        },
+-                        fail_op: wgpu::StencilOperation::Zero,
+-                        depth_fail_op: wgpu::StencilOperation::Zero,
+-                        pass_op: wgpu::StencilOperation::Zero,
+-                    },
+-                    back: wgpu::StencilFaceState {
+-                        compare: if command.clip_active {
+-                            wgpu::CompareFunction::Less
+-                        } else {
+-                            wgpu::CompareFunction::NotEqual
+-                        },
+-                        fail_op: wgpu::StencilOperation::Zero,
+-                        depth_fail_op: wgpu::StencilOperation::Zero,
+-                        pass_op: wgpu::StencilOperation::Zero,
+-                    },
+-                    read_mask: match (command.clip_active, command.fill_rule) {
+-                        (false, FillRule::NonZero) => 0xff,
+-                        (false, FillRule::EvenOdd) => 0x1,
+-                        (true, FillRule::NonZero) => 0xff,
+-                        (true, FillRule::EvenOdd) => 0x81,
+-                    },
+-                    // Even-odd reads only the parity bit, but the winding pass
+-                    // wrote the full count (2 in overlaps, 0xff for a wrapped
+-                    // -1); clear every winding bit so nothing leaks into the
+-                    // next fill. The clip bit stays write-protected.
+-                    write_mask: if command.clip_active { 0x7f } else { 0xff },
+-                },
+-                stencil_reference: if command.clip_active { 0x80 } else { 0 },
+-            },
++            fill_cover_stencil(command.clip_active, command.fill_rule),
+             Some(wgpu::Face::Back),
+             fill_params,
+             images,
+@@ -4568,6 +4733,16 @@
+         // An unchanged pipeline was looked up, and stamped with this flush, when it was bound.
+         if render_pass_builder.current_pipeline_state.as_ref() != Some(&pipeline_state) {
+             let mut pipeline_cache = self.shared.pipelines.borrow_mut();
++            #[cfg(target_os = "macos")]
++            {
++                let mut prepared = self.shared.prepared_pipelines.borrow_mut();
++                if let Some(batch) = prepared.as_mut() {
++                    batch.collect(&pipeline_state, &mut pipeline_cache, self.pipeline_epoch);
++                    if batch.keys.is_empty() {
++                        *prepared = None;
++                    }
++                }
++            }
+             let render_pipeline = pipeline_cache.entry(pipeline_state.clone()).or_insert_with(|| {
+                 let layout = if pipeline_state.mesh_palette {
+                     &self.shared.mesh_palette_layout().pipeline

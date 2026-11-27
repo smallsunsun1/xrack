@@ -87,6 +87,9 @@ impl MeshData {
         let mut has_volume = false;
         for (index, part) in geometry.parts.iter().enumerate() {
             let material = &materials[part.material];
+            if !material.is_visible() {
+                continue;
+            }
             let blended = material.is_blended();
             let writes_depth = material.depth_coverage().is_some();
             has_face_culling |= material.cull_mode != MeshCullMode::None;
@@ -96,7 +99,7 @@ impl MeshData {
             has_opaque_depth_prepass |= material
                 .depth_draw_mode
                 .admits_opaque_prepass(blended, transmission.is_some());
-            if material.depth_draw_mode == MeshDepthDraw::OpaquePrepass {
+            if writes_depth && material.depth_draw_mode == MeshDepthDraw::OpaquePrepass {
                 depth_prepasses[usize::from(transmission.is_some())] = true;
             }
             if blended {
@@ -115,9 +118,14 @@ impl MeshData {
             model_blend: None,
             material_slots: Arc::from([]),
             slot_selectors: Default::default(),
-            uses_base_items: materials
-                .iter()
-                .any(|material| material.base_item.is_some()),
+            uses_base_items: materials.iter().any(|material| {
+                material.base_item.is_some()
+                    || material
+                        .pbr
+                        .as_ref()
+                        .and_then(|pbr| pbr.specular_reflection.as_deref())
+                        .is_some_and(|reflection| reflection.item.is_some())
+            }),
             item_sources: materials
                 .iter()
                 .flat_map(|material| {
@@ -126,6 +134,14 @@ impl MeshData {
                         .as_deref()
                         .map(SceneItemTexture::source)
                         .into_iter()
+                        .chain(
+                            material
+                                .pbr
+                                .as_ref()
+                                .and_then(|pbr| pbr.specular_reflection.as_deref())
+                                .and_then(|reflection| reflection.item.as_deref())
+                                .map(SceneItemTexture::source),
+                        )
                         .chain(material.shader.iter().flat_map(MeshShader::item_sources))
                 })
                 .collect::<std::collections::BTreeSet<_>>()
@@ -181,6 +197,9 @@ impl MeshData {
 
 fn default_mesh_material() -> MeshMaterial {
     MeshMaterial {
+        opacity: 1.0,
+        opacity_texture: None,
+        invert_opacity_map_value: false,
         shader: None,
         channels: Default::default(),
         vertex_colors: true,
@@ -427,7 +446,7 @@ impl Mesh3D {
         };
         if source.materials.iter().all(|material| {
             matches!(
-                material.alpha_mode,
+                material.effective_alpha_mode(),
                 MeshAlphaMode::Blend | MeshAlphaMode::InstanceBlend { .. }
             )
         }) {
@@ -439,13 +458,20 @@ impl Mesh3D {
             .cloned()
             .map(|mut material| {
                 material.alpha_mode = match material.alpha_mode {
+                    MeshAlphaMode::Default => MeshAlphaMode::InstanceBlend {
+                        cutoff: None,
+                        builtin: false,
+                        source_alpha: true,
+                    },
                     MeshAlphaMode::Opaque => MeshAlphaMode::InstanceBlend {
                         cutoff: None,
                         builtin,
+                        source_alpha: false,
                     },
                     MeshAlphaMode::Mask(cutoff) => MeshAlphaMode::InstanceBlend {
                         cutoff: Some(cutoff),
                         builtin,
+                        source_alpha: false,
                     },
                     mode => mode,
                 };

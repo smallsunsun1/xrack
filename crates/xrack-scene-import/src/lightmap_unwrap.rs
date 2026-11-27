@@ -369,6 +369,9 @@ mod tests {
                 volume_inverse: None,
             }],
             vec![MeshMaterial {
+                opacity: 1.0,
+                opacity_texture: None,
+                invert_opacity_map_value: false,
                 shader: None,
                 base_item: None,
                 channels: Default::default(),

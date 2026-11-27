@@ -265,6 +265,7 @@ pub enum Type {
     Instance3D,
     InstanceTable3D,
     TextureData2D,
+    TextureData3D,
     MeshAsset3D,
     MeshNode3D,
     Bounds3D,
@@ -362,6 +363,7 @@ impl Type {
             | Self::Instance3D
             | Self::InstanceTable3D
             | Self::TextureData2D
+            | Self::TextureData3D
             | Self::MeshAsset3D
             | Self::MeshNode3D
             | Self::Bounds3D
@@ -411,6 +413,7 @@ impl Type {
             Self::Instance3D => "instance3d",
             Self::InstanceTable3D => "instancetable3d",
             Self::TextureData2D => "texturedata2d",
+            Self::TextureData3D => "texturedata3d",
             Self::MeshAsset3D => "meshasset3d",
             Self::MeshNode3D => "meshnode3d",
             Self::Bounds3D => "bounds3d",
@@ -515,6 +518,7 @@ impl Type {
             "instance3d" | "Instance3D" => Self::Instance3D,
             "instancetable3d" | "InstanceTable3D" => Self::InstanceTable3D,
             "texturedata2d" | "TextureData2D" => Self::TextureData2D,
+            "texturedata3d" | "TextureData3D" => Self::TextureData3D,
             "meshasset3d" | "MeshAsset3D" => Self::MeshAsset3D,
             "meshnode3d" | "MeshNode3D" => Self::MeshNode3D,
             "bounds3d" | "Bounds3D" => Self::Bounds3D,

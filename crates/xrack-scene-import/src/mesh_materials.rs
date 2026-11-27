@@ -255,6 +255,9 @@ impl<'a> Materials<'a> {
                 emissive: emission(&material)?,
                 occlusion_strength: occlusion.map_or(1.0, |info| info.strength()),
                 surface_texture,
+                separate_surface_maps: None,
+                specular_reflection: None,
+                height_map: None,
                 emissive_texture,
                 occlusion_texture,
                 normal_map,
@@ -285,6 +288,9 @@ impl<'a> Materials<'a> {
                 MeshCullMode::Back
             };
         self.materials.push(MeshMaterial {
+            opacity: 1.0,
+            opacity_texture: None,
+            invert_opacity_map_value: false,
             shader: None,
             channels: Default::default(),
             vertex_colors: true,

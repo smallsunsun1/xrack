@@ -1,6 +1,8 @@
 //! Unit geometry for the procedural scene models.
+
 use crate::scene3d::MeshVertex;
-use std::f32::consts::TAU;
+use nalgebra::Vector3;
+use std::f32::consts::{PI, TAU};
 
 pub(crate) type PrimitiveParts = Vec<(&'static str, Vec<MeshVertex>)>;
 
@@ -98,6 +100,79 @@ pub(crate) fn cone() -> PrimitiveParts {
         })
         .collect();
     vec![("side", sides), ("base", cap(0.0, false))]
+}
+
+pub(super) fn box_vertices() -> Vec<MeshVertex> {
+    let corners = [
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5],
+    ];
+    let faces = [
+        ([3, 2, 1, 0], [0.0, 0.0, -1.0]),
+        ([4, 5, 6, 7], [0.0, 0.0, 1.0]),
+        ([4, 7, 3, 0], [-1.0, 0.0, 0.0]),
+        ([1, 2, 6, 5], [1.0, 0.0, 0.0]),
+        ([0, 1, 5, 4], [0.0, -1.0, 0.0]),
+        ([3, 7, 6, 2], [0.0, 1.0, 0.0]),
+    ];
+    faces
+        .into_iter()
+        .flat_map(|(indices, normal)| {
+            let up = match normal[1] {
+                1.0 => -Vector3::z(),
+                -1.0 => Vector3::z(),
+                _ => Vector3::y(),
+            };
+            let right = up.cross(&Vector3::from(normal));
+            [0, 1, 2, 0, 2, 3].map(|index| {
+                let position = corners[indices[index]];
+                let p = Vector3::from(position);
+                vertex(position, normal, [0.5 + p.dot(&right), 0.5 - p.dot(&up)])
+            })
+        })
+        .collect()
+}
+
+pub(super) fn sphere_vertices() -> Vec<MeshVertex> {
+    const SLICES: usize = 24;
+    const STACKS: usize = 12;
+    let point = |row: usize, column: usize| {
+        let polar = PI * row as f32 / STACKS as f32;
+        let azimuth = TAU * (column % SLICES) as f32 / SLICES as f32;
+        let (radius, y) = polar.sin_cos();
+        let position = match row {
+            0 => [0.0, 1.0, 0.0],
+            STACKS => [0.0, -1.0, 0.0],
+            _ => [radius * azimuth.cos(), y, radius * azimuth.sin()],
+        };
+        vertex(
+            position,
+            position,
+            [column as f32 / SLICES as f32, row as f32 / STACKS as f32],
+        )
+    };
+    let mut vertices = Vec::with_capacity(SLICES * (STACKS - 1) * 6);
+    for row in 0..STACKS {
+        for column in 0..SLICES {
+            let a = point(row, column);
+            let b = point(row, column + 1);
+            let c = point(row + 1, column);
+            let d = point(row + 1, column + 1);
+            if row > 0 {
+                vertices.extend([a, b, c]);
+            }
+            if row + 1 < STACKS {
+                vertices.extend([b, d, c]);
+            }
+        }
+    }
+    vertices
 }
 
 #[cfg(test)]

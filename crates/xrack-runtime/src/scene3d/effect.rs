@@ -2,7 +2,7 @@
 use crate::{
     Color, Node, RecordList, Value, VecModel, Vector3D,
     scene3d::mesh::material::{MeshImage, TextureColorSpace, TextureFilter, TextureWrap},
-    scene3d::{CubeTexture3D, TextureAsset3D, TextureData2D},
+    scene3d::{CubeTexture3D, TextureAsset3D, TextureData2D, TextureData3D, VolumeImage3D},
 };
 use std::{collections::BTreeMap, fmt::Write, sync::Arc};
 
@@ -15,6 +15,103 @@ pub const SURFACE_CAMERA_BINDING: u32 = SURFACE_BINDING + 1;
 pub const CAPTURE_CAMERA_BINDING: u32 = SURFACE_CAMERA_BINDING + 1;
 pub const SURFACE_HEADER: &str = "// XRack effect needs opaque surfaces\n";
 pub const CAPTURE_POSITION_HEADER: &str = "// XRack effect needs capture projection\n";
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ShaderTextureKinds {
+    pub cubemaps: u8,
+    pub volumes: u8,
+}
+
+impl ShaderTextureKinds {
+    pub const PLANAR: Self = Self {
+        cubemaps: 0,
+        volumes: 0,
+    };
+
+    pub fn nonplanar(self) -> u8 {
+        self.cubemaps | self.volumes
+    }
+
+    pub fn wgsl(self, slot: usize) -> &'static str {
+        let bit = 1 << slot;
+        if self.cubemaps & bit != 0 {
+            "cube"
+        } else if self.volumes & bit != 0 {
+            "3d"
+        } else {
+            "2d"
+        }
+    }
+}
+
+const VOLUME_SAMPLING: &str = r#"
+fn xr_sample_volume(image: texture_3d<f32>, filtering: sampler, uvw: vec3<f32>) -> vec4<f32> {
+    if !all(abs(uvw) <= vec3(1e20)) {
+        return vec4(0.0);
+    }
+    return textureSampleLevel(image, filtering, clamp(uvw, vec3(0.0), vec3(1.0)), 0.0);
+}
+"#;
+
+#[doc(hidden)]
+pub fn write_volume_interface(shader: &mut String, volumes: u8, material: bool) {
+    let (present, available, sample, image) = if material {
+        (
+            "material_has_volume",
+            "material_has_texture",
+            "material_volume",
+            "xr_material_image",
+        )
+    } else {
+        (
+            "scene_has_volume",
+            "scene_has_buffer",
+            "scene_buffer_volume",
+            "xr_effect_buffer",
+        )
+    };
+    if volumes != 0 {
+        shader.push_str(VOLUME_SAMPLING);
+    }
+    let _ = writeln!(
+        shader,
+        "
+        fn {present}(index: u32) -> bool {{
+            return {available}(index) && ({volumes}u & (1u << (index & 31u))) != 0u;
+        }}
+        fn {sample}(index: u32, uvw: vec3<f32>) -> vec4<f32> {{
+            if !{present}(index) {{ return vec4(0.0); }}
+            switch index {{"
+    );
+    let slots = (0..8).filter(|index| volumes & (1 << index) != 0);
+    for index in slots.clone() {
+        let sampler = if material {
+            "xr_material_spatial_sampler".to_owned()
+        } else {
+            format!("xr_effect_buffer_sampler_{index}")
+        };
+        let _ = writeln!(
+            shader,
+            "case {index}u: {{ return xr_sample_volume({image}_{index}, {sampler}, uvw); }}"
+        );
+    }
+    shader.push_str("default: { return vec4(0.0); }\n}\n}\n");
+    let _ = writeln!(
+        shader,
+        "
+        fn {sample}_size(index: u32) -> vec3<u32> {{
+            if !{present}(index) {{ return vec3(0u); }}
+            switch index {{"
+    );
+    for index in slots {
+        let _ = writeln!(
+            shader,
+            "case {index}u: {{ return textureDimensions({image}_{index}); }}"
+        );
+    }
+    shader.push_str("default: { return vec3(0u); }\n}\n}\n");
+}
 
 fn without_surface_header(source: &str) -> &str {
     source.strip_prefix(SURFACE_HEADER).unwrap_or(source)
@@ -1108,6 +1205,7 @@ pub struct BufferInput {
 pub enum ExternalTexture<'a> {
     Image(&'a EffectImage),
     Cubemap(&'a Arc<CubeTexture3D>),
+    Volume(&'a EffectVolume),
     Item(&'a str),
     Capture(&'a CaptureRead),
 }
@@ -1117,6 +1215,7 @@ impl BufferInput {
         match &self.source {
             BufferInputSource::Image(image) => Some(ExternalTexture::Image(image)),
             BufferInputSource::Cubemap(texture) => Some(ExternalTexture::Cubemap(texture)),
+            BufferInputSource::Volume(texture) => Some(ExternalTexture::Volume(texture)),
             BufferInputSource::Item(item) => Some(ExternalTexture::Item(item)),
             BufferInputSource::Capture(name) => Some(ExternalTexture::Capture(name)),
             _ => None,
@@ -1129,6 +1228,7 @@ enum BufferInputSource {
     Named { name: String, previous_frame: bool },
     Image(EffectImage),
     Cubemap(Arc<CubeTexture3D>),
+    Volume(EffectVolume),
     Item(Arc<str>),
     Capture(CaptureRead),
     Unavailable,
@@ -1147,11 +1247,37 @@ impl PartialEq for EffectImage {
 }
 impl Eq for EffectImage {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffectVolume {
+    pub image: Arc<VolumeImage3D>,
+    pub color: TextureColorSpace,
+}
+
+pub enum ShaderInputData<'a> {
+    Plane(&'a TextureData2D),
+    Volume(&'a TextureData3D),
+}
+
+impl ShaderInputData<'_> {
+    fn prepare(self, color: TextureColorSpace) -> Option<BufferInputSource> {
+        Some(match self {
+            Self::Plane(data) => BufferInputSource::Image(EffectImage {
+                image: data.image()?,
+                color,
+            }),
+            Self::Volume(data) => BufferInputSource::Volume(EffectVolume {
+                image: data.image()?,
+                color,
+            }),
+        })
+    }
+}
+
 pub struct BufferInputDefinition<'a> {
     pub name: String,
     pub previous_frame: bool,
     pub texture: &'a str,
-    pub data: Option<&'a TextureData2D>,
+    pub data: Option<ShaderInputData<'a>>,
     pub item: &'a str,
     pub capture: &'a str,
     pub attachment: CaptureAttachment,
@@ -1174,8 +1300,8 @@ impl BufferInputDefinition<'_> {
                 name: self.capture.into(),
                 attachment: self.attachment,
             })
-        } else if let Some(image) = self.data.and_then(TextureData2D::image) {
-            BufferInputSource::Image(EffectImage { image, color })
+        } else if let Some(source) = self.data.and_then(|data| data.prepare(color)) {
+            source
         } else if !self.texture.is_empty() {
             match resolve(self.texture) {
                 Some(TextureAsset3D::Image(image)) => {
@@ -1219,6 +1345,7 @@ pub enum BufferSource {
     History(usize),
     Image(EffectImage),
     Cubemap(Arc<CubeTexture3D>),
+    Volume(EffectVolume),
     Item(Arc<str>),
     Capture(CaptureRead),
 }
@@ -1289,6 +1416,9 @@ impl Chain {
                         BufferInputSource::Image(image) => Some(BufferSource::Image(image.clone())),
                         BufferInputSource::Cubemap(texture) => {
                             Some(BufferSource::Cubemap(texture.clone()))
+                        }
+                        BufferInputSource::Volume(texture) => {
+                            Some(BufferSource::Volume(texture.clone()))
                         }
                         BufferInputSource::Item(item) => Some(BufferSource::Item(item.clone())),
                         BufferInputSource::Capture(name) => {
@@ -1392,7 +1522,8 @@ pub fn record_buffer_inputs(
             previous_frame: item.field("previous-frame") == Some(&Value::Bool(true)),
             texture: text("texture"),
             data: match item.field("data") {
-                Some(Value::TextureData2D(data)) => Some(data),
+                Some(Value::TextureData2D(data)) => Some(ShaderInputData::Plane(data)),
+                Some(Value::TextureData3D(data)) => Some(ShaderInputData::Volume(data)),
                 _ => None,
             },
             item: text("item"),
@@ -1466,7 +1597,7 @@ pub fn shader(
     depth: DepthInput,
     buffers: usize,
     nearest_buffers: u8,
-    cubemaps: u8,
+    kinds: ShaderTextureKinds,
 ) -> String {
     // Keep the application's snippet first so WGSL errors retain file line numbers.
     let surface = depth == DepthInput::Surface;
@@ -1502,7 +1633,7 @@ fn scene_depth(uv: vec2<f32>) -> f32 {
     if buffers != 0 {
         shader.push_str(crate::scene3d::material_shader::TEXTURE_FOOTPRINT);
     }
-    write_buffer_interface(&mut shader, buffers, nearest_buffers, cubemaps);
+    write_buffer_interface(&mut shader, buffers, nearest_buffers, kinds);
     write_capture_positions(
         &mut shader,
         buffers,
@@ -1521,17 +1652,19 @@ fn scene_depth(uv: vec2<f32>) -> f32 {
     shader
 }
 
-fn write_buffer_interface(shader: &mut String, count: usize, nearest_buffers: u8, cubemaps: u8) {
+fn write_buffer_interface(
+    shader: &mut String,
+    count: usize,
+    nearest_buffers: u8,
+    kinds: ShaderTextureKinds,
+) {
+    let cubemaps = kinds.cubemaps;
     if nearest_buffers != 0 {
         shader.push_str(CAPTURE_DEPTH_READ);
     }
     for index in 0..count {
         let (texture, sampler) = buffer_bindings(index);
-        let dimension = if cubemaps & (1 << index) == 0 {
-            "2d"
-        } else {
-            "cube"
-        };
+        let dimension = kinds.wgsl(index);
         let _ = writeln!(
             shader,
             "@group(0) @binding({texture}) var xr_effect_buffer_{index}: texture_{dimension}<f32>;\n@group(0) @binding({sampler}) var xr_effect_buffer_sampler_{index}: sampler;"
@@ -1550,7 +1683,7 @@ fn write_buffer_interface(shader: &mut String, count: usize, nearest_buffers: u8
         "fn scene_buffer_color_lod(index: u32, uv: vec2<f32>, lod: f32) -> vec4<f32> {\n",
     );
     shader.push_str("  if !scene_has_buffer(index) { return vec4(0.0); }\n  switch index {\n");
-    for index in (0..count).filter(|index| cubemaps & (1 << index) == 0) {
+    for index in (0..count).filter(|index| kinds.nonplanar() & (1 << index) == 0) {
         let texture = format!("xr_effect_buffer_{index}");
         if nearest_buffers & (1 << index) != 0 {
             let _ = writeln!(shader, "    case {index}u: {{
@@ -1573,7 +1706,7 @@ fn write_buffer_interface(shader: &mut String, count: usize, nearest_buffers: u8
             let slope_y = clamp(dy, vec2(-1e12), vec2(1e12));
             switch index {\n",
     );
-    for index in (0..count).filter(|index| cubemaps & (1 << index) == 0) {
+    for index in (0..count).filter(|index| kinds.nonplanar() & (1 << index) == 0) {
         if nearest_buffers & (1 << index) != 0 {
             let _ = writeln!(
                 shader,
@@ -1593,7 +1726,7 @@ fn write_buffer_interface(shader: &mut String, count: usize, nearest_buffers: u8
     for index in 0..count {
         let _ = writeln!(
             shader,
-            "    case {index}u: {{ return vec2<f32>(textureDimensions(xr_effect_buffer_{index})); }}"
+            "    case {index}u: {{ return vec2<f32>(textureDimensions(xr_effect_buffer_{index}).xy); }}"
         );
     }
     shader.push_str("    default: { return vec2(0.0); }\n  }\n}\n");
@@ -1623,6 +1756,7 @@ fn write_buffer_interface(shader: &mut String, count: usize, nearest_buffers: u8
         );
     }
     shader.push_str("default: { return vec4(0.0); }\n}\n}\n");
+    write_volume_interface(shader, kinds.volumes, false);
 }
 
 fn write_capture_positions(shader: &mut String, count: usize, mask: u8) {

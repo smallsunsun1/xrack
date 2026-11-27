@@ -4,12 +4,22 @@ use nalgebra::Vector3;
 
 use super::SceneObject;
 use crate::scene3d::{
-    ClosestSurface, Mesh3D, MeshAlphaMode, MeshCullMode, MeshMaterial, MeshVertex, Ray3D, RayHit,
-    SceneCamera, SurfaceHit, bake_opaque, pick::MIN_BVH_TRIANGLES, surface::closest_triangle_point,
+    ClosestSurface, Mesh3D, MeshCullMode, MeshMaterial, MeshVertex, Ray3D, RayHit, SceneCamera,
+    SurfaceHit, bake_opaque, pick::MIN_BVH_TRIANGLES, surface::closest_triangle_point,
     visibility::Frustum,
 };
 
 impl SceneObject {
+    #[doc(hidden)]
+    pub fn is_pickable(&self) -> bool {
+        self.pickable
+    }
+
+    pub fn with_pickable(mut self, enabled: bool) -> Self {
+        self.pickable = enabled;
+        self
+    }
+
     pub(crate) fn intersects_selection(
         &self,
         camera: &SceneCamera,
@@ -22,13 +32,17 @@ impl SceneObject {
         {
             return false;
         }
-        let test_faces = matches!(&self.mesh, Mesh3D::Imported(mesh) if mesh.has_face_culling);
+        let test_faces = matches!(&self.mesh, Mesh3D::Imported(mesh)
+            if mesh.has_face_culling || mesh.materials.iter().any(|material| !material.is_visible()));
         if planes == 0 && !test_faces {
             return true;
         }
         let pose = self.pick_pose();
         let triangles = self.mesh.vertices().as_chunks::<3>().0;
         let intersects = |vertex, material: Option<&MeshMaterial>, planes| {
+            if material.is_some_and(|material| !material.is_visible()) {
+                return false;
+            }
             let vertices = pose.deform::<false>(vertex, triangles[vertex / 3]);
             let points = vertices.map(|vertex| {
                 self.transform.linear * Vector3::from(vertex.position) + self.transform.origin
@@ -140,7 +154,7 @@ impl SceneObject {
         let local_direction = world_step / ray_scale;
         let triangles = self.mesh.vertices().as_chunks::<3>().0;
         let pose = self.pick_pose();
-        let tint_alpha = f32::from(self.color.0 as u8) / 255.0;
+        let tint_alpha = self.tint_alpha();
         let moves_positions = pose.moves_positions();
         let mut best = None;
         let mut test = |vertex: usize, material: Option<&MeshMaterial>, closest| {
@@ -166,14 +180,19 @@ impl SceneObject {
             }
             let w = 1.0 - u - v;
             if let Some(material) = material {
-                if !material.cull_mode.accepts(front) {
+                if !material.is_visible() || !material.cull_mode.accepts(front) {
                     return closest;
                 }
-                if material.alpha_mode != MeshAlphaMode::Opaque {
+                if material.tests_fragment_coverage() {
                     let [a, b, c] = pose.material_triangle(vertex, *base);
-                    let uv = std::array::from_fn(|axis| {
-                        a.uv[axis] * w + b.uv[axis] * u + c.uv[axis] * v
-                    });
+                    let uv = [
+                        std::array::from_fn(|axis| {
+                            a.uv[axis] * w + b.uv[axis] * u + c.uv[axis] * v
+                        }),
+                        std::array::from_fn(|axis| {
+                            a.uv1[axis] * w + b.uv1[axis] * u + c.uv1[axis] * v
+                        }),
+                    ];
                     let vertex_alpha = a.color[3] * w + b.color[3] * u + c.color[3] * v;
                     let covered = if bake {
                         material.depth_covers(uv, vertex_alpha, tint_alpha)

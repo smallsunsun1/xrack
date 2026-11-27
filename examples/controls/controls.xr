@@ -121,8 +121,8 @@ export component ControlsDemo inherits Window {
         vertical-interval := RangeSlider {
             x <- 104px; y <- 12px; width <- 32px; height <- 90px;
             orientation <- vertical;
-            lower-value <- 30;
-            upper-value <- 70;
+            lower-value: 30;
+            upper-value: 70;
             step <- 10;
         }
     }
@@ -148,13 +148,13 @@ export component ControlsDemo inherits Window {
         phase := Dial {
             x <- 202px; y <- 36px; width <- 78px; height <- 78px;
             wrap <- true;
-            value <- 95;
+            value: 95;
             step <- 5;
         }
         linear := Dial {
             x <- 364px; y <- 36px; width <- 78px; height <- 78px;
             input-mode <- root.linear-mode;
-            value <- 35;
+            value: 35;
             step <- 10;
         }
     }

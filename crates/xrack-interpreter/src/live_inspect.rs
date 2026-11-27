@@ -632,6 +632,12 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
                 "has-mesh": node.has_mesh, "has-camera": node.has_camera, "has-light": node.has_light,
             }),
         ),
+        Value::TextureData3D(value) => (
+            "TextureData3D",
+            json!({
+                "valid": value.is_valid(), "width": value.width(), "height": value.height(), "depth": value.depth(),
+            }),
+        ),
         Value::MeshAsset3D(value) => ("MeshAsset3D", json!({"loaded": value.is_loaded()})),
         Value::TextureData2D(value) => (
             "TextureData2D",

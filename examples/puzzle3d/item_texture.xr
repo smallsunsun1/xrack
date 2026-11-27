@@ -564,7 +564,8 @@ export component ControllerTouchDemo inherits Window {
     out property <point2d> last-right <- right-pad.last-position;
     out property <string> previous-event: "";
     out property <string> last-event: "";
-    in-out property <point3d> ray-origin: Point3D.new(-2.3, root.controls-mode ? 0.4 : 0, 7);
+    property <float> ray-x: -2.3;
+    out property <point3d> ray-origin <- Point3D.new(root.ray-x, root.controls-mode ? 0.4 : 0, 7);
 
     property <PanelMap> panel-map: PanelMap {
         source: "controller-left", wrap-u: "clamp", uv-scale-u: 1, uv-rotation: 0,
@@ -630,7 +631,7 @@ export component ControllerTouchDemo inherits Window {
                 root.command-position = root.command-position.x < 75px
                     ? Point2D.new(87px, 23px) : Point2D.new(62px, 23px);
             } else {
-                root.ray-origin = Point3D.new(-root.ray-origin.x, root.ray-origin.y, 7);
+                root.ray-x = -root.ray-x;
             }
         }
     }

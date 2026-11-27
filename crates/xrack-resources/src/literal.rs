@@ -13,6 +13,7 @@ pub enum Literal {
     Quaternion3D([f64; 4]),
     RotationTrack3D(Vec<[f64; 5]>),
     TextureData2D(i64, i64, Vec<u8>),
+    TextureData3D([i64; 3], Vec<u8>),
     Vector2D(runtime::Vector2D),
     Transform2D(runtime::Transform2D),
     Percent(Percent),
@@ -45,6 +46,9 @@ impl Literal {
             )),
             Self::TextureData2D(width, height, pixels) => {
                 runtime::TextureData2D::from_rgba8(width, height, pixels).into()
+            }
+            Self::TextureData3D([w, h, d], voxels) => {
+                runtime::TextureData3D::from_rgba8(w, h, d, voxels).into()
             }
             Self::Vector2D(value) => Value::Vector2D(value),
             Self::Transform2D(value) => Value::Transform2D(value),
@@ -90,20 +94,24 @@ fn rotation_track(spelling: &str) -> Result<Literal, String> {
     }
 }
 
-fn texture_data(spelling: &str) -> Result<Literal, String> {
-    if spelling.is_empty() {
-        return Ok(Literal::Default(runtime::TextureData2D::default().into()));
-    }
+fn texture_bytes<const D: usize>(
+    spelling: &str,
+    limit: u32,
+) -> Result<([i64; D], Vec<u8>), String> {
     let invalid = || "invalid RGBA8 texture data literal".to_owned();
     let (dimensions, hex) = spelling.split_once(':').ok_or_else(invalid)?;
-    let (width, height) = dimensions.split_once('x').ok_or_else(invalid)?;
-    let width = width.parse::<u32>().map_err(|_| invalid())?;
-    let height = height.parse::<u32>().map_err(|_| invalid())?;
-    let limit = runtime::TextureData2D::MAX_DIMENSION;
-    if !(1..=limit).contains(&width)
-        || !(1..=limit).contains(&height)
-        || hex.len() != width as usize * height as usize * 8
-    {
+    let fields = dimensions
+        .split('x')
+        .take(D + 1)
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid())?;
+    let size: [u32; D] = fields.try_into().map_err(|_| invalid())?;
+    if size.iter().any(|side| !(1..=limit).contains(side)) {
+        return Err(invalid());
+    }
+    let count = size.iter().map(|side| *side as usize).product::<usize>() * 4;
+    if count > runtime::TextureData3D::MAX_BYTES || hex.len() != count * 2 {
         return Err(invalid());
     }
     let pixels = hex
@@ -114,11 +122,7 @@ fn texture_data(spelling: &str) -> Result<Literal, String> {
             Ok(nibble(pair[0]).ok_or_else(invalid)? << 4 | nibble(pair[1]).ok_or_else(invalid)?)
         })
         .collect::<Result<Vec<_>, String>>()?;
-    Ok(Literal::TextureData2D(
-        i64::from(width),
-        i64::from(height),
-        pixels,
-    ))
+    Ok((size.map(i64::from), pixels))
 }
 
 pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
@@ -201,7 +205,20 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
             Default(Value::WalkResult3D(runtime::WalkResult3D::default()))
         }
         Type::RotationTrack3D => rotation_track(spelling)?,
-        Type::TextureData2D => texture_data(spelling)?,
+        Type::TextureData2D if spelling.is_empty() => {
+            Default(runtime::TextureData2D::default().into())
+        }
+        Type::TextureData3D if spelling.is_empty() => {
+            Default(runtime::TextureData3D::default().into())
+        }
+        Type::TextureData2D => {
+            let ([w, h], pixels) = texture_bytes(spelling, runtime::TextureData2D::MAX_DIMENSION)?;
+            Literal::TextureData2D(w, h, pixels)
+        }
+        Type::TextureData3D => {
+            let (size, voxels) = texture_bytes(spelling, runtime::TextureData3D::MAX_DIMENSION)?;
+            Literal::TextureData3D(size, voxels)
+        }
         Type::Bounds3D => {
             if !spelling.is_empty() {
                 return Err("invalid 3D bounds literal".into());

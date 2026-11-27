@@ -1,44 +1,28 @@
 //! wgpu-backed 2D renderer. No windowing dependency and no compiler/MLIR dependency.
-#[cfg(target_os = "android")]
-mod android_emoji;
-mod cell_glyphs;
-#[cfg(any(target_os = "android", target_os = "ios"))]
-mod color_glyphs;
-mod controls;
-mod display_list;
-mod entry;
-mod glyph_masks;
+mod frame;
 mod image;
-mod image_colorize;
-mod image_coverage;
+mod items;
+mod text;
+use frame::{
+    display_list, layer_compositor, retained_geometry, retained_layers, transform,
+    transient_textures, viewport_gpu_timing, window_damage,
+};
+use image::{image_colorize, image_coverage, scroll_images};
+use items::{
+    controls, entry, primitive, range, rectangle, shader_effect, shadow, vector, vector_masks,
+};
+#[cfg(target_os = "android")]
+use text::android_emoji;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use text::color_glyphs;
 #[cfg(target_os = "ios")]
-mod ios_font;
-mod label_glyphs;
-mod layer_compositor;
-mod nine_slice;
+use text::ios_font;
+use text::{cell_glyphs, glyph_masks, label_glyphs, retained_text, styled_ink, styled_text};
 pub mod preview;
 mod preview_pointer;
-mod primitive;
-mod range;
-mod rectangle;
-mod retained_geometry;
-mod retained_layers;
 mod scene3d;
 pub use scene3d::SceneDrawStats;
-mod retained_text;
-mod scroll_images;
-mod shader_effect;
-mod shadow;
-mod styled_ink;
-mod styled_text;
-mod text;
 mod theme;
-mod transform;
-mod transient_textures;
-mod vector;
-mod vector_masks;
-mod viewport_gpu_timing;
-mod window_damage;
 #[cfg(target_os = "android")]
 #[doc(hidden)]
 pub use color_glyphs::GlyphBitmap as AndroidGlyphBitmap;
@@ -72,14 +56,16 @@ pub use theme::Theme;
 use theme::{Palette, PaletteRole as Role};
 use transform::{CanvasTransform, canvas_transform, has_device_scale, has_pixel_aligned_scale};
 pub use window_damage::{DamageRect, DamageRegions, WindowDamage};
+use xrack_layout::item::{
+    ButtonStyle, ContainerPaint, ItemPaint, ItemRef, PartPaint, ToggleStyle, paint as item_paint,
+};
 use xrack_layout::{
     ButtonContent, ComboCompletion, ImagePresentation, Interaction, LayoutNode, Point, Rect, Size,
     SpinGeometry, StackTransitions, TextMeasurer, TreeRowGeometry, corner_radii,
 };
 use xrack_runtime::{
     Brush, Color as UiColor, ColorScheme, Component, GradientStop, Node, Orientation,
-    StandardButtonKind, Value, button_text, combo_editable, group_index, is_button,
-    is_multiline_text_input, is_spin_box, is_text_input, is_toggle, is_window_overlay,
+    StandardButtonKind, Value, button_text, combo_editable, group_index, is_window_overlay,
     spin_editable, spin_text, text_input_value,
 };
 
@@ -212,7 +198,7 @@ fn window_clear_background(
 ) -> Option<UiColor> {
     scene.color("background").filter(|background| {
         background.0 & 0xff == 0xff
-            && scene.kind == "Window"
+            && matches!(item_paint(scene), ItemPaint::Window)
             && covers_frame(scene, layout, viewport, scale)
     })
 }
@@ -264,11 +250,11 @@ fn table_frame_background<'a>(
 ) -> Option<ClearBackground<'a>> {
     // A plain Window contributes only its own background before its first
     // visible child. A full opaque table can supply both background fills.
-    let (table, item) = if scene.kind == "Window" {
+    let (table, item) = if matches!(item_paint(scene), ItemPaint::Window) {
         let (_, child, item) = layout
             .children_in_paint_order(scene)
             .find(|(_, _, item)| item.visible)?;
-        if child.kind != "TableView"
+        if !matches!(item_paint(child), ItemPaint::TableView)
             || scene.application_window
             || scene.is_item_delegate()
             || layout.table.is_some()
@@ -282,7 +268,7 @@ fn table_frame_background<'a>(
     } else {
         (scene, layout)
     };
-    if table.kind != "TableView"
+    if !matches!(item_paint(table), ItemPaint::TableView)
         || table.is_item_delegate()
         || item.has_ancestor_clip_chain()
         || !covers_frame(table, item, viewport, frame.scale)
@@ -638,6 +624,23 @@ impl Renderer {
             input,
             &mut self.row_layouts,
         )
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_window_text_pipelines(&self, scene: &Node, format: wgpu::TextureFormat) {
+        #[cfg(all(target_os = "macos", xrack_femtovg_glyph_samples))]
+        {
+            fn has_styled_text(node: &Node) -> bool {
+                matches!(item_paint(node), ItemPaint::StyledText)
+                    || node.children.iter().any(has_styled_text)
+            }
+
+            if self.adapter.get_info().backend == wgpu::Backend::Metal && has_styled_text(scene) {
+                self.canvas.renderer().prepare_window_text_pipelines(format);
+            }
+        }
+        #[cfg(not(all(target_os = "macos", xrack_femtovg_glyph_samples)))]
+        let _ = (scene, format);
     }
 
     #[doc(hidden)]
@@ -1081,7 +1084,7 @@ impl Renderer {
     ) -> Result<(), String> {
         self.text.begin_label_frame();
         self.inline_target = (frame.damage.is_none()
-            && scene.kind == "Window"
+            && matches!(item_paint(scene), ItemPaint::Window)
             && scene.opacity() == 1.0
             && !layout.has_ancestor_clip_chain()
             && layout.child_clip_shape().is_none()
@@ -1496,7 +1499,8 @@ impl Renderer {
         self.effect_mount = node.dynamic_mount_key().or(previous_mount);
         // The damage plan expands to a viewport's complete paint extent.
         // Replay that viewport with its usual clips and batch boundaries.
-        let frame = if frame.damage.is_some() && window_damage::is_paint_viewport(node.kind) {
+        let frame = if frame.damage.is_some() && window_damage::is_paint_viewport(item_paint(node))
+        {
             PaintFrame {
                 damage: None,
                 ..frame
@@ -1556,7 +1560,7 @@ impl Renderer {
             return Ok(());
         }
         if !self.rectangle_batches.disabled
-            && node.kind == "Rectangle"
+            && matches!(item_paint(node), ItemPaint::Rectangle)
             && has_device_scale(canvas_transform(&self.canvas), frame.scale)
             && let Some(rectangle) = rectangle::Solid::from_node(node, layout, frame.scale)
             && !rectangle.uses_mask()
@@ -1582,7 +1586,7 @@ impl Renderer {
         );
         let retain_opaque_group = self.geometry_cache.enabled
             && !(frame.damage.is_some() && window_damage::can_clip_surface(node, layout, frame))
-            && node.kind == "Rectangle"
+            && matches!(item_paint(node), ItemPaint::Rectangle)
             && node
                 .color("background")
                 .is_some_and(|color| color.0 & 0xff == 0xff)
@@ -1793,10 +1797,12 @@ impl Renderer {
         frame: PaintFrame<'_>,
         in_layout: bool,
     ) -> Result<(), String> {
+        let item = ItemRef { node, layout };
+        let paint = item.paint();
         let content = layout.clip.intersect(layout.bounds);
         if layout.allows_overflow() {
             self.paint_group(content, 1.0, |renderer| {
-                renderer.paint_surface(node, layout, path, frame, in_layout)
+                renderer.paint_surface(item, paint, path, frame, in_layout)
             })?;
         } else if let Some(damage) = frame.damage
             && window_damage::can_clip_surface(node, layout, frame)
@@ -1811,23 +1817,23 @@ impl Renderer {
                 self.canvas.save();
                 self.canvas
                     .intersect_scissor(clip.x, clip.y, clip.width, clip.height);
-                let result = self.paint_surface(node, layout, path, frame, in_layout);
+                let result = self.paint_surface(item, paint, path, frame, in_layout);
                 self.canvas.restore();
                 result?;
             }
         } else {
-            self.paint_surface(node, layout, path, frame, in_layout)?;
+            self.paint_surface(item, paint, path, frame, in_layout)?;
         }
-        if node.kind == "Menu" {
+        if matches!(paint, ItemPaint::Menu) {
             return Ok(());
         }
         let visible_viewport = layout.scroll_viewport(Orientation::Vertical);
-        if node.kind == "ScrollView" && visible_viewport != layout.bounds {
+        if matches!(paint, ItemPaint::ScrollView) && visible_viewport != layout.bounds {
             self.paint_group(visible_viewport.intersect(layout.clip), 1.0, |renderer| {
                 renderer.paint_children(node, layout, path, frame)
             })?;
         } else if let Some(close) = layout.tab_close
-            && node.kind == "TabButton"
+            && matches!(paint, ItemPaint::TabButton)
         {
             let content =
                 xrack_layout::tab_content_rect(layout.bounds, close).intersect(layout.clip);
@@ -1845,7 +1851,7 @@ impl Renderer {
         } else {
             self.paint_children(node, layout, path, frame)?;
         }
-        if frame.theme.button_shapes && is_button(node.kind) {
+        if frame.theme.button_shapes && matches!(paint, ItemPaint::Button(_)) {
             let bounds = layout.bounds;
             let width = 1.5_f32.min(bounds.width.min(bounds.height) * 0.5);
             let tint = if layout.enabled {
@@ -1859,13 +1865,13 @@ impl Renderer {
             );
         }
         if frame.theme.differentiate_without_color
-            && matches!(node.kind, "TabWidget" | "TabBar")
+            && let ItemPaint::Tabs { standalone } = paint
             && let Some(index) = group_index(node)
             && let Some(tab) = node.children.get(index)
             && let Some(page) = layout.child_at(index)
             && let Some(header) = page
                 .tab_header
-                .or_else(|| (node.kind == "TabBar" && page.visible).then_some(page.bounds))
+                .or_else(|| (standalone && page.visible).then_some(page.bounds))
         {
             let clip = header.intersect(content);
             self.paint_group(clip, tab.opacity(), |renderer| {
@@ -1939,17 +1945,17 @@ impl Renderer {
         }
         if layout.allows_overflow() {
             self.paint_group(content, 1.0, |renderer| {
-                renderer.paint_chrome(node, layout, path, frame)
+                renderer.paint_chrome(node, layout, paint, path, frame)
             })
         } else {
-            self.paint_chrome(node, layout, path, frame)
+            self.paint_chrome(node, layout, paint, path, frame)
         }
     }
 
     fn paint_surface(
         &mut self,
-        node: &Node,
-        layout: &LayoutNode,
+        item: ItemRef<'_, '_>,
+        item_paint: ItemPaint,
         path: &mut Vec<usize>,
         frame: PaintFrame<'_>,
         in_layout: bool,
@@ -1961,8 +1967,9 @@ impl Renderer {
             theme,
             ..
         } = frame;
+        let ItemRef { node, layout } = item;
         let bounds = layout.bounds;
-        if node.kind == "ToolSeparator" {
+        if matches!(item_paint, ItemPaint::ToolSeparator) {
             let padding = node.length("padding").unwrap_or(6.0).max(0.0);
             let stroke = node.length("stroke-width").unwrap_or(1.0).max(0.0);
             let line = match node.orientation() {
@@ -2003,8 +2010,8 @@ impl Renderer {
             return Ok(());
         }
         let group_header =
-            matches!(node.kind, "GroupBox" | "Expander").then(|| layout.group_header(node));
-        if node.kind == "SplitHandle" {
+            matches!(item_paint, ItemPaint::GroupHeader { .. }).then(|| layout.group_header(node));
+        if matches!(item_paint, ItemPaint::SplitHandle) {
             if node.children.is_empty() {
                 controls::split_handle(
                     &mut self.canvas,
@@ -2017,7 +2024,7 @@ impl Renderer {
             }
             return Ok(());
         }
-        if node.kind == "Menu" {
+        if matches!(item_paint, ItemPaint::Menu) {
             return controls::menu_header(
                 &mut self.canvas,
                 &self.text,
@@ -2027,42 +2034,41 @@ impl Renderer {
                 input.menu_header_open(path) || input.is_hovered(path) || input.is_focused(path),
             );
         }
-        let is_button = is_button(node.kind);
+        let button_style = match item_paint {
+            ItemPaint::Button(style) => Some(style),
+            _ => None,
+        };
+        let is_button = button_style.is_some();
         let item_delegate = node.is_item_delegate();
-        let is_cell = matches!(node.kind, "TableCell" | "TreeCell");
+        let is_cell = matches!(item_paint, ItemPaint::Cell { .. });
         let editable_combo = combo_editable(node);
-        let is_input =
-            is_text_input(node.kind) || editable_combo || is_cell && input.table_cell_editing(path);
+        let combo_geometry = matches!(item_paint, ItemPaint::Combo).then(|| {
+            xrack_layout::ComboGeometry::for_control(node, bounds, layout.layout_direction)
+        });
+        let is_input = matches!(item_paint, ItemPaint::Entry { .. } | ItemPaint::SearchEntry)
+            || editable_combo
+            || is_cell && input.table_cell_editing(path);
         let boxed = is_input
             || matches!(
-                node.kind,
-                "SpinBox"
-                    | "DoubleSpinBox"
-                    | "ComboBox"
-                    | "ListView"
-                    | "GridView"
-                    | "StandardListView"
-                    | "TableView"
-                    | "TreeView"
-                    | "Dialog"
-                    | "PopupWindow"
-                    | "GroupBox"
-                    | "Expander"
-                    | "Pane"
-                    | "ControlFrame"
-                    | "Drawer"
-                    | "MenuBar"
-                    | "ToolBar"
-                    | "Calendar"
-                    | "MonthGrid"
-                    | "Tumbler"
+                item_paint,
+                ItemPaint::SpinEntry
+                    | ItemPaint::Combo
+                    | ItemPaint::Boxed
+                    | ItemPaint::Rows
+                    | ItemPaint::TableView
+                    | ItemPaint::Pane
+                    | ItemPaint::MenuBar
+                    | ItemPaint::ControlFrame
+                    | ItemPaint::GroupHeader { .. }
+                    | ItemPaint::Calendar { framed: true }
+                    | ItemPaint::Wheel { framed: true }
             );
         let use_row_surface = item_delegate
             && (!is_button
                 || !node.properties.contains_key("primary")
                     && !node.properties.contains_key("flat"));
         let checked = is_button
-            && (((node.kind == "DelayButton" || node.boolean("checkable", false))
+            && (((button_style == Some(ButtonStyle::Delay) || node.boolean("checkable", false))
                 && node.boolean("checked", false))
                 || (item_delegate && !use_row_surface && node.boolean("highlighted", false)));
         let hovered = (is_button || item_delegate) && input.is_hovered(path);
@@ -2072,7 +2078,7 @@ impl Renderer {
                     .button_press_handle
                     .as_ref()
                     .is_some_and(xrack_runtime::ButtonPressHandle::is_synthetic_pressed));
-        let field = is_input || is_spin_box(node.kind) || node.kind == "ComboBox";
+        let field = is_input || matches!(item_paint, ItemPaint::SpinEntry | ItemPaint::Combo);
         let mut button_text_color = theme.text;
         let background = if frame
             .cleared_background
@@ -2128,7 +2134,7 @@ impl Renderer {
                 };
                 let flat = node.boolean(
                     "flat",
-                    node.kind == "ToolButton" && !node.boolean("primary", false),
+                    button_style == Some(ButtonStyle::Tool) && !node.boolean("primary", false),
                 );
                 (!flat || checked || hovered || pressed).then(|| {
                     button_text_color = foreground;
@@ -2142,7 +2148,7 @@ impl Renderer {
         }
         let image_scale = scale * layout.world_transform().max_scale();
         shadow::draw_inner(&mut self.canvas, node, bounds, radii, image_scale);
-        if node.kind == "DelayButton" {
+        if button_style == Some(ButtonStyle::Delay) {
             let (fraction, pending) = input.delay_progress(path).unwrap_or((0.0, false));
             let fraction = if checked { 1.0 } else { fraction };
             if fraction > 0.0 && layout.enabled {
@@ -2189,7 +2195,7 @@ impl Renderer {
             self.canvas.save();
             self.canvas
                 .intersect_scissor(header.x, header.y, header.width, header.height);
-            let result = if node.kind == "Expander" {
+            let result = if matches!(item_paint, ItemPaint::GroupHeader { expander: true }) {
                 controls::expander_header(&mut self.canvas, &self.text, theme, node, header, layout)
             } else if node.group_checkable() {
                 entry::toggle(&mut self.canvas, &self.text, theme, node, header, layout)
@@ -2229,7 +2235,7 @@ impl Renderer {
         let border = node
             .length("border-width")
             .unwrap_or(
-                if node.kind == "ControlFrame"
+                if matches!(item_paint, ItemPaint::ControlFrame)
                     || group_header.is_some()
                     || field && theme.outlines_fields()
                 {
@@ -2248,16 +2254,15 @@ impl Renderer {
         }
         if (is_button
             || boxed
-            || is_toggle(node.kind)
             || is_cell
             || matches!(
-                node.kind,
-                "Slider"
-                    | "ColorPlane"
-                    | "RadioButton"
-                    | "SwipeView"
-                    | "PageIndicator"
-                    | "FocusScope"
+                item_paint,
+                ItemPaint::Toggle(_)
+                    | ItemPaint::Slider
+                    | ItemPaint::ColorPlane
+                    | ItemPaint::SwipeView
+                    | ItemPaint::PageIndicator
+                    | ItemPaint::FocusScope
             ))
             && input.is_focused(path)
             && layout.enabled
@@ -2278,7 +2283,7 @@ impl Renderer {
             );
             self.canvas.stroke_path(&path, &paint);
         }
-        if node.kind == "MediaPlayer" {
+        if matches!(item_paint, ItemPaint::Media) {
             if let (Some(media), Some(frame)) = (&node.media, &node.media_frame) {
                 self.images.draw_video(
                     &mut self.canvas,
@@ -2301,10 +2306,10 @@ impl Renderer {
                 ImagePresentation::for_node(node, size, in_layout),
                 image::Colorize::from_value(node.properties.get("colorize")),
             )?;
-        } else if matches!(node.kind, "Image" | "AnimatedImage")
+        } else if let ItemPaint::Image { animated } = item_paint
             && let Some(image) = node.image_asset("source")
         {
-            let image = if node.kind == "AnimatedImage" {
+            let image = if animated {
                 image.frame(node.int("current-frame").unwrap_or_default().max(0) as usize)
             } else {
                 image
@@ -2319,26 +2324,26 @@ impl Renderer {
                 colorize: image::Colorize::from_value(node.properties.get("colorize")),
                 scale: image_scale,
             })?;
-        } else if node.kind == "Path" {
+        } else if matches!(item_paint, ItemPaint::Vector) {
             self.draw_primitive(Primitive::Vector {
                 node,
                 layout,
                 scale,
             })?;
-        } else if node.kind == "SceneView3D" {
+        } else if matches!(item_paint, ItemPaint::SceneView3D) {
             self.paint_scene3d(node, layout, path, scale)?;
-        } else if node.kind == "CustomRender" {
+        } else if matches!(item_paint, ItemPaint::CustomRender) {
             self.paint_custom(node, layout, path, scale)?;
-        } else if node.kind == "ColorPlane" {
+        } else if matches!(item_paint, ItemPaint::ColorPlane) {
             controls::color_plane(&mut self.canvas, node, bounds);
-        } else if node.kind == "ColorPreview" {
+        } else if matches!(item_paint, ItemPaint::ColorPreview) {
             controls::color_preview(
                 &mut self.canvas,
                 bounds,
                 node.color("color").unwrap_or_default(),
             );
         }
-        if node.kind == "RadioGroup" {
+        if matches!(item_paint, ItemPaint::RadioGroup) {
             let tint = if layout.enabled {
                 theme.text
             } else {
@@ -2352,9 +2357,8 @@ impl Renderer {
                 tint,
                 layout.layout_direction,
             )?;
-        } else if matches!(node.kind, "TabWidget" | "TabBar") {
+        } else if let ItemPaint::Tabs { standalone } = item_paint {
             let selected = group_index(node);
-            let standalone = node.kind == "TabBar";
             for (index, tab, page) in layout.children_in_paint_order(node) {
                 let Some(header) = page
                     .tab_header
@@ -2390,8 +2394,8 @@ impl Renderer {
                 result?;
             }
         }
-        if let Some(wheel) = &layout.tumbler {
-            if node.kind == "Tumbler" || node.combo_option_renderer.is_none() {
+        if let (ItemPaint::Wheel { framed }, Some(wheel)) = (item_paint, &layout.tumbler) {
+            if framed || node.combo_option_renderer.is_none() {
                 controls::tumbler_background(&mut self.canvas, theme, wheel, layout.enabled);
             }
             let input = Interaction::default();
@@ -2414,10 +2418,7 @@ impl Renderer {
                     )?;
                 }
             }
-        } else if matches!(
-            node.kind,
-            "Calendar" | "MonthGrid" | "DayOfWeekRow" | "WeekNumberColumn"
-        ) {
+        } else if matches!(item_paint, ItemPaint::Calendar { .. }) {
             controls::calendar(
                 &mut self.canvas,
                 &self.text,
@@ -2426,7 +2427,7 @@ impl Renderer {
                 &xrack_layout::CalendarGeometry::for_layout(node, layout),
                 layout.enabled,
             )?;
-        } else if node.kind == "Slider" {
+        } else if matches!(item_paint, ItemPaint::Slider) {
             range::slider(
                 &mut self.canvas,
                 theme,
@@ -2443,7 +2444,7 @@ impl Renderer {
                     None
                 },
             );
-        } else if node.kind == "Dial" {
+        } else if matches!(item_paint, ItemPaint::Dial) {
             range::dial(
                 &mut self.canvas,
                 theme,
@@ -2452,14 +2453,14 @@ impl Renderer {
                 layout.enabled,
                 input.is_focused(path) || input.is_pressed(path),
             );
-        } else if node.kind == "RangeSlider" {
+        } else if matches!(item_paint, ItemPaint::RangeSlider) {
             let preview = layout
                 .enabled
                 .then(|| input.interval_preview(node, path))
                 .flatten();
             let active = Self::range_thumb_activity(path, input);
             range::interval(&mut self.canvas, theme, node, layout, active, preview);
-        } else if node.kind == "PageIndicator" {
+        } else if matches!(item_paint, ItemPaint::PageIndicator) {
             if let Some(geometry) = xrack_layout::PageIndicatorGeometry::with_layout_direction(
                 node,
                 bounds,
@@ -2474,14 +2475,14 @@ impl Renderer {
                     |index| input.page_marker_hovered(path, index),
                 );
             }
-        } else if let Some(indicator) = xrack_runtime::indicator_state(node)
+        } else if let ItemPaint::Indicator(indicator) | ItemPaint::Progress(indicator) = item_paint
             && !node.has_progress_parts()
         {
             let phase =
                 indicator_phase.filter(|_| layout.enabled && node.boolean("animated", true));
             self.needs_redraw |=
                 range::indicator(&mut self.canvas, theme, node, layout, indicator, phase);
-        } else if node.kind == "StandardListItem" {
+        } else if matches!(item_paint, ItemPaint::StandardListItem) {
             controls::row_label(
                 &mut self.canvas,
                 &self.text,
@@ -2504,39 +2505,39 @@ impl Renderer {
                     xrack_runtime::LayoutDirection::LeftToRight
                 },
             )?;
-        } else if node.kind == "RadioButton" || is_toggle(node.kind) {
+        } else if matches!(item_paint, ItemPaint::Toggle(_)) {
             entry::toggle(&mut self.canvas, &self.text, theme, node, bounds, layout)?;
-        } else if node.kind == "ComboBox" && !editable_combo {
+        } else if !editable_combo && let Some(geometry) = combo_geometry.as_ref() {
             controls::combo(
                 &mut self.canvas,
                 &self.text,
                 theme,
-                node,
-                layout,
+                item,
+                geometry,
                 input.choice_is_open_for(path),
             )?;
-        } else if is_input || is_cell || is_spin_box(node.kind) {
-            let (area, value) = if editable_combo {
-                let geometry = controls::combo(
+        } else if is_input || is_cell || matches!(item_paint, ItemPaint::SpinEntry) {
+            let (area, value) = if let Some(geometry) = combo_geometry.as_ref() {
+                controls::combo(
                     &mut self.canvas,
                     &self.text,
                     theme,
-                    node,
-                    layout,
+                    item,
+                    geometry,
                     input.choice_is_open_for(path),
                 )?;
                 (
                     geometry.entry,
                     std::borrow::Cow::Borrowed(text_input_value(node)),
                 )
-            } else if node.kind == "SearchField" {
+            } else if matches!(item_paint, ItemPaint::SearchEntry) {
                 let geometry = xrack_layout::SearchGeometry::for_layout(layout);
                 controls::search_icons(&mut self.canvas, theme, node, &geometry, layout.enabled);
                 (
                     geometry.entry,
                     std::borrow::Cow::Borrowed(text_input_value(node)),
                 )
-            } else if is_spin_box(node.kind) {
+            } else if matches!(item_paint, ItemPaint::SpinEntry) {
                 let geometry = SpinGeometry::for_layout(layout, node);
                 controls::spin_buttons(
                     &mut self.canvas,
@@ -2581,7 +2582,7 @@ impl Renderer {
             };
             // Text editing clips to the entry, which must not clip sibling control parts.
             self.canvas.save();
-            let drawn = if is_multiline_text_input(node.kind) {
+            let drawn = if matches!(item_paint, ItemPaint::Entry { multiline: true }) {
                 entry::draw_area(
                     &mut self.canvas,
                     &self.text,
@@ -2607,7 +2608,7 @@ impl Renderer {
             if drawn? {
                 self.painted_combo_completion = completion;
             }
-        } else if node.kind == "StyledText" {
+        } else if matches!(item_paint, ItemPaint::StyledText) {
             let focused = input
                 .focused
                 .as_ref()
@@ -2625,14 +2626,16 @@ impl Renderer {
                 focused,
                 selection,
             )?;
-        } else if xrack_layout::uses_label_layout(node) {
+        } else if matches!(item_paint, ItemPaint::Label) {
             self.paint_label(
                 node,
                 layout,
                 display_list::label_tint(node, layout, theme),
                 scale,
             )?;
-        } else if node.kind == "Text" || is_button && node.control_part("ButtonContent").is_none() {
+        } else if matches!(item_paint, ItemPaint::Text)
+            || is_button && node.control_part("ButtonContent").is_none()
+        {
             let button = is_button.then(|| ButtonContent::new(node));
             let text = button
                 .as_ref()
@@ -2829,7 +2832,8 @@ impl Renderer {
         path: &mut Vec<usize>,
         frame: PaintFrame<'_>,
     ) -> Result<(), String> {
-        if node.kind == "RangeSlider"
+        let paint = item_paint(node);
+        if matches!(paint, ItemPaint::RangeSlider)
             && Node::RANGE_HANDLE_PARTS
                 .iter()
                 .any(|kind| node.control_part(kind).is_some())
@@ -2927,10 +2931,10 @@ impl Renderer {
         } else {
             None
         };
-        let thumb = if node.kind == "Switch" {
-            layout
-                .children_in_paint_order(node)
-                .find(|(_, child, _)| child.kind == "SwitchThumb")
+        let thumb = if matches!(paint, ItemPaint::Toggle(ToggleStyle::Switch)) {
+            layout.children_in_paint_order(node).find(|(_, child, _)| {
+                matches!(item_paint(child), ItemPaint::Part(PartPaint::SwitchThumb))
+            })
         } else {
             None
         };
@@ -2938,17 +2942,20 @@ impl Renderer {
         let offset = slide
             .map(|slide| slide.displacement(bounds, slide.incoming_offset()))
             .or(swipe_offset);
-        let cull_clipped_children =
-            matches!(node.kind, "VerticalLayout" | "ScrollView" | "Flickable")
-                && layout.children.len() >= 32
-                && offset.is_none();
+        let cull_clipped_children = matches!(
+            paint,
+            ItemPaint::Container(ContainerPaint::Vertical)
+                | ItemPaint::ScrollView
+                | ItemPaint::Flickable
+        ) && layout.children.len() >= 32
+            && offset.is_none();
         let clipped = |child: &Node, item: &LayoutNode| {
             !item.allows_overflow()
                 && is_clipped_out(item.bounds, item.clip)
                 && (child.can_skip_clipped_layout_group()
                     // Styled text has no outer shadow. Keep retained layers
                     // on the ordinary painter so they remain tracked.
-                    || child.kind == "StyledText"
+                    || matches!(item_paint(child), ItemPaint::StyledText)
                         && child.opacity() == 1.0
                         && !child.boolean("cache-rendering-hint", false))
         };
@@ -2992,12 +2999,12 @@ impl Renderer {
         let batch_groups = batch_images && !transitions.is_some_and(StackTransitions::is_active);
         let plain_table_row = self.display_batching
             && plain_canvas
-            && node.kind == "TableRow"
+            && matches!(paint, ItemPaint::TableRow)
             && self.text.text_scale() <= 1.0;
         let batch_table_rows = batch_groups
             && plain_canvas
             && !cfg!(any(target_os = "android", target_os = "ios"))
-            && node.kind == "TableView"
+            && matches!(paint, ItemPaint::TableView)
             && layout.table.is_some()
             && layout.child_clip_shape().is_none()
             && self.text.text_scale() <= 1.0
@@ -3019,7 +3026,7 @@ impl Renderer {
         // enclosing scissor is the full device-pixel viewport.
         display.viewport_label_masks = batch_images
             && path.is_empty()
-            && node.kind == "Window"
+            && matches!(paint, ItemPaint::Window)
             && DisplayList::plain_window(node)
             && damage.is_none()
             && layout.child_clip_shape().is_none()
@@ -3035,8 +3042,15 @@ impl Renderer {
             if !layout.visible
                 || node.scene_texture_only()
                 || is_window_overlay(node.kind)
-                || Node::PROGRESS_PARTS.contains(&node.kind)
-                || Node::SCROLL_PARTS.contains(&node.kind)
+                || matches!(
+                    item_paint(node),
+                    ItemPaint::Part(
+                        PartPaint::ProgressTrack
+                            | PartPaint::ProgressFill
+                            | PartPaint::ScrollTrack
+                            | PartPaint::ScrollThumb
+                    )
+                )
             {
                 continue;
             }
@@ -3157,8 +3171,8 @@ impl Renderer {
         let [row_layout] = layout.children.as_slice() else {
             return false;
         };
-        if item.kind != "ListRow"
-            || row.kind != "TableRow"
+        if !matches!(item_paint(item), ItemPaint::ListRow)
+            || !matches!(item_paint(row), ItemPaint::TableRow)
             || item.boolean("selected", false)
             || item.boolean("current", false)
             || frame.input.is_hovered(path)
@@ -3207,7 +3221,7 @@ impl Renderer {
         row_paint: &'a std::cell::OnceCell<text::CellPaint>,
         display: &mut DisplayList<'a>,
     ) -> bool {
-        if node.kind != "TableCell"
+        if !matches!(item_paint(node), ItemPaint::Cell { tree: false })
             || !node.children.is_empty()
             || !layout.local_transform().is_identity()
             || layout.table_pane_clip().is_some()
@@ -3407,6 +3421,7 @@ impl Renderer {
         &mut self,
         node: &Node,
         layout: &LayoutNode,
+        item_paint: ItemPaint,
         path: &mut Vec<usize>,
         frame: PaintFrame<'_>,
     ) -> Result<(), String> {
@@ -3462,9 +3477,10 @@ impl Renderer {
                 })),
             );
         }
-        let drag_target = node.kind == "DropArea" && input.is_drop_target(node, path);
-        let focus_outline = (node.kind == "SwipeDelegate"
-            || node.kind == "SplitHandle" && !node.children.is_empty())
+        let drag_target =
+            matches!(item_paint, ItemPaint::DropArea) && input.is_drop_target(node, path);
+        let focus_outline = (matches!(item_paint, ItemPaint::SwipeDelegate)
+            || matches!(item_paint, ItemPaint::SplitHandle) && !node.children.is_empty())
             && input.is_focused(path);
         if (focus_outline || drag_target) && layout.enabled {
             let mut outline = Path::new();
@@ -3479,7 +3495,7 @@ impl Renderer {
             self.canvas
                 .fill_path(&path, &Paint::color(color(theme.role(Role::Grip))));
         }
-        if node.kind == "ListRow" {
+        if matches!(item_paint, ItemPaint::ListRow) {
             let item_delegate = node.children.first().is_some_and(Node::is_item_delegate);
             controls::list_row(
                 &mut self.canvas,
@@ -3614,9 +3630,18 @@ impl Renderer {
         }
         let custom_parts = node.has_scroll_parts();
         for bar in layout.scroll_bars(node) {
-            let focused = node.kind == "ScrollBar" && input.is_focused(path);
-            let indicator = node.kind == "ScrollIndicator"
-                || node.kind == "ScrollBar" && !node.boolean("interactive", true);
+            let focused = matches!(
+                item_paint,
+                ItemPaint::ScrollBar {
+                    interactive: Some(_)
+                }
+            ) && input.is_focused(path);
+            let indicator = matches!(
+                item_paint,
+                ItemPaint::ScrollBar {
+                    interactive: None | Some(false)
+                }
+            );
             for kind in Node::SCROLL_PARTS {
                 let replacement = custom_parts
                     .then(|| {

@@ -30,6 +30,8 @@ struct Material {
     base_uv: TextureTransform,
     channels: vec4<u32>,
     shader_parameters: vec4<f32>,
+    opacity_uv: TextureTransform,
+    opacity_sampling: vec4<u32>,
 }
 
 @group(0) @binding(0) var<uniform> cameras: Cameras;
@@ -53,6 +55,7 @@ struct Vertex {
     @location(6) z: vec4<f32>,
     @location(7) tint: vec4<f32>,
     @location(8) metadata: vec2<u32>,
+    @location(9) uv1: vec2<f32>,
     @location(15) instance_data: vec4<f32>,
 }
 
@@ -60,7 +63,7 @@ struct RasterVertex {
     @builtin(position) position: vec4<f32>,
     @location(0) previous_clip: vec4<f32>,
     @location(1) depth: vec2<f32>,
-    @location(2) uv: vec2<f32>,
+    @location(2) uv: vec4<f32>,
     @location(3) alpha: vec2<f32>,
     @location(4) @interpolate(flat) ids: vec2<u32>,
     @location(5) @interpolate(flat) scale: f32,
@@ -81,7 +84,7 @@ fn paired_vertex(vertex: Vertex, index: u32, current: vec3<f32>, previous: vec3<
         world * cameras.current.clip,
         previous_world * cameras.previous.clip,
         vec2<f32>(dot(cameras.current.depth, world), dot(cameras.previous.depth, previous_world)),
-        vertex.uv,
+        vec4(vertex.uv, vertex.uv1),
         vec2<f32>(vertex.color.a, vertex.tint.a),
         vec2<u32>(select(0u, index + 1u, (old.index_and_enabled & 1u) != 0u), old.previous_id),
         old.scale,
@@ -128,6 +131,7 @@ fn skinned(vertex: Vertex, weights: SkinWeights, @builtin(instance_index) instan
 fn morphed_coverage(vertex: Vertex, delta: MorphDisplacement) -> Vertex {
     var result = vertex;
     result.uv += delta.uvs.xy;
+    result.uv1 += delta.uvs.zw;
     result.color.a = clamp(vertex.color.a + delta.color.a, 0.0, 1.0);
     return result;
 }
@@ -160,10 +164,17 @@ fn fragment(vertex: RasterVertex) -> MotionOutput {
         var surface = material.base.a * coverage_vertex_alpha(material.channels, vertex.alpha.x);
         if material.params.z > 0.5 && base_texture_uses_alpha(material.channels)
             && (material.params.w < 1.5 || material.params.x >= 0.0) {
-            surface *= sample_base_texture(base_texture, base_sampler, material.base_uv, vertex.uv).a;
+            surface *= sample_base_texture(base_texture, base_sampler, material.base_uv, vertex.uv.xy).a;
         }
-        let coverage = material_coverage(material.params.w, surface, vertex.alpha.y);
-        if coverage.y < material.params.x || (material.params.w > 0.5 && coverage.x <= 0.0) {
+        let has_map = xr_has_opacity_map(material.channels.w);
+        var opacity = xr_scalar_opacity(material.channels.w);
+        let fades = has_map || opacity < 1.0;
+        if has_map {
+            opacity = xr_material_opacity(material.channels.w, material.opacity_uv, material.opacity_sampling,
+                vertex.uv, dpdx(vertex.uv), dpdy(vertex.uv));
+        }
+        let coverage = material_coverage(material.params.w, surface, vertex.alpha.y, opacity, fades);
+        if coverage.y < material.params.x || ((material.params.w > 0.5 || fades) && coverage.x <= 0.0) {
             discard;
         }
     }

@@ -1312,6 +1312,14 @@ struct Palette {
 
 #### 材质混合模式
 
+模型记录的 `opacity: float` 默认 1，限制在 0 到 1。组节点即使没有网格，也能用这个字段控制后代。沿 `parent` 链逐级相乘，再与每个实例的颜色透明度合成。父节点为 0.5、子节点为 0.5 时，子网格使用 0.25 的透明度。实例表和导入网格内的实例也沿用这个规则。
+
+有效透明度介于 0 和 1 时，表面进入透明绘制。Alpha 裁切仍用原材质阈值，裁切留下的像素再应用节点透明度。深度和阴影沿用材质的 `depth-draw-mode`。透明度为 0 时，后代网格从绘制和拾取中剔除。物理查询继续使用场景的碰撞形状，视点和灯光继续使用解析后的场景位姿。连续修改透明度可复用网格与贴图。 [父子层级与实例淡出示例](../examples/puzzle3d/node_opacity.xr)
+
+材质记录及 `material-slots` 的槽位记录也可设置 `opacity: float`，范围为 0 到 1，默认 1。材质不透明度乘以节点不透明度。使用 `"mask"` 时，先照常比较底色和贴图 alpha，留下的像素再按材质不透明度混合。默认深度策略下，淡出的槽位退出不透明深度通道和实时投影。设为 0 时，这个槽位退出绘制、投影和拾取，网格仍可用于碰撞。 [逐槽淡出示例](../examples/puzzle3d/material_slots.xr)
+
+材质记录可显式选择 `alpha-mode: "default"`。仅改变底色或底色贴图的 alpha 时，材质继续走不透明通道。材质或节点淡出、透明度贴图和滤色或叠底启用混合后，底色、贴图和顶点 alpha 参与实际合成。此时零覆盖率的片元可以点到后方。导入资源在没有覆盖字段时沿用资源指定的模式。 [深度和混合示例](../examples/puzzle3d/material_depth.xr)
+
 材质记录可声明 `blend-mode: string`。默认的 `"source-over"` 按源 alpha 合成，`"screen"` 使用滤色提亮，`"multiply"` 使用正片叠底压暗。运算在线性颜色空间进行。滤色与叠底的源 RGB 限制在 0 到 1。
 
 `alpha-mode` 独立决定覆盖率。可用 `"blend"` 保留材质和贴图的半透明，`"mask"` 保留通过阈值的片元，二者的拾取规则与绘制一致。使用滤色或叠底的网格参与透明排序和深度测试。当它们在视锥内时，同一视口的透明网格按深度合成，模型粒子仍可使用加权透明。编译器将修改混合方式标记为绘制更新，GPU 网格与实例数据可继续复用。 [材质混合示例](../examples/puzzle3d/material_blend.xr)
@@ -1344,11 +1352,16 @@ struct Palette {
 | 材质字段 | 通道 |
 | --- | --- |
 | `base-color-map` | RGB 与底色相乘，alpha 参与透明裁切及混合。 |
+| `opacity-map` | 单通道控制各像素的不透明度。通过 `opacity-channel` 选择 `r`、`g`、`b`、`a`，默认 `a`。 |
+| `height-map` | 视差遮蔽使用的线性高度贴图，默认读取 R 通道。 |
 | `metallic-roughness-map` | B 调节金属度，G 调节粗糙度。 |
+| `metalness-map` | 独立金属度贴图，默认读取 B 通道。 |
+| `roughness-map` | 独立粗糙度贴图，默认读取 G 通道。 |
 | `emissive-map`、`occlusion-map` | 分别使用 RGB 发光和 R 环境遮蔽。 |
 | `normal-map`、`clearcoat-normal-map` | RGB 切线空间法线，可分别设置 `normal-strength` 和 `clearcoat-normal-strength`。 |
 | `clearcoat-map`、`clearcoat-roughness-map`、`transmission-map` | 分别使用 R 清漆强度、G 清漆粗糙度和 R 透射强度。 |
 | `specular-map`、`specular-color-map` | 分别用线性 A 通道调节高光强度、用 sRGB 颜色调节介电高光颜色。 |
+| `specular-reflection-map` | 材质自己的镜面反射全景，按世界空间的反射方向采样。 |
 | `thickness-map` | 用线性 G 通道调节体积厚度。 |
 | `anisotropy-map` | 线性 RG 表示拉丝方向，B 表示强度。 |
 
@@ -1375,6 +1388,14 @@ struct Sampler {
 
 例如，声明 `base-color-map: Sampler` 后可以绑定 `Sampler { source: @texture-url("models/tile.png"), wrap-u: "repeat", wrap-v: "repeat", uv-scale-u: 2, uv-scale-v: 2 }`。
 
+独立的 `metalness-map` 和 `roughness-map` 在金属度与粗糙度工作流中分别覆盖合图里的对应通道。每张贴图可使用纹理键、`texturedata2d` 或采样器记录，并独立设置 UV 集、变换、寻址和过滤。采样值乘以对应的材质系数，通道由 `metalness-channel` 和 `roughness-channel` 选择。清空一张独立贴图后，该通道回到合图或材质系数。 [材质通道示例](../examples/puzzle3d/material_debug.xr)
+
+`specular-reflection-map` 使用经纬全景，可接收贴图键、`texturedata2d` 或采样器记录。旋转及偏移作用在反射采样坐标上。镜面与清漆按各自粗糙度选择 mip 层，场景的漫反射环境光继续生效。若提供 `specular-reflection-item`，它从匹配 `texture-source` 的实时 2D 元素取图。没有可用的实时来源时，依次使用材质的全景贴图和场景反射。 [材质调试示例](../examples/puzzle3d/material_debug.xr)
+
+`opacity-map` 同样接受纹理键、`texturedata2d` 或采样器记录。通道以线性数据读取。`invert-opacity-map-value: bool` 默认 `false`，启用时在过滤后取 `1 - v`。最终采样值乘以材质的 `opacity` 和节点不透明度。切换该字段会复用原贴图缓冲。零值像素透出后方并跳过射线拾取。`alpha-mode: "mask"` 仍先按底色 alpha 计算裁切阈值。贴图启用后材质参与透明合成，默认深度策略下退出实时投影。需要局部写深度时，`"always"` 写入可见像素，`"opaque-prepass"` 只写入完全不透明的像素。 [贴图示例](../examples/puzzle3d/authored_texture.xr)
+
+`height-map` 接受贴图键、`texturedata2d` 或采样器记录。用 `height-channel` 选择 `r`、`g`、`b` 或 `a`。`height-amount: float` 默认 0，取值范围 0 到 1。`min-height-map-samples: int` 和 `max-height-map-samples: int` 默认 8 和 32，运行时限制在 1 到 64。正视时用较少的采样，掠视时用较多的采样。同一 UV 集的材质着色贴图沿观察射线偏移，轮廓、拾取和透明裁切继续使用几何覆盖率。 [高度贴图示例](../examples/puzzle3d/authored_texture.xr)
+
 **程序生成贴图**
 
 `TextureData2D.rgba8(width, height, pixels)` 从 `[int]` 生成不可变的 `texturedata2d`。每个像素依次提供 R、G、B 和直通 alpha，行从上到下排列。宽高各为 1–2048，列表必须恰好有 `width * height * 4` 项，每项为 0–255。无效输入返回 `valid: false`，宽高均为 0。
@@ -1388,6 +1409,14 @@ property <texturedata2d> palette: TextureData2D.rgba8(2, 1, [240, 30, 60, 255, 0
 材质贴图字段可直接使用该值，也可以把它填入采样器记录的 `data`，继续设置 UV 和过滤。采样器同时声明 `source` 时，无效数据回退到文件贴图。可编程材质的 `shader-textures`、捕获的 `augment-textures` 和后处理的 `buffers` 也可使用 `data: texturedata2d`。它们沿用二维采样和 `color-space`。同时存在时优先读取 `capture`，其次是有效的 `data`，再读取 `texture` 和其他来源。
 
 常量像素由 MLIR 折叠成紧凑字节。绑定数组模型时，修改像素会产生新快照，原快照继续保留原值。同一快照在材质和后处理中共享上传。Rust 宿主可用 `TextureData2D::from_rgba8` 创建，Python 可用 `TextureData2D.rgba8(width, height, bytes)` 创建。 [程序生成贴图示例](../examples/puzzle3d/procedural_texture.xr)
+
+**程序生成的体积贴图**
+
+`TextureData3D.rgba8(width, height, depth, voxels)` 生成 `texturedata3d`。每个体素含 RGBA 四个 0–255 的整数，X 变化最快，Z 变化最慢。各轴长 1–256，数据上限 16 MiB。无效输入的 `valid` 为 false，宽、高、深均为 0。直接传入字面量会在 MLIR 中折叠为紧凑字节。可编辑列表随模型版本生成新快照。
+
+`shader-textures` 和后处理 `buffers` 可用 `data: texturedata3d`。WGSL 用 `material_volume(index, uvw)` 或 `scene_buffer_volume(index, uvw)` 采样，`uvw` 是 0 到 1 的三维坐标。用同名的 `_size(index)` 查各轴像素数。材质使用线性过滤。后处理支持 `filter: "nearest"`，默认线性。坐标在边缘夹紧。默认使用 sRGB，体素数据图可设 `color-space: "linear"`。当前上传并采样基础层。
+
+两类程序共用一次体积上传，可与二维贴图或立方体贴图出现在同一输入列表。设备支持的最大三维纹理尺寸以内，体积占用一个标准纹理槽。Rust 宿主可用 `TextureData3D::from_rgba8` 创建，Python 可用 `TextureData3D.rgba8(width, height, depth, bytes)` 创建。 [体积贴图示例](../examples/puzzle3d/volume_texture.xr)
 
 要把 2D 界面用作底色贴图，在同一窗口的可见 `Rectangle` 上写 `texture-source: "dashboard";`，再在场景材质记录中声明 `base-item: string`，并填入同一个名字。矩形的背景和子项会一起画进 GPU 纹理。多个材质可共享同一源。用 `unlit: true` 可保留面板配色，也可以交由 PBR 材质照明。底色使用 UV0；`alpha-mode: "blend"` 会合成源的透明区域。
 

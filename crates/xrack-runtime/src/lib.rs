@@ -4,107 +4,41 @@
 #[doc(hidden)]
 pub const CODEGEN_ABI_VERSION: u32 = 69;
 
-mod animation;
-mod arithmetic;
-mod button_group;
-mod calendar;
-mod callback;
-mod child_window;
-mod color_picker;
-mod combo;
+mod component;
 mod controls;
-mod delegate;
-mod double_spin;
-mod drag;
-mod dynamic_children;
-mod event_loop;
-mod external_loader;
-#[doc(hidden)]
-pub use event_loop::EventLoopRegistration;
-pub use event_loop::{EventLoopError, WeakComponent, invoke_from_event_loop};
-mod focus;
-mod font_picker;
-mod geometry;
+mod diagnostics;
+mod host;
+mod input;
+mod physics3d;
+mod scene;
 #[doc(hidden)]
 pub mod scene3d;
-pub use scene3d::bounds::SceneBounds3D as Bounds3D;
-#[doc(hidden)]
-pub use scene3d::{effect as scene_effect, material_shader};
-mod ui_log;
-mod visual_transform;
-pub use ui_log::LogLevel;
-#[doc(hidden)]
-pub use ui_log::log_ui;
-mod hover;
-mod image_animation;
-mod image_asset;
-mod inspection;
-#[doc(hidden)]
-pub use inspection::{
-    InspectionInput, PresentationFeedback, PresentedFrame, RecordedAction, ViewportGpuFrame,
-    ViewportGpuPass, ViewportGpuStats, ViewportRenderStats, ViewportRenderWork, ViewportStatistics,
-    WindowInspector,
+mod views;
+
+use component::{
+    animation, arithmetic, callback, delegate, dynamic_children, localization, localized_number,
+    model, property, record, repeat,
 };
-mod media;
-#[doc(hidden)]
-pub mod ui_trace;
-#[doc(hidden)]
-pub mod update_profile;
-pub use media::{
-    MediaCommand, MediaFrame, MediaOptions, MediaQueue, MediaRegistration, MediaSession, MediaSlot,
-    MediaState, MediaStatus, open_media_session, register_media_backend, register_sound_backend,
+use controls::common as control_semantics;
+use controls::{
+    button_group, calendar, color_picker, combo, double_spin, font_picker, picker, range, split,
+    stack, time_picker, tumbler,
 };
-mod keyboard;
-mod list;
-mod list_keys;
-mod localization;
-mod localized_number;
-mod model;
-mod native_dialog;
-mod physics3d;
-mod picker;
-mod pointer;
-mod property;
-mod range;
-mod record;
-pub use record::{RecordList, RecordRowValidator, RecordValue};
-mod input_mask;
-mod input_pattern;
-mod list_sections;
-mod loader;
-pub use scene3d::mesh::loader::{
-    MeshLoader3D, mesh_loader_deadline, poll_mesh_loaders, register_mesh_importer,
+use diagnostics::{inspection, render_stats, ui_log};
+use host::{
+    child_window, event_loop, external_loader, image_animation, image_asset, loader, media,
+    native_dialog, timer, window_status,
 };
-pub use scene3d::mesh::nodes::MeshNode3D;
-mod render_stats;
-mod repeat;
-pub use render_stats::RenderStats3D;
-#[doc(hidden)]
-pub use render_stats::RenderStats3DData;
-mod row_heights;
-mod scale_rotate;
-mod scene_plan;
-mod scene_tracking;
-pub use scene_tracking::{SceneChanges, SceneIndex, SceneNodeId};
-mod split;
-mod stack;
-mod styled_text;
-mod swipe_gesture;
-mod table_clipboard;
-mod table_history;
-mod table_rows;
-mod table_selection;
-pub use input_mask::{InputMask, MaskDelete, MaskEdit};
-pub use input_pattern::InputValidity;
-#[doc(hidden)]
-pub use input_pattern::input_pattern_accepts;
-mod text_input;
-mod time_picker;
-mod timer;
-mod tree;
-mod tumbler;
-mod viewport;
-mod window_status;
+use input::{
+    drag, focus, hover, input_mask, input_pattern, keyboard, pointer, scale_rotate, styled_text,
+    swipe_gesture, text_input,
+};
+use scene::{geometry, scene_plan, scene_tracking, visual_transform};
+use views::{
+    list, list_keys, list_sections, row_heights, table_clipboard, table_history, table_rows,
+    table_selection, tree, viewport,
+};
+
 pub use animation::{Animation, Easing, SceneTransition, StateTiming};
 #[doc(hidden)]
 pub use arithmetic::{
@@ -149,7 +83,7 @@ pub use combo::{
     resolve_combo_after_accept, try_prepare_combo_input, try_prepare_combo_input_with_draft,
     try_prepare_combo_input_with_live_draft, try_resolve_combo_after_accept,
 };
-pub use controls::{
+pub use control_semantics::{
     ActionKey, ControlAction, DialogCommand, DialogRole, PopupPlacement, SpinAction, SpinRange,
     StandardButtonKind, SwipeSide, TabClose, TabMove, TableColumnOrder, TableHeader, TableSort,
     button_text, combo_editable, delay_millis, dialog_button_action, group_index, group_item,
@@ -158,20 +92,20 @@ pub use controls::{
     search_suggestions, spin_editable, spin_text, spin_value_after, text_input_value,
 };
 #[doc(hidden)]
-pub use controls::{
+pub use control_semantics::{
     DialogEvent, TableHeaderAction, page_indicator_step, prepare_swipe_side,
     resolve_navigation_value, set_overlay_open, try_prepare_swipe_side,
     try_resolve_navigation_value, try_resolve_swipe_index, try_set_overlay_open,
 };
 #[doc(hidden)]
-pub use controls::{PageIdentity, SwipePreview, SwipePreviewHandle};
+pub use control_semantics::{PageIdentity, SwipePreview, SwipePreviewHandle};
 #[doc(hidden)]
-pub use controls::{
+pub use control_semantics::{
     SPIN_VIEW_PROPERTIES, prepare_spin_view, spin_view_is_current, try_prepare_spin_view,
     try_spin_view_is_current,
 };
 #[doc(hidden)]
-pub use controls::{
+pub use control_semantics::{
     delay_button_transition_is_current, group_selection_item, moved_navigation_index,
     prepare_action_activation, prepare_action_view, prepare_expander_change,
     prepare_group_box_toggle, prepare_group_selection, prepare_group_selection_with_model,
@@ -186,6 +120,10 @@ pub use controls::{
 };
 #[doc(hidden)]
 pub use delegate::{ComponentRepeater, RowContext};
+#[doc(hidden)]
+pub use diagnostics::ui_trace;
+#[doc(hidden)]
+pub use diagnostics::update_profile;
 pub use double_spin::{
     DecimalSpinRange, SpinDecimal, decimal_separator, decimal_spin_value_after, spin_text_is_valid,
 };
@@ -194,6 +132,9 @@ pub use drag::DragArguments;
 pub use drag::{DragAction, DragEvent, is_drag_area};
 #[doc(hidden)]
 pub use dynamic_children::DynamicChildren;
+#[doc(hidden)]
+pub use event_loop::EventLoopRegistration;
+pub use event_loop::{EventLoopError, WeakComponent, invoke_from_event_loop};
 #[doc(hidden)]
 pub use external_loader::{
     ExternalComponent, ExternalLoader, ExternalSource, LoadedExternal, register_external_loader,
@@ -219,6 +160,16 @@ pub use image_animation::{ImageAnimation, ImageAnimationFrame};
 #[doc(hidden)]
 pub use image_animation::{ImagePlaybackQueue, ImagePlaybackRegistration, ImagePlaybackSlot};
 pub use image_asset::{ImageAsset, ImageIdentity, ImagePixels, LoadedAnimation, LoadedImage};
+pub use input_mask::{InputMask, MaskDelete, MaskEdit};
+pub use input_pattern::InputValidity;
+#[doc(hidden)]
+pub use input_pattern::input_pattern_accepts;
+#[doc(hidden)]
+pub use inspection::{
+    InspectionInput, PresentationFeedback, PresentedFrame, RecordedAction, ViewportGpuFrame,
+    ViewportGpuPass, ViewportGpuStats, ViewportRenderStats, ViewportRenderWork, ViewportStatistics,
+    WindowInspector,
+};
 pub use keyboard::{EventResult, KeyEvent, KeyModifiers, KeyPhase, WheelEvent};
 #[doc(hidden)]
 pub use list::ViewIndex;
@@ -246,6 +197,10 @@ pub use loader::{
 pub use localization::LocaleContext;
 #[doc(hidden)]
 pub use localization::{LocaleBinding, LocaleId, TranslationCatalog, TranslationValue};
+pub use media::{
+    MediaCommand, MediaFrame, MediaOptions, MediaQueue, MediaRegistration, MediaSession, MediaSlot,
+    MediaState, MediaStatus, open_media_session, register_media_backend, register_sound_backend,
+};
 #[doc(hidden)]
 pub use model::ModelEdit;
 pub use model::VecModel;
@@ -281,6 +236,10 @@ pub use range::{
     RANGE_VIEW_PROPERTIES, RangePositionHandle, prepare_range_view, range_view_properties,
     try_prepare_range_view,
 };
+pub use record::{RecordList, RecordRowValidator, RecordValue};
+pub use render_stats::RenderStats3D;
+#[doc(hidden)]
+pub use render_stats::RenderStats3DData;
 pub use repeat::{Repeater, repeat_scene, static_repeat_scene};
 #[doc(hidden)]
 pub use row_heights::{RowHeightOverrides, RowHeightProjection, RowHeights};
@@ -290,11 +249,19 @@ pub use scene_plan::{
     GridCellPosition, GridCellSlot, GridPlanner, GridTrackInput, LoadedVectorPath, ScenePlanSlice,
     StaticVectorPath, VectorSegment,
 };
+pub use scene_tracking::{SceneChanges, SceneIndex, SceneNodeId};
+pub use scene3d::bounds::SceneBounds3D as Bounds3D;
+pub use scene3d::mesh::loader::{
+    MeshLoader3D, mesh_loader_deadline, poll_mesh_loaders, register_mesh_importer,
+};
+pub use scene3d::mesh::nodes::MeshNode3D;
 pub use scene3d::rotation::{Quaternion3D, RotationTrack3D};
 pub use scene3d::{
     Hit3D, Instance3D, InstanceTable3D, MeshAsset3D, Point3D, ProjectedPoint3D, TextureData2D,
-    Vector3D, WalkResult3D,
+    TextureData3D, Vector3D, WalkResult3D,
 };
+#[doc(hidden)]
+pub use scene3d::{effect as scene_effect, material_shader};
 #[doc(hidden)]
 pub use split::{
     SplitHandleInput, SplitResizeHandle, SplitState, decode_split_sizes, decode_split_state,
@@ -361,6 +328,9 @@ pub use tree::{
     TreeSelectionChange, TreeSelectionCommand, TreeSelectionLookup,
 };
 pub use tumbler::{Tumbler, TumblerItems};
+pub use ui_log::LogLevel;
+#[doc(hidden)]
+pub use ui_log::log_ui;
 pub use viewport::{
     ScrollAction, ScrollAlignment, ScrollContext, ScrollRequest, ScrollRequests, ViewportHandle,
     ViewportMotion,
@@ -1747,6 +1717,7 @@ pub enum Value {
     InstanceTable3D(InstanceTable3D),
     MeshAsset3D(MeshAsset3D),
     TextureData2D(TextureData2D),
+    TextureData3D(TextureData3D),
     MeshNode3D(MeshNode3D),
     Bounds3D(Bounds3D),
     WalkResult3D(WalkResult3D),
@@ -1888,6 +1859,7 @@ value_from!(Instance3D, Instance3D);
 value_from!(InstanceTable3D, InstanceTable3D);
 value_from!(MeshAsset3D, MeshAsset3D);
 value_from!(TextureData2D, TextureData2D);
+value_from!(TextureData3D, TextureData3D);
 value_from!(MeshNode3D, MeshNode3D);
 value_from!(Bounds3D, Bounds3D);
 value_from!(WalkResult3D, WalkResult3D);
@@ -2141,7 +2113,7 @@ pub struct NodeMetadata {
     pub action: Option<ActionKey>,
     #[doc(hidden)]
     pub button_group: Option<ButtonGroupMembership>,
-    pub(crate) radio_option_blocks: Option<Rc<Vec<controls::RadioOptionBlock>>>,
+    pub(crate) radio_option_blocks: Option<Rc<Vec<control_semantics::RadioOptionBlock>>>,
     /// Selected TreeView business keys and model row identities, including folded descendants.
     pub tree_selection: Option<Arc<BTreeMap<i64, RowKey>>>,
     pub split_weights: Option<Arc<[Option<f32>]>>,

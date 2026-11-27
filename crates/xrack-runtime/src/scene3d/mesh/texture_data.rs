@@ -9,11 +9,47 @@ use std::{
 use super::material::MeshImage;
 use crate::VecModel;
 
-type TextureKey = ((u64, u64), [u32; 2]);
+type SnapshotCache<const D: usize, T> = RefCell<VecDeque<(((u64, u64), [u32; D]), Weak<T>)>>;
 
 thread_local! {
-    static TEXTURES: RefCell<VecDeque<(TextureKey, Weak<MeshImage>)>> =
+    static TEXTURES: SnapshotCache<2, MeshImage> =
         const { RefCell::new(VecDeque::new()) };
+    static VOLUMES: SnapshotCache<3, VolumeImage3D> =
+        const { RefCell::new(VecDeque::new()) };
+}
+
+fn snapshot<const D: usize, T: 'static>(
+    cache: &'static std::thread::LocalKey<SnapshotCache<D, T>>,
+    size: [u32; D],
+    count: usize,
+    pixels: &VecModel<i64>,
+    image: impl FnOnce(Vec<u8>) -> Option<T>,
+) -> Option<Arc<T>> {
+    if pixels.len() != count {
+        return None;
+    }
+    let key = (pixels.contents_stamp(), size);
+    if let Some(cached) = cache.with_borrow(|textures| {
+        textures
+            .iter()
+            .find(|(id, _)| *id == key)
+            .and_then(|(_, image)| image.upgrade())
+    }) {
+        return Some(cached);
+    }
+    let mut bytes = Vec::with_capacity(count);
+    pixels.visit_rows_untracked(count, |_, _, value| {
+        if let Ok(byte) = u8::try_from(*value) {
+            bytes.push(byte);
+        }
+    });
+    let image = Arc::new(image(bytes)?);
+    cache.with_borrow_mut(|textures| {
+        textures.retain(|(id, value)| *id != key && value.strong_count() != 0);
+        textures.truncate(31);
+        textures.push_front((key, Arc::downgrade(&image)));
+    });
+    Some(image)
 }
 
 /// A snapshot of top-to-bottom RGBA8 pixels with straight alpha.
@@ -56,35 +92,13 @@ impl TextureData2D {
         let Some(size) = Self::dimensions(width, height) else {
             return Self::default();
         };
-        let count = Self::byte_len(size);
-        if pixels.len() != count {
-            return Self::default();
-        }
-        let key = (pixels.contents_stamp(), size);
-        let cached = TEXTURES.with_borrow(|textures| {
-            textures
-                .iter()
-                .find(|(id, _)| *id == key)
-                .and_then(|(_, image)| image.upgrade())
-        });
-        if cached.is_some() {
-            return Self(cached);
-        }
-        let mut bytes = Vec::with_capacity(count);
-        pixels.visit_rows_untracked(count, |_, _, value| {
-            if let Ok(byte) = u8::try_from(*value) {
-                bytes.push(byte);
-            }
-        });
-        let image = MeshImage::new(size, bytes).map(Arc::new);
-        if let Some(image) = &image {
-            TEXTURES.with_borrow_mut(|textures| {
-                textures.retain(|(id, value)| *id != key && value.strong_count() != 0);
-                textures.truncate(31);
-                textures.push_front((key, Arc::downgrade(image)));
-            });
-        }
-        Self(image)
+        Self(snapshot(
+            &TEXTURES,
+            size,
+            Self::byte_len(size),
+            pixels,
+            |bytes| MeshImage::new(size, bytes),
+        ))
     }
 
     fn dimensions(width: i64, height: i64) -> Option<[u32; 2]> {
@@ -139,9 +153,147 @@ impl std::fmt::Debug for TextureData2D {
     }
 }
 
+/// An immutable stack of RGBA8 slices, with X changing fastest and Z slowest.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextureData3D(Option<Arc<VolumeImage3D>>);
+
+impl TextureData3D {
+    pub const MAX_DIMENSION: u32 = 256;
+    pub const MAX_BYTES: usize = 16 * 1024 * 1024;
+
+    fn dimensions(width: i64, height: i64, depth: i64) -> Option<([u32; 3], usize)> {
+        let size = [
+            u32::try_from(width).ok()?,
+            u32::try_from(height).ok()?,
+            u32::try_from(depth).ok()?,
+        ];
+        if size
+            .iter()
+            .any(|side| !(1..=Self::MAX_DIMENSION).contains(side))
+        {
+            return None;
+        }
+        let count = size
+            .into_iter()
+            .map(|side| side as usize)
+            .product::<usize>()
+            * 4;
+        (count <= Self::MAX_BYTES).then_some((size, count))
+    }
+
+    pub fn from_rgba8(width: i64, height: i64, depth: i64, voxels: Vec<u8>) -> Self {
+        let Some((size, count)) = Self::dimensions(width, height, depth) else {
+            return Self::default();
+        };
+        Self(VolumeImage3D::new(size, count, voxels).map(Arc::new))
+    }
+
+    pub fn from_ints(width: i64, height: i64, depth: i64, voxels: &[i64]) -> Self {
+        let Some((size, count)) = Self::dimensions(width, height, depth) else {
+            return Self::default();
+        };
+        if voxels.len() != count {
+            return Self::default();
+        }
+        let voxels = voxels
+            .iter()
+            .copied()
+            .map(u8::try_from)
+            .collect::<Result<Vec<_>, _>>();
+        Self(
+            voxels
+                .ok()
+                .and_then(|bytes| VolumeImage3D::new(size, count, bytes))
+                .map(Arc::new),
+        )
+    }
+
+    pub fn from_model(width: i64, height: i64, depth: i64, voxels: &VecModel<i64>) -> Self {
+        let Some((size, count)) = Self::dimensions(width, height, depth) else {
+            return Self::default();
+        };
+        Self(snapshot(&VOLUMES, size, count, voxels, |bytes| {
+            VolumeImage3D::new(size, count, bytes)
+        }))
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.0.is_some()
+    }
+    pub fn width(&self) -> i64 {
+        self.0
+            .as_ref()
+            .map_or(0, |image| i64::from(image.size()[0]))
+    }
+    pub fn height(&self) -> i64 {
+        self.0
+            .as_ref()
+            .map_or(0, |image| i64::from(image.size()[1]))
+    }
+    pub fn depth(&self) -> i64 {
+        self.0
+            .as_ref()
+            .map_or(0, |image| i64::from(image.size()[2]))
+    }
+    pub fn image(&self) -> Option<Arc<VolumeImage3D>> {
+        self.0.clone()
+    }
+}
+
+#[doc(hidden)]
+pub struct VolumeImage3D {
+    size: [u32; 3],
+    rgba: Box<[u8]>,
+}
+
+impl VolumeImage3D {
+    fn new(size: [u32; 3], count: usize, bytes: Vec<u8>) -> Option<Self> {
+        (bytes.len() == count).then(|| Self {
+            size,
+            rgba: bytes.into_boxed_slice(),
+        })
+    }
+
+    pub fn size(&self) -> [u32; 3] {
+        self.size
+    }
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+
+impl PartialEq for VolumeImage3D {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl Eq for VolumeImage3D {}
+impl std::fmt::Debug for VolumeImage3D {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VolumeImage3D")
+            .field("size", &self.size)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_snapshots_keep_slice_order_and_apply_bounds() {
+        let voxels = VecModel::from(vec![17, 34, 68, 85, 102, 119, 136, 153]);
+        let before = TextureData3D::from_model(1, 1, 2, &voxels);
+        assert_eq!(before.depth(), 2);
+        assert_eq!(before, TextureData3D::from_model(1, 1, 2, &voxels));
+        assert!(voxels.set_row(4, 255));
+        let after = TextureData3D::from_model(1, 1, 2, &voxels);
+        assert_eq!(before.image().unwrap().rgba()[4], 102);
+        assert_eq!(after.image().unwrap().rgba()[4], 255);
+        assert!(!TextureData3D::from_model(1, 1, 0, &voxels).is_valid());
+        assert!(!TextureData3D::from_model(256, 256, 256, &voxels).is_valid());
+    }
 
     #[test]
     fn pixel_snapshots_follow_model_revisions_and_validate_all_channels() {

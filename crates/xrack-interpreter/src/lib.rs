@@ -329,6 +329,7 @@ pub enum ValueType {
     Instance3D,
     InstanceTable3D,
     TextureData2D,
+    TextureData3D,
     MeshAsset3D,
     MeshNode3D,
     Bounds3D,

@@ -5,7 +5,7 @@ use xrack_runtime::scene_effect::{
 
 pub(super) fn load(path: &Path) -> Result<Arc<str>, String> {
     let source = load_source(path, "scene effect")?;
-    let wgsl = shader(&source, DepthInput::None, 0, 0, 0);
+    let wgsl = shader(&source, DepthInput::None, 0, 0, Default::default());
     let module =
         naga::front::wgsl::parse_str(&wgsl).map_err(|error| error.emit_to_string(&wgsl))?;
     if module.entry_points.len() != 2

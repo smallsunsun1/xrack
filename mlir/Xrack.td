@@ -37,6 +37,7 @@ def XR_Instance3D : XR_Type<"Instance3D", "instance3d">;
 def XR_Bounds3D : XR_Type<"Bounds3D", "bounds3d">;
 def XR_MeshNode3D : XR_Type<"MeshNode3D", "meshnode3d">;
 def XR_MeshAsset3D : XR_Type<"MeshAsset3D", "meshasset3d">;
+def XR_TextureData3D : XR_Type<"TextureData3D", "texturedata3d">;
 def XR_TextureData2D : XR_Type<"TextureData2D", "texturedata2d">;
 def XR_InstanceTable3D : XR_Type<"InstanceTable3D", "instancetable3d">;
 def XR_Hit3DList : XR_Type<"Hit3DList", "hit3dlist">;
@@ -117,7 +118,7 @@ def XR_DateList : XR_Type<"DateList", "datelist">;
 def XR_Time : XR_Type<"Time", "time">;
 def XR_Font : XR_Type<"Font", "font">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
-def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Point2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_InstanceTable3D, XR_TextureData2D, XR_MeshAsset3D, XR_MeshNode3D, XR_Bounds3D, XR_Hit3DList, XR_PhysicsContact3D, XR_PhysicsHit3D, XR_PhysicsContact3DList, XR_PhysicsHit3DList, XR_ProjectedPoint3D, XR_RenderStats3D, XR_WalkResult3D, XR_PhysicsWorld3D, XR_SceneModel3D, XR_Vector2D, XR_Transform2D, XR_Percent, XR_Color,
+def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Point2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_InstanceTable3D, XR_TextureData2D, XR_TextureData3D, XR_MeshAsset3D, XR_MeshNode3D, XR_Bounds3D, XR_Hit3DList, XR_PhysicsContact3D, XR_PhysicsHit3D, XR_PhysicsContact3DList, XR_PhysicsHit3DList, XR_ProjectedPoint3D, XR_RenderStats3D, XR_WalkResult3D, XR_PhysicsWorld3D, XR_SceneModel3D, XR_Vector2D, XR_Transform2D, XR_Percent, XR_Color,
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers, XR_WheelEvent,
                          XR_PointerEvent, XR_PointerEventKind, XR_PointerButton, XR_PointerButtons, XR_TouchPoint, XR_TouchPoints,
                          XR_Brush, XR_Image, XR_LogLevel, XR_ImageFit, XR_ImageTileMode,
@@ -636,7 +637,7 @@ def XR_MathFunctionOp : XR_ExpressionOp<"math_function", (ins Variadic<XR_MathOp
 def XR_GeometryValue : AnyTypeOf<[XR_Point2D, XR_Vector2D, XR_Transform2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_Hit3DList, XR_ProjectedPoint3D, XR_RenderStats3D, XR_WalkResult3D, XR_Bounds3D, XR_MeshNode3D]>;
 def XR_GeometryFunctionOp : XR_ExpressionOp<"geometry_function",
     (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length, XR_Record, XR_RecordList, XR_SceneModel3D, XR_InstanceTable3D, XR_PhysicsWorld3D, XR_MeshAsset3D, XR_String, XR_Int, XR_IntList]>>:$inputs),
-    AnyTypeOf<[XR_GeometryValue, XR_SceneModel3D, XR_InstanceTable3D, XR_TextureData2D, XR_String, XR_IntList, XR_StringList, XR_Float]>,
+    AnyTypeOf<[XR_GeometryValue, XR_SceneModel3D, XR_InstanceTable3D, XR_TextureData2D, XR_TextureData3D, XR_String, XR_IntList, XR_StringList, XR_Float]>,
     [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> { let hasVerifier = 1; }
 def XR_PhysicsFunctionOp : XR_ExpressionOp<"physics_function",
     (ins Variadic<AnyTypeOf<[XR_PhysicsWorld3D, XR_Point3D, XR_Vector3D, XR_Int, XR_Float, XR_Bool, XR_String, XR_RecordList]>>:$inputs),
@@ -660,6 +661,8 @@ def XR_Quaternion3DFieldOp : XR_ExpressionOp<"quaternion3d_field", (ins XR_Quate
 }
 def XR_RotationTrack3DFieldOp : XR_ExpressionOp<"rotation_track3d_field", (ins XR_RotationTrack3D:$input),
     AnyTypeOf<[XR_Int, XR_Bool, XR_Float]>, [Pure]> { let hasVerifier = 1; }
+def XR_TextureData3DFieldOp : XR_ExpressionOp<"texture_data3d_field", (ins XR_TextureData3D:$input),
+    AnyTypeOf<[XR_Int, XR_Bool]>, [Pure]> { let hasVerifier = 1; }
 def XR_TextureData2DFieldOp : XR_ExpressionOp<"texture_data2d_field", (ins XR_TextureData2D:$input),
     AnyTypeOf<[XR_Int, XR_Bool]>, [Pure]> { let hasVerifier = 1; }
 def XR_InstanceTable3DFieldOp : XR_ExpressionOp<"instance_table3d_field", (ins XR_InstanceTable3D:$input),

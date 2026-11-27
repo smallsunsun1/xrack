@@ -8,6 +8,51 @@ component HitTile inherits Rectangle {
     }
 }
 
+export component TransformComboProbe inherits Window {
+    width <- 360px;
+    height <- 360px;
+    in-out property <int> selected: 0;
+
+    Rectangle {
+        x <- 160px;
+        y <- 30px;
+        width <- 210px;
+        height <- 50px;
+        transform-rotation <- 90;
+        transform-origin-x <- 0px;
+        transform-origin-y <- 0px;
+
+        choice := ComboBox {
+            x <- 12px;
+            y <- 8px;
+            width <- 90px;
+            height <- 26px;
+            transform <- Transform2D.scale(2, 1);
+            model <- ["First", "Second"];
+            current-index <-> root.selected;
+            editable <- true;
+        }
+    }
+
+    Rectangle {
+        x <- 24px;
+        y <- 140px;
+        width <- 12px;
+        height <- 8px;
+        transform-scale <- 2;
+        transform-origin-x <- 0px;
+        transform-origin-y <- 0px;
+    }
+
+    Rectangle {
+        x <- 12px;
+        y <- 14px;
+        width <- 12px;
+        height <- 8px;
+        transform-scale-x <- 0;
+    }
+}
+
 export component TransformProbe inherits Window {
     width <- 90px;
     height <- 62px;

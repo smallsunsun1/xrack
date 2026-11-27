@@ -153,6 +153,57 @@ impl Cache {
         })
     }
 
+    #[cfg(any(test, not(xrack_femtovg_glyph_samples)))]
+    pub(super) fn ltr_width_and_ink(
+        &mut self,
+        system: &TextSystem,
+        text: &str,
+        fonts: &CellFonts,
+        size: f32,
+    ) -> Option<(f32, Option<[f32; 2]>)> {
+        use BidiClass::{CS, EN, ES, ET, L, ON, WS};
+
+        if !text
+            .chars()
+            .all(|ch| matches!(bidi_class(ch), L | EN | ES | ET | CS | ON | WS))
+        {
+            return None;
+        }
+        self.select_context(system);
+        let mut width = 0.0;
+        let mut ink = Some([0.0_f32; 3]);
+        for token in text.split_word_bounds() {
+            let word = self.word(system, token, fonts)?;
+            let scale = size / word.units_per_em;
+            let mut advance = 0.0;
+            for glyph in &word.glyphs {
+                // Match the native accumulation within a word and between words.
+                advance += glyph.advance[0] * scale + 0.0;
+                if let Some([cursor, top, bottom]) = ink {
+                    ink = system.outline_glyph(glyph.font, glyph.id).map(|outline| {
+                        let [bearing, height] = outline.bounds.map_or([0.0, 0.0], |bounds| {
+                            [
+                                f32::from(bounds.y_max) * scale,
+                                f32::from(bounds.height()) * scale,
+                            ]
+                        });
+                        let y = cursor + glyph.offset[1] * scale - bearing;
+                        [
+                            cursor + glyph.advance[1] * scale,
+                            top.min(y),
+                            bottom.max(y + height),
+                        ]
+                    });
+                }
+            }
+            width += advance;
+        }
+        Some((
+            width,
+            ink.map(|[_, top, bottom]| [top, top + (bottom - top)]),
+        ))
+    }
+
     pub(super) fn word_advance(
         &mut self,
         system: &TextSystem,
@@ -449,21 +500,32 @@ mod ascii_width_tests {
     #[test]
     fn ascii_glyphs_match_native_and_leave_kerning_to_shaping() {
         use super::{Cache, TextSystem};
-        use femtovg::{Color, Paint};
+        use femtovg::{Baseline, Color, Paint};
 
         let system = TextSystem::from_fonts([(test_font(false), 0)]).unwrap();
         let font = system.font_context().fallback[0];
+        let fonts = [Some(font), None, None, None, None, None, None, None];
         let mut cache = Cache::default();
         for size in [9.125, 13.25, 33.75] {
-            let paint = Paint::color(Color::white())
+            let mut paint = Paint::color(Color::white())
                 .with_font(&[font])
                 .with_font_size(size);
+            paint.set_text_baseline(Baseline::Alphabetic);
             let metrics = cache.ascii_metrics(&system, size, font).unwrap();
             for text in ["AV9", "release-0000F2a", "a.b:0,2 -3", "9 - 90", " A  b_1 "] {
                 let native = system
                     .context()
                     .measure_text(0.0, 0.0, text, &paint)
                     .unwrap();
+                let (width, ink) = cache
+                    .ltr_width_and_ink(&system, text, &fonts, size)
+                    .unwrap();
+                assert_eq!(width.to_bits(), native.width().to_bits(), "{text:?}");
+                assert_eq!(
+                    ink,
+                    Some([native.y, native.y + native.height()]),
+                    "{text:?}"
+                );
                 let cached = metrics.width(text).unwrap();
                 assert_eq!(
                     cached.to_bits(),
@@ -488,6 +550,11 @@ mod ascii_width_tests {
                 .ascii_metrics(&system, 12.0, font)
                 .unwrap()
                 .width("ترقيم A")
+                .is_none()
+        );
+        assert!(
+            cache
+                .ltr_width_and_ink(&system, "A שלום", &fonts, 16.0)
                 .is_none()
         );
         let system = TextSystem::from_fonts([(test_font(true), 0)]).unwrap();

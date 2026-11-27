@@ -7,11 +7,62 @@ use std::sync::Arc;
 use super::SceneObject;
 use crate::scene3d::{
     JointPalette, Mesh3D, MeshInfluence, MeshPbr, MeshTangent, MeshVertex, ModelBlendPose,
-    MorphGeometry, MorphWeights,
+    MorphGeometry, MorphWeights, SceneTransform,
+    bounds::Bounds3D,
     mesh::{morph::MorphPose, skin::SkinPose},
 };
 
 impl SceneObject {
+    pub(crate) fn relative_to(mut self, root: SceneTransform) -> Option<Self> {
+        self.transform = self.transform.relative_to(root)?;
+        Some(self)
+    }
+
+    pub(crate) fn with_parent_transform(mut self, parent: SceneTransform) -> Option<Self> {
+        self.transform = parent.child(self.transform)?;
+        Some(self)
+    }
+
+    fn render_bounds(&self) -> ([f32; 3], [f32; 3]) {
+        let (min, max) = self.bounds();
+        let expansion = self.mesh.shader_displacement();
+        (
+            min.map(|point| point - expansion),
+            max.map(|point| point + expansion),
+        )
+    }
+
+    pub(crate) fn world_bounds(&self) -> Bounds3D {
+        let (min, max) = self.render_bounds();
+        Bounds3D { min, max }.transform(self.transform_rows())
+    }
+
+    /// Corners of the transformed mesh bounds.
+    pub fn bounds_corners(&self) -> [[f32; 3]; 8] {
+        let (min, max) = self.render_bounds();
+        let transform = self.transform_rows();
+        std::array::from_fn(|corner| {
+            let [x, y, z] = std::array::from_fn(|axis| {
+                if corner & (1 << axis) == 0 {
+                    min[axis]
+                } else {
+                    max[axis]
+                }
+            });
+            transform.map(|[a, b, c, d]| a * x + b * y + c * z + d)
+        })
+    }
+
+    /// Rows of the model-to-world affine transform, including translation.
+    pub fn transform_rows(&self) -> [[f32; 4]; 3] {
+        self.transform.rows()
+    }
+
+    /// Whether this object's model-to-world transform reverses orientation.
+    pub fn is_reflected(&self) -> bool {
+        self.transform.reflected
+    }
+
     pub(crate) fn with_morph(mut self, weights: MorphWeights) -> Option<Self> {
         if weights.iter().any(|weight| *weight != 0.0) {
             self.morph = Some(Arc::new(MorphPose::new(

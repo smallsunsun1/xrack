@@ -1,0 +1,12 @@
+// RAW-DAG: "xr.geometry_function"{{.*}}value = "volume-rgba8"
+// RAW-DAG: "xr.int_array"
+// CHECK-DAG: "xr.literal"() <{value = "1x1x2:1122445566778899"}> : () -> !xr.texturedata3d
+// CHECK-DAG: "xr.literal"() <{value = ""}> : () -> !xr.texturedata3d
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "volume-rgba8"
+
+export component App inherits Window {
+    in-out property <[int]> voxels: [17, 34, 68, 85, 102, 119, 136, 153];
+    out property <texturedata3d> packed <- TextureData3D.rgba8(1, 1, 2, [17, 34, 68, 85, 102, 119, 136, 153]);
+    out property <texturedata3d> invalid <- TextureData3D.rgba8(1, 1, 2, [17]);
+    out property <texturedata3d> live <- TextureData3D.rgba8(1, 1, 2, root.voxels);
+}

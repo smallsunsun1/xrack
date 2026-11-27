@@ -1,6 +1,6 @@
-use transform2d_ui::TransformProbe;
+use transform2d_ui::{TransformComboProbe, TransformProbe};
 use xrack_interpreter::{Program, load_mlir};
-use xrack_layout::{Interaction, Point, Rect};
+use xrack_layout::{ComboGeometry, Interaction, Point, Rect, Size, item::ItemRef};
 use xrack_renderer_femtovg::Renderer;
 use xrack_runtime::{Component, Length, Point2D, Transform2D, Value, Vector2D};
 
@@ -60,6 +60,79 @@ fn benchmark_transform_binding() -> Result<(), Box<dyn std::error::Error>> {
 
 fn point(x: f64, y: f64) -> Point2D {
     Point2D::new(Length(x), Length(y))
+}
+
+#[test]
+fn transformed_combo_uses_item_local_coordinates_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    let compiled = xrack_compiler::compile(SOURCE, "transform2d.xr")?;
+    let mut interpreted = load_mlir(&compiled.mlir)?.create("TransformComboProbe")?;
+    let mut aot = TransformComboProbe::new();
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+
+    for ui in [&mut aot as &mut dyn Component, &mut interpreted] {
+        let mut input = Interaction::default();
+        let scene = ui.render_shared();
+        let layout = renderer.layout_with_input(&scene, Size::new(360.0, 360.0), &input);
+        let at = |path: &[usize]| {
+            Some(ItemRef {
+                node: scene.at_path(path)?,
+                layout: layout.at_path(path)?,
+            })
+        };
+        let combo = at(&[0, 0]).ok_or("combo missing")?;
+        let sibling = at(&[1]).ok_or("sibling missing")?;
+        let collapsed = at(&[2]).ok_or("collapsed item missing")?;
+        let local = Point { x: 5.0, y: 7.0 };
+        let window = Point { x: 145.0, y: 52.0 };
+        assert_eq!(combo.local_rect(), Rect::new(0.0, 0.0, 90.0, 26.0));
+        assert_eq!(combo.local_to_window(local), window);
+        assert_eq!(combo.window_to_local(window), Some(local));
+        assert_eq!(
+            combo.map_to_item(sibling, local),
+            Some(Point { x: 60.5, y: -44.0 })
+        );
+        assert_eq!(combo.map_to_item(collapsed, local), None);
+
+        let center = |rect: Rect| Point {
+            x: rect.x + rect.width * 0.5,
+            y: rect.y + rect.height * 0.5,
+        };
+        // Use the same layout-space geometry as the painter to locate the visible arrow.
+        let geometry = ComboGeometry::for_control(
+            combo.node,
+            combo.layout.bounds,
+            combo.layout.layout_direction,
+        );
+        let entry = combo.layout.map_to_window(center(geometry.entry));
+        let arrow = combo.layout.map_to_window(center(geometry.trigger));
+        for (press, release, opens) in [(entry, arrow, false), (arrow, arrow, true)] {
+            input.pointer_move(&scene, &layout, press);
+            input.pointer_press_in_scene(&scene, &layout);
+            input.pointer_move(&scene, &layout, release);
+            let target = input.pointer_release_target().ok_or("combo missed")?;
+            assert_eq!(target.path, [0, 0]);
+            assert_eq!(input.open_choice_at_pointer(&scene, &layout, target), opens);
+        }
+        let menu = input
+            .choice_menu(&scene, &layout)
+            .ok_or("choice menu missing")?;
+        let anchor = combo.layout.window_bounds(combo.layout.bounds);
+        assert_eq!(menu.bounds.y, anchor.y + anchor.height);
+        assert_eq!(menu.rows.get(1).map(String::as_str), Some("Second"));
+        input.pointer_move(&scene, &layout, center(menu.row_bounds(1)));
+        assert!(input.choice_press(&scene, &layout));
+        let choice = input
+            .choice_release(&scene, &layout)
+            .ok_or("choice not selected")?;
+        assert!(ui.control_at(&scene, &choice.path, choice.action));
+    }
+    assert_eq!(aot.get_selected(), 1);
+    assert_eq!(interpreted.get("selected")?, Value::Int(1));
+    Ok(())
 }
 
 #[test]

@@ -605,6 +605,41 @@ impl TextureData2D {
     }
 }
 
+owned_value!(TextureData3D, rt::TextureData3D);
+
+#[pymethods]
+impl TextureData3D {
+    #[new]
+    fn new() -> Self {
+        Self(Default::default())
+    }
+
+    #[staticmethod]
+    fn rgba8(width: i64, height: i64, depth: i64, voxels: &Bound<'_, PyBytes>) -> Self {
+        rt::TextureData3D::from_rgba8(width, height, depth, voxels.as_bytes().to_vec()).into()
+    }
+
+    #[getter]
+    fn valid(&self) -> bool {
+        self.0.is_valid()
+    }
+
+    #[getter]
+    fn width(&self) -> i64 {
+        self.0.width()
+    }
+
+    #[getter]
+    fn height(&self) -> i64 {
+        self.0.height()
+    }
+
+    #[getter]
+    fn depth(&self) -> i64 {
+        self.0.depth()
+    }
+}
+
 owned_value!(SceneModel3D, std::sync::Arc<rt::scene3d::SceneModel>);
 
 #[pymethods]
@@ -2374,7 +2409,18 @@ macro_rules! bridge_values {
                 HostValue::Image(value) => convert!(Image(value.into())),
                 // The combo projection is renderer data and has no public ValueType.
                 HostValue::ComboModel(_) => Err(PyTypeError::new_err("invalid public XRack combo projection")),
-                HostValue::SceneLights(_) | HostValue::SceneEnvironment(_) | HostValue::SceneReflections(_) | HostValue::PhysicsDebugLines(_) | HostValue::SceneFogVolumes(_) | HostValue::SceneEffects(_) | HostValue::SceneCaptures(_) | HostValue::SceneParticleEmitters(_) | HostValue::SceneParticleAffectors(_) => Err(PyTypeError::new_err("invalid public XRack scene projection")),
+                HostValue::SceneLights(_)
+                | HostValue::SceneEnvironment(_)
+                | HostValue::SceneReflections(_)
+                | HostValue::PhysicsDebugLines(_)
+                | HostValue::SceneFogVolumes(_)
+                | HostValue::SceneEffects(_)
+                | HostValue::SceneCaptures(_)
+                | HostValue::SceneParticleEmitters(_)
+                | HostValue::SceneParticleInstanceModels(_)
+                | HostValue::SceneParticleAffectors(_) => {
+                    Err(PyTypeError::new_err("invalid public XRack scene projection"))
+                }
                 $(HostValue::$tag(value) => convert!($wrapper(value)),)+
                 $(HostValue::$name(value) => convert!($name::from(value)),)+
             }
@@ -2410,6 +2456,7 @@ bridge_values! {
         Instance3D => Instance3D,
         InstanceTable3D => InstanceTable3D,
         TextureData2D => TextureData2D,
+        TextureData3D => TextureData3D,
         MeshAsset3D => MeshAsset3D,
         MeshNode3D => MeshNode3D,
         Bounds3D => Bounds3D,

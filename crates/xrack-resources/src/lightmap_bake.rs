@@ -1094,6 +1094,9 @@ mod tests {
             .collect();
         let chart = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
         let material = MeshMaterial {
+            opacity: 1.0,
+            opacity_texture: None,
+            invert_opacity_map_value: false,
             shader: None,
             base_item: None,
             channels: Default::default(),
@@ -1117,6 +1120,9 @@ mod tests {
                 emissive: [0.0; 3],
                 occlusion_strength: 1.0,
                 surface_texture: None,
+                separate_surface_maps: None,
+                specular_reflection: None,
+                height_map: None,
                 workflow: Default::default(),
                 emissive_texture: None,
                 occlusion_texture: None,

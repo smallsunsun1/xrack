@@ -5,7 +5,7 @@ use xrack_runtime::{
     Color, Length, Node, RecordList, RecordValue, Value,
     material_shader::prepare_capture_augment,
     scene_effect::{record_captures, record_passes},
-    scene3d::{record_lights, record_objects},
+    scene3d::{TextureData2D, record_lights, record_objects},
 };
 
 use crate::{RenderDevice, Renderer};
@@ -20,9 +20,30 @@ fn row<const N: usize>(fields: [(&str, Value); N]) -> RecordValue {
     )
 }
 
-fn scene(coated: bool) -> Node {
+fn scene(coated: bool, opacity: Option<TextureData2D>) -> Node {
     let material = if coated {
-        row([("clearcoat", Value::Float(0.5))])
+        let maps = opacity.is_some();
+        let scalar = |channels| {
+            Value::TextureData2D(if maps {
+                TextureData2D::from_rgba8(1, 1, Vec::from(channels))
+            } else {
+                TextureData2D::default()
+            })
+        };
+        row([
+            ("metalness", Value::Float(if maps { 0.5 } else { 0.0 })),
+            ("roughness", Value::Float(0.5)),
+            ("metalness-map", scalar([255, 64, 128, 255])),
+            ("roughness-map", scalar([0, 64, 0, 255])),
+            ("specular-reflection-map", scalar([30, 225, 168, 255])),
+            ("height-map", scalar([128, 0, 0, 255])),
+            ("height-amount", Value::Float(if maps { 0.15 } else { 0.0 })),
+            ("clearcoat", Value::Float(0.5)),
+            (
+                "opacity-map",
+                Value::TextureData2D(opacity.unwrap_or_default()),
+            ),
+        ])
     } else {
         row([("unlit", Value::Bool(true))])
     };
@@ -174,12 +195,34 @@ fn a_sixteen_texture_device_uses_only_the_current_material_budget()
         system_fonts: Default::default(),
     })?;
     let input = Interaction::default();
-    let simple = renderer.snapshot(&scene(false), 64, 64, 1.0, &input)?;
+    let simple = renderer.snapshot(&scene(false, None), 64, 64, 1.0, &input)?;
     assert_eq!(simple.pixel(32, 32), Some([255, 255, 255, 255]));
     assert_eq!(renderer.scene_draw_stats().scene_capture_passes, 4);
-    let coated = renderer.snapshot(&scene(true), 64, 64, 1.0, &input)?;
+    let coated = renderer.snapshot(&scene(true, None), 64, 64, 1.0, &input)?;
     assert_eq!(coated.pixel(32, 32), Some([0, 0, 0, 255]));
     assert_eq!(renderer.scene_draw_stats().scene_capture_passes, 5);
+    let draw = |renderer: &mut Renderer, opacity| {
+        let mut scene = scene(true, opacity);
+        let properties = &mut scene.children[0].properties;
+        properties.remove("scene-captures");
+        properties.remove("scene-effects");
+        properties.remove("render-overrides");
+        properties.insert("ambient-intensity", Value::Float(0.6));
+        properties.insert("scene-background", Value::Color(Color(0x000000ff)));
+        renderer.snapshot(&scene, 64, 64, 1.0, &input)
+    };
+    let solid = draw(&mut renderer, None)?;
+    let painted = draw(
+        &mut renderer,
+        Some(TextureData2D::from_rgba8(1, 1, vec![255, 255, 255, 128])),
+    )?;
+    let transparent = draw(
+        &mut renderer,
+        Some(TextureData2D::from_rgba8(1, 1, vec![255, 255, 255, 0])),
+    )?;
+    assert_ne!(solid.pixel(32, 32), painted.pixel(32, 32));
+    assert_ne!(painted.pixel(32, 32), transparent.pixel(32, 32));
+    assert_eq!(transparent.pixel(32, 32), Some([0, 0, 0, 255]));
     let mixed = |precision: &str| {
         row([
             ("kind", Value::String("directional".into())),
@@ -202,7 +245,7 @@ fn a_sixteen_texture_device_uses_only_the_current_material_budget()
         "Row",
         vec![mixed("depth32"), mixed("depth16")],
     ));
-    let mut mixed = scene(true);
+    let mut mixed = scene(true, None);
     let properties = &mut mixed.children[0].properties;
     properties.insert("shadows", Value::Bool(true));
     properties.insert("shadow-map-size", Value::Int(128));

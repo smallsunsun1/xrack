@@ -130,6 +130,9 @@ fn xr_sample_cubemap(image: texture_cube<f32>, filtering: sampler,
 pub const MAX_TEXTURES: usize = 4;
 
 pub const VALIDATION_TEXTURES: &str = r#"
+fn material_has_volume(index: u32) -> bool { return false; }
+fn material_volume(index: u32, uvw: vec3<f32>) -> vec4<f32> { return vec4(0.0); }
+fn material_volume_size(index: u32) -> vec3<u32> { return vec3(0u); }
 fn material_has_cubemap(index: u32) -> bool { return false; }
 fn material_cubemap(index: u32, direction: vec3<f32>) -> vec4<f32> { return vec4(0.0); }
 fn material_cubemap_lod(index: u32, direction: vec3<f32>, lod: f32) -> vec4<f32> { return vec4(0.0); }
