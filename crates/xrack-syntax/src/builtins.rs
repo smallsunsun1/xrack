@@ -2527,6 +2527,16 @@ pub const MESH_LOADER_OUTPUTS: &[(&str, Type)] = &[
     ("error", Type::String),
 ];
 
+pub fn mesh_loader_output_type(kind: &str, property: &str) -> Option<Type> {
+    if kind != "MeshLoader3D" {
+        return None;
+    }
+    MESH_LOADER_OUTPUTS
+        .iter()
+        .find(|(name, _)| *name == property)
+        .map(|(_, ty)| ty.clone())
+}
+
 pub const OBJ_EXTENSION: &str = "obj";
 pub const MESH_SOURCE_EXTENSIONS: &[&str] = &["glb", "gltf", OBJ_EXTENSION, HEIGHTFIELD_EXTENSION];
 

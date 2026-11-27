@@ -12,6 +12,7 @@ rust_binary(
         "//docs:editor.md",
         "//docs:language.md",
         "//docs:models.md",
+        "//docs:scene3d.md",
     ],
     edition = "2024",
     deps = [
@@ -32,6 +33,7 @@ genrule(
     name = "pages",
     srcs = [
         "assets/live-preview.png",
+        "assets/primitive-meshes.webp",
         "assets/xrack.png",
         "index.html",
         "main.js",
@@ -50,7 +52,8 @@ genrule(
             reference.js=$(location reference.js) \\
             theme.css=$(location theme.css) \\
             assets/xrack.png=$(location assets/xrack.png) \\
-            assets/live-preview.png=$(location assets/live-preview.png)
+            assets/live-preview.png=$(location assets/live-preview.png) \\
+            assets/primitive-meshes.webp=$(location assets/primitive-meshes.webp)
     """,
     tools = ["@bazel_tools//tools/zip:zipper"],
 )

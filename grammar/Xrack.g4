@@ -12,7 +12,7 @@ enumVariant: identifier enumFieldTypes?;
 enumFieldTypes: '(' typeName (',' typeName)* ','? ')' | '{' recordField (',' recordField)* ','? '}';
 component: 'export'? ('component' identifier 'inherits' identifier '{' member* '}'
                      | 'global' identifier '{' member* '}');
-member: property | callback | binding | handler | element | animation | stateBlock | '@children' ';'? | slotMarker | slotFill | functionDecl | viewMatch;
+member: property | callback | callbackImplementation | binding | handler | view | animation | stateBlock | '@children' ';'? | slotMarker | slotFill | functionDecl;
 viewMatch: 'match' expression ':' '{' viewArm (',' viewArm)* ','? '}';
 viewArm: enumPattern '=>' element;
 functionDecl: 'pure' 'function' identifier '(' (namedParameter (',' namedParameter)* ','?)? ')' '->' typeName '{' statement* expression ';'? '}';
@@ -37,7 +37,7 @@ binding: identifier ((':' | oneWayBinding) expression | '<->' reference) ';';
 oneWayBinding: '<' '-';
 handler: identifier ('(' (identifier (',' identifier)*)? ')')? '=>' '{' statement* (expression ';'?)? '}';
 statement: (reference assignmentOp expression | call) ';' | ifStatement | forStatement | letStatement;
-letStatement: 'let' identifier '=' expression ';';
+letStatement: 'let' identifier (':' typeName)? '=' expression ';';
 statementBlock: '{' statement* '}';
 ifStatement: 'if' expression statementBlock ('else' (ifStatement | statementBlock))?;
 forStatement: iteration statementBlock;
@@ -56,7 +56,8 @@ comparison: additive (('<' | '<=' | '>' | '>=') additive)*;
 additive: multiplicative (('+' | '-') multiplicative)*;
 multiplicative: unary (('*' | '/' | '%') unary)*;
 unary: ('!' | '-' | '+') unary | primary;
-primary: NUMBER (UNIT | '%')? | STRING | COLOR | 'true' | 'false' | gradient | imageUrl | meshUrl | environmentUrl | textureUrl | shaderUrl | materialShaderUrl | instanceTableUrl | markdown | translation | arrayLiteral | recordLiteral | enumValue | matchExpression | call | reference | '(' expression ')';
+primary: NUMBER (UNIT | '%')? | STRING | COLOR | 'true' | 'false' | gradient | imageUrl | meshUrl | environmentUrl | textureUrl | shaderUrl | materialShaderUrl | instanceTableUrl | markdown | translation | arrayLiteral | recordLiteral | enumValue | matchExpression | ifExpression | call | reference | '(' expression ')';
+ifExpression: 'if' expression '{' expression '}' 'else' ('{' expression '}' | ifExpression);
 enumValue: identifier '::' identifier enumArguments?;
 enumArguments: '(' expression (',' expression)* ','? ')' | '{' recordValue (',' recordValue)* ','? '}';
 matchExpression: 'match' expression '{' matchArm (',' matchArm)* ','? '}';
@@ -88,6 +89,12 @@ reference: ('root' | 'self' | identifier) ('.' identifier)*;
 // Type words are contextual: `color: ...` is an ordinary element binding.
 identifier: IDENT | 'int' | 'float' | 'bool' | 'string' | 'length' | 'color' | 'brush' | 'image'
           | 'ImageFit' | 'LayoutAlignment' | 'CrossAxisAlignment' | 'Orientation' | 'DialInputMode' | 'ScrollBarPolicy' | 'TextWrap' | 'DialogRole' | 'DrawerEdge' | 'SelectionTarget' | 'circle' | 'deg' | 'duration' | 'ms' | 'as' | 'from' | 'pure' | 'struct' | 'states' | 'when' | 'translations' | 'else' | 'let' | 'slot' | 'enum' | 'match' | 'function';
+
+view: element | viewIf | viewFor | viewMatch;
+viewBlock: '{' view* '}';
+viewIf: 'if' expression viewBlock ('else' (viewIf | viewBlock))?;
+viewFor: iteration viewBlock;
+callbackImplementation: 'pure'? 'callback' identifier '(' (namedParameter (',' namedParameter)* ','?)? ')' ('->' typeName)? '=>' '{' statement* (expression ';'?)? '}';
 
 UNIT: 'px';
 COLOR: '#' [0-9a-fA-F]+;

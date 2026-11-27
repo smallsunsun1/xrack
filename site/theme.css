@@ -110,6 +110,7 @@ p > code { font-size: .93em; }
 .demo-caption span:first-child { color: #b6cea9; }
 .component-reference { margin-top: 20px; }
 
+.scene-showcase { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: clamp(28px, 5vw, 64px); align-items: center; padding-block: 65px; border-bottom: 1px solid var(--line); }
 .workflow { padding: 70px 0; }
 .workflow-inner, .start-inner { display: grid; align-items: center; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: clamp(28px, 5vw, 72px); }
 .preview-image img { width: 100%; height: auto; border-radius: 12px; border: 1px solid #373e4a; box-shadow: 0 18px 38px -25px #1d2a2e79; }
@@ -147,13 +148,16 @@ p > code { font-size: .93em; }
   .topbar nav, .topbar-actions { gap: 10px; }
   .topbar nav a[href="#architecture"] { display: none; }
   .hero { padding-block: 54px; }
-  .components, .workflow, .architecture, .start { padding-block: 45px; }
-  .workflow-inner, .start-inner { grid-template-columns: 1fr; }
+  .components, .scene-showcase, .workflow, .architecture, .start { padding-block: 45px; }
+  .scene-showcase, .workflow-inner, .start-inner { grid-template-columns: 1fr; }
   .workflow-copy { grid-row: 1; }
 }
 
 @media (max-width: 530px) {
-  .topbar-inner { min-height: 57px; }
+  .topbar-inner { min-height: 57px; gap: 10px; }
+  .topbar nav, .topbar-actions { gap: 8px; font-size: .84rem; }
+  .topbar nav a, .topbar-actions .github { white-space: nowrap; }
+  .topbar-actions .github span { display: none; }
   .topbar nav a[href="#start"] { display: none; }
   .demo-body { grid-template-columns: 1fr; }
   .demo-preview { border-inline-start: 0; border-top: 1px solid #ffffff22; padding-block: 17px; }

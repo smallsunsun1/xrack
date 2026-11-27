@@ -96,3 +96,58 @@ export component PropertyOwnership inherits Window {
     }
 
 }
+
+export component LanguageBlocks inherits Window {
+    in-out property <bool> show-details: false;
+    in-out property <bool> show-summary: false;
+    private property <[string]> rows: ["A", "B"];
+    out property <string> message <- if root.show-details { "Details" }
+        else if root.show-summary { "Summary" }
+        else { root.fallback() };
+    out property <string> selected;
+    pure callback fallback() -> string => { "Hidden" }
+    pure callback row-count() -> int => { 2 }
+
+    callback flip() => {
+        let previous: bool = root.show-details;
+        root.show-details = !previous;
+    }
+    callback swap() => { Model.move(root.rows, 0, 1); }
+    callback measure(value: length) -> length => {
+        let extra: length = 4px;
+        let total = value + extra;
+        total
+    }
+
+    controls := HorizontalLayout {
+        spacing: 5px;
+        if root.show-details {
+            details := Text { width: 20px; text <- "Details"; }
+            more := Text { width: 20px; text <- "More"; }
+        } else if root.show-summary {
+            summary := Text { width: 20px; text <- "Summary"; }
+        } else {
+            hidden := Text { width: 20px; text <- "Hidden"; }
+        }
+        tail := Text { width: 20px; text <- "Tail"; }
+    }
+
+    repeated := VerticalLayout {
+        for row[index] in root.rows {
+            Button {
+                text <- index + " " + row;
+                checkable <- true;
+                clicked => { root.selected = row; }
+            }
+            Text { text <- row + "!"; }
+        }
+    }
+
+    conditional-repeat := Rectangle {
+        if root.show-details {
+            for n in root.row-count() {
+                Text { text <- "number " + n; }
+            }
+        }
+    }
+}

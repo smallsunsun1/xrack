@@ -73,8 +73,8 @@ fn sound_effect_is_nonvisual_and_uses_declaration_directory() {
 fn sound_effect_rejects_visual_bindings_and_video_commands() {
     let source = std::fs::read_to_string(SOURCE).unwrap();
     for (from, to, expected) in [
-        ("volume: 0.35;", "width: 10px;", "width"),
-        ("volume: 0.35;", "ready: true;", "read-only"),
+        ("volume <- 0.35;", "width <- 10px;", "width"),
+        ("volume <- 0.35;", "ready <- true;", "read-only"),
         ("confirmation.play();", "confirmation.pause();", "pause"),
         (
             "confirmation.play();",
@@ -82,7 +82,8 @@ fn sound_effect_rejects_visual_bindings_and_video_commands() {
             "takes no arguments",
         ),
     ] {
-        let document = xrack_compiler::parse(&source.replace(from, to)).unwrap();
+        assert!(source.contains(from), "missing fixture statement: {from}");
+        let document = xrack_compiler::parse(&source.replacen(from, to, 1)).unwrap();
         let error = xrack_compiler::lower(&document, SOURCE).unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }

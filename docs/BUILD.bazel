@@ -5,6 +5,7 @@ exports_files(
         "editor.md",
         "language.md",
         "models.md",
+        "scene3d.md",
     ],
     visibility = ["//site:__pkg__"],
 )

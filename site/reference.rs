@@ -4,16 +4,18 @@ use xrack_ir::semantic::{
     builtin_event, builtin_property, combo_state_property, event_parameters, event_return_type,
     media_object_read_type, visual_template_inputs,
 };
-use xrack_syntax::ast::Span;
+use xrack_syntax::ast::{Span, Type};
 use xrack_syntax::builtins::{
-    POSITION_CHILD_METHOD, VIEWPORT_MOVE_METHODS, media_methods, navigation_move_methods,
-    scroll_bar_methods, text_editor_methods,
+    MESH_LOADER_OUTPUTS, POSITION_CHILD_METHOD, VIEWPORT_MOVE_METHODS, media_methods,
+    mesh_loader_output_type, navigation_move_methods, scene_view_methods, scroll_bar_methods,
+    text_editor_methods,
 };
 
 const TEMPLATE: &str = include_str!("reference-template.html");
 const ELEMENT_SOURCE: &str = include_str!("../crates/xrack-syntax/src/builtins.rs");
 const CATALOG: &str = include_str!("../crates/xrack-lsp/src/catalog.rs");
-const GUIDES: [(&str, &str, &str); 5] = [
+const GUIDES: [(&str, &str, &str); 6] = [
+    ("scene3d", "3D 场景", include_str!("../docs/scene3d.md")),
     ("language", ".xr 语言", include_str!("../docs/language.md")),
     (
         "controls-guide",
@@ -75,7 +77,8 @@ fn escape(value: &str) -> String {
 }
 
 fn controls() -> Result<String, Box<dyn std::error::Error>> {
-    let properties = candidates("PROPERTIES")?;
+    let mut properties = candidates("PROPERTIES")?;
+    properties.extend(MESH_LOADER_OUTPUTS.iter().map(|(name, _)| *name));
     let events = candidates("EVENTS")?;
     let mut rendered = String::from("<div class=\"control-list\">\n");
     for kind in elements()? {
@@ -84,11 +87,15 @@ fn controls() -> Result<String, Box<dyn std::error::Error>> {
             rendered,
             "<details class=\"control\" id=\"api-{name}\"><summary><code>{name}</code></summary><div class=\"control-body\"><pre><code>{name} {{ … }}</code></pre>"
         )?;
+        if matches!(kind, "SceneView3D" | "MeshLoader3D") {
+            rendered.push_str("<p><a href=\"#scene3d\">3D 场景入门与可运行示例</a></p>");
+        }
         let mut fields = properties
             .iter()
             .filter_map(|&property| {
                 builtin_property(kind, property)
                     .or_else(|| media_object_read_type(kind, property))
+                    .or_else(|| mesh_loader_output_type(kind, property))
                     .or_else(|| combo_state_property(kind, property))
                     .or_else(|| {
                         xrack_ir::semantic::navigation_active_property(kind, property)
@@ -105,6 +112,7 @@ fn controls() -> Result<String, Box<dyn std::error::Error>> {
                     "<tr><td><code>{}</code>{}</td><td><code>{}</code></td></tr>",
                     escape(property),
                     if media_object_read_type(kind, property).is_some()
+                        || mesh_loader_output_type(kind, property).is_some()
                         || property == "acceptable-input"
                         || xrack_ir::semantic::scroll_view_bar_metric(kind, property)
                         || xrack_ir::semantic::scroll_visual_property(kind, property)
@@ -128,6 +136,12 @@ fn controls() -> Result<String, Box<dyn std::error::Error>> {
                         "由 value-role 决定".into()
                     } else if matches!(kind, "Tumbler" | "PathView") && property == "model" {
                         "[string] 或记录列表".into()
+                    } else if kind == "SceneView3D" && property == "model" {
+                        "符合场景字段约束的记录列表，或 scenemodel3d".into()
+                    } else if kind == "SceneView3D" && matches!(ty, Type::RecordList(_)) {
+                        "符合字段约束的记录列表".into()
+                    } else if kind == "SceneView3D" && matches!(ty, Type::Record(_)) {
+                        "符合字段约束的记录".into()
                     } else {
                         escape(&ty.name())
                     }
@@ -189,6 +203,7 @@ fn controls() -> Result<String, Box<dyn std::error::Error>> {
             .chain(text_editor_methods(kind))
             .chain(viewport_methods)
             .chain(navigation_move_methods(kind))
+            .chain(scene_view_methods(kind))
             .chain(xrack_ir::semantic::content_viewport(kind).then_some(&POSITION_CHILD_METHOD))
             .peekable();
         if methods.peek().is_some() {
@@ -214,6 +229,7 @@ fn resolve_link(url: CowStr<'_>) -> CowStr<'_> {
         "language.md" => Some("#language"),
         "controls.md" => Some("#controls-guide"),
         "models.md" => Some("#models"),
+        "scene3d.md" => Some("#scene3d"),
         "desktop.md" => Some("#desktop"),
         "editor.md" => Some("#editor"),
         _ => None,
@@ -228,7 +244,12 @@ fn resolve_link(url: CowStr<'_>) -> CowStr<'_> {
     if let Some(path) = url.strip_prefix("./") {
         return format!("https://github.com/smallsunsun1/xrack/blob/main/docs/{path}").into();
     }
-    if url.ends_with(".md") && !url.contains("://") {
+    if url
+        .split('#')
+        .next()
+        .is_some_and(|path| path.ends_with(".md"))
+        && !url.contains("://")
+    {
         return format!("https://github.com/smallsunsun1/xrack/blob/main/docs/{url}").into();
     }
     url

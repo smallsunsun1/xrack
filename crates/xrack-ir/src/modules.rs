@@ -629,6 +629,8 @@ fn rewrite_statements(
     for statement in statements {
         match statement {
             ast::Statement::Let {
+                ty,
+                type_span,
                 value,
                 span,
                 name_span,
@@ -636,6 +638,12 @@ fn rewrite_statements(
             } => {
                 span.source = source;
                 name_span.source = source;
+                if let Some(ty) = ty {
+                    rewrite_record_type(ty, names);
+                }
+                if let Some(span) = type_span {
+                    span.source = source;
+                }
                 rewrite_expr(value, prefix, names, source);
             }
             ast::Statement::Assignment(assignment) => {

@@ -13097,3 +13097,38 @@ fn raw_mlir_rejects_conditional_callback_writes_to_a_one_way_input() {
         }
     }
 }
+
+#[test]
+fn block_syntax_reports_invalid_types_and_writes() {
+    for (members, diagnostic) in [
+        (
+            r#"callback update() => { let padding: length = "wide"; }"#,
+            "type mismatch: expected length, found string",
+        ),
+        (
+            "callback update() => { let padding: Missing = 2px; }",
+            "unknown record type `Missing`",
+        ),
+        (
+            "callback update() => { let n: int = 1; n = 2; }",
+            "local bindings cannot be assigned",
+        ),
+        (
+            "callback update(value: length) -> string => { value }",
+            "type mismatch: expected string, found length",
+        ),
+        ("if 42 { }", "type mismatch: expected bool, found int"),
+        (
+            "for row in true { Text {} Text {} }",
+            "repeat expects an integer or a list model",
+        ),
+        (
+            r#"out property <string> caption <- if true { "ready" } else { 1px };"#,
+            "conditional",
+        ),
+    ] {
+        let source = format!("export component App inherits Window {{ {members} }}");
+        let error = compile(&source, "blocks.xr").err().unwrap().to_string();
+        assert!(error.contains(diagnostic), "{members}: {error}");
+    }
+}

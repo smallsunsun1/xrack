@@ -64,7 +64,7 @@ rust_library(
     rustc_flags = PATCHED_FEMTOVG_FLAGS,
     crate_root = "src/lib.rs",
     edition = "2024",
-    version = "0.9.0",
+    version = "0.10.0",
     visibility = ["//visibility:public"],
     deps = [
         "//crates/xrack-runtime:xrack_runtime",

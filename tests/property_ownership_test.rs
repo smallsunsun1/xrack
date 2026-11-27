@@ -144,3 +144,139 @@ fn strict_properties_keep_their_sources_in_both_backends() {
     }
     assert_eq!(actual.take_error(), None);
 }
+
+#[test]
+fn language_blocks_match_in_the_interpreter_and_rust_aot() {
+    use property_ownership_ui::LanguageBlocks;
+    use std::{cell::Cell, rc::Rc};
+    use xrack_layout::{Size, layout};
+    use xrack_runtime::Length;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("property_ownership.xr"),
+        "property_ownership.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("LanguageBlocks")
+        .unwrap();
+    let mut generated = LanguageBlocks::new();
+    assert_eq!(generated.invoke_measure(Length(6.0)), Length(10.0));
+    assert_eq!(
+        interpreted.invoke("measure", &[Length(6.0).into()]),
+        Ok(Some(Length(10.0).into()))
+    );
+
+    let aot_calls = Rc::new(Cell::new(0));
+    let interp_calls = Rc::new(Cell::new(0));
+    generated.on_row_count({
+        let calls = aot_calls.clone();
+        move || {
+            calls.set(calls.get() + 1);
+            2
+        }
+    });
+    interpreted
+        .on("row-count", {
+            let calls = interp_calls.clone();
+            Rc::new(move |_| {
+                calls.set(calls.get() + 1);
+                Ok(Some(2_i64.into()))
+            })
+        })
+        .unwrap();
+
+    assert_eq!(generated.get_message(), "Hidden");
+    assert_eq!(interpreted.get("message"), Ok("Hidden".to_owned().into()));
+    for scene in [generated.render(), interpreted.render()] {
+        assert!(scene.find("hidden").is_some());
+        assert!(scene.find("summary").is_none());
+        assert!(scene.find("details").is_none());
+    }
+    assert_eq!(aot_calls.get(), 0);
+    assert_eq!(interp_calls.get(), 0);
+
+    generated.set_show_summary(true);
+    interpreted.set("show-summary", true.into()).unwrap();
+    assert_eq!(generated.get_message(), "Summary");
+    assert_eq!(interpreted.get("message"), Ok("Summary".to_owned().into()));
+    for scene in [generated.render(), interpreted.render()] {
+        assert!(scene.find("hidden").is_none());
+        assert!(scene.find("summary").is_some());
+    }
+
+    generated.invoke_flip();
+    interpreted.invoke("flip", &[]).unwrap();
+    assert_eq!(generated.get_message(), "Details");
+    assert_eq!(interpreted.get("message"), Ok("Details".to_owned().into()));
+    for scene in [generated.render(), interpreted.render()] {
+        let parent = scene.find("controls").unwrap();
+        let layout = layout(
+            parent,
+            Size::new(300.0, 40.0),
+            &mut xrack_testing::FixedText,
+        );
+        let positions = parent
+            .children
+            .iter()
+            .zip(&layout.children)
+            .filter_map(|(node, layout)| {
+                layout
+                    .visible
+                    .then_some((node.element_id(), layout.bounds.x))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            positions,
+            [
+                (Some("details"), 0.0),
+                (Some("more"), 25.0),
+                (Some("tail"), 50.0)
+            ]
+        );
+    }
+    assert!(aot_calls.get() > 0);
+    assert!(interp_calls.get() > 0);
+
+    fn rows(scene: &Node) -> &[Node] {
+        &scene.find("repeated").unwrap().children[0].children
+    }
+
+    let before_aot = generated.render();
+    let before_interp = interpreted.render();
+    for scene in [&before_aot, &before_interp] {
+        let rows = rows(scene);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].children[0].text("text"), Some("0 A"));
+        assert_eq!(rows[0].children[1].text("text"), Some("A!"));
+        assert_eq!(rows[1].children[0].text("text"), Some("1 B"));
+        assert_eq!(rows[1].children[1].text("text"), Some("B!"));
+    }
+    generated.invoke_swap();
+    interpreted.invoke("swap", &[]).unwrap();
+    for (ui, before) in [
+        (&mut generated as &mut dyn Component, &before_aot),
+        (&mut interpreted, &before_interp),
+    ] {
+        let scene = ui.render();
+        let moved = rows(&scene);
+        assert_eq!(moved[0].children[0].text("text"), Some("0 B"));
+        assert_eq!(moved[1].children[0].text("text"), Some("1 A"));
+        assert!(moved[0].routing_row_key().is_some());
+        assert_eq!(
+            moved[0].routing_row_key(),
+            rows(before)[1].routing_row_key()
+        );
+        let parent = scene
+            .children
+            .iter()
+            .position(|child| child.element_id() == Some("repeated"))
+            .unwrap();
+        assert!(ui.dispatch_at(&scene, &[parent, 0, 0, 0], "clicked"));
+    }
+    assert_eq!(generated.get_selected(), "B");
+    assert_eq!(interpreted.get("selected"), Ok("B".to_owned().into()));
+    assert_eq!(interpreted.take_error(), None);
+}

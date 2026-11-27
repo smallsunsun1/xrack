@@ -110,10 +110,13 @@ pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> 
                         | RULE_enumDecl
                         | RULE_matchExpression
                         | RULE_viewMatch
+                        | RULE_viewBlock
                         | RULE_functionDecl
+                        | RULE_callbackImplementation
                         | RULE_element
                         | RULE_handler
                         | RULE_statementBlock
+                        | RULE_ifExpression
                         | RULE_stateDecl
                         | RULE_stateTransition
                         | RULE_animationBody
@@ -130,6 +133,7 @@ pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> 
                         parent,
                         RULE_callback
                             | RULE_functionDecl
+                            | RULE_callbackImplementation
                             | RULE_enumFieldTypes
                             | RULE_enumArguments
                             | RULE_enumPatternFields
@@ -156,7 +160,8 @@ pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> 
                 block,
                 attach_before,
                 attach_after,
-                joins_block: spelling == "else" && parent == RULE_ifStatement,
+                joins_block: spelling == "else"
+                    && matches!(parent, RULE_ifStatement | RULE_ifExpression | RULE_viewIf),
                 space_before: spelling == ":" && parent == RULE_conditional,
             });
         } else {
@@ -432,111 +437,80 @@ fn members(contexts: Vec<Rc<MemberContextAll<'_>>>) -> Vec<Member> {
                     span: span(&*animation),
                 })
             }));
-        } else if let Some(branch) = ctx.viewMatch() {
-            let position = span(&*branch);
-            let selector = expression(&branch.expression().required("view match scrutinee"));
-            let arms = branch.viewArm_all();
-            let patterns: Vec<_> = arms
-                .iter()
-                .map(|arm| enum_pattern(&arm.enumPattern().required("view match pattern")))
-                .collect();
-            for (selected, arm) in arms.into_iter().enumerate() {
-                let mut child = element(&arm.element().required("view match element"));
-                child.view_match = Some(ViewMatch {
-                    selector: Box::new(selector.clone()),
-                    pattern: patterns[selected].clone(),
-                    guard: child.condition.take(),
-                });
-                let condition = Expr {
-                    kind: ExprKind::Match {
-                        selector: Box::new(selector.clone()),
-                        arms: patterns
-                            .iter()
-                            .cloned()
-                            .enumerate()
-                            .map(|(index, mut pattern)| {
-                                for field in &mut pattern.fields {
-                                    field.binding = "_".into();
-                                }
-                                MatchArm {
-                                    result: Expr {
-                                        kind: ExprKind::Literal {
-                                            value: (index == selected).to_string(),
-                                            ty: Type::Bool,
-                                        },
-                                        span: pattern.variant.span,
-                                    },
-                                    pattern,
-                                }
-                            })
-                            .collect(),
-                    },
-                    span: position,
-                };
-                child.condition = Some(condition);
-                result.push(Member::Element(child));
-            }
+        } else if let Some(view) = ctx.view() {
+            result.extend(view_elements(&view).into_iter().map(Member::Element));
         } else if let Some(function) = ctx.functionDecl() {
-            let name = function.identifier().required("function name").get_text();
-            let result_ty = function.typeName().required("function result type");
-            let parameter_names = function.namedParameter_all();
-            let parameters: Vec<_> = parameter_names
-                .iter()
-                .map(|parameter| Parameter {
-                    name: parameter
-                        .identifier()
-                        .required("function parameter")
-                        .get_text(),
-                    ty: Type::from_source(
-                        &parameter
-                            .typeName()
-                            .required("function parameter type")
-                            .get_text(),
-                    ),
-                })
-                .collect();
-            let position = span(&*function);
-            result.push(Member::Callback(Callback {
-                name: name.clone(),
-                parameter_type_spans: parameter_names
-                    .iter()
-                    .map(|parameter| {
-                        type_span(&parameter.typeName().required("function parameter type"))
-                    })
-                    .collect(),
-                parameters: parameters.clone(),
-                result_type_span: Some(type_span(&result_ty)),
-                span: position,
-                return_type: Some(Type::from_source(&result_ty.get_text())),
-                pure: true,
-                alias: None,
-                alias_span: None,
-            }));
-            result.push(Member::Handler(Handler {
-                name,
-                parameters: parameters
-                    .into_iter()
-                    .map(|parameter| parameter.name)
-                    .collect(),
-                parameter_spans: parameter_names
-                    .iter()
-                    .map(|parameter| span(&*parameter.identifier().required("function parameter")))
-                    .collect(),
-                statements: function
-                    .statement_all()
-                    .iter()
-                    .map(|item| statement(item))
-                    .collect(),
-                span: position,
-                result: Some(expression(
-                    &function.expression().required("function result"),
-                )),
-            }));
+            result.extend(callback_with_body(
+                function.identifier().required("function name").get_text(),
+                function.namedParameter_all(),
+                function.typeName().as_deref(),
+                function.statement_all(),
+                function.expression().as_deref(),
+                true,
+                span(&*function),
+            ));
+        } else if let Some(callback) = ctx.callbackImplementation() {
+            result.extend(callback_with_body(
+                callback.identifier().required("callback name").get_text(),
+                callback.namedParameter_all(),
+                callback.typeName().as_deref(),
+                callback.statement_all(),
+                callback.expression().as_deref(),
+                starts_with(&*callback, "pure"),
+                span(&*callback),
+            ));
         } else {
             result.push(member(&ctx));
         }
     }
     result
+}
+
+fn callback_with_body(
+    name: String,
+    named_parameters: Vec<Rc<NamedParameterContextAll<'_>>>,
+    result_ty: Option<&TypeNameContextAll<'_>>,
+    statements: Vec<Rc<StatementContextAll<'_>>>,
+    result: Option<&ExpressionContextAll<'_>>,
+    pure: bool,
+    position: Span,
+) -> [Member; 2] {
+    let parameters: Vec<_> = named_parameters
+        .iter()
+        .map(|parameter| Parameter {
+            name: parameter.identifier().required("parameter name").get_text(),
+            ty: Type::from_source(&parameter.typeName().required("parameter type").get_text()),
+        })
+        .collect();
+    let handler = Handler {
+        name: name.clone(),
+        parameters: parameters
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect(),
+        parameter_spans: named_parameters
+            .iter()
+            .map(|parameter| span(&*parameter.identifier().required("parameter name")))
+            .collect(),
+        statements: statements.iter().map(|item| statement(item)).collect(),
+        span: position,
+        result: result.map(expression),
+    };
+    let callback = Callback {
+        name,
+        parameter_type_spans: named_parameters
+            .iter()
+            .map(|parameter| type_span(&parameter.typeName().required("parameter type")))
+            .collect(),
+        parameters,
+        result_type_span: result_ty.map(type_span),
+        span: position,
+        return_type: result_ty.map(|ty| Type::from_source(&ty.get_text())),
+        pure,
+        alias: None,
+        alias_span: None,
+    };
+    [Member::Callback(callback), Member::Handler(handler)]
 }
 
 fn animation_options(body: &AnimationBodyContextAll<'_>) -> Vec<AnimationOption> {
@@ -718,8 +692,6 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
             span: span(&*handler),
             result: handler.expression().as_deref().map(expression),
         })
-    } else if let Some(child) = ctx.element() {
-        Member::Element(element(&child))
     } else if let Some(block) = ctx.stateBlock() {
         Member::States(state_block(&block))
     } else if let Some(marker) = ctx.slotMarker() {
@@ -744,6 +716,162 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
     } else {
         unreachable!("non-animation member alternative")
     }
+}
+
+// Normalize view blocks to existing guarded elements and repeat templates.
+fn view_elements(ctx: &ViewContextAll<'_>) -> Vec<Element> {
+    if let Some(child) = ctx.element() {
+        vec![element(&child)]
+    } else if let Some(branch) = ctx.viewIf() {
+        view_if(&branch)
+    } else if let Some(loop_view) = ctx.viewFor() {
+        let mut children = view_block(&loop_view.viewBlock().required("repeat view block"));
+        let position = span(&*loop_view);
+        let mut template = match children.as_mut_slice() {
+            [only] if only.condition.is_none() && only.repeat.is_none() => {
+                children.pop().required("repeat template")
+            }
+            _ => view_group(children, position),
+        };
+        template.repeat = Some(iteration(
+            &loop_view.iteration().required("repeat iteration"),
+        ));
+        vec![template]
+    } else {
+        view_match(&ctx.viewMatch().required("view match"))
+    }
+}
+
+fn view_block(ctx: &ViewBlockContextAll<'_>) -> Vec<Element> {
+    ctx.view_all()
+        .iter()
+        .flat_map(|child| view_elements(child))
+        .collect()
+}
+
+fn view_group(children: Vec<Element>, position: Span) -> Element {
+    Element {
+        placement_scope: None,
+        view_match: None,
+        id: None,
+        ty: "VerticalLayout".into(),
+        type_span: position,
+        members: children.into_iter().map(Member::Element).collect(),
+        span: position,
+        condition: None,
+        repeat: None,
+    }
+}
+
+fn view_if(ctx: &ViewIfContextAll<'_>) -> Vec<Element> {
+    let condition = expression(&ctx.expression().required("view condition"));
+    let position = span(ctx);
+    let mut then_children = view_block(&ctx.viewBlock(0).required("then view block"));
+    if then_children.is_empty() {
+        // Keep a guard to type-check the condition even when the branch has no views.
+        let mut empty = view_group(Vec::new(), position);
+        empty.members.push(Member::Binding(Binding {
+            name: "visible".into(),
+            value: Expr {
+                kind: ExprKind::Literal {
+                    value: "false".into(),
+                    ty: Type::Bool,
+                },
+                span: position,
+            },
+            span: position,
+            initial: true,
+            two_way: false,
+        }));
+        then_children.push(empty);
+    }
+    let else_children = if let Some(nested) = ctx.viewIf() {
+        view_if(&nested)
+    } else {
+        ctx.viewBlock(1)
+            .as_deref()
+            .map_or_else(Vec::new, view_block)
+    };
+    let negative = Expr {
+        span: condition.span,
+        kind: ExprKind::Unary {
+            op: "!".into(),
+            value: Box::new(condition.clone()),
+        },
+    };
+    guard_views(then_children, &condition)
+        .chain(guard_views(else_children, &negative))
+        .collect()
+}
+
+fn guard_views(children: Vec<Element>, guard: &Expr) -> impl Iterator<Item = Element> {
+    children.into_iter().map(|mut child| {
+        if child.repeat.is_some() {
+            // Do not evaluate a repeat's model or materialize rows for an inactive branch.
+            let position = child.span;
+            child = view_group(vec![child], position);
+        }
+        child.condition = Some(match child.condition.take() {
+            Some(condition) => Expr {
+                kind: ExprKind::Binary {
+                    op: "&&".into(),
+                    left: Box::new(guard.clone()),
+                    right: Box::new(condition),
+                },
+                span: guard.span,
+            },
+            None => guard.clone(),
+        });
+        child
+    })
+}
+
+fn view_match(branch: &ViewMatchContextAll<'_>) -> Vec<Element> {
+    let mut result = Vec::new();
+    let position = span(branch);
+    let selector = expression(&branch.expression().required("view match scrutinee"));
+    let arms = branch.viewArm_all();
+    let patterns: Vec<_> = arms
+        .iter()
+        .map(|arm| enum_pattern(&arm.enumPattern().required("view match pattern")))
+        .collect();
+    for (selected, arm) in arms.into_iter().enumerate() {
+        let mut child = element(&arm.element().required("view match element"));
+        child.view_match = Some(ViewMatch {
+            selector: Box::new(selector.clone()),
+            pattern: patterns[selected].clone(),
+            guard: child.condition.take(),
+        });
+        let condition = Expr {
+            kind: ExprKind::Match {
+                selector: Box::new(selector.clone()),
+                arms: patterns
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(index, mut pattern)| {
+                        for field in &mut pattern.fields {
+                            field.binding = "_".into();
+                        }
+                        MatchArm {
+                            result: Expr {
+                                kind: ExprKind::Literal {
+                                    value: (index == selected).to_string(),
+                                    ty: Type::Bool,
+                                },
+                                span: pattern.variant.span,
+                            },
+                            pattern,
+                        }
+                    })
+                    .collect(),
+            },
+            span: position,
+        };
+        child.condition = Some(condition);
+        result.push(child);
+    }
+    result
 }
 
 fn element(element: &ElementContextAll<'_>) -> Element {
@@ -789,6 +917,8 @@ fn statement(ctx: &StatementContextAll<'_>) -> Statement {
         let name = local.identifier().required("local binding name");
         Statement::Let {
             local: name.get_text(),
+            ty: local.typeName().map(|ty| Type::from_source(&ty.get_text())),
+            type_span: local.typeName().as_deref().map(type_span),
             value: expression(&local.expression().required("local initializer")),
             span: span(&*local),
             name_span: span(&*name),
@@ -936,6 +1066,23 @@ fn unary(ctx: &UnaryContextAll<'_>) -> Expr {
     }
 }
 
+fn if_expression(ctx: &IfExpressionContextAll<'_>) -> Expr {
+    let condition = expression(&ctx.expression(0).required("if condition"));
+    let yes = expression(&ctx.expression(1).required("if branch value"));
+    let no = match ctx.ifExpression() {
+        Some(nested) => if_expression(&nested),
+        None => expression(&ctx.expression(2).required("else branch value")),
+    };
+    Expr {
+        kind: ExprKind::Conditional {
+            condition: Box::new(condition),
+            yes: Box::new(yes),
+            no: Box::new(no),
+        },
+        span: span(ctx),
+    }
+}
+
 fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
     if let Some(inner) = ctx.expression() {
         return expression(&inner);
@@ -945,6 +1092,9 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
     }
     if let Some(gradient) = ctx.gradient() {
         return gradient_expr(&gradient);
+    }
+    if let Some(branch) = ctx.ifExpression() {
+        return if_expression(&branch);
     }
     let kind = if let Some(value) = ctx.enumValue() {
         let variant = value.identifier(1).required("enum variant");

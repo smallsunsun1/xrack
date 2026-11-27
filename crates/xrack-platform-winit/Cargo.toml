@@ -11,7 +11,7 @@ description = "Native winit windows, input, and accessibility for XRack UI"
 media = ["dep:xrack-media"]
 
 [dependencies]
-xrack-media = { path = "../xrack-media", version = "=0.9.0", default-features = false, features = ["ffmpeg"], optional = true }
+xrack-media = { path = "../xrack-media", version = "=0.10.0", default-features = false, features = ["ffmpeg"], optional = true }
 accesskit = "=0.25.2"
 accesskit_winit = "=0.34.2"
 xrack-runtime.workspace = true

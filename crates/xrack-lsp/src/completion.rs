@@ -58,6 +58,8 @@ enum Role<'a> {
     RecordValue(&'a str),
     Handler,
     StatementBlock,
+    ViewBlock,
+    ExpressionBlock,
     Animation,
     States,
     State,
@@ -202,7 +204,7 @@ impl<'a> Index<'a> {
                                 }),
                         );
                     }
-                    let record_value = matches!(scope.role, Role::RecordValue(_));
+                    let role = scope.role;
                     current = scope.parent;
                     let parent = &mut scopes[current];
                     let control_header =
@@ -210,7 +212,9 @@ impl<'a> Index<'a> {
                             && tokens
                                 .get(parent.statement)
                                 .is_some_and(|token| matches!(token.text, "if" | "else" | "for"));
-                    if !record_value || !control_header {
+                    if !matches!(role, Role::ExpressionBlock)
+                        && (!matches!(role, Role::RecordValue(_)) || !control_header)
+                    {
                         parent.statement = i + 1;
                     }
                 }
@@ -720,6 +724,9 @@ fn role<'a>(head: &[&Token<'a>], top_level: bool) -> Role<'a> {
     if first == "animate" {
         return Role::Animation;
     }
+    if first == "else" && control_block(head) {
+        return Role::ViewBlock;
+    }
     let target = match first {
         "if" | "for" => head
             .iter()
@@ -736,14 +743,18 @@ fn role<'a>(head: &[&Token<'a>], top_level: bool) -> Role<'a> {
             kind: kind.text,
             id: Some(id.text),
         },
+        _ if control_block(head) => Role::ViewBlock,
+        _ if head.iter().any(|token| token.text == "if") => Role::ExpressionBlock,
         _ if name(last) => Role::RecordValue(last),
         _ => Role::Block,
     }
 }
 
 fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
-    let repeat = matches!(role, Role::Element { .. } | Role::StatementBlock)
-        && head.first().is_some_and(|t| t.text == "for");
+    let repeat = matches!(
+        role,
+        Role::Element { .. } | Role::StatementBlock | Role::ViewBlock
+    ) && head.first().is_some_and(|t| t.text == "for");
     let names: &[&Token<'_>] = match role {
         Role::Handler => head
             .iter()
@@ -770,8 +781,9 @@ fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
         && head
             .first()
             .is_some_and(|token| token.text == "pointer-event");
-    let signature =
-        matches!(head, [pure, function, ..] if pure.text == "pure" && function.text == "function");
+    let signature = matches!(head, [first, ..] if first.text == "callback")
+        || matches!(head, [pure, declaration, ..]
+            if pure.text == "pure" && matches!(declaration.text, "callback" | "function"));
     let declarations: Vec<_> = if signature {
         let end = names
             .iter()
@@ -841,7 +853,7 @@ fn repeat_model<'a>(head: &[&Token<'a>], role: Role<'_>) -> Vec<&'a str> {
         return vec![];
     }
     let start = head.iter().position(|t| t.text == "in");
-    let end = if matches!(role, Role::StatementBlock) {
+    let end = if matches!(role, Role::StatementBlock | Role::ViewBlock) {
         Some(head.len())
     } else {
         head.iter().rposition(|t| matches!(t.text, ":" | "<-"))
@@ -1411,14 +1423,22 @@ pub(crate) fn complete_with_imports(
             .iter()
             .rposition(|token| token.text == ";")
             .unwrap_or(0);
-        for declaration in prior[..end].windows(3) {
+        for (index_in_prior, declaration) in prior[..end].windows(3).enumerate().rev() {
             if declaration[0].text == "let"
-                && declaration[2].text == "="
+                && matches!(declaration[2].text, "=" | ":")
                 && index
                     .ancestors(scope)
                     .any(|ancestor| ancestor == index.scope_at(declaration[0].range.start))
             {
-                items.add(declaration[1].text, VARIABLE, "immutable local binding");
+                let detail = if declaration[2].text == ":" {
+                    read_type(&prior[index_in_prior + 3..]).map_or_else(
+                        || "immutable local binding".into(),
+                        |ty| ty.name().into_owned(),
+                    )
+                } else {
+                    "immutable local binding".into()
+                };
+                items.add(declaration[1].text, VARIABLE, &detail);
             }
         }
     }
@@ -1803,6 +1823,10 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     }
     if last == "->"
         || matches!(role, Role::Record { .. }) && last == ":"
+        || first == "let"
+            && matches!(role, Role::Handler | Role::StatementBlock)
+            && matches!(last, ":" | "[")
+            && !head.iter().any(|token| token.text == "=")
         || head.iter().any(|t| t.text == "property") && matches!(last, "<" | "[")
         || head
             .iter()
@@ -1906,7 +1930,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     }
     let in_handler = matches!(role, Role::Handler | Role::StatementBlock);
     let expression = in_handler
-        || matches!(role, Role::States)
+        || matches!(role, Role::States | Role::ExpressionBlock)
         || matches!(first, "if" | "for" | "..")
         || head
             .iter()
@@ -1975,6 +1999,11 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         for member in index.record(record) {
             items.member(member);
         }
+        return;
+    }
+    if matches!(role, Role::ViewBlock) {
+        items.elements(index, |_| false);
+        items.words("if for match", KEYWORD, "XRack view");
         return;
     }
     if !kind.is_empty() {
@@ -2218,6 +2247,12 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
 }
 
 fn expected_type(index: &Index<'_>, scope: usize, head: &[&Token<'_>], kind: &str) -> Option<Type> {
+    if let [keyword, _, colon, ty @ ..] = head
+        && keyword.text == "let"
+        && colon.text == ":"
+    {
+        return read_type(ty);
+    }
     if let Some(start) = head.iter().position(|t| t.text == "property") {
         return property_type(&head[start + 1..]).map(|(ty, _)| ty);
     }
@@ -2961,6 +2996,42 @@ fn complete_builtin_fields<'a>(
 #[cfg(test)]
 mod tests {
     use super::complete;
+
+    #[test]
+    fn view_blocks_expose_loop_bindings_and_offer_view_members() {
+        let source = "component App inherits Window { if true { for row[i] in 2 { Text { text <- ";
+        let entries = complete(source, 0, source.len(), None);
+        for label in ["row", "i"] {
+            assert!(
+                entries
+                    .iter()
+                    .any(|item| item["label"] == label && item["detail"] == "int"),
+                "{entries:?}"
+            );
+        }
+        let source = "component App inherits Window { if true { Text {} } else { ";
+        let entries = complete(source, 0, source.len(), None);
+        assert!(entries.iter().any(|item| item["label"] == "Text"));
+        assert!(!entries.iter().any(|item| item["label"] == "property"));
+    }
+
+    #[test]
+    fn inline_callbacks_complete_typed_parameters_and_local_annotations() {
+        for (tail, label) in [
+            ("let padding: len", "length"),
+            ("let padding: length = 4px; pa", "padding"),
+            ("event.modifiers.", "shift"),
+        ] {
+            let source = format!(
+                "component App inherits Window {{ callback handle(event: KeyEvent) => {{ {tail}"
+            );
+            let entries = complete(&source, 0, source.len(), None);
+            assert!(
+                entries.iter().any(|item| item["label"] == label),
+                "{tail}: {entries:?}"
+            );
+        }
+    }
 
     #[test]
     fn dynamic_container_methods_complete_in_handlers() {

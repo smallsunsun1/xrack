@@ -139,7 +139,11 @@ export component App inherits Window {
 
 ## 局部变量、纯函数和枚举
 
-回调和纯函数中可用 `let name = expression;` 声明不可写的局部变量。初始化表达式执行一次，后续语句和末尾表达式均可读取它。内层块可以声明同名变量，离开该块后外层变量恢复可见。`pure function` 在同一处声明返回类型和实现，调用方式与纯度检查沿用 `pure callback`。
+回调和纯函数中可用 `let name = expression;` 声明不可写的局部变量。需要显式指定类型时，用 `let name: Type = expression;`。编译器会按该类型检查初值。初始化表达式执行一次，后续语句和末尾表达式均可读取它。内层块可以声明同名变量，离开该块后外层变量恢复可见。
+
+`callback rename(text: string) => { ... }` 可在同一处声明回调和实现。需要返回值时，用 `callback name(...) -> Type => { ... }`，以块末尾的表达式作为结果。只声明回调接口时，继续使用 `callback rename(string);`。宿主注册处理器沿用上文的回调规则。`pure function` 与带实现的 `pure callback` 沿用相同的调用方式和纯度检查。
+
+属性公式和局部变量初值都可用 `if condition { value } else { other-value }`。条件须是 `bool`，各分支须产生类型兼容的值。可以接 `else if`，只有选中的分支会求值。
 
 ```xr
 export enum RequestState {
@@ -151,7 +155,7 @@ export enum RequestState {
 component StatusLine inherits VerticalLayout {
     in property <RequestState> state: RequestState::Idle;
     pure function status-text(value: RequestState) -> string {
-        let caption = match value {
+        let caption: string = match value {
             Idle => "等待",
             Ready(document) => document,
             Failed { message: reason, retryable: _ } => reason,
@@ -197,6 +201,38 @@ export component App inherits Window {
 ```
 
 `global` 可声明属性、回调及其处理器。一个顶层组件实例及其子组件共享一份全局状态，每次独立创建顶层组件都会获得新状态。跨文件用普通 `import` 导入已导出的全局。Rust AOT 可用 `ui.global_Session()` 取得导出对象。解释器可用 `instance.global("Session")`，再调用属性和回调 API。全局不出现在窗口或预览组件列表中。
+
+## 视图控制流
+
+`if condition { ... } else { ... }` 可以选择一组子元素。块中的元素按声明顺序参与父容器的布局。可省略 `else` 或接上 `else if`。
+
+`for row[index] in model { ... }` 可以为每行声明多个元素。多元素的行模板默认使用纵向布局。可以在块内显式放一个 `HorizontalLayout` 或其他布局来指定单行布局。`row` 和 `index` 都可在行内的绑定和回调中读取，索引从零开始。旧的单元素写法 `if condition: Element { ... }` 和 `for row in model: Element { ... }` 也可用。
+
+```xr
+export component ResultsList inherits Window {
+    in-out property <bool> expanded: false;
+    in property <[string]> rows: ["Alpha", "Beta"];
+    callback toggle() => { root.expanded = !root.expanded; }
+
+    VerticalLayout {
+        toggle-button := Button {
+            text <- if root.expanded { "收起" } else { "展开" };
+            clicked => { root.toggle(); }
+        }
+        if root.expanded {
+            Text { text <- "搜索结果"; }
+            for row[index] in root.rows {
+                Text { text <- "结果 " + index; }
+                Text { text <- row; }
+            }
+        } else {
+            Text { text <- "结果已收起"; }
+        }
+    }
+}
+```
+
+## 插槽
 
 用 `@slot(toolbar)` 声明命名插槽，在组件实例中用 `slot toolbar { ... }` 提供内容。命名插槽可与 `@children` 同时使用。每个命名插槽可填充一次，省略时它为空。重复模板可以将周围的行和索引作为参数传给插槽。
 

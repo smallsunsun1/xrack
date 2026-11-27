@@ -140,6 +140,7 @@ fn scene(coated: bool) -> Node {
 }
 
 #[test]
+#[ignore = "requires a graphics adapter to exercise native GPU pipelines"]
 fn a_sixteen_texture_device_uses_only_the_current_material_budget()
 -> Result<(), Box<dyn std::error::Error>> {
     let (instance, adapter, device, queue) = pollster::block_on(async {

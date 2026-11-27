@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="XRack is a declarative native desktop UI framework powered by Rust and MLIR.">
+  <meta name="description" content="XRack is a declarative native desktop UI framework with 2D controls and 3D scenes, powered by Rust and MLIR.">
   <meta name="theme-color" content="#f8f6ef">
   <meta property="og:title" content="XRack · Native desktop UI">
   <meta property="og:description" content="Describe your interface in .xr, build it as Rust, and preview it while you edit.">
@@ -24,7 +24,8 @@
       </a>
       <nav aria-label="Main navigation">
         <a href="#start" data-zh="学习 XRack">Learn</a>
-        <a href="./reference.html" data-zh="控件与语法">Reference</a>
+        <a href="./reference.html" data-zh="参考">Reference</a>
+        <a href="#scene3d">3D</a>
         <a href="#architecture" data-zh="架构">Architecture</a>
       </nav>
       <div class="topbar-actions">
@@ -91,6 +92,21 @@
       </div>
       <a class="text-link component-reference" href="./reference.html#controls"><span data-zh="浏览全部内建控件">Browse all built-in controls</span><span aria-hidden="true">↗</span></a>
       </div>
+    </section>
+
+    <section class="scene-showcase wrap" id="scene3d" aria-labelledby="scene-title">
+      <div class="section-title">
+        <h2 id="scene-title" data-zh="在同一窗口组合 2D 与 3D">Compose 2D and 3D in one window</h2>
+        <p data-zh="把 SceneView3D 放进普通布局，用 .xr 绑定模型、相机和光照。点击按钮更新场景，或在视口拾取物体。">Place a <code>SceneView3D</code> in a regular layout and bind its model, camera, and lighting in <code>.xr</code>. Update the scene from a button or pick objects inside the viewport.</p>
+        <div class="doc-links">
+          <a href="./reference.html#scene3d"><span data-zh="3D 入门与示例">3D guide and examples</span> ↗</a>
+          <a href="./reference.html#api-SceneView3D">SceneView3D API ↗</a>
+        </div>
+      </div>
+      <figure class="preview-image">
+        <img src="./assets/primitive-meshes.webp" width="1300" height="868" loading="lazy" alt="XRack rendering a textured rectangle, a cylinder, and a cone above 2D checkboxes" data-alt-zh="XRack 中的贴图矩形、圆柱和圆锥，下方是普通 2D 复选框">
+        <figcaption data-zh="基础图元示例。下方的复选框可调整相机、材质和粒子。">The primitive meshes example. The checkboxes control the camera, materials, and particles.</figcaption>
+      </figure>
     </section>
 
     <section class="workflow" id="workflow" aria-labelledby="workflow-title">

@@ -25,6 +25,7 @@ bazel test //...
 | [Cargo 接入](docs/cargo.md) | 构建时生成 Rust、运行时加载 MLIR |
 | [.xr 语言参考](docs/language.md) | 语法、属性、回调、内建函数和翻译 |
 | [控件与布局参考](docs/controls.md) | 布局、表单、图像与交互 |
+| [3D 场景](docs/scene3d.md) | 视口、材质、模型加载、物理与粒子示例 |
 | [模型与虚拟视图](docs/models.md) | 滚动、列表、树和表格 |
 | [桌面宿主与异步](docs/desktop.md) | UI 线程、多窗口、托盘 |
 | [VS Code 与预览](docs/editor.md) | .xr LSP、MLIR 调试、项目图和编译数据库 |

@@ -985,6 +985,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
         .or_else(|| xrack_ir::semantic::text_selection_property(kind, name))
         .or_else(|| xrack_ir::semantic::text_command_property(kind, name).then_some(Type::Bool))
         .or_else(|| xrack_ir::semantic::media_object_read_type(kind, name))
+        .or_else(|| builtins::mesh_loader_output_type(kind, name))
         .or_else(|| (kind == "Loader" && name == "status").then_some(Type::String))
         .or_else(|| {
             builtins::text_submission_editor(kind).then_some(())?;

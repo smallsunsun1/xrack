@@ -4745,16 +4745,11 @@ impl<'a> Scope<'a> {
     fn mesh_loader_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
         let (owner, property) = reference.split_once('.')?;
         let owner = self.receiver(current, owner).unwrap_or(owner);
-        if self.owners.get(owner)?.kind != "MeshLoader3D" {
-            return None;
-        }
-        let (_, ty) = builtins::MESH_LOADER_OUTPUTS
-            .iter()
-            .find(|(name, _)| *name == property)?;
+        let ty = builtins::mesh_loader_output_type(&self.owners.get(owner)?.kind, property)?;
         Some(ir::Expr {
             owner: Some(owner.into()),
             value: property.into(),
-            ..ir::Expr::operation("mesh_loader_read", ty.clone(), vec![], span)
+            ..ir::Expr::operation("mesh_loader_read", ty, vec![], span)
         })
     }
 
@@ -10582,6 +10577,8 @@ fn statement_block(
             let s = match statement {
                 ast::Statement::Let {
                     local,
+                    ty,
+                    type_span,
                     value,
                     span,
                     name_span,
@@ -10589,7 +10586,14 @@ fn statement_block(
                     if !declared.insert(local) {
                         return fail(*name_span, format!("duplicate local binding {local}"));
                     }
-                    let value = expression(value, scope, owner)?;
+                    let value = if let Some(ty) = ty {
+                        let annotation = type_span.unwrap_or(*name_span);
+                        scope.checked_type(ty, annotation)?;
+                        scope.record_type_reference(ty, annotation);
+                        expression_as(value, scope, owner, ty.clone())?
+                    } else {
+                        expression(value, scope, owner)?
+                    };
                     let name = format!(
                         "local_{}_{}_{}_{local}",
                         span.source, span.line, span.column
@@ -10674,10 +10678,10 @@ fn statement_block(
             if scope.enum_locals.contains_key(receiver) {
                 return fail(s.span, "match bindings cannot be assigned");
             }
+            if scope.let_locals.contains_key(receiver) {
+                return fail(s.span, "local bindings cannot be assigned");
+            }
             if !s.target.contains('.') && scope.parameters.contains_key(&s.target) {
-                if scope.let_locals.contains_key(&s.target) {
-                    return fail(s.span, "local bindings cannot be assigned");
-                }
                 if scope.loop_locals.contains(&s.target) {
                     return fail(s.span, "loop bindings cannot be assigned");
                 }

@@ -10,7 +10,7 @@
 
 ```toml
 [dev-dependencies]
-xrack-testing = "=0.9.0"
+xrack-testing = "=0.10.0"
 ```
 
 将下面的代码放在 `tests/ui_test.rs`。例子使用 [Counter](../examples/cargo-consumer/ui/counter.xr) 的控件 ID `increment`，由 `build.rs` 生成组件。运行 `cargo test`。
@@ -144,6 +144,13 @@ bazel test //tests:gpu_test -c opt --nocache_test_results --test_output=all \
 
 
 ### GPU 命令与屏幕呈现
+
+需要验证 3D 渲染在每个着色阶段最多绑定 16 个采样纹理时的行为，可在有图形适配器的机器上运行以下测试。它会实际绘制材质、捕获和阴影通道。
+
+```sh
+cargo test --release --locked -p xrack-renderer-femtovg \
+  a_sixteen_texture_device_uses_only_the_current_material_budget -- --ignored
+```
 
 令 `XRACK_GPU_TRACE_DIR` 指向本地目录，设备会记录提交给 wgpu 的完整命令。正常退出进程后，用分析器读取设备子目录中的 `trace.ron`。
 

@@ -925,6 +925,10 @@ pub enum Statement {
     Assignment(Assignment),
     Let {
         local: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ty: Option<Type>,
+        #[serde(skip)]
+        type_span: Option<Span>,
         value: Expr,
         span: Span,
         #[serde(skip)]

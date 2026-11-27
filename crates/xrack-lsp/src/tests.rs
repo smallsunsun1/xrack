@@ -9917,7 +9917,7 @@ fn declarative_mesh_loader_completes_fields_and_paths_and_validates_read_only_ou
 
     let source = "component App inherits Window { importer := MeshLoader3D {} out property <meshasset3d> model: importer.";
     let items = completion::complete(source, 0, source.len(), None);
-    for name in ["asset", "status", "error"] {
+    for name in ["asset", "bounds", "status", "error"] {
         assert!(
             items.iter().any(|item| item["label"] == name),
             "{name}: {items:?}"
@@ -9959,6 +9959,31 @@ fn declarative_mesh_loader_completes_fields_and_paths_and_validates_read_only_ou
         completion::document_links(complete, &workspace)[0]["target"],
         workspace.uri(&obj).unwrap()
     );
+}
+
+#[test]
+fn mesh_loader_output_hover_reports_the_shared_type() {
+    for (ty, output) in [
+        ("meshasset3d", "as|set"),
+        ("bounds3d", "bou|nds"),
+        ("string", "sta|tus"),
+        ("string", "er|ror"),
+    ] {
+        let source = format!(
+            "component App inherits Window {{
+                loader := MeshLoader3D {{}}
+                out property <{ty}> result <- loader.{output};
+            }}"
+        );
+        let hover = request_at("textDocument/hover", URI, &source, None);
+        let spelling = output.replace('|', "");
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .is_some_and(|text| text.contains(&spelling) && text.contains(ty)),
+            "{hover}"
+        );
+    }
 }
 
 #[test]
@@ -10566,4 +10591,25 @@ export component App inherits Window {{
                 .contains(message)
         );
     }
+}
+
+#[test]
+fn formatting_supports_view_blocks_and_inline_callbacks() {
+    let source = r#"export component App inherits Window{
+callback rename(name:string)=>{let label:string=name;root.title=label;}
+if true { Text{text <- if false {"a"} else {"b"};} } else {for item[i] in 2 {Text{text <- i+" "+item;}}}
+}"#;
+    let edits = formatting::edits(source, &json!({}));
+    let formatted = edits[0]["newText"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{edits}"));
+    for expected in [
+        "callback rename(name: string) => {\n        let label: string = name;",
+        "if true {\n        Text {",
+        "text <- if false {\n                \"a\"\n            } else {",
+        "} else {\n        for item[i] in 2 {",
+    ] {
+        assert!(formatted.contains(expected), "{formatted}");
+    }
+    assert_eq!(formatting::edits(formatted, &json!({})), json!([]));
 }

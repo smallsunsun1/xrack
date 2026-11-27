@@ -772,6 +772,8 @@ let _painter = register_geometry("level-meter", |context| {
 
 ### SceneView3D
 
+[3D 场景入门与可运行示例](scene3d.md)
+
 `SceneView3D` 是一个参与普通 2D 布局的 3D 视口。`model` 接收记录列表。可以给记录起任意名称并添加应用字段，编译器会检查绘制和拾取共用的字段。
 
 `scene-background` 使用 `#RRGGBBAA` 颜色时会保留透明度。例如 `#00000000` 让下层 2D 界面从视口空白处透出，`#24405480` 添加半透明着色。实体材质仍遮挡下层，半透明材质、抗锯齿边缘、体积雾、泛光和发光粒子按覆盖率合成。乘法混合只处理视口内已有的颜色。启用环境天空盒时，天空在相机画幅内覆盖背景。
@@ -902,7 +904,7 @@ Bazel 的 `xr_ui_library(assets = [...])` 要声明 OBJ、MTL 和实际使用的
 
 Rust 应用可用 `xrack_scene_import::load_mesh_file(path, options)` 加载本地 OBJ、glTF、GLB 或 PNG 高度图。导入器返回准备好的 `MeshAsset3D` 和它读取的文件集合，工作线程可把资产发送给 UI 线程。Python 的 `xrack.load_mesh_file(path, auto_lod=False, lightmap_uv=False)` 返回同一种资产，可以用 `asyncio.to_thread` 放在后台执行。
 
-在 `.xr` 中声明 `in property <meshasset3d> loaded;`，可在场景记录里用 `mesh-asset <- root.loaded`。该行的变换、动画、材质、层和拾取沿用原有设置。自定义 `geometry` 优先，空资产回退到同一行的 `mesh`，可用于加载前的占位。将准备好的资产赋到属性只传递共享句柄。相机或物体变换继续复用 GPU 网格。
+在 `.xr` 中声明 `in property <meshasset3d> loaded;`，可在场景记录字面量里写 `mesh-asset: root.loaded`。该行的变换、动画、材质、层和拾取沿用原有设置。自定义 `geometry` 优先，空资产回退到同一行的 `mesh`，可用于加载前的占位。将准备好的资产赋到属性只传递共享句柄。相机或物体变换继续复用 GPU 网格。
 
 用 `bazel run //examples/puzzle3d:play_runtime_mesh` 打开系统文件选择器。这个示例会在后台导入，完成后通过弱句柄更新原窗口。导入失败会显示错误并保留上一个模型。也可在命令末尾加 `-- /path/to/model.obj` 指定启动模型。 [运行时加载示例](../examples/puzzle3d/runtime_mesh.xr)
 
