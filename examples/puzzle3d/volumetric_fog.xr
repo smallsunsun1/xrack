@@ -10,10 +10,10 @@ struct MistMarker {
 }
 
 export component VolumetricFogDemo inherits Window {
-    title: "XRack · 局部体积雾";
-    width: 600px; height: 422px;
-    resizable: false;
-    background: #1a293c;
+    title <- "XRack · 局部体积雾";
+    width <- 600px; height <- 422px;
+    resizable <- false;
+    background <- #1a293c;
     in-out property <bool> fog-enabled: true;
     in-out property <bool> overlap: true;
     in-out property <bool> geometry: true;
@@ -23,53 +23,53 @@ export component VolumetricFogDemo inherits Window {
     in-out property <float> orbit: 0;
     in-out property <int> view-mask: 3;
 
-    property <Mist> blue: Mist {
+    property <Mist> blue <- Mist {
         position: Point3D.new(-0.65, 0.03, 1), size: Vector3D.new(3.1, 2.35, 2),
         density: root.density, color: #65c7e0, fog-shape: "box", layers: 1,
     };
-    property <Mist> amber: Mist {
+    property <Mist> amber <- Mist {
         position: Point3D.new(0.82, 0.33, -0.12), size: Vector3D.new(3.6, 2.9, 3.1),
         density: root.density * 0.78, color: #e6a664, fog-shape: "sphere", layers: 2,
     };
     property <[Mist]> clear-air: [];
-    property <[Mist]> mist: !root.fog-enabled ? root.clear-air
+    property <[Mist]> mist <- !root.fog-enabled ? root.clear-air
         : !root.overlap ? [root.blue] : root.reverse-list ? [root.amber, root.blue] : [root.blue, root.amber];
     property <MistMarker> base: MistMarker {
         id: "", mesh: "primitive:box",
         x: 0, y: 0, z: 0, scale-x: 0.63, scale-y: 0.63, scale-z: 0.63,
         yaw: 0, pitch: 0, roll: 0, color: #e59e59,
     };
-    property <[MistMarker]> complete: [
+    property <[MistMarker]> complete <- [
         MistMarker { id: "front", x: -0.84, y: 0.16, z: 3.5, yaw: 18, ..root.base },
         MistMarker { id: "inside", x: 0.3, y: -0.12, z: 1.1, yaw: 18, ..root.base },
         MistMarker { id: "back", x: 1.25, y: -0.2, z: -2.7, scale-x: 0.9, scale-y: 0.9, scale-z: 0.9,
             yaw: 18, color: #a3b7df, ..root.base },
     ];
     property <[MistMarker]> empty: [];
-    property <[MistMarker]> actors: root.geometry ? root.complete : root.empty;
-    property <point2d> viewport: Point2D.new(600px, 354px);
-    property <projectedpoint3d> front-projection:
+    property <[MistMarker]> actors <- root.geometry ? root.complete : root.empty;
+    property <point2d> viewport <- Point2D.new(600px, 354px);
+    property <projectedpoint3d> front-projection <-
         Scene3D.project(root.orbit, 0, 10, root.viewport, Point3D.new(-0.84, 0.16, 3.5));
-    out property <string> picked: Scene3D.pick(
+    out property <string> picked <- Scene3D.pick(
         root.actors, root.orbit, 0, 10, root.viewport, root.front-projection.point);
 
     SceneView3D {
-        width: root.viewport.x; height: root.viewport.y;
-        model: root.actors;
-        camera-yaw: root.orbit; camera-pitch: 0; camera-distance: 10;
-        scene-background: #203346;
-        environment: root.hdr-sky ? @environment-url("models/studio.hdr") : "";
-        environment-skybox: root.hdr-sky;
-        fog-volumes: root.mist;
-        layer-mask: root.view-mask;
-        multisampling: true;
-        cache-rendering: true;
+        width <- root.viewport.x; height <- root.viewport.y;
+        model <- root.actors;
+        camera-yaw <- root.orbit; camera-pitch <- 0; camera-distance <- 10;
+        scene-background <- #203346;
+        environment <- root.hdr-sky ? @environment-url("models/studio.hdr") : "";
+        environment-skybox <- root.hdr-sky;
+        fog-volumes <- root.mist;
+        layer-mask <- root.view-mask;
+        multisampling <- true;
+        cache-rendering <- true;
     }
     HorizontalLayout {
-        x: 14px; y: 365px; width: 572px; height: 45px; spacing: 11px;
-        fog-toggle := CheckBox { width: 99px; text: "体积雾"; checked <=> root.fog-enabled; }
-        overlap-toggle := CheckBox { width: 105px; text: "琥珀雾体"; checked <=> root.overlap; }
-        geometry-toggle := CheckBox { width: 120px; text: "场景物体"; checked <=> root.geometry; }
-        orbit := Slider { width: 200px; minimum: -40; maximum: 40; value <=> root.orbit; }
+        x <- 14px; y <- 365px; width <- 572px; height <- 45px; spacing <- 11px;
+        fog-toggle := CheckBox { width <- 99px; text <- "体积雾"; checked <-> root.fog-enabled; }
+        overlap-toggle := CheckBox { width <- 105px; text <- "琥珀雾体"; checked <-> root.overlap; }
+        geometry-toggle := CheckBox { width <- 120px; text <- "场景物体"; checked <-> root.geometry; }
+        orbit := Slider { width <- 200px; minimum <- -40; maximum <- 40; value <-> root.orbit; }
     }
 }

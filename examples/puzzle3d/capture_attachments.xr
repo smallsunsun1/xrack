@@ -19,15 +19,15 @@ struct AttachmentFeed { name: string, camera: string, layers: int, scale: float 
 struct AttachmentEffect { shader: string, strength: float, buffers: [CaptureInput] }
 
 export component CaptureAttachmentsDemo inherits Window {
-    title: "XRack · 命名深度与法线附件";
-    width: 520px; height: 362px; resizable: false;
-    background: #172437;
+    title <- "XRack · 命名深度与法线附件";
+    width <- 520px; height <- 362px; resizable <- false;
+    background <- #172437;
     in-out property <float> source-z: 2;
     in-out property <bool> diagnostic-strip: true;
     in-out property <bool> normals: true;
     in-out property <bool> color-inset: false;
 
-    property <CaptureMaterial> stock: CaptureMaterial {
+    property <CaptureMaterial> stock <- CaptureMaterial {
         unlit: true, roughness: 0.76, material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
         base-color: #fff, alpha-mode: "opaque", shader-textures: [],
     };
@@ -37,7 +37,7 @@ export component CaptureAttachmentsDemo inherits Window {
     property <CaptureInput> normal-input: CaptureInput {
         capture: "data", attachment: "normal-roughness", enabled: true, filter: "nearest",
     };
-    property <DataActor> base: DataActor {
+    property <DataActor> base <- DataActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, layers: 1, camera-kind: "", camera-height: 4,
@@ -45,9 +45,9 @@ export component CaptureAttachmentsDemo inherits Window {
     };
 
     SceneView3D {
-        width: 520px; height: 280px; camera: "main"; layer-mask: 1;
-        scene-background: #23384f; scene-tone-map: none; cache-rendering: true;
-        model: [
+        width <- 520px; height <- 280px; camera <- "main"; layer-mask <- 1;
+        scene-background <- #23384f; scene-tone-map <- none; cache-rendering <- true;
+        model <- [
             DataActor { id: "main", mesh: "", z: 7, camera-kind: "orthographic", ..root.base },
             DataActor { id: "data-eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.base },
             DataActor {
@@ -89,10 +89,10 @@ export component CaptureAttachmentsDemo inherits Window {
                 ..root.base
             },
         ];
-        scene-captures: [
+        scene-captures <- [
             AttachmentFeed { name: "data", camera: "data-eye", layers: 2, scale: 0.5 }
         ];
-        scene-effects: [
+        scene-effects <- [
             AttachmentEffect {
                 shader: @shader-url("effects/capture_attachment_strip.wgsl"),
                 strength: root.diagnostic-strip ? 1 : 0, buffers: [root.depth-input, root.normal-input],
@@ -106,19 +106,19 @@ export component CaptureAttachmentsDemo inherits Window {
     }
 
     slide := Button {
-        x: 14px; y: 297px; width: 105px; height: 31px;
-        text: "移动源模型"; clicked => { root.source-z = root.source-z == 2 ? 4 : 2; }
+        x <- 14px; y <- 297px; width <- 105px; height <- 31px;
+        text <- "移动源模型"; clicked => { root.source-z = root.source-z == 2 ? 4 : 2; }
     }
     CheckBox {
-        x: 131px; y: 297px; width: 122px; height: 31px;
-        text: "后处理数据"; checked <=> root.diagnostic-strip;
+        x <- 131px; y <- 297px; width <- 122px; height <- 31px;
+        text <- "后处理数据"; checked <-> root.diagnostic-strip;
     }
     CheckBox {
-        x: 266px; y: 297px; width: 119px; height: 31px;
-        text: "材质法线"; checked <=> root.normals;
+        x <- 266px; y <- 297px; width <- 119px; height <- 31px;
+        text <- "材质法线"; checked <-> root.normals;
     }
     CheckBox {
-        x: 393px; y: 297px; width: 116px; height: 31px;
-        text: "颜色小窗"; checked <=> root.color-inset;
+        x <- 393px; y <- 297px; width <- 116px; height <- 31px;
+        text <- "颜色小窗"; checked <-> root.color-inset;
     }
 }

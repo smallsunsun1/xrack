@@ -131,6 +131,15 @@ pub(crate) fn program(
                 .properties
                 .values()
                 .any(|property| property.mode == xrack_syntax::ast::PropertyMode::Once)
+        })
+        || module.operations().any(|component| {
+            let mut pending = vec![component];
+            std::iter::from_fn(|| {
+                let op = pending.pop()?;
+                pending.extend(op.children());
+                Some(op)
+            })
+            .any(|op| op.name() == "xr.bind" && op.attribute("initial") == Some("true"))
         });
     Ok(Program {
         initialize_once,
@@ -1101,7 +1110,10 @@ impl<'m> Loader<'m> {
             let binding = input.operation;
             let value = operand(binding, 0)?;
             let source = if binding.name() == "xr.bind" {
-                InputSource::Binding(self.expression(value, &[])?)
+                InputSource::Binding {
+                    expression: self.expression(value, &[])?,
+                    initial: binding.attribute("initial") == Some("true"),
+                }
             } else if value
                 .defining_operation()
                 .is_some_and(|op| op.name() == "xr.read")
@@ -1291,7 +1303,10 @@ impl<'m> Loader<'m> {
                         .ok_or_else(|| invalid(child, "invalid viewport axis"))?;
                     let input = operand(child, 0)?;
                     let offset = if child.name() == "xr.bind" {
-                        viewport::Offset::Binding(self.visual_binding(child)?)
+                        viewport::Offset::Binding {
+                            expression: self.visual_binding(child)?,
+                            initial: child.attribute("initial") == Some("true"),
+                        }
                     } else {
                         viewport::Offset::Linked(reference(child, input)?)
                     };
@@ -1348,7 +1363,9 @@ impl<'m> Loader<'m> {
                         }
                         _ => None,
                     };
-                    read_only_bindings.insert(name);
+                    if child.attribute("initial") != Some("true") {
+                        read_only_bindings.insert(name);
+                    }
                     bindings.push(Binding {
                         name,
                         expression,
@@ -1672,6 +1689,9 @@ impl<'m> Loader<'m> {
         self.hoist_visual_subexpressions = previous;
         let expression = expression?;
         Ok(match slot {
+            Some(slot) if binding.attribute("initial") == Some("true") => {
+                Rc::new(Expression::CachedInitializer(slot, expression))
+            }
             Some(slot) => Rc::new(Expression::CachedVisual(slot, expression)),
             None => expression,
         })

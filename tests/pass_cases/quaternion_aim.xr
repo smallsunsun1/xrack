@@ -9,10 +9,10 @@
 
 export component App inherits Window {
     in-out property <point3d> target;
-    out property <quaternion3d> forward: Quaternion3D.look-rotation(Vector3D.new(0, 0, -7));
-    out property <quaternion3d> coincident: Quaternion3D.look-at(
+    out property <quaternion3d> forward <- Quaternion3D.look-rotation(Vector3D.new(0, 0, -7));
+    out property <quaternion3d> coincident <- Quaternion3D.look-at(
         Point3D.new(4, 2, 1), Point3D.new(4, 2, 1), Vector3D.new(1, 0, 0));
-    out property <quaternion3d> aligned: Quaternion3D.look-at(
+    out property <quaternion3d> aligned <- Quaternion3D.look-at(
         Point3D.new(1, 1, 10), Point3D.new(1, 1, -1), Vector3D.new(0, 2, 0));
-    out property <quaternion3d> dynamic: Quaternion3D.look-at(Point3D.new(4, 0, 8), root.target);
+    out property <quaternion3d> dynamic <- Quaternion3D.look-at(Point3D.new(4, 0, 8), root.target);
 }

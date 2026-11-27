@@ -13,8 +13,8 @@ struct Actor {
 export component TexturePlan inherits Window {
     in property <float> angle: 0;
     SceneView3D {
-        width: 80px; height: 80px;
-        model: [Actor {
+        width <- 80px; height <- 80px;
+        model <- [Actor {
             id: "tile", mesh: "primitive:box", x: 0, y: 0, z: 0,
             scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
             material: Surface { base-color: #fff, base-color-map: Sampler {

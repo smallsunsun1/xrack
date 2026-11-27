@@ -1,8 +1,8 @@
 export component AsyncDemo inherits Window {
-    title: "XRack · Async Rust";
-    width: 540px;
-    height: 350px;
-    background: #182331;
+    title <- "XRack · Async Rust";
+    width <- 540px;
+    height <- 350px;
+    background <- #182331;
 
     in-out property <string> query: "XRack";
     in-out property <string> local-status: "等待 UI 任务";
@@ -18,9 +18,9 @@ export component AsyncDemo inherits Window {
 
     private property <bool> startup-running: true;
     startup := Timer {
-        interval: 1;
-        running <=> root.startup-running;
-        repeat: false;
+        interval <- 1;
+        running <-> root.startup-running;
+        repeat <- false;
         triggered() => {
             root.start-local();
             root.search(root.query);
@@ -28,46 +28,46 @@ export component AsyncDemo inherits Window {
     }
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 8px;
-        Text { text: "异步搜索"; font-size: 20px; }
+        padding <- 16px;
+        spacing <- 8px;
+        Text { text <- "异步搜索"; font-size <- 20px; }
         HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             query-field := SearchField {
-                text <=> root.query;
-                accessible-name: "搜索查询";
-                placeholder-text: "输入关键词，查看异步候选";
-                live: true;
-                suggestions: root.suggestions;
-                suggestions-for: root.result-query;
+                text <-> root.query;
+                accessible-name <- "搜索查询";
+                placeholder-text <- "输入关键词，查看异步候选";
+                live <- true;
+                suggestions <- root.suggestions;
+                suggestions-for <- root.result-query;
                 search-triggered(query) => { root.search(query); }
             }
             submit := Button {
-                text: "搜索";
+                text <- "搜索";
                 clicked() => { root.search(root.query); }
             }
         }
         HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             BusyIndicator {
-                width: 18px; height: 18px;
-                stroke-width: 2px;
-                running: root.loading;
-                accessible-name: "搜索加载中";
+                width <- 18px; height <- 18px;
+                stroke-width <- 2px;
+                running <- root.loading;
+                accessible-name <- "搜索加载中";
             }
-            Text { text: root.loading ? "后台正在查找…" : "搜索结果"; color: #b8caff; }
+            Text { text <- root.loading ? "后台正在查找…" : "搜索结果"; color <- #b8caff; }
         }
         results-view := ListView {
-            background: #223249;
-            row-height: 30px;
-            current-index <=> root.selection;
+            background <- #223249;
+            row-height <- 30px;
+            current-index <-> root.selection;
             for item in root.results : Rectangle {
-                Text { x: 10px; y: 4px; text: root.result-label(item); }
+                Text { x <- 10px; y <- 4px; text <- root.result-label(item); }
             }
         }
-        Text { text: root.local-status; }
+        Text { text <- root.local-status; }
         local := Button {
-            text: "启动 UI 线程 Future";
+            text <- "启动 UI 线程 Future";
             clicked() => { root.start-local(); }
         }
     }

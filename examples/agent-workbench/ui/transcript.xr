@@ -19,8 +19,8 @@ export component ConversationFindBar inherits FocusScope {
     callback focus-query();
     focus-query => { if !chat-find-input.has-focus { chat-find-input.focus(); } }
 
-    visible: root.chat-find-open;
-    height: 43px;
+    visible <- root.chat-find-open;
+    height <- 43px;
     capture-key-pressed(event) => {
         let close = event.key == "Escape";
         let previous = event.key == "Enter" && event.modifiers.shift;
@@ -34,75 +34,75 @@ export component ConversationFindBar inherits FocusScope {
         close || previous ? EventResult.accept : EventResult.reject
     }
     HorizontalLayout {
-        width: 100%;
-        height: 100%;
-        alignment: end;
-        padding-left: 14px;
-        padding-right: 14px;
-        spacing: 6px;
-        cross-axis-alignment: center;
+        width <- 100%;
+        height <- 100%;
+        alignment <- end;
+        padding-left <- 14px;
+        padding-right <- 14px;
+        spacing <- 6px;
+        cross-axis-alignment <- center;
         chat-find-input := LineEdit {
-            min-width: 75px;
-            preferred-width: 280px;
-            max-width: 360px;
-            horizontal-stretch: 1;
-            height: 29px;
-            text <=> root.chat-find-query;
-            persistent-selection: true;
-            placeholder-text: @tr("find-in-conversation");
-            accessible-name: @tr("find-in-conversation");
+            min-width <- 75px;
+            preferred-width <- 280px;
+            max-width <- 360px;
+            horizontal-stretch <- 1;
+            height <- 29px;
+            text <-> root.chat-find-query;
+            persistent-selection <- true;
+            placeholder-text <- @tr("find-in-conversation");
+            accessible-name <- @tr("find-in-conversation");
             edited => { root.query-edited(); }
             accepted => { root.move-chat-find(1); }
         }
         Label {
-            min-width: 62px;
-            text: root.chat-find-query == "" ? "" : !root.chat-find-ready ? @tr("finding") :
+            min-width <- 62px;
+            text <- root.chat-find-query == "" ? "" : !root.chat-find-ready ? @tr("finding") :
                 root.chat-find-count == 0 ? @tr("no-matches") :
                 root.chat-find-position + " / " + root.chat-find-count;
-            color: Palette.muted;
-            font-size: 11px;
-            overflow: elide;
+            color <- Palette.muted;
+            font-size <- 11px;
+            overflow <- elide;
         }
         chat-find-previous := Button {
-            text: "↑";
-            accessible-name: @tr("previous-match");
-            width: 26px;
-            height: 27px;
-            flat: true;
-            padding: 0px;
-            focus-on-click: false;
-            enabled: root.chat-find-ready && root.chat-find-count > 0;
+            text <- "↑";
+            accessible-name <- @tr("previous-match");
+            width <- 26px;
+            height <- 27px;
+            flat <- true;
+            padding <- 0px;
+            focus-on-click <- false;
+            enabled <- root.chat-find-ready && root.chat-find-count > 0;
             clicked => { root.move-chat-find(-1); }
         }
         chat-find-next := Button {
-            text: "↓";
-            accessible-name: @tr("next-match");
-            width: 26px;
-            height: 27px;
-            flat: true;
-            padding: 0px;
-            focus-on-click: false;
-            enabled: root.chat-find-ready && root.chat-find-count > 0;
+            text <- "↓";
+            accessible-name <- @tr("next-match");
+            width <- 26px;
+            height <- 27px;
+            flat <- true;
+            padding <- 0px;
+            focus-on-click <- false;
+            enabled <- root.chat-find-ready && root.chat-find-count > 0;
             clicked => { root.move-chat-find(1); }
         }
         chat-find-earlier := Button {
-            text: @tr("earlier-messages");
-            width: 62px;
-            height: 27px;
-            flat: true;
-            padding: 0px;
-            focus-on-click: false;
-            visible: root.earlier-turns;
-            enabled: root.connected && !root.busy && !root.switching;
+            text <- @tr("earlier-messages");
+            width <- 62px;
+            height <- 27px;
+            flat <- true;
+            padding <- 0px;
+            focus-on-click <- false;
+            visible <- root.earlier-turns;
+            enabled <- root.connected && !root.busy && !root.switching;
             clicked => { root.load-earlier-turns(); }
         }
         close-chat-find-button := Button {
-            text: "×";
-            accessible-name: @tr("close-conversation-search");
-            width: 26px;
-            height: 27px;
-            flat: true;
-            padding: 0px;
+            text <- "×";
+            accessible-name <- @tr("close-conversation-search");
+            width <- 26px;
+            height <- 27px;
+            flat <- true;
+            padding <- 0px;
             clicked => {
                 root.close-chat-find();
                 root.return-to-input();
@@ -116,38 +116,38 @@ export component ConversationWelcome inherits HorizontalLayout {
     in property <string> workspace-name;
     callback focus-draft();
 
-    width: 100%;
-    height: 100%;
-    alignment: center;
-    cross-axis-alignment: center;
-    padding-left: 20px;
-    padding-right: 20px;
+    width <- 100%;
+    height <- 100%;
+    alignment <- center;
+    cross-axis-alignment <- center;
+    padding-left <- 20px;
+    padding-right <- 20px;
     VerticalLayout {
-        min-width: 0px;
-        preferred-width: 530px;
-        max-width: 530px;
-        alignment: start;
-        spacing: 12px;
+        min-width <- 0px;
+        preferred-width <- 530px;
+        max-width <- 530px;
+        alignment <- start;
+        spacing <- 12px;
         Text {
-            text: root.workspace-name == "" ? @tr("choose-a-workspace-to-get-started") : @tr("workspace-welcome", workspace: root.workspace-name);
-            color: Palette.text;
-            font-size: 26px;
-            font-weight: 700;
-            wrap: word-wrap;
+            text <- root.workspace-name == "" ? @tr("choose-a-workspace-to-get-started") : @tr("workspace-welcome", workspace: root.workspace-name);
+            color <- Palette.text;
+            font-size <- 26px;
+            font-weight <- 700;
+            wrap <- word-wrap;
         }
         Text {
-            text: @tr("ask-a-question-about-the-code-or-recent-changes");
-            color: Palette.muted;
-            wrap: word-wrap;
+            text <- @tr("ask-a-question-about-the-code-or-recent-changes");
+            color <- Palette.muted;
+            wrap <- word-wrap;
         }
         overview := PromptSuggestion {
-            heading: @tr("explore-the-project");
-            detail: @tr("map-the-structure-and-entry-points");
+            heading <- @tr("explore-the-project");
+            detail <- @tr("map-the-structure-and-entry-points");
             choose => { root.draft = @tr("describe-this-project-s-structure-and-entry-points"); root.focus-draft(); }
         }
         test-guide := PromptSuggestion {
-            heading: @tr("find-the-tests");
-            detail: @tr("inspect-build-commands-and-key-tests");
+            heading <- @tr("find-the-tests");
+            detail <- @tr("inspect-build-commands-and-key-tests");
             choose => { root.draft = @tr("show-me-how-to-build-and-test-this-project-list-the-key-tests-and-what-they-cover"); root.focus-draft(); }
         }
     }

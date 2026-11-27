@@ -1,15 +1,15 @@
 component ConfirmActions inherits HorizontalLayout {
-    spacing: 10px;
-    alignment: end;
-    cancel := DialogButton { text: "取消"; role: reject; background: #384966; }
-    save := DialogButton { text: "保存"; role: accept; }
+    spacing <- 10px;
+    alignment <- end;
+    cancel := DialogButton { text <- "取消"; role <- reject; background <- #384966; }
+    save := DialogButton { text <- "保存"; role <- accept; }
 }
 
 export component DialogDemo inherits Window {
-    title: "XRack · 模态对话框";
-    width: 640px;
-    height: 390px;
-    background: #182331;
+    title <- "XRack · 模态对话框";
+    width <- 640px;
+    height <- 390px;
+    background <- #182331;
 
     in-out property <bool> rename-open: false;
     in-out property <bool> help-open: false;
@@ -20,91 +20,91 @@ export component DialogDemo inherits Window {
     out property <int> rejected-count: 0;
     out property <int> background-clicks: 0;
     in-out property <bool> drawer-open: false;
-    in-out property <DrawerEdge> drawer-edge: once left;
+    in-out property <DrawerEdge> drawer-edge: left;
     out property <int> drawer-opens: 0;
     out property <int> drawer-closes: 0;
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 10px;
-        Text { text: "工作区 · " + root.saved; font-size: 22px; }
+        padding <- 16px;
+        spacing <- 10px;
+        Text { text <- "工作区 · " + root.saved; font-size <- 22px; }
         HorizontalLayout {
-            spacing: 10px;
+            spacing <- 10px;
             opener := Button {
-                text: "重命名…";
+                text <- "重命名…";
                 clicked() => { root.draft = root.saved; root.rename-open = true; }
             }
             background-action := Button {
-                text: "背景计数 · " + root.background-clicks;
+                text <- "背景计数 · " + root.background-clicks;
                 clicked() => { root.background-clicks += 1; }
             }
             drawer-opener := Button {
-                text: "打开导航";
-                background: #384966;
+                text <- "打开导航";
+                background <- #384966;
                 clicked() => { root.drawer-open = true; }
             }
         }
         ScrollView {
-            viewport-height: 640px;
-            Text { text: "滚动内容 · 弹层由窗口统一显示"; color: #acc0db; }
+            viewport-height <- 640px;
+            Text { text <- "滚动内容 · 弹层由窗口统一显示"; color <- #acc0db; }
             rename := Dialog {
-                open <=> root.rename-open;
-                title: "重命名工作区";
-                font-size: 19px;
-                width: 420px;
-                height: 236px;
-                background: #273751;
-                close-on-outside: root.outside-closes;
+                open <-> root.rename-open;
+                title <- "重命名工作区";
+                font-size <- 19px;
+                width <- 420px;
+                height <- 236px;
+                background <- #273751;
+                close-on-outside <- root.outside-closes;
                 accepted() => { root.saved = root.draft; root.accepted-count += 1; }
                 rejected() => { root.rejected-count += 1; }
 
-                Text { text: "输入工作区的新名称。"; color: #b8caff; }
-                name-field := LineEdit { text <=> root.draft; placeholder-text: "名称"; }
-                help-opener := Button { text: "查看快捷键"; background: #384966; clicked() => { root.help-open = true; } }
+                Text { text <- "输入工作区的新名称。"; color <- #b8caff; }
+                name-field := LineEdit { text <-> root.draft; placeholder-text <- "名称"; }
+                help-opener := Button { text <- "查看快捷键"; background <- #384966; clicked() => { root.help-open = true; } }
                 actions := ConfirmActions { }
                 help := Dialog {
-                    open <=> root.help-open;
-                    title: "键盘操作";
-                    width: 340px;
-                    height: 170px;
-                    Text { text: "Tab 切换焦点，Escape 关闭当前弹窗。"; }
-                    DialogButton { text: "关闭帮助"; role: reject; }
+                    open <-> root.help-open;
+                    title <- "键盘操作";
+                    width <- 340px;
+                    height <- 170px;
+                    Text { text <- "Tab 切换焦点，Escape 关闭当前弹窗。"; }
+                    DialogButton { text <- "关闭帮助"; role <- reject; }
                 }
             }
         }
-        Text { text: "确认 " + root.accepted-count + " 次 · 取消 " + root.rejected-count + " 次"; color: #acc0db; }
+        Text { text <- "确认 " + root.accepted-count + " 次 · 取消 " + root.rejected-count + " 次"; color <- #acc0db; }
         drawer := Drawer {
-            edge: root.drawer-edge;
-            open <=> root.drawer-open;
-            title: "工作区导航";
-            drag-margin: 18px;
-            background: #273751;
+            edge <- root.drawer-edge;
+            open <-> root.drawer-open;
+            title <- "工作区导航";
+            drag-margin <- 18px;
+            background <- #273751;
             opened() => { root.drawer-opens += 1; }
             closed() => { root.drawer-closes += 1; }
-            Text { text: "窗口边缘向内滑动打开。拖动面板内侧边缘关闭。"; color: #acc0db; }
+            Text { text <- "窗口边缘向内滑动打开。拖动面板内侧边缘关闭。"; color <- #acc0db; }
             drawer-rename := Button {
-                text: "重命名工作区";
-                height: 42px;
+                text <- "重命名工作区";
+                height <- 42px;
                 clicked() => { root.draft = root.saved; root.rename-open = true; }
             }
             drawer-close := Button {
-                text: "收起导航";
-                height: 42px;
-                background: #384966;
+                text <- "收起导航";
+                height <- 42px;
+                background <- #384966;
                 clicked() => { root.drawer-open = false; }
             }
         }
     }
 }
 export component StandardDialogDemo inherits Window {
-    title: "XRack · 标准对话框按钮";
-    width: 620px; height: 380px;
-    background: #182331;
+    title <- "XRack · 标准对话框按钮";
+    width <- 620px; height <- 380px;
+    background <- #182331;
 
     in-out property <bool> settings-open: false;
     in-out property <bool> show-editor: true;
     in-out property <bool> danger-only: false;
-    in-out property <StandardButtonKind> preferred-kind: once save;
+    in-out property <StandardButtonKind> preferred-kind: save;
     in-out property <bool> save-enabled: true;
     in-out property <string> draft: "工作区";
     out property <string> saved: "工作区";
@@ -115,16 +115,16 @@ export component StandardDialogDemo inherits Window {
     out property <int> helps: 0;
     out property <int> discards: 0;
 
-    Text { x: 24px; y: 24px; text: "已保存 · " + root.saved; font-size: 22px; }
-    Text { x: 24px; y: 62px; text: "确认 " + root.accepts + " · 取消 " + root.rejects + " · 丢弃 " + root.discards; }
+    Text { x <- 24px; y <- 24px; text <- "已保存 · " + root.saved; font-size <- 22px; }
+    Text { x <- 24px; y <- 62px; text <- "确认 " + root.accepts + " · 取消 " + root.rejects + " · 丢弃 " + root.discards; }
     open-standard := StandardButton {
-        x: 24px; y: 108px; text: "编辑设置…";
-        kind: open; primary: true;
+        x <- 24px; y <- 108px; text <- "编辑设置…";
+        kind <- open; primary <- true;
         clicked => { root.draft = root.saved; root.settings-open = true; }
     }
     settings := Dialog {
-        title: "编辑设置"; width: 540px;
-        open <=> root.settings-open;
+        title <- "编辑设置"; width <- 540px;
+        open <-> root.settings-open;
         accepted() => { root.saved = root.draft; root.accepts += 1; }
         rejected() => { root.rejects += 1; }
         applied() => { root.saved = root.draft; root.applies += 1; }
@@ -132,25 +132,25 @@ export component StandardDialogDemo inherits Window {
         help-requested() => { root.helps += 1; }
         discarded() => { root.draft = root.saved; root.discards += 1; }
 
-        if root.show-editor && !root.danger-only : setting-name := LineEdit { text <=> root.draft; }
-        Text { text: "应用 " + root.applies + " 次 · 帮助请求 " + root.helps + " 次"; }
+        if root.show-editor && !root.danger-only : setting-name := LineEdit { text <-> root.draft; }
+        Text { text <- "应用 " + root.applies + " 次 · 帮助请求 " + root.helps + " 次"; }
         actions := DialogButtonBox {
             save := StandardButton {
-                kind: root.preferred-kind; primary: true; enabled: root.save-enabled; visible: !root.danger-only;
-                width: 86px; layout-order: 100;
+                kind <- root.preferred-kind; primary <- true; enabled <- root.save-enabled; visible <- !root.danger-only;
+                width <- 86px; layout-order <- 100;
             }
-            cancel := StandardButton { kind: cancel; visible: !root.danger-only; }
-            apply := StandardButton { kind: apply; visible: !root.danger-only; }
-            discard := StandardButton { kind: discard; text: "丢弃草稿"; }
-            reset := StandardButton { kind: reset; visible: !root.danger-only; }
-            help := StandardButton { kind: help; visible: !root.danger-only; }
+            cancel := StandardButton { kind <- cancel; visible <- !root.danger-only; }
+            apply := StandardButton { kind <- apply; visible <- !root.danger-only; }
+            discard := StandardButton { kind <- discard; text <- "丢弃草稿"; }
+            reset := StandardButton { kind <- reset; visible <- !root.danger-only; }
+            help := StandardButton { kind <- help; visible <- !root.danger-only; }
         }
     }
 }
 export component PopupDemo inherits Window {
-    title: "XRack · 锚定弹层";
-    width: 480px; height: 300px;
-    background: #182331;
+    title <- "XRack · 锚定弹层";
+    width <- 480px; height <- 300px;
+    background <- #182331;
 
     in-out property <bool> filters-open: false;
     in-out property <bool> modal: false;
@@ -161,33 +161,33 @@ export component PopupDemo inherits Window {
     out property <int> background-clicks: 0;
 
     background-action := Button {
-        x: 24px; y: 24px; width: 165px; height: 44px;
-        text: "背景操作";
+        x <- 24px; y <- 24px; width <- 165px; height <- 44px;
+        text <- "背景操作";
         clicked() => { root.background-clicks += 1; }
     }
     Text {
-        x: 24px; y: 82px;
-        text: "背景操作 " + root.background-clicks + " 次 · 已关闭 " + root.closes + " 次";
+        x <- 24px; y <- 82px;
+        text <- "背景操作 " + root.background-clicks + " 次 · 已关闭 " + root.closes + " 次";
     }
-    CheckBox { x: 24px; y: 130px; text: "模态弹层"; checked <=> root.modal; }
+    CheckBox { x <- 24px; y <- 130px; text <- "模态弹层"; checked <-> root.modal; }
     filter-anchor := Button {
-        x: 320px; y: 220px; width: 128px; height: 44px;
-        text: "筛选…";
+        x <- 320px; y <- 220px; width <- 128px; height <- 44px;
+        text <- "筛选…";
         clicked() => { filters.show(); }
 
         filters := PopupWindow {
-            open <=> root.filters-open;
-            modal: root.modal;
-            close-on-outside: root.close-outside;
-            placement: below;
-            anchor-gap: 8px;
-            width: 212px; height: 136px;
-            background: #2b4e58;
-            accessible-name: "筛选选项";
+            open <-> root.filters-open;
+            modal <- root.modal;
+            close-on-outside <- root.close-outside;
+            placement <- below;
+            anchor-gap <- 8px;
+            width <- 212px; height <- 136px;
+            background <- #2b4e58;
+            accessible-name <- "筛选选项";
             opened() => { root.opens += 1; }
             closed() => { root.closes += 1; }
-            query-field := LineEdit { text <=> root.query; placeholder-text: "输入筛选条件"; }
-            finish-filter := Button { text: "完成"; clicked() => { filters.close(); } }
+            query-field := LineEdit { text <-> root.query; placeholder-text <- "输入筛选条件"; }
+            finish-filter := Button { text <- "完成"; clicked() => { filters.close(); } }
         }
     }
 }

@@ -6,6 +6,6 @@
 // CHECK: "xr.property"(%[[LOD]]) <{mode = "formula", name = "simplified", visibility = "out"}>
 
 export component ChartAssets inherits Window {
-    out property <string> chart: @mesh-url("models/static.glb", lightmap-uv);
-    out property <string> simplified: @mesh-url("models/static.glb", auto-lod, lightmap-uv);
+    out property <string> chart <- @mesh-url("models/static.glb", lightmap-uv);
+    out property <string> simplified <- @mesh-url("models/static.glb", auto-lod, lightmap-uv);
 }

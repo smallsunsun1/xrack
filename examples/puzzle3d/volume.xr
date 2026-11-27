@@ -15,10 +15,10 @@ struct VolumeLamp {
 }
 
 export component VolumeDemo inherits Window {
-    title: "XRack · 体积折射与吸收";
-    width: 460px;
-    height: 282px;
-    background: #141d29;
+    title <- "XRack · 体积折射与吸收";
+    width <- 460px;
+    height <- 282px;
+    background <- #141d29;
 
     in-out property <float> depth-scale: 1;
     in-out property <float> yaw: 22;
@@ -33,7 +33,7 @@ export component VolumeDemo inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
         camera-kind: "", camera-height: 5.6,
     };
-    property <[VolumeObject]> scene: [
+    property <[VolumeObject]> scene <- [
         VolumeObject {
             id: "wall", mesh: @mesh-url("models/transmission-wall.gltf"),
             z: -4, scale-x: 5.55, scale-y: 2.8, visible: root.patterned, ..root.defaults
@@ -59,17 +59,17 @@ export component VolumeDemo inherits Window {
     property <[VolumeLamp]> lights;
 
     SceneView3D {
-        width: 460px;
-        height: 224px;
-        model: root.scene;
-        camera: "eye";
-        lights: root.lights;
-        ambient-intensity: 0.4;
-        multisampling: root.msaa;
-        scene-background: #ffffff;
+        width <- 460px;
+        height <- 224px;
+        model <- root.scene;
+        camera <- "eye";
+        lights <- root.lights;
+        ambient-intensity <- 0.4;
+        multisampling <- root.msaa;
+        scene-background <- #ffffff;
     }
-    volume-toggle := CheckBox { x: 16px; y: 230px; width: 112px; height: 40px; text: "体积折射"; checked <=> root.volume; }
-    pattern-toggle := CheckBox { x: 139px; y: 230px; width: 102px; height: 40px; text: "棋盘格"; checked <=> root.patterned; }
-    Label { x: 246px; y: 230px; width: 54px; height: 40px; text: "厚度"; }
-    thickness := Slider { x: 299px; y: 232px; width: 139px; height: 35px; minimum: 0.5; maximum: 2; value <=> root.depth-scale; }
+    volume-toggle := CheckBox { x <- 16px; y <- 230px; width <- 112px; height <- 40px; text <- "体积折射"; checked <-> root.volume; }
+    pattern-toggle := CheckBox { x <- 139px; y <- 230px; width <- 102px; height <- 40px; text <- "棋盘格"; checked <-> root.patterned; }
+    Label { x <- 246px; y <- 230px; width <- 54px; height <- 40px; text <- "厚度"; }
+    thickness := Slider { x <- 299px; y <- 232px; width <- 139px; height <- 35px; minimum <- 0.5; maximum <- 2; value <-> root.depth-scale; }
 }

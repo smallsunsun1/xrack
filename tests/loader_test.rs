@@ -357,7 +357,7 @@ fn loader_rejects_invalid_candidate_declarations() {
         ),
         ("if true: Child {}", "without if or for"),
         (
-            "active <=> root.open; Child {}",
+            "active <-> root.open; Child {}",
             "Loader active accepts one one-way binding",
         ),
         ("ChildWindow {}", "Loader delegates cannot contain a window"),
@@ -379,9 +379,9 @@ fn loader_rejects_invalid_candidate_declarations() {
 
 const EXTERNAL_PANEL: &str = r#"
 export component RemotePanel inherits VerticalLayout {
-    in-out property <int> count: once 0;
+    in-out property <int> count: 0;
     remote-button := Button {
-        text: "Clicks " + root.count;
+        text <- "Clicks " + root.count;
         clicked => { root.count += 1; }
     }
 }

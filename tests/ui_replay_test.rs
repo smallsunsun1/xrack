@@ -358,7 +358,7 @@ fn replay<C: SearchApp>(
                             assert_eq!(*generation, source_generation);
                         }
                         let expected_height = if recording.version == 1 {
-                            source = UI.replace("row-height: 30px;", "row-height: 34px;");
+                            source = UI.replace("row-height <- 30px;", "row-height <- 34px;");
                             Some(34.0)
                         } else {
                             apply_edits(&mut source, edits)
@@ -574,11 +574,11 @@ fn replay_recorded_actions() {
 fn compiler_report_links_paint_only_binding_to_its_named_source_element() {
     let source = r#"
         export component ProfileDemo inherits Window {
-            in-out property <color> accent: once #112233;
+            in-out property <color> accent: #112233;
             swatch := Rectangle {
-                width: 40px;
-                height: 40px;
-                background: root.accent;
+                width <- 40px;
+                height <- 40px;
+                background <- root.accent;
             }
         }
     "#;

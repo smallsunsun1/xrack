@@ -854,6 +854,10 @@ impl<T: Clone, E: Clone> Property<Result<T, E>> {
 pub enum InputProperty<T> {
     Local(Property<T>),
     ReadOnly(Box<Self>),
+    Initial {
+        value: Property<T>,
+        read: Box<dyn Fn() -> Option<T>>,
+    },
     Linked {
         read: Box<dyn Fn() -> Option<T>>,
         write: Box<dyn Fn(T)>,
@@ -881,6 +885,15 @@ impl<T> InputProperty<T> {
     #[doc(hidden)]
     pub fn bound_optional(read: impl Fn() -> Option<T> + 'static) -> Self {
         Self::default().with_state(read)
+    }
+
+    /// Supply a value at construction without retaining the caller's binding.
+    #[doc(hidden)]
+    pub fn initial_optional(read: impl Fn() -> Option<T> + 'static) -> Self {
+        Self::Initial {
+            value: Property::default(),
+            read: Box::new(read),
+        }
     }
 
     pub fn linked(read: impl Fn() -> Option<T> + 'static, write: impl Fn(T) + 'static) -> Self {
@@ -926,7 +939,7 @@ impl<T> InputProperty<T> {
     pub fn reset(&self) {
         match self {
             Self::Local(value) | Self::State { value, .. } => value.reset(),
-            Self::Linked { .. } | Self::ReadOnly(_) => {}
+            Self::Initial { .. } | Self::Linked { .. } | Self::ReadOnly(_) => {}
         }
     }
 
@@ -934,6 +947,9 @@ impl<T> InputProperty<T> {
     pub fn set_if_changed_by(&self, value: T, equal: impl FnOnce(&T, &T) -> bool) {
         match self {
             Self::Local(property)
+            | Self::Initial {
+                value: property, ..
+            }
             | Self::State {
                 value: property, ..
             } => property.set_if_changed_by(value, equal),
@@ -944,12 +960,29 @@ impl<T> InputProperty<T> {
 }
 
 impl<T: Clone> InputProperty<T> {
+    /// Evaluate connected initializers after the owning component graph exists.
+    #[doc(hidden)]
+    pub fn freeze_initial(&self) {
+        match self {
+            Self::Initial { value, read } if value.cached_value().is_none() => {
+                if let Some(initial) = read() {
+                    value.get_once(|| initial);
+                }
+            }
+            Self::State { base, .. } | Self::ReadOnly(base) => base.freeze_initial(),
+            _ => {}
+        }
+    }
+
     #[doc(hidden)]
     pub fn get_shared(&self, default: impl FnOnce() -> T) -> Rc<T> {
         match self {
             Self::Local(property) => property.get_shared(default),
             Self::ReadOnly(base) => base.get_shared(default),
             Self::Linked { read, .. } => Rc::new(read().unwrap_or_else(default)),
+            Self::Initial { value, read } => {
+                Rc::new(value.get_once(|| read().unwrap_or_else(default)))
+            }
             Self::State { value, read, base } => {
                 value.get_shared(|| read().unwrap_or_else(|| base.get(default)))
             }
@@ -961,6 +994,7 @@ impl<T: Clone> InputProperty<T> {
             Self::Local(property) => property.get(default),
             Self::ReadOnly(base) => base.get(default),
             Self::Linked { read, .. } => read().unwrap_or_else(default),
+            Self::Initial { value, read } => value.get_once(|| read().unwrap_or_else(default)),
             Self::State { value, read, base } => {
                 value.get(|| read().unwrap_or_else(|| base.get(default)))
             }
@@ -969,6 +1003,21 @@ impl<T: Clone> InputProperty<T> {
 }
 
 impl<T: Clone, E: Clone> InputProperty<Result<T, E>> {
+    #[doc(hidden)]
+    pub fn freeze_initial_result(&self) -> Result<(), E> {
+        match self {
+            Self::Initial { value, read } if value.cached_value().is_none() => {
+                if let Some(initial) = read() {
+                    let initial = initial?;
+                    let _ = value.get_once(|| Ok(initial));
+                }
+            }
+            Self::State { base, .. } | Self::ReadOnly(base) => base.freeze_initial_result()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// A failed input read leaves the binding dirty so it can be retried.
     #[doc(hidden)]
     pub fn get_result(&self, default: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
@@ -976,6 +1025,9 @@ impl<T: Clone, E: Clone> InputProperty<Result<T, E>> {
             Self::Local(property) => property.get_result(default),
             Self::ReadOnly(base) => base.get_result(default),
             Self::Linked { read, .. } => read().unwrap_or_else(default),
+            Self::Initial { value, read } => {
+                value.try_get_once(|| read().unwrap_or_else(default).map(Ok))?
+            }
             Self::State { value, read, base } => {
                 value.get_result(|| read().unwrap_or_else(|| base.get_result(default)))
             }

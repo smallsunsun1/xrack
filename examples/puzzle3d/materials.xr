@@ -13,16 +13,16 @@ struct MaterialLight {
 }
 
 export component MaterialDemo inherits Window {
-    title: "XRack · glTF 材质";
-    width: 480px;
-    height: 300px;
-    background: #141d29;
+    title <- "XRack · glTF 材质";
+    width <- 480px;
+    height <- 300px;
+    background <- #141d29;
 
     in-out property <bool> hdr: false;
     in-out property <bool> shadows: false;
     in-out property <bool> filtered: false;
     in-out property <float> light-yaw: 0;
-    property <[MaterialActor]> models: [
+    property <[MaterialActor]> models <- [
         MaterialActor {
             id: "finish", mesh: @mesh-url("models/finish.gltf"),
             x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
@@ -35,37 +35,37 @@ export component MaterialDemo inherits Window {
             color: #ffffff, camera-kind: "orthographic", camera-height: 7.125,
         },
     ];
-    property <[MaterialLight]> lights: [
+    property <[MaterialLight]> lights <- [
         MaterialLight {
             kind: "directional", x: 0, y: 0, z: 0,
             yaw: root.light-yaw, elevation: 0, intensity: 4, color: #ffffff,
             range: 0, inner-angle: 0, outer-angle: 45,
         },
     ];
-    out property <string> picked: Scene3D.pick-camera(root.models, "camera",
+    out property <string> picked <- Scene3D.pick-camera(root.models, "camera",
         Point2D.new(480px, 248px), Point2D.new(240px, 82px));
 
     view := SceneView3D {
-        width: 480px;
-        height: 248px;
-        model: root.models;
-        lights: root.lights;
-        camera: "camera";
-        ambient-intensity: 0.2;
-        shadows: root.shadows;
-        specular-aa: root.filtered;
-        scene-background: #172333;
-        environment: root.hdr ? @environment-url("models/studio.hdr") : "";
+        width <- 480px;
+        height <- 248px;
+        model <- root.models;
+        lights <- root.lights;
+        camera <- "camera";
+        ambient-intensity <- 0.2;
+        shadows <- root.shadows;
+        specular-aa <- root.filtered;
+        scene-background <- #172333;
+        environment <- root.hdr ? @environment-url("models/studio.hdr") : "";
     }
 
     HorizontalLayout {
-        y: 248px;
-        width: 480px;
-        height: 52px;
-        padding: 12px;
-        spacing: 14px;
-        hdr-toggle := CheckBox { text: "HDR"; checked <=> root.hdr; }
-        shadows-toggle := CheckBox { text: "阴影"; checked <=> root.shadows; }
-        light-slider := Slider { minimum: -40; maximum: 40; value <=> root.light-yaw; }
+        y <- 248px;
+        width <- 480px;
+        height <- 52px;
+        padding <- 12px;
+        spacing <- 14px;
+        hdr-toggle := CheckBox { text <- "HDR"; checked <-> root.hdr; }
+        shadows-toggle := CheckBox { text <- "阴影"; checked <-> root.shadows; }
+        light-slider := Slider { minimum <- -40; maximum <- 40; value <-> root.light-yaw; }
     }
 }

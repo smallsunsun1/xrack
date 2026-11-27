@@ -361,10 +361,10 @@ fn verified_hexadecimal_literals_are_decoded_in_both_backends() {
         out property <float> scalar: 1.5;
         out property <length> distance: 2.5px;
         out property <float> zero: 3.5;
-        out property <float> reciprocal: 1.0 / root.zero;
+        out property <float> reciprocal <- 1.0 / root.zero;
         out property <float> smallest: 4.5;
         out property <float> folded: 6.5 * 2.0;
-        ProgressIndicator { progress: 65%; }
+        ProgressIndicator { progress <- 65%; }
     }"#;
     let module =
         xrack_compiler::mlir::lower_module(&xrack_compiler::parse(source).unwrap(), "hex.xr")
@@ -2824,11 +2824,11 @@ fn ungrouped_ssa_visuals_and_control_defaults_preserve_callback_evaluation() {
     let raw_calls = calls();
     for (ui, calls) in [(&actual, &interpreted_calls), (&raw, &raw_calls)] {
         install(ui, "describe", "text:", calls[0].clone());
-        install(ui, "field-label", "field:", calls[1].clone());
+        install(ui, "field-label", "field <- ", calls[1].clone());
         install(ui, "extra-label", "extra:", calls[2].clone());
     }
     expected.on_describe(counted("text:", generated_calls[0].clone()));
-    expected.on_field_label(counted("field:", generated_calls[1].clone()));
+    expected.on_field_label(counted("field <- ", generated_calls[1].clone()));
     expected.on_extra_label(counted("extra:", generated_calls[2].clone()));
     let observed = |counts: &[Rc<Cell<usize>>; 3]| counts.each_ref().map(|value| value.get());
     let check = |expected: &expressions_ui::OperandCacheProbe, counts: [usize; 3]| {
@@ -5310,9 +5310,9 @@ fn exported_mlir_resolves_source_resources_from_a_different_output_directory() {
         translations "i18n/catalog.toml";
         import { FontSample } from "fonts/sample.xr";
         export component App inherits Window {
-            title: @tr("title");
-            image := Image { source: @image-url("landscape.png"); }
-            empty := Image { source: @image-url(""); }
+            title <- @tr("title");
+            image := Image { source <- @image-url("landscape.png"); }
+            empty := Image { source <- @image-url(""); }
             FontSample {}
         }
     "#;
@@ -5441,7 +5441,7 @@ fn standalone_mlir_loads_fonts_and_reactive_translations_like_generated_ui() {
     let invalid = r#"
         translations "i18n/catalog.toml";
         export component MissingTranslation inherits Window {
-            title: true ? "Fixed" : @tr("missing-from-default");
+            title <- true ? "Fixed" : @tr("missing-from-default");
         }
     "#;
     let path = locale_file.with_file_name("invalid.mlir");
@@ -5518,12 +5518,12 @@ fn standalone_mlir_rejects_duplicate_visual_bindings_and_handlers() {
     let source = r#"
         export component App inherits Window {
             out property <int> edits;
-            in-out property <string> draft: once "";
-            width: 200px;
-            height: 100px;
+            in-out property <string> draft: "";
+            width <- 200px;
+            height <- 100px;
             field := LineEdit {
-                text <=> root.draft;
-                placeholder-text: "Edit";
+                text <-> root.draft;
+                placeholder-text <- "Edit";
                 edited => { root.edits += 1; }
                 accepted => { root.edits += 2; }
             }
@@ -5566,12 +5566,12 @@ fn standalone_mlir_validates_declaration_names_before_either_backend() {
     let source = r#"
         export struct DataPoint { weight: int }
         export component Name_Probe inherits Window {
-            in-out property <int> first-value: once 2;
-            in-out property <int> other-value: once 7;
+            in-out property <int> first-value: 2;
+            in-out property <int> other-value: 7;
             pure callback convert(int) -> int;
             pure callback reset-counter();
             convert(value) => { value + root.first-value }
-            display := Text { text: "Ready"; }
+            display := Text { text <- "Ready"; }
         }
     "#;
     let doc = xrack_compiler::parse(source).unwrap();
@@ -5692,11 +5692,11 @@ fn standalone_mlir_checks_visual_property_names_and_types() {
 
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> narrow: once false;
-            button := Button { text: "Go"; }
+            in-out property <bool> narrow: false;
+            button := Button { text <- "Go"; }
             panel := Rectangle {
-                width: 50%;
-                background: #aabbcc;
+                width <- 50%;
+                background <- #aabbcc;
                 states [ small when root.narrow: { width: 32px; } ]
             }
         }
@@ -5761,11 +5761,11 @@ fn standalone_mlir_rejects_conflicting_controls_and_animation_targets() {
 
     let source = r#"
         export component App inherits Window {
-            in-out property <int> selected: once 0;
+            in-out property <int> selected: 0;
             choice := ComboBox {
-                model: ["one", "two"];
-                edit-text: "draft";
-                current-index <=> root.selected;
+                model <- ["one", "two"];
+                edit-text <- "draft";
+                current-index <-> root.selected;
             }
             panel := Rectangle {
                 animate x, width { duration: 120ms; }
@@ -5832,13 +5832,13 @@ fn standalone_mlir_checks_parameter_names_and_types_in_their_scope() {
         export component ParameterScope inherits Window {
             pure callback echo(int) -> int;
             echo(callback-value) => { callback-value }
-            for row[index] in ["A", "B"] : Text { text: row + index; }
+            for row[index] in ["A", "B"] : Text { text <- row + index; }
         }
         export component NestedParameterScope inherits Window {
             pure callback labels(int) -> [string];
             labels(size) => { size == 2 ? ["a", "b"] : [] }
             for count in 3 : Rectangle {
-                for count in root.labels(count) : Text { text: "inner-" + count; }
+                for count in root.labels(count) : Text { text <- "inner-" + count; }
             }
         }
     "#;
@@ -5912,7 +5912,7 @@ fn missing_module_resources_fail_at_load_with_the_codegen_diagnostic() {
     for (source, message) in [
         (
             r#"export component App inherits Window {
-                Image { source: @image-url("missing.svg"); }
+                Image { source <- @image-url("missing.svg"); }
             }"#,
             "unresolved image \"missing.svg\"",
         ),
@@ -5923,12 +5923,12 @@ fn missing_module_resources_fail_at_load_with_the_codegen_diagnostic() {
         ),
         (
             r#"translations "i18n/catalog.toml";
-            export component App inherits Window { title: @tr("title"); }"#,
+            export component App inherits Window { title <- @tr("title"); }"#,
             "@tr requires a translation catalog",
         ),
         (
             r#"translations "i18n/catalog.toml";
-            export component App inherits Window { title: I18n.locale(); }"#,
+            export component App inherits Window { title <- I18n.locale(); }"#,
             "unresolved translation catalog \"i18n/catalog.toml\"",
         ),
     ] {
@@ -5952,7 +5952,7 @@ fn missing_module_resources_fail_at_load_with_the_codegen_diagnostic() {
 #[test]
 fn text_mlir_checks_translations_before_dead_branches_are_removed() {
     let source = r#"export component App inherits Window {
-        title: true ? "Fixed" : @tr("missing");
+        title <- true ? "Fixed" : @tr("missing");
     }"#;
     let document = xrack_compiler::parse(source).unwrap();
     let filename = "missing-catalog.xr";
@@ -5983,7 +5983,7 @@ fn missing_imported_image_reports_its_source_in_compiler_and_interpreter() {
     fs::create_dir_all(dependency.parent().unwrap()).unwrap();
     fs::write(
         &dependency,
-        "export component Picture inherits Image {\n    source: @image-url(\"missing.svg\");\n}",
+        "export component Picture inherits Image {\n    source <- @image-url(\"missing.svg\");\n}",
     )
     .unwrap();
     let path = directory.join("app.xr");
@@ -6058,7 +6058,7 @@ fn module_only_backends_validate_and_plan_literal_vector_paths() {
     let lower = |commands: &str| {
         let source = format!(
             r#"export component App inherits Window {{
-                badge := Path {{ commands: "{commands}"; }}
+                badge := Path {{ commands <- "{commands}"; }}
             }}"#,
         );
         mlir::lower_module(&xrack_compiler::parse(&source).unwrap(), "vector-path.xr").unwrap()
@@ -6101,8 +6101,8 @@ fn host_resources_report_image_errors_before_path_errors_in_both_backends() {
     use xrack_runtime::{ImageAsset, ImageFormat, LoadedImage};
 
     let source = r#"export component App inherits Window {
-        Path { commands: "M0 0 L10"; }
-        Image { source: @image-url("frame.svg"); }
+        Path { commands <- "M0 0 L10"; }
+        Image { source <- @image-url("frame.svg"); }
     }"#;
     let document = xrack_compiler::parse(source).unwrap();
     let module = xrack_compiler::lower(&document, "host-resource-order.xr").unwrap();
@@ -6147,7 +6147,7 @@ fn host_translation_catalogs_are_checked_before_running_either_backend() {
     let source = r#"
         translations "catalog.toml";
         export component App inherits Window {
-            title: @tr("title", count: 3);
+            title <- @tr("title", count: 3);
         }
     "#;
     let document = xrack_compiler::parse(source).unwrap();
@@ -6217,7 +6217,7 @@ fn host_supplied_nine_slice_assets_are_validated_before_instantiation() {
     use xrack_runtime::{ImageAsset, ImageFormat, LoadedAnimation, LoadedImage, NineSlice};
 
     let source = r#"export component Frame inherits Window {
-        Image { source: @image-url("frame.svg", nine-slice(4)); }
+        Image { source <- @image-url("frame.svg", nine-slice(4)); }
     }"#;
     let document = xrack_compiler::parse(source).unwrap();
     let module = xrack_compiler::lower(&document, "host-frame.xr").unwrap();
@@ -6283,7 +6283,7 @@ fn host_images_match_file_decoding_and_validate_animation_frames() {
     use xrack_runtime::ImageFormat;
 
     let source = r#"export component App inherits Window {
-        AnimatedImage { source: @image-url("asset"); }
+        AnimatedImage { source <- @image-url("asset"); }
     }"#;
     let module =
         xrack_compiler::lower(&xrack_compiler::parse(source).unwrap(), "host-image.xr").unwrap();
@@ -6556,7 +6556,7 @@ fn standalone_mlir_routes_anonymous_handlers_by_scene_path() {
                 edited => { root.events += "right;"; }
                 accepted => { root.events += "accept;"; }
             }
-            collision := LineEdit { text: "reserved"; }
+            collision := LineEdit { text <- "reserved"; }
         }
     "#;
     let raw =
@@ -6652,9 +6652,9 @@ fn standalone_mlir_state_selector_can_supply_a_binding_value() {
 fn standalone_mlir_rejects_state_overrides_of_control_storage() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> active: once false;
+            in property <bool> active: false;
             spin := SpinBox {
-                value: 2;
+                value <- 2;
                 states [ marked when root.active: { font-weight: 600; } ]
             }
         }
@@ -12430,7 +12430,7 @@ fn standalone_mlir_uses_root_for_control_aliases_even_with_a_custom_root_id() {
 
     let source = r#"
         export component Editor inherits LineEdit {
-            in-out property <string> value <=> root.text;
+            in-out property <string> value <-> root.text;
             callback submitted();
             accepted => { root.submitted(); }
         }
@@ -12969,14 +12969,14 @@ fn instance_state_targets_validate_aliases_the_same_in_both_backends() {
         format!(
             r#"
             component StateTarget inherits Rectangle {{
-                in-out property <float> level: once 2;
-                in-out property <float> first <=> root.level;
-                in-out property <float> second <=> root.level;
+                in-out property <float> level: 2;
+                in-out property <float> first <-> root.level;
+                in-out property <float> second <-> root.level;
             }}
             export component StateAliasProbe inherits Window {{
-                in-out property <bool> active: once true;
-                in-out property <float> external: once 1;
-                out property <float> observed: child.level;
+                in-out property <bool> active: true;
+                in-out property <float> external: 1;
+                out property <float> observed <- child.level;
                 child := StateTarget {{ {binding} }}
                 states [ override when root.active: {{ {overrides} }} ]
             }}
@@ -13001,7 +13001,20 @@ fn instance_state_targets_validate_aliases_the_same_in_both_backends() {
         assert_eq!(interpreted.to_string(), compile.to_string());
     }
 
-    let source = source("first: root.external;", "child.second: 4;");
+    let initialized = source("first: root.external;", "child.second: 4;");
+    let initialized =
+        xrack_compiler::prepare_preview(&initialized, "state-initial.xr", Default::default())
+            .unwrap();
+    let initialized = Program::from_module(&initialized.module)
+        .unwrap()
+        .create("StateAliasProbe")
+        .unwrap();
+    assert_eq!(initialized.get("observed"), Ok(4.0.into()));
+    initialized.set("external", 7.0.into()).unwrap();
+    initialized.set("active", false.into()).unwrap();
+    assert_eq!(initialized.get("observed"), Ok(1.0.into()));
+
+    let source = source("first <- root.external;", "child.second: 4;");
     xrack_compiler::compile(&source, "state-alias.xr").unwrap();
     let preview =
         xrack_compiler::prepare_preview(&source, "state-alias.xr", Default::default()).unwrap();
@@ -13033,20 +13046,20 @@ fn instance_state_targets_validate_aliases_the_same_in_both_backends() {
 fn standalone_mlir_rejects_a_forwarded_two_way_input_with_an_inner_state() {
     let source = r#"
         component Leaf inherits Rectangle {
-            in-out property <string> caption <=> field.text;
+            in-out property <string> caption <-> field.text;
             field := LineEdit {}
         }
         component Frame inherits Rectangle {
-            in-out property <string> alias <=> badge.caption;
-            in property <bool> active: once false;
+            in-out property <string> alias <-> badge.caption;
+            in property <bool> active: false;
             badge := Leaf {
                 states [ warning when root.active: { caption: "Warning"; } ]
             }
         }
         export component App inherits Window {
-            in-out property <string> caption: once "Normal";
-            in-out property <bool> active: once false;
-            frame := Frame { alias: root.caption; active: root.active; }
+            in-out property <string> caption: "Normal";
+            in-out property <bool> active: false;
+            frame := Frame { alias <- root.caption; active <- root.active; }
         }
     "#;
     let filename = "nested-state-link.xr";
@@ -13092,7 +13105,7 @@ fn standalone_mlir_rejects_a_forwarded_two_way_input_with_an_inner_state() {
         Some(xrack_interpreter::Error::Invalid(error)),
     );
 
-    let invalid = source.replace("alias: root.caption;", "alias <=> root.caption;");
+    let invalid = source.replace("alias <- root.caption;", "alias <-> root.caption;");
     let error = xrack_compiler::compile(&invalid, filename).err().unwrap();
     assert!(
         error.to_string().contains("state cannot override"),
@@ -13109,8 +13122,8 @@ fn instance_callback_handlers_validate_shared_alias_targets() {
                 callback received(int);
             }}
             component CallbackTarget inherits Rectangle {{
-                callback first <=> left.received;
-                callback second <=> {second_owner}.received;
+                callback first <-> left.received;
+                callback second <-> {second_owner}.received;
                 left := CallbackLeaf {{}}
                 right := CallbackLeaf {{}}
             }}
@@ -13210,17 +13223,17 @@ fn incoming_callback_precedes_defaults_on_equivalent_nested_aliases() {
 fn standalone_mlir_detects_cycles_through_equivalent_control_aliases() {
     let source = r#"
         component AliasEditor inherits LineEdit {
-            in-out property <string> primary <=> root.text;
-            in-out property <string> alternate <=> root.text;
+            in-out property <string> primary <-> root.text;
+            in-out property <string> alternate <-> root.text;
         }
         component AliasWrapper inherits Rectangle {
-            in-out property <string> primary <=> field.primary;
-            in-out property <string> alternate <=> field.alternate;
+            in-out property <string> primary <-> field.primary;
+            in-out property <string> alternate <-> field.alternate;
             field := AliasEditor {}
         }
         export component AliasCycleProbe inherits Window {
-            in-out property <string> input: once "Initial";
-            editor := AliasWrapper { primary: root.input; }
+            in-out property <string> input: "Initial";
+            editor := AliasWrapper { primary <- root.input; }
         }
     "#;
     let document = xrack_compiler::parse(source).unwrap();
@@ -28550,7 +28563,7 @@ fn a_swipe_delegate_without_a_binding_keeps_its_open_side() {
         export component Inbox inherits Window {
             row := SwipeDelegate {
                 SwipeContent {}
-                SwipeRight { width: 60px; Button { text: "Archive"; } }
+                SwipeRight { width <- 60px; Button { text <- "Archive"; } }
             }
         }
     "#;
@@ -28632,7 +28645,7 @@ fn clipboard_named_input_and_table_projection_keep_their_own_bindings() {
     assert_eq!(interpreted.take_error(), None);
 
     let source = include_str!("expressions.xr").replacen(
-        "child := ClipboardNamedContent { clipboard-text: root.source; }",
+        "child := ClipboardNamedContent { clipboard-text <- root.source; }",
         "child := ClipboardNamedContent { clipboard-text: root.source; copy-value: 99; }",
         1,
     );

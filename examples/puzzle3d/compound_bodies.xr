@@ -11,14 +11,14 @@ struct CompoundVisual {
 }
 
 export component CompoundBodiesDemo inherits Window {
-    title: "XRack · 复合碰撞形状";
-    width: 690px; height: 474px;
-    resizable: false; background: #172738;
+    title <- "XRack · 复合碰撞形状";
+    width <- 690px; height <- 474px;
+    resizable <- false; background <- #172738;
 
     in-out property <bool> running: false;
-    property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
-    property <point3d> origin: Point3D.new(0, 0, 0);
-    property <vector3d> identity: Vector3D.new(0, 0, 0);
+    property <physicsworld3d> world <- Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    property <point3d> origin <- Point3D.new(0, 0, 0);
+    property <vector3d> identity <- Vector3D.new(0, 0, 0);
     property <float> radius: 0.25;
     out property <int> gate: 0;
     out property <int> ball: 0;
@@ -28,17 +28,17 @@ export component CompoundBodiesDemo inherits Window {
     out property <int> exits: 0;
     out property <bool> raised: false;
     out property <bool> open-lane: true;
-    out property <int> occupants: Physics3D.trigger-count(root.world, root.sensor);
-    out property <point3d> ball-position: root.ball == 0 ? root.launch-position : Physics3D.position(root.world, root.ball);
-    out property <point3d> gate-position: Physics3D.position(root.world, root.gate);
-    property <point3d> launch-position: Point3D.new(-3.2, root.radius, root.open-lane ? 0 : 1.04);
-    property <point3d> sensor-center: Point3D.new(1.55, 0.35, 0);
-    property <[ColliderPart]> gate-shapes: [
+    out property <int> occupants <- Physics3D.trigger-count(root.world, root.sensor);
+    out property <point3d> ball-position <- root.ball == 0 ? root.launch-position : Physics3D.position(root.world, root.ball);
+    out property <point3d> gate-position <- Physics3D.position(root.world, root.gate);
+    property <point3d> launch-position <- Point3D.new(-3.2, root.radius, root.open-lane ? 0 : 1.04);
+    property <point3d> sensor-center <- Point3D.new(1.55, 0.35, 0);
+    property <[ColliderPart]> gate-shapes <- [
         ColliderPart { shape: "box", position: Point3D.new(0, 0.63, -1.04), size: Vector3D.new(0.46, 1.26, 0.7) },
         ColliderPart { shape: "box", position: Point3D.new(0, 0.63, 1.04), size: Vector3D.new(0.46, 1.26, 0.7) },
         ColliderPart { shape: "box", position: Point3D.new(0, 1.37, 0), size: Vector3D.new(0.46, 0.22, 2.78) },
     ];
-    property <[ColliderPart]> sensor-shapes: [
+    property <[ColliderPart]> sensor-shapes <- [
         ColliderPart { shape: "box", position: Point3D.new(0, 0, -0.38), size: Vector3D.new(0.55, 0.46, 1.3) },
         ColliderPart { shape: "box", position: Point3D.new(0, 0, 0.38), size: Vector3D.new(0.55, 0.46, 1.3) },
     ];
@@ -90,7 +90,7 @@ export component CompoundBodiesDemo inherits Window {
         }
     }
     clock := Timer {
-        interval: 16; repeat: true; running: root.running;
+        interval <- 16; repeat <- true; running <- root.running;
         triggered => { root.advance(); }
     }
 
@@ -106,7 +106,7 @@ export component CompoundBodiesDemo inherits Window {
             Point3D.new(part.position.x, part.position.y + root.gate-position.y, part.position.z),
             part.size, #8bb8dc)
     }
-    property <[CompoundVisual]> visuals: [
+    property <[CompoundVisual]> visuals <- [
         root.box-part("floor", Point3D.new(0, -0.12, 0), Vector3D.new(8.6, 0.24, 4.8), #35515d),
         root.box-part("open-lane", Point3D.new(-1.0, 0.002, 0), Vector3D.new(5.9, 0.004, 0.035), #577e85),
         root.box-part("blocked-lane", Point3D.new(-1.0, 0.002, 1.04), Vector3D.new(5.9, 0.004, 0.035), #876c53),
@@ -123,30 +123,30 @@ export component CompoundBodiesDemo inherits Window {
         },
     ];
     SceneView3D {
-        width: 690px; height: 400px; model: root.visuals;
-        camera-yaw: -23; camera-pitch: 32; camera-distance: 10.0;
-        scene-background: #203a4e; ambient-intensity: 0.42; multisampling: true;
+        width <- 690px; height <- 400px; model <- root.visuals;
+        camera-yaw <- -23; camera-pitch <- 32; camera-distance <- 10.0;
+        scene-background <- #203a4e; ambient-intensity <- 0.42; multisampling <- true;
     }
     body-status := Text {
-        x: 18px; y: 16px; color: #e1edf5;
-        text: (root.open-lane ? "中央通道" : "侧面立柱") + "   ·   进入 " + root.entries + "   离开 "
+        x <- 18px; y <- 16px; color <- #e1edf5;
+        text <- (root.open-lane ? "中央通道" : "侧面立柱") + "   ·   进入 " + root.entries + "   离开 "
             + root.exits + "   ·   步数 " + root.ticks;
     }
     HorizontalLayout {
-        x: 14px; y: 412px; width: 662px; height: 44px; spacing: 10px;
+        x <- 14px; y <- 412px; width <- 662px; height <- 44px; spacing <- 10px;
         gap-button := Button {
-            width: 122px; text: "穿过通道";
+            width <- 122px; text <- "穿过通道";
             clicked => { root.launch(true); root.running = true; }
         }
         collision-button := Button {
-            width: 122px; text: "撞向立柱";
+            width <- 122px; text <- "撞向立柱";
             clicked => { root.launch(false); root.running = true; }
         }
         lift-button := Button {
-            width: 122px; text: root.raised ? "放下门框" : "抬起门框";
+            width <- 122px; text <- root.raised ? "放下门框" : "抬起门框";
             clicked => { root.set-gate-raised(!root.raised); root.advance(); }
         }
-        step-button := Button { width: 110px; text: "单步"; clicked => { root.advance(); } }
-        reset-button := Button { width: 104px; text: "重置"; clicked => { root.reset(true); } }
+        step-button := Button { width <- 110px; text <- "单步"; clicked => { root.advance(); } }
+        reset-button := Button { width <- 104px; text <- "重置"; clicked => { root.reset(true); } }
     }
 }

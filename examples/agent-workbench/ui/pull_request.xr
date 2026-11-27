@@ -15,7 +15,7 @@ export component PullRequestContent inherits VerticalLayout {
     in property <string> url;
     in property <bool> existing;
     in property <bool> copied;
-    private property <bool> editable: !root.loading && !root.pending && root.url == "";
+    private property <bool> editable <- !root.loading && !root.pending && root.url == "";
 
     callback reload();
     callback repository-changed();
@@ -23,144 +23,144 @@ export component PullRequestContent inherits VerticalLayout {
     callback copy-link();
     callback dismiss();
 
-    padding: 14px;
-    spacing: 8px;
-    alignment: start;
+    padding <- 14px;
+    spacing <- 8px;
+    alignment <- start;
     git-pr-source-label := Label {
-        text: root.loading ? @tr("reading-github-pr") : root.source;
-        height: 23px;
-        visible: root.source != "" || root.loading;
-        color: Palette.muted;
-        font-size: 12px;
-        font-family: "monospace";
-        overflow: elide;
+        text <- root.loading ? @tr("reading-github-pr") : root.source;
+        height <- 23px;
+        visible <- root.source != "" || root.loading;
+        color <- Palette.muted;
+        font-size <- 12px;
+        font-family <- "monospace";
+        overflow <- elide;
     }
     VerticalLayout {
-        visible: root.url == "";
-        alignment: start;
-        spacing: 7px;
+        visible <- root.url == "";
+        alignment <- start;
+        spacing <- 7px;
         HorizontalLayout {
-            height: 17px;
-            spacing: 8px;
+            height <- 17px;
+            spacing <- 8px;
             Label {
-                text: @tr("pr-base-repository");
-                horizontal-stretch: 1;
-                color: Palette.muted;
-                font-size: 11px;
+                text <- @tr("pr-base-repository");
+                horizontal-stretch <- 1;
+                color <- Palette.muted;
+                font-size <- 11px;
             }
             Label {
-                text: @tr("base-branch");
-                width: 146px;
-                color: Palette.muted;
-                font-size: 11px;
+                text <- @tr("base-branch");
+                width <- 146px;
+                color <- Palette.muted;
+                font-size <- 11px;
             }
         }
         HorizontalLayout {
-            height: 33px;
-            spacing: 8px;
-            cross-axis-alignment: center;
+            height <- 33px;
+            spacing <- 8px;
+            cross-axis-alignment <- center;
             git-pr-repository-choice := ComboBox {
-                height: 33px;
-                horizontal-stretch: 1;
-                min-width: 0px;
-                model: root.repositories;
-                current-value <=> root.repository;
-                accessible-name: @tr("pr-base-repository");
-                placeholder-text: @tr("pr-base-repository");
-                enabled: root.editable && Model.count(root.repositories) > 0;
+                height <- 33px;
+                horizontal-stretch <- 1;
+                min-width <- 0px;
+                model <- root.repositories;
+                current-value <-> root.repository;
+                accessible-name <- @tr("pr-base-repository");
+                placeholder-text <- @tr("pr-base-repository");
+                enabled <- root.editable && Model.count(root.repositories) > 0;
                 selected(repo) => { root.repository-changed(); }
             }
             git-pr-base-input := TextInput {
-                text <=> root.branch;
-                height: 33px;
-                width: 146px;
-                accessible-name: @tr("base-branch");
-                placeholder-text: @tr("base-branch");
-                enabled: root.editable;
+                text <-> root.branch;
+                height <- 33px;
+                width <- 146px;
+                accessible-name <- @tr("base-branch");
+                placeholder-text <- @tr("base-branch");
+                enabled <- root.editable;
             }
         }
         git-pr-title-input := TextInput {
-            text <=> root.heading;
-            height: 33px;
-            accessible-name: @tr("pr-title");
-            placeholder-text: @tr("pr-title");
-            enabled: root.editable;
+            text <-> root.heading;
+            height <- 33px;
+            accessible-name <- @tr("pr-title");
+            placeholder-text <- @tr("pr-title");
+            enabled <- root.editable;
         }
         git-pr-body-input := TextArea {
-            text <=> root.body;
-            height: 107px;
-            padding: 7px;
-            accessible-name: @tr("pr-description");
-            placeholder-text: @tr("pr-description");
-            read-only: !root.editable;
+            text <-> root.body;
+            height <- 107px;
+            padding <- 7px;
+            accessible-name <- @tr("pr-description");
+            placeholder-text <- @tr("pr-description");
+            read-only <- !root.editable;
         }
         git-pr-draft-option := CheckBox {
-            text: @tr("create-draft-pr");
-            checked <=> root.draft;
-            height: 28px;
-            enabled: root.editable;
+            text <- @tr("create-draft-pr");
+            checked <-> root.draft;
+            height <- 28px;
+            enabled <- root.editable;
         }
     }
     Label {
-        text: root.existing ? @tr("pr-found-existing") : @tr("pr-created");
-        visible: root.url != "";
-        color: Palette.success;
-        font-size: 13px;
-        font-weight: 650;
-        height: 26px;
+        text <- root.existing ? @tr("pr-found-existing") : @tr("pr-created");
+        visible <- root.url != "";
+        color <- Palette.success;
+        font-size <- 13px;
+        font-weight <- 650;
+        height <- 26px;
     }
     git-pr-result-url := TextInput {
-        text: root.url;
-        visible: root.url != "";
-        read-only: true;
-        accessible-name: @tr("pr-link");
-        height: 34px;
+        text <- root.url;
+        visible <- root.url != "";
+        read-only <- true;
+        accessible-name <- @tr("pr-link");
+        height <- 34px;
     }
     git-pr-error-label := Label {
-        text: root.error;
-        visible: root.error != "";
-        color: Palette.error;
-        font-size: 12px;
-        height: 36px;
-        wrap: word-wrap;
-        overflow: elide;
-        max-lines: 2;
+        text <- root.error;
+        visible <- root.error != "";
+        color <- Palette.error;
+        font-size <- 12px;
+        height <- 36px;
+        wrap <- word-wrap;
+        overflow <- elide;
+        max-lines <- 2;
     }
     HorizontalLayout {
-        height: 33px;
-        spacing: 7px;
-        cross-axis-alignment: center;
+        height <- 33px;
+        spacing <- 7px;
+        cross-axis-alignment <- center;
         reload-git-pr-button := Button {
-            text: @tr("reload-pr-source");
-            visible: root.url == "";
-            enabled: !root.loading && !root.pending;
-            flat: true;
-            padding: 5px;
+            text <- @tr("reload-pr-source");
+            visible <- root.url == "";
+            enabled <- !root.loading && !root.pending;
+            flat <- true;
+            padding <- 5px;
             clicked => { root.reload(); }
         }
-        Rectangle { horizontal-stretch: 1; }
+        Rectangle { horizontal-stretch <- 1; }
         copy-git-pr-button := Button {
-            text: root.copied ? @tr("pr-link-copied") : @tr("copy-pr-link");
-            visible: root.url != "";
-            flat: true;
-            padding: 6px;
+            text <- root.copied ? @tr("pr-link-copied") : @tr("copy-pr-link");
+            visible <- root.url != "";
+            flat <- true;
+            padding <- 6px;
             clicked => { root.copy-link(); }
         }
         cancel-git-pr := Button {
-            text: root.url == "" ? @tr("cancel") : @tr("done");
-            primary: root.url != "";
-            flat: root.url == "";
-            enabled: !root.pending;
-            padding: 6px;
+            text <- root.url == "" ? @tr("cancel") : @tr("done");
+            primary <- root.url != "";
+            flat <- root.url == "";
+            enabled <- !root.pending;
+            padding <- 6px;
             clicked => { root.dismiss(); }
         }
         confirm-git-pr-button := Button {
-            text: root.pending ? @tr("creating-pr") : @tr("create-git-pr");
-            enabled: root.ready;
-            visible: root.url == "";
-            primary: true;
-            border-radius: 6px;
-            padding: 6px;
+            text <- root.pending ? @tr("creating-pr") : @tr("create-git-pr");
+            enabled <- root.ready;
+            visible <- root.url == "";
+            primary <- true;
+            border-radius <- 6px;
+            padding <- 6px;
             clicked => { root.confirm(); }
         }
     }

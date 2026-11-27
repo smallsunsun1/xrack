@@ -14,10 +14,10 @@ struct ParticleSceneObject {
 }
 
 export component ParticleDemo inherits Window {
-    title: "XRack · 3D 粒子";
-    width: 620px;
-    height: 410px;
-    background: #182333;
+    title <- "XRack · 3D 粒子";
+    width <- 620px;
+    height <- 410px;
+    background <- #182333;
 
     in-out property <float> time: 0.65;
     in-out property <float> emission: 100;
@@ -32,12 +32,12 @@ export component ParticleDemo inherits Window {
     in-out property <bool> running: false;
 
     clock := Timer {
-        interval: 16;
-        running: root.running;
+        interval <- 16;
+        running <- root.running;
         triggered => { root.time += 0.016; }
     }
 
-    property <[Emitter]> emitters: [
+    property <[Emitter]> emitters <- [
         Emitter {
             position: Point3D.new(-1.25, -1.2, -0.2), color: #ff952dc0,
             lifetime: 1.6, size: 0.25, end-size: 0.04,
@@ -56,7 +56,7 @@ export component ParticleDemo inherits Window {
         },
     ];
 
-    property <[ParticleSceneObject]> room: [
+    property <[ParticleSceneObject]> room <- [
         ParticleSceneObject {
             id: "cover", mesh: "primitive:box", x: -1.4, y: -0.14, z: 1.25,
             scale-x: 0.6, scale-y: 1.35, scale-z: 0.2, color: #52779b, visible: root.cover,
@@ -70,33 +70,33 @@ export component ParticleDemo inherits Window {
     ];
 
     SceneView3D {
-        width: 620px; height: 330px;
-        model: root.room;
-        camera-yaw: 8;
-        camera-pitch: 8;
-        camera-distance: 7.9;
-        layer-mask: root.layers;
-        scene-background: #101724;
-        particle-emitters: root.emitters;
-        particle-time: root.time;
-        cache-rendering: true;
-        order-independent-transparency: root.weighted;
-        multisampling: root.msaa;
-        scene-hdr: root.hdr;
-        bloom: root.hdr;
-        bloom-threshold: 0.7;
+        width <- 620px; height <- 330px;
+        model <- root.room;
+        camera-yaw <- 8;
+        camera-pitch <- 8;
+        camera-distance <- 7.9;
+        layer-mask <- root.layers;
+        scene-background <- #101724;
+        particle-emitters <- root.emitters;
+        particle-time <- root.time;
+        cache-rendering <- true;
+        order-independent-transparency <- root.weighted;
+        multisampling <- root.msaa;
+        scene-hdr <- root.hdr;
+        bloom <- root.hdr;
+        bloom-threshold <- 0.7;
     }
 
-    play := CheckBox { x: 14px; y: 367px; width: 82px; height: 36px; text: "播放"; checked <=> root.running; }
+    play := CheckBox { x <- 14px; y <- 367px; width <- 82px; height <- 36px; text <- "播放"; checked <-> root.running; }
     burst := Button {
-        x: 104px; y: 367px; width: 82px; height: 36px;
-        text: "爆发";
+        x <- 104px; y <- 367px; width <- 82px; height <- 36px;
+        text <- "爆发";
         clicked => { root.burst-start = root.time - 0.18; }
     }
-    cover-toggle := CheckBox { x: 197px; y: 367px; width: 86px; height: 36px; text: "遮挡"; checked <=> root.cover; }
-    weighting := CheckBox { x: 285px; y: 367px; width: 108px; height: 36px; text: "加权透明"; checked <=> root.weighted; }
-    hdr-toggle := CheckBox { x: 395px; y: 367px; width: 80px; height: 36px; text: "HDR"; checked <=> root.hdr; }
-    msaa-toggle := CheckBox { x: 478px; y: 367px; width: 128px; height: 36px; text: "4× MSAA"; checked <=> root.msaa; }
-    Label { x: 17px; y: 330px; width: 64px; height: 36px; text: "时间"; }
-    timeline := Slider { x: 78px; y: 330px; width: 528px; height: 36px; minimum: 0; maximum: 4; value <=> root.time; }
+    cover-toggle := CheckBox { x <- 197px; y <- 367px; width <- 86px; height <- 36px; text <- "遮挡"; checked <-> root.cover; }
+    weighting := CheckBox { x <- 285px; y <- 367px; width <- 108px; height <- 36px; text <- "加权透明"; checked <-> root.weighted; }
+    hdr-toggle := CheckBox { x <- 395px; y <- 367px; width <- 80px; height <- 36px; text <- "HDR"; checked <-> root.hdr; }
+    msaa-toggle := CheckBox { x <- 478px; y <- 367px; width <- 128px; height <- 36px; text <- "4× MSAA"; checked <-> root.msaa; }
+    Label { x <- 17px; y <- 330px; width <- 64px; height <- 36px; text <- "时间"; }
+    timeline := Slider { x <- 78px; y <- 330px; width <- 528px; height <- 36px; minimum <- 0; maximum <- 4; value <-> root.time; }
 }

@@ -20,9 +20,9 @@ struct ParticleLightProbe {
 }
 
 export component ParticleLightingDemo inherits Window {
-    title: "XRack · 粒子阴影与反射";
-    width: 600px; height: 430px;
-    background: #182333;
+    title <- "XRack · 粒子阴影与反射";
+    width <- 600px; height <- 430px;
+    background <- #182333;
 
     in-out property <bool> cast-shadow: true;
     in-out property <bool> cast-reflection: true;
@@ -39,7 +39,7 @@ export component ParticleLightingDemo inherits Window {
         casts-shadow: false, receives-shadow: true,
         casts-reflections: false, receives-reflections: false,
     };
-    property <[ParticleLightObject]> model: [
+    property <[ParticleLightObject]> model <- [
         ParticleLightObject { id: "eye", mesh: "", z: 11, camera-kind: "orthographic", ..root.defaults },
         ParticleLightObject {
             id: "wall", z: -1.9, scale-x: 13, scale-y: 7, scale-z: 0.1,
@@ -51,7 +51,7 @@ export component ParticleLightingDemo inherits Window {
             receives-reflections: true, ..root.defaults
         },
     ];
-    property <ParticleLightEmitter> sparks: ParticleLightEmitter {
+    property <ParticleLightEmitter> sparks <- ParticleLightEmitter {
         position: Point3D.new(-1.9, 1, 1.15), size: 1.35, color: #ff8848,
         lifetime: 3.0, bursts: [ParticleBurst { time: 0, count: root.population }], fade-out: 0.2,
         velocity: Vector3D.new(0, -0.62, 0.1), particle-model: "primitive:box",
@@ -60,7 +60,7 @@ export component ParticleLightingDemo inherits Window {
         particle-receives-shadow: root.receive-shadow,
         particle-casts-reflections: root.cast-reflection,
     };
-    property <[ParticleLightProbe]> probes: [
+    property <[ParticleLightProbe]> probes <- [
         ParticleLightProbe {
             position: Point3D.new(2.35, 0, 0), box-size: Vector3D.new(14, 10, 10),
             capture-size: 64, refresh-mode: "on-change", time-slicing: root.slicing,
@@ -68,20 +68,20 @@ export component ParticleLightingDemo inherits Window {
         },
     ];
     SceneView3D {
-        width: 600px; height: 310px; model: root.model; camera: "eye";
-        reflection-probes: root.probes; particle-emitters: [root.sparks]; particle-time: root.time;
-        scene-background: #273d52; scene-hdr: true; cache-rendering: true;
-        shadows: true; shadow-map-size: 512; shadow-bias: 0.0015;
-        light-yaw: root.light-angle; light-elevation: 33; ambient-intensity: 0.35;
+        width <- 600px; height <- 310px; model <- root.model; camera <- "eye";
+        reflection-probes <- root.probes; particle-emitters <- [root.sparks]; particle-time <- root.time;
+        scene-background <- #273d52; scene-hdr <- true; cache-rendering <- true;
+        shadows <- true; shadow-map-size <- 512; shadow-bias <- 0.0015;
+        light-yaw <- root.light-angle; light-elevation <- 33; ambient-intensity <- 0.35;
     }
-    shadow-toggle := CheckBox { x: 14px; y: 321px; width: 124px; height: 36px; text: "投射阴影"; checked <=> root.cast-shadow; }
-    reflection-toggle := CheckBox { x: 146px; y: 321px; width: 127px; height: 36px; text: "进入反射"; checked <=> root.cast-reflection; }
-    receive-toggle := CheckBox { x: 274px; y: 321px; width: 126px; height: 36px; text: "接收阴影"; checked <=> root.receive-shadow; }
+    shadow-toggle := CheckBox { x <- 14px; y <- 321px; width <- 124px; height <- 36px; text <- "投射阴影"; checked <-> root.cast-shadow; }
+    reflection-toggle := CheckBox { x <- 146px; y <- 321px; width <- 127px; height <- 36px; text <- "进入反射"; checked <-> root.cast-reflection; }
+    receive-toggle := CheckBox { x <- 274px; y <- 321px; width <- 126px; height <- 36px; text <- "接收阴影"; checked <-> root.receive-shadow; }
     slicing-toggle := Button {
-        x: 414px; y: 321px; width: 165px; height: 36px;
-        text: root.slicing == "none" ? "同帧捕获" : "逐面捕获";
+        x <- 414px; y <- 321px; width <- 165px; height <- 36px;
+        text <- root.slicing == "none" ? "同帧捕获" : "逐面捕获";
         clicked => { root.slicing = root.slicing == "none" ? "individual-faces" : "none"; }
     }
-    Label { x: 14px; y: 371px; width: 70px; height: 42px; text: "粒子时间"; }
-    time-slider := Slider { x: 90px; y: 371px; width: 488px; height: 42px; minimum: 0; maximum: 2.9; value <=> root.time; }
+    Label { x <- 14px; y <- 371px; width <- 70px; height <- 42px; text <- "粒子时间"; }
+    time-slider := Slider { x <- 90px; y <- 371px; width <- 488px; height <- 42px; minimum <- 0; maximum <- 2.9; value <-> root.time; }
 }

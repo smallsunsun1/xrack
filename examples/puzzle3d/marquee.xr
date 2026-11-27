@@ -7,20 +7,20 @@ struct MarqueeActor {
 }
 
 export component MarqueeDemo inherits Window {
-    title: "XRack · 3D 框选";
-    width: 634px; height: 420px;
-    resizable: false;
-    background: #162333;
+    title <- "XRack · 3D 框选";
+    width <- 634px; height <- 420px;
+    resizable <- false;
+    background <- #162333;
 
-    in-out property <point2d> start: once Point2D.new(0px, 0px);
-    in-out property <point2d> end: once Point2D.new(0px, 0px);
+    in-out property <point2d> start: Point2D.new(0px, 0px);
+    in-out property <point2d> end: Point2D.new(0px, 0px);
     in-out property <bool> named-camera: true;
     in-out property <bool> dragging: false;
     in-out property <int> mask: 3;
     in-out property <float> time: 0.5;
     property <length> view-width: 634px;
     property <length> view-height: 350px;
-    property <point2d> view-size: Point2D.new(root.view-width, root.view-height);
+    property <point2d> view-size <- Point2D.new(root.view-width, root.view-height);
     property <MarqueeActor> base: MarqueeActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
@@ -28,7 +28,7 @@ export component MarqueeDemo inherits Window {
         camera-kind: "", camera-height: 6, camera-near: 0.5, camera-far: 17,
         animation: "", animation-time: 0,
     };
-    property <[MarqueeActor]> world: [
+    property <[MarqueeActor]> world <- [
         MarqueeActor { id: "map", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
         MarqueeActor {
             id: "front", x: -1.15, z: 1.4, scale-x: 1.2, scale-y: 1.4, scale-z: 0.35,
@@ -55,7 +55,7 @@ export component MarqueeDemo inherits Window {
             pickable: false, color: #41546a, ..root.base
         },
     ];
-    out property <[int]> selected: root.named-camera
+    out property <[int]> selected <- root.named-camera
         ? Scene3D.pick-in-rect-camera(root.world, "map", root.view-size, root.start, root.end, root.mask)
         : Scene3D.pick-in-rect(root.world, 0, 0, 9, root.view-size, root.start, root.end, root.mask);
 
@@ -80,7 +80,7 @@ export component MarqueeDemo inherits Window {
     }
 
     select-area := TouchArea {
-        width: root.view-width; height: root.view-height;
+        width <- root.view-width; height <- root.view-height;
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
                 root.start = Point2D.new(event.x, event.y);
@@ -97,36 +97,36 @@ export component MarqueeDemo inherits Window {
             }
         }
         viewport := SceneView3D {
-            width: root.view-width; height: root.view-height;
-            model: root.world; camera: root.named-camera ? "map" : "";
-            camera-yaw: 0; camera-pitch: 0; camera-distance: 9;
-            layer-mask: root.mask; ambient-intensity: 0.6;
-            scene-background: #253a52; multisampling: true; cache-rendering: true;
+            width <- root.view-width; height <- root.view-height;
+            model <- root.world; camera <- root.named-camera ? "map" : "";
+            camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 9;
+            layer-mask <- root.mask; ambient-intensity <- 0.6;
+            scene-background <- #253a52; multisampling <- true; cache-rendering <- true;
         }
         for index in root.selected: Label {
-            x: root.marker-x(index) - 38px; y: root.marker-y(index) - 14px;
-            width: 76px; height: 24px;
-            text: root.model-label(index); color: #ffda94;
-            font-size: 13px; horizontal-alignment: center;
+            x <- root.marker-x(index) - 38px; y <- root.marker-y(index) - 14px;
+            width <- 76px; height <- 24px;
+            text <- root.model-label(index); color <- #ffda94;
+            font-size <- 13px; horizontal-alignment <- center;
         }
         Rectangle {
-            x: Math.clamp(Math.min(root.start.x, root.end.x), 0px, root.view-width);
-            y: Math.clamp(Math.min(root.start.y, root.end.y), 0px, root.view-height);
-            width: Math.clamp(Math.max(root.start.x, root.end.x), 0px, root.view-width) - Math.clamp(Math.min(root.start.x, root.end.x), 0px, root.view-width);
-            height: Math.clamp(Math.max(root.start.y, root.end.y), 0px, root.view-height) - Math.clamp(Math.min(root.start.y, root.end.y), 0px, root.view-height);
-            visible: root.dragging; background: #7cb8ff3a;
-            border-color: #8ec7fb; border-width: 1px;
+            x <- Math.clamp(Math.min(root.start.x, root.end.x), 0px, root.view-width);
+            y <- Math.clamp(Math.min(root.start.y, root.end.y), 0px, root.view-height);
+            width <- Math.clamp(Math.max(root.start.x, root.end.x), 0px, root.view-width) - Math.clamp(Math.min(root.start.x, root.end.x), 0px, root.view-width);
+            height <- Math.clamp(Math.max(root.start.y, root.end.y), 0px, root.view-height) - Math.clamp(Math.min(root.start.y, root.end.y), 0px, root.view-height);
+            visible <- root.dragging; background <- #7cb8ff3a;
+            border-color <- #8ec7fb; border-width <- 1px;
         }
     }
     Label {
-        x: 14px; y: 364px; width: 146px; height: 38px;
-        text: "选中 " + Model.count(root.selected) + " 个模型";
+        x <- 14px; y <- 364px; width <- 146px; height <- 38px;
+        text <- "选中 " + Model.count(root.selected) + " 个模型";
     }
-    named-toggle := CheckBox { x: 163px; y: 364px; width: 119px; height: 38px; text: "正交相机"; checked <=> root.named-camera; }
+    named-toggle := CheckBox { x <- 163px; y <- 364px; width <- 119px; height <- 38px; text <- "正交相机"; checked <-> root.named-camera; }
     layer-toggle := CheckBox {
-        x: 288px; y: 364px; width: 127px; height: 38px; text: "包含橙色层"; checked: root.mask == 3;
+        x <- 288px; y <- 364px; width <- 127px; height <- 38px; text <- "包含橙色层"; checked <- root.mask == 3;
         toggled => { root.mask = root.mask == 3 ? 1 : 3; }
     }
-    Label { x: 432px; y: 364px; width: 77px; height: 38px; text: "动画时间"; }
-    time-slider := Slider { x: 505px; y: 364px; width: 115px; height: 38px; minimum: 0; maximum: 1; value <=> root.time; }
+    Label { x <- 432px; y <- 364px; width <- 77px; height <- 38px; text <- "动画时间"; }
+    time-slider := Slider { x <- 505px; y <- 364px; width <- 115px; height <- 38px; minimum <- 0; maximum <- 1; value <-> root.time; }
 }

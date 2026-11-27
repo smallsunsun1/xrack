@@ -16,8 +16,8 @@ struct FresnelLight {
 }
 
 export component FresnelDemo inherits Window {
-    title: "XRack · Fresnel reflectance";
-    width: 600px; height: 372px; background: #192330;
+    title <- "XRack · Fresnel reflectance";
+    width <- 600px; height <- 372px; background <- #192330;
 
     in-out property <bool> base-controls: false;
     in-out property <bool> coat-controls: false;
@@ -38,17 +38,17 @@ export component FresnelDemo inherits Window {
         clearcoat: 0, clearcoat-roughness: 0.62, clearcoat-fresnel-power: 5, clearcoat-fresnel-scale: 1,
         clearcoat-fresnel-bias: 0, clearcoat-fresnel-scale-bias-enabled: false,
     };
-    property <FresnelActor> defaults: FresnelActor {
+    property <FresnelActor> defaults <- FresnelActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, camera-kind: "", camera-height: 4, visible: true, material: root.flat,
     };
-    property <string> sample-mesh: root.curved ? "primitive:sphere" : "primitive:rectangle";
-    property <FresnelFinish> base-finish: FresnelFinish {
+    property <string> sample-mesh <- root.curved ? "primitive:sphere" : "primitive:rectangle";
+    property <FresnelFinish> base-finish <- FresnelFinish {
         fresnel-power: root.base-power, fresnel-scale: root.base-scale, fresnel-bias: root.base-bias,
         fresnel-scale-bias-enabled: root.base-controls, ..root.flat
     };
-    property <[FresnelActor]> world: [
+    property <[FresnelActor]> world <- [
         FresnelActor { id: "eye", mesh: "", camera-kind: "orthographic", z: 8, ..root.defaults },
         FresnelActor {
             id: "base", mesh: root.sample-mesh, x: -1.5, scale-x: 2.2, scale-y: 2.15, scale-z: 2.2,
@@ -76,7 +76,7 @@ export component FresnelDemo inherits Window {
         }
     ];
     property <[FresnelLight]> dark;
-    property <[FresnelLight]> lights: root.probe || root.floor ? root.dark : [
+    property <[FresnelLight]> lights <- root.probe || root.floor ? root.dark : [
         FresnelLight {
             kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0, intensity: 3,
             color: #fff, range: 1, inner-angle: 0, outer-angle: 20,
@@ -84,24 +84,24 @@ export component FresnelDemo inherits Window {
     ];
 
     SceneView3D {
-        width: 600px; height: 320px; model: root.world; camera: root.floor ? "" : "eye";
-        camera-yaw: 0; camera-pitch: 26; camera-distance: 10;
-        ambient-intensity: 0; lights: root.lights; shadows: false;
-        environment: root.probe ? @environment-url("models/studio.hdr") : "";
-        environment-intensity: 1.7; scene-background: #22334b;
-        screen-space-reflections: root.screen-reflections;
-        ssr-roughness-cutoff: 0.6; ssr-thickness: 0.26; ssr-steps: 128;
+        width <- 600px; height <- 320px; model <- root.world; camera <- root.floor ? "" : "eye";
+        camera-yaw <- 0; camera-pitch <- 26; camera-distance <- 10;
+        ambient-intensity <- 0; lights <- root.lights; shadows <- false;
+        environment <- root.probe ? @environment-url("models/studio.hdr") : "";
+        environment-intensity <- 1.7; scene-background <- #22334b;
+        screen-space-reflections <- root.screen-reflections;
+        ssr-roughness-cutoff <- 0.6; ssr-thickness <- 0.26; ssr-steps <- 128;
     }
     base-button := Button {
-        x: 12px; y: 334px; width: 135px; height: 30px;
-        text: root.base-controls ? "Base custom" : "Base Schlick";
+        x <- 12px; y <- 334px; width <- 135px; height <- 30px;
+        text <- root.base-controls ? "Base custom" : "Base Schlick";
         clicked => { root.base-controls = !root.base-controls; }
     }
     coat-button := Button {
-        x: 160px; y: 334px; width: 135px; height: 30px;
-        text: root.coat-controls ? "Coat custom" : "Coat Schlick";
+        x <- 160px; y <- 334px; width <- 135px; height <- 30px;
+        text <- root.coat-controls ? "Coat custom" : "Coat Schlick";
         clicked => { root.coat-controls = !root.coat-controls; }
     }
-    CheckBox { x: 312px; y: 334px; width: 118px; text: "Sphere"; checked <=> root.curved; }
-    CheckBox { x: 447px; y: 334px; width: 140px; text: "Light probe"; checked <=> root.probe; }
+    CheckBox { x <- 312px; y <- 334px; width <- 118px; text <- "Sphere"; checked <-> root.curved; }
+    CheckBox { x <- 447px; y <- 334px; width <- 140px; text <- "Light probe"; checked <-> root.probe; }
 }

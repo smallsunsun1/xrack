@@ -14,8 +14,8 @@ struct BrushLight {
 }
 
 export component MaterialAnisotropyDemo inherits Window {
-    title: "XRack · Brushed metal";
-    width: 600px; height: 372px; background: #192330;
+    title <- "XRack · Brushed metal";
+    width <- 600px; height <- 372px; background <- #192330;
 
     in-out property <float> strength: 0.85;
     in-out property <float> rotation: 0.0;
@@ -28,18 +28,18 @@ export component MaterialAnisotropyDemo inherits Window {
     in-out property <bool> ao: false;
     in-out property <float> yaw: 0.0;
 
-    property <BrushFinish> finish: BrushFinish {
+    property <BrushFinish> finish <- BrushFinish {
         enabled: !root.inherit, base-color: #b38a50, metalness: 1, roughness: 0.38,
         anisotropy-strength: root.strength, anisotropy-rotation: root.rotation,
         anisotropy-map: root.mapped ? @texture-url("models/brushed-direction.png") : "",
         clearcoat: root.coat ? 0.35 : 0, clearcoat-roughness: 0.42,
     };
-    property <BrushActor> default-actor: BrushActor {
+    property <BrushActor> default-actor <- BrushActor {
         id: "", mesh: "", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #fff, camera-kind: "", camera-height: 4,
         material: root.finish,
     };
-    property <[BrushActor]> world: [
+    property <[BrushActor]> world <- [
         BrushActor { id: "eye", camera-kind: "orthographic", z: 8, ..root.default-actor },
         BrushActor {
             id: "sample", mesh: root.imported ? @mesh-url("models/brushed-panel.gltf")
@@ -48,7 +48,7 @@ export component MaterialAnisotropyDemo inherits Window {
         }
     ];
     property <[BrushLight]> dark;
-    property <[BrushLight]> lights: root.probe ? root.dark : [
+    property <[BrushLight]> lights <- root.probe ? root.dark : [
         BrushLight {
             kind: "directional", x: 0, y: 0, z: 0, yaw: 45, elevation: 0, intensity: 3.2,
             color: #fff, range: 1, inner-angle: 0, outer-angle: 20,
@@ -56,17 +56,17 @@ export component MaterialAnisotropyDemo inherits Window {
     ];
 
     SceneView3D {
-        width: 600px; height: 320px; model: root.world; camera: "eye";
-        lights: root.lights; ambient-intensity: root.ao ? 0.35 : 0; scene-background: #22334b;
-        environment: root.probe ? @environment-url("models/studio.hdr") : "";
-        environment-intensity: 2; shadows: false; ambient-occlusion: root.ao;
+        width <- 600px; height <- 320px; model <- root.world; camera <- "eye";
+        lights <- root.lights; ambient-intensity <- root.ao ? 0.35 : 0; scene-background <- #22334b;
+        environment <- root.probe ? @environment-url("models/studio.hdr") : "";
+        environment-intensity <- 2; shadows <- false; ambient-occlusion <- root.ao;
     }
     rotation-button := Button {
-        x: 12px; y: 334px; width: 145px; height: 30px;
-        text: root.rotation == 0 ? "Horizontal" : "Vertical";
+        x <- 12px; y <- 334px; width <- 145px; height <- 30px;
+        text <- root.rotation == 0 ? "Horizontal" : "Vertical";
         clicked => { root.rotation = root.rotation == 0 ? 90 : 0; }
     }
-    CheckBox { x: 170px; y: 334px; width: 125px; text: "Direction map"; checked <=> root.mapped; }
-    CheckBox { x: 306px; y: 334px; width: 105px; text: "Sphere"; checked <=> root.sphere; }
-    CheckBox { x: 430px; y: 334px; width: 140px; text: "Light probe"; checked <=> root.probe; }
+    CheckBox { x <- 170px; y <- 334px; width <- 125px; text <- "Direction map"; checked <-> root.mapped; }
+    CheckBox { x <- 306px; y <- 334px; width <- 105px; text <- "Sphere"; checked <-> root.sphere; }
+    CheckBox { x <- 430px; y <- 334px; width <- 140px; text <- "Light probe"; checked <-> root.probe; }
 }

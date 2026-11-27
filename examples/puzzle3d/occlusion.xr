@@ -12,10 +12,10 @@ struct OcclusionLamp {
 }
 
 export component OcclusionDemo inherits Window {
-    title: "XRack · 屏幕空间环境遮蔽";
-    width: 480px;
-    height: 300px;
-    background: #141d29;
+    title <- "XRack · 屏幕空间环境遮蔽";
+    width <- 480px;
+    height <- 300px;
+    background <- #141d29;
 
     in-out property <bool> ao: true;
     in-out property <bool> orthographic: false;
@@ -32,7 +32,7 @@ export component OcclusionDemo inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #e8dbc4, visible: true,
         camera-kind: "", camera-height: 6.2, camera-look-at: "",
     };
-    property <[OcclusionActor]> models: [
+    property <[OcclusionActor]> models <- [
         OcclusionActor { id: "floor", y: -0.37, scale-x: 6.4, scale-y: 0.3, scale-z: 5.4, color: #cfbd9b, ..root.defaults },
         OcclusionActor { id: "plinth", x: -0.45, y: 0.22, z: 0.35, scale-x: 1.7, scale-y: 0.88, scale-z: 1.15, ..root.defaults },
         OcclusionActor { id: "upper", x: -0.8, y: 0.88, z: 0.35, scale-x: 0.9, scale-y: 0.44, scale-z: 0.82, ..root.defaults },
@@ -47,7 +47,7 @@ export component OcclusionDemo inherits Window {
             camera-kind: "orthographic", camera-look-at: "floor", ..root.defaults
         },
     ];
-    property <[OcclusionLamp]> lights: [
+    property <[OcclusionLamp]> lights <- [
         OcclusionLamp {
             kind: "directional", x: 0, y: 0, z: 0, yaw: 36, elevation: 62,
             intensity: root.direct, color: #fff6e6, range: 0, inner-angle: 0, outer-angle: 45,
@@ -55,35 +55,35 @@ export component OcclusionDemo inherits Window {
     ];
 
     view := SceneView3D {
-        width: 480px;
-        height: 248px;
-        model: root.models;
-        lights: root.lights;
-        camera: root.orthographic ? "ortho" : "";
-        camera-yaw: root.angle;
-        camera-pitch: 27;
-        camera-distance: 9.8;
-        ambient-intensity: root.ambient;
-        ambient-occlusion: root.ao;
-        ao-strength: root.strength;
-        ao-distance: root.radius;
-        ao-bias: 0.025;
-        environment: root.hdr ? @environment-url("models/studio.hdr") : "";
-        order-independent-transparency: root.glass;
-        multisampling: root.glass;
-        scene-background: #182537;
+        width <- 480px;
+        height <- 248px;
+        model <- root.models;
+        lights <- root.lights;
+        camera <- root.orthographic ? "ortho" : "";
+        camera-yaw <- root.angle;
+        camera-pitch <- 27;
+        camera-distance <- 9.8;
+        ambient-intensity <- root.ambient;
+        ambient-occlusion <- root.ao;
+        ao-strength <- root.strength;
+        ao-distance <- root.radius;
+        ao-bias <- 0.025;
+        environment <- root.hdr ? @environment-url("models/studio.hdr") : "";
+        order-independent-transparency <- root.glass;
+        multisampling <- root.glass;
+        scene-background <- #182537;
     }
 
     HorizontalLayout {
-        y: 248px;
-        width: 480px;
-        height: 52px;
-        padding: 12px;
-        spacing: 12px;
-        ao-toggle := CheckBox { width: 112px; text: "环境遮蔽"; checked <=> root.ao; }
-        ortho-toggle := CheckBox { width: 72px; text: "正交"; checked <=> root.orthographic; }
-        hdr-toggle := CheckBox { width: 68px; text: "HDR"; checked <=> root.hdr; }
-        glass-toggle := CheckBox { width: 72px; text: "透明"; checked <=> root.glass; }
-        radius-slider := Slider { width: 84px; minimum: 0.15; maximum: 2.5; value <=> root.radius; }
+        y <- 248px;
+        width <- 480px;
+        height <- 52px;
+        padding <- 12px;
+        spacing <- 12px;
+        ao-toggle := CheckBox { width <- 112px; text <- "环境遮蔽"; checked <-> root.ao; }
+        ortho-toggle := CheckBox { width <- 72px; text <- "正交"; checked <-> root.orthographic; }
+        hdr-toggle := CheckBox { width <- 68px; text <- "HDR"; checked <-> root.hdr; }
+        glass-toggle := CheckBox { width <- 72px; text <- "透明"; checked <-> root.glass; }
+        radius-slider := Slider { width <- 84px; minimum <- 0.15; maximum <- 2.5; value <-> root.radius; }
     }
 }

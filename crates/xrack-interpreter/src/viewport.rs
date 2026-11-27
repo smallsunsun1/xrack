@@ -6,7 +6,7 @@ use xrack_runtime::{
 
 #[derive(Clone)]
 pub(crate) enum Offset {
-    Binding(Expr),
+    Binding { expression: Expr, initial: bool },
     Linked(Member),
 }
 
@@ -126,6 +126,7 @@ impl Element {
                 let binding = offset.clone();
                 let target = offset.clone();
                 let value = Rc::new(Property::<Length>::default());
+                let written = value.clone();
                 handle.bind_offset(
                     *axis,
                     move || {
@@ -138,7 +139,7 @@ impl Element {
                         };
                         let current = match &binding {
                             Offset::Linked(target) => instance.read(target).map(read_length),
-                            Offset::Binding(expression) => value
+                            Offset::Binding { expression, .. } => value
                                 .try_get(|| instance.evaluate(expression, &[]).map(read_length)),
                         };
                         instance.capture_result(current).unwrap_or_default()
@@ -149,7 +150,12 @@ impl Element {
                                 instance.capture_result(instance.write(target, length.into()));
                             }
                         }
-                        Offset::Binding(_) => {}
+                        Offset::Binding { initial: true, .. } => {
+                            written.set_if_changed_by(length, |left, right| {
+                                xrack_runtime::same_float_bits(&left.0, &right.0)
+                            });
+                        }
+                        Offset::Binding { .. } => {}
                     },
                 );
             }

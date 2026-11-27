@@ -1953,6 +1953,7 @@ fn has_read_only_binding(element: OperationRef<'_>, property: &str) -> bool {
     element.children().any(|binding| {
         matches!(binding.name(), "xr.bind" | "xr.state_set")
             && binding.attribute("name") == Some(property)
+            && binding.attribute("initial") != Some("true")
     })
 }
 
@@ -3251,7 +3252,11 @@ impl<'a> Generator<'a> {
         if let Some(&id) = cache.bindings.get(&key) {
             let field = visual_field(id);
             let receiver = cache.receiver_in(receiver);
-            Ok(quote!(#receiver.#field.get(|| #value)))
+            if matches!(key, VisualCacheKey::Initializer(_)) {
+                Ok(quote!(#receiver.#field.get_once(|| #value)))
+            } else {
+                Ok(quote!(#receiver.#field.get(|| #value)))
+            }
         } else {
             Ok(value)
         }
@@ -7603,7 +7608,11 @@ impl<'a> Generator<'a> {
             children(element, "xr.bind").find(|binding| binding.attr("name") == Ok(property))
         };
         let initial = if let Some(binding) = binding(name) {
-            expr(self.operand(binding, 0)?)?
+            if binding.attribute("initial") == Some("true") {
+                self.visual_value(binding, scope)?
+            } else {
+                expr(self.operand(binding, 0)?)?
+            }
         } else {
             let kind = element.attr("kind")?;
             let default = control_default(kind, name, &ty)
@@ -13789,11 +13798,16 @@ impl<'a> Generator<'a> {
             let name = binding.attr("name")?;
             let value = if binding.name() == "xr.bind" {
                 let expression = self.expr_in(self.operand(binding, 0)?, expression_context)?;
+                let factory = if binding.attribute("initial") == Some("true") {
+                    format_ident!("initial_optional")
+                } else {
+                    format_ident!("bound_optional")
+                };
                 quote! {
                     ::core::option::Option::Some({
                         let __weak = __parent.clone();
                         #context
-                        ::xrack_runtime::InputProperty::bound_optional(move || {
+                        ::xrack_runtime::InputProperty::#factory(move || {
                             let __ui = Self { __state: __weak.upgrade()? };
                             __ui.__state.__binding_lifetime.track();
                             #parameters
@@ -14720,6 +14734,9 @@ impl<'a> Generator<'a> {
                     };
                     defaults
                         .extend(quote!(#field: (#incoming).unwrap_or_default().protect_binding(),));
+                    if self.initialize_once {
+                        once_initializers.extend(quote!(self.__state.#field.freeze_initial();));
+                    }
                 } else {
                     fields.extend(quote!(#field: ::xrack_runtime::Property<#rust_type>,));
                     defaults.extend(quote!(#field: ::core::default::Default::default(),));
@@ -14815,6 +14832,9 @@ impl<'a> Generator<'a> {
             if let Some(input) = self.forwarded_input((key, property)) {
                 fields.extend(quote!(#field: ::xrack_runtime::InputProperty<#rust_type>,));
                 defaults.extend(quote!(#field: (#input).unwrap_or_default().protect_binding(),));
+                if self.initialize_once {
+                    once_initializers.extend(quote!(self.__state.#field.freeze_initial();));
+                }
             } else {
                 fields.extend(quote!(#field: ::xrack_runtime::Property<#rust_type>,));
                 defaults.extend(quote!(#field: ::core::default::Default::default(),));
@@ -18367,7 +18387,10 @@ fn generate_with_resources(
         pending.extend(op.children());
         Some(op)
     })
-    .any(|op| op.name() == "xr.property" && op.attribute("mode") == Some("once"));
+    .any(|op| {
+        op.name() == "xr.property" && op.attribute("mode") == Some("once")
+            || op.name() == "xr.bind" && op.attribute("initial") == Some("true")
+    });
     for op in module.operations().filter(|op| {
         !matches!(
             op.name(),

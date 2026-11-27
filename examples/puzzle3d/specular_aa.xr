@@ -14,16 +14,16 @@ struct ReflectionLight {
 }
 
 export component SpecularDemo inherits Window {
-    title: "XRack · 镜面高光抗锯齿";
-    width: 400px;
-    height: 252px;
-    background: #141d29;
+    title <- "XRack · 镜面高光抗锯齿";
+    width <- 400px;
+    height <- 252px;
+    background <- #141d29;
 
     in-out property <bool> filtered: false;
     in-out property <bool> studio: false;
     in-out property <bool> msaa: false;
     in-out property <float> yaw: 0;
-    property <[ReflectionObject]> scene: [
+    property <[ReflectionObject]> scene <- [
         ReflectionObject {
             id: "spheres", mesh: @mesh-url("models/specular-spheres.gltf"),
             x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
@@ -38,34 +38,34 @@ export component SpecularDemo inherits Window {
         },
     ];
     property <[ReflectionLight]> empty;
-    out property <string> picked: Scene3D.pick(root.scene, root.yaw, 0, 9,
+    out property <string> picked <- Scene3D.pick(root.scene, root.yaw, 0, 9,
         Point2D.new(400px, 200px), Point2D.new(200px, 100px));
 
     view := SceneView3D {
-        width: 400px;
-        height: 200px;
-        model: root.scene;
-        lights: root.studio ? root.empty : root.direct;
-        camera-yaw: root.yaw;
-        camera-pitch: 0;
-        camera-distance: 9;
-        scene-background: #172333;
-        ambient-intensity: 0.6;
-        scene-hdr: true;
-        specular-aa: root.filtered;
-        multisampling: root.msaa;
-        order-independent-transparency: true;
-        environment: root.studio ? @environment-url("models/studio.hdr") : "";
+        width <- 400px;
+        height <- 200px;
+        model <- root.scene;
+        lights <- root.studio ? root.empty : root.direct;
+        camera-yaw <- root.yaw;
+        camera-pitch <- 0;
+        camera-distance <- 9;
+        scene-background <- #172333;
+        ambient-intensity <- 0.6;
+        scene-hdr <- true;
+        specular-aa <- root.filtered;
+        multisampling <- root.msaa;
+        order-independent-transparency <- true;
+        environment <- root.studio ? @environment-url("models/studio.hdr") : "";
     }
 
     HorizontalLayout {
-        y: 200px;
-        width: 400px;
-        height: 52px;
-        padding: 12px;
-        spacing: 10px;
-        aa-toggle := CheckBox { width: 118px; text: "高光抗锯齿"; checked <=> root.filtered; }
-        studio-toggle := CheckBox { width: 112px; text: "环境反射"; checked <=> root.studio; }
-        orbit := Slider { width: 112px; minimum: -28; maximum: 28; value <=> root.yaw; }
+        y <- 200px;
+        width <- 400px;
+        height <- 52px;
+        padding <- 12px;
+        spacing <- 10px;
+        aa-toggle := CheckBox { width <- 118px; text <- "高光抗锯齿"; checked <-> root.filtered; }
+        studio-toggle := CheckBox { width <- 112px; text <- "环境反射"; checked <-> root.studio; }
+        orbit := Slider { width <- 112px; minimum <- -28; maximum <- 28; value <-> root.yaw; }
     }
 }

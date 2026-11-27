@@ -12,8 +12,8 @@ struct Lamp {
 }
 
 export component ShadowDebugDemo inherits Window {
-    title: "XRack · 阴影调试"; width: 448px; height: 334px;
-    background: #172437; resizable: false;
+    title <- "XRack · 阴影调试"; width <- 448px; height <- 334px;
+    background <- #172437; resizable <- false;
     in-out property <int> guides: 0;
     in-out property <bool> frozen: false;
     in-out property <bool> side: false;
@@ -22,7 +22,7 @@ export component ShadowDebugDemo inherits Window {
     in-out property <string> lamp-kind: "directional";
     property <[string]> names: ["隐藏辅助线", "级联切分", "灯光投影", "投影物体", "受光物体", "级联相交", "全部辅助线"];
 
-    property <Actor> wall: Actor {
+    property <Actor> wall <- Actor {
         id: "wall", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 7, scale-y: 4, scale-z: 0.10, yaw: 0, pitch: 0, roll: 0,
         color: #d0d8e4, camera-kind: "", camera-height: 5, camera-look-at: "",
@@ -30,16 +30,16 @@ export component ShadowDebugDemo inherits Window {
     };
 
     view := SceneView3D {
-        width: 448px; height: 244px; camera: "eye"; cache-rendering: true;
-        scene-background: #243449; ambient-intensity: 0.16;
-        shadows: true; shadow-map-size: 256; shadow-distance: 9.5; shadow-cascades: 3;
-        shadow-freeze-camera: root.frozen;
-        shadow-debug-cascades: root.guides == 1 || root.guides == 6;
-        shadow-debug-light-volumes: root.guides == 2 || root.guides == 6;
-        shadow-debug-casters: root.guides == 3 || root.guides == 6;
-        shadow-debug-receivers: root.guides == 4 || root.guides == 6;
-        shadow-debug-intersections: root.guides == 5 || root.guides == 6;
-        model: [
+        width <- 448px; height <- 244px; camera <- "eye"; cache-rendering <- true;
+        scene-background <- #243449; ambient-intensity <- 0.16;
+        shadows <- true; shadow-map-size <- 256; shadow-distance <- 9.5; shadow-cascades <- 3;
+        shadow-freeze-camera <- root.frozen;
+        shadow-debug-cascades <- root.guides == 1 || root.guides == 6;
+        shadow-debug-light-volumes <- root.guides == 2 || root.guides == 6;
+        shadow-debug-casters <- root.guides == 3 || root.guides == 6;
+        shadow-debug-receivers <- root.guides == 4 || root.guides == 6;
+        shadow-debug-intersections <- root.guides == 5 || root.guides == 6;
+        model <- [
             Actor {
                 id: "eye", mesh: "", camera-kind: "orthographic", camera-look-at: "wall",
                 x: root.side ? 6 : 0, y: root.side ? 2.2 : 0, z: root.distant ? 12 : 8,
@@ -52,7 +52,7 @@ export component ShadowDebugDemo inherits Window {
                 color: #ffaa58, casts-shadow: true, receives-shadow: false, ..root.wall
             },
         ];
-        lights: [Lamp {
+        lights <- [Lamp {
             kind: root.lamp-kind, x: -3, y: 0, z: 3, yaw: -45, elevation: 0,
             intensity: root.lamp-kind == "directional" ? 2.9 : 65,
             color: #fff, range: 11, inner-angle: 20, outer-angle: 48, shadow-filter: "hard",
@@ -60,29 +60,29 @@ export component ShadowDebugDemo inherits Window {
     }
 
     guides-button := Button {
-        x: 12px; y: 253px; width: 119px; height: 32px;
-        text: Model.at(root.names, root.guides, "辅助线");
+        x <- 12px; y <- 253px; width <- 119px; height <- 32px;
+        text <- Model.at(root.names, root.guides, "辅助线");
         clicked => { root.guides = (root.guides + 1) % 7; }
     }
     freeze-toggle := CheckBox {
-        x: 145px; y: 253px; width: 142px; height: 32px;
-        text: "冻结阴影相机"; checked <=> root.frozen;
+        x <- 145px; y <- 253px; width <- 142px; height <- 32px;
+        text <- "冻结阴影相机"; checked <-> root.frozen;
     }
     side-toggle := CheckBox {
-        x: 305px; y: 253px; width: 116px; height: 32px;
-        text: "侧面观察"; checked <=> root.side;
+        x <- 305px; y <- 253px; width <- 116px; height <- 32px;
+        text <- "侧面观察"; checked <-> root.side;
     }
     distant-toggle := CheckBox {
-        x: 12px; y: 291px; width: 117px; height: 32px;
-        text: "移远相机"; checked <=> root.distant;
+        x <- 12px; y <- 291px; width <- 117px; height <- 32px;
+        text <- "移远相机"; checked <-> root.distant;
     }
     receivers-toggle := CheckBox {
-        x: 145px; y: 291px; width: 142px; height: 32px;
-        text: "接收实时阴影"; checked <=> root.receives;
+        x <- 145px; y <- 291px; width <- 142px; height <- 32px;
+        text <- "接收实时阴影"; checked <-> root.receives;
     }
     lamp-button := Button {
-        x: 305px; y: 291px; width: 119px; height: 32px;
-        text: root.lamp-kind == "directional" ? "方向光" : root.lamp-kind == "point" ? "点光源" : "聚光灯";
+        x <- 305px; y <- 291px; width <- 119px; height <- 32px;
+        text <- root.lamp-kind == "directional" ? "方向光" : root.lamp-kind == "point" ? "点光源" : "聚光灯";
         clicked => {
             root.lamp-kind = root.lamp-kind == "directional" ? "point" : root.lamp-kind == "point" ? "spot" : "directional";
         }

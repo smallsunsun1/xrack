@@ -5,33 +5,33 @@ struct MassActor {
 }
 
 export component PhysicsMassDemo inherits Window {
-    title: "XRack · 刚体质量属性";
-    width: 736px; height: 460px; resizable: false; background: #172735;
+    title <- "XRack · 刚体质量属性";
+    width <- 736px; height <- 460px; resizable <- false; background <- #172735;
 
-    property <vector3d> zero: Vector3D.new(0, 0, 0);
-    property <point3d> local-origin: Point3D.new(0, 0, 0);
-    property <physicsworld3d> world: Physics3D.new(root.zero, 0.016);
-    property <vector3d> size: Vector3D.new(1, 1, 1);
-    property <point3d> amber-start: Point3D.new(-1.75, 0.72, -0.85);
-    property <point3d> teal-start: Point3D.new(-1.75, 0.72, 0.85);
+    property <vector3d> zero <- Vector3D.new(0, 0, 0);
+    property <point3d> local-origin <- Point3D.new(0, 0, 0);
+    property <physicsworld3d> world <- Physics3D.new(root.zero, 0.016);
+    property <vector3d> size <- Vector3D.new(1, 1, 1);
+    property <point3d> amber-start <- Point3D.new(-1.75, 0.72, -0.85);
+    property <point3d> teal-start <- Point3D.new(-1.75, 0.72, 0.85);
     out property <int> mode: 0;
     out property <int> amber: 0;
     out property <int> teal: 0;
     out property <int> ticks: 0;
     in-out property <bool> running: false;
-    out property <float> density: Physics3D.default-density(root.world);
-    out property <float> amber-mass: Physics3D.mass(root.world, root.amber);
-    out property <float> teal-mass: Physics3D.mass(root.world, root.teal);
-    out property <point3d> amber-position: root.amber == 0 ? root.amber-start : Physics3D.position(root.world, root.amber);
-    out property <point3d> teal-position: root.teal == 0 ? root.teal-start : Physics3D.position(root.world, root.teal);
-    out property <point3d> amber-center: Physics3D.center-of-mass(root.world, root.amber);
-    out property <point3d> amber-local-center: Physics3D.local-center-of-mass(root.world, root.amber);
-    out property <vector3d> amber-inertia: Physics3D.principal-inertia(root.world, root.amber);
-    out property <vector3d> amber-column: Physics3D.inertia-column(root.world, root.amber, 0);
-    out property <vector3d> amber-spin: Physics3D.angular-velocity(root.world, root.amber);
-    out property <vector3d> teal-spin: Physics3D.angular-velocity(root.world, root.teal);
-    out property <vector3d> amber-speed: Physics3D.velocity(root.world, root.amber);
-    out property <vector3d> teal-speed: Physics3D.velocity(root.world, root.teal);
+    out property <float> density <- Physics3D.default-density(root.world);
+    out property <float> amber-mass <- Physics3D.mass(root.world, root.amber);
+    out property <float> teal-mass <- Physics3D.mass(root.world, root.teal);
+    out property <point3d> amber-position <- root.amber == 0 ? root.amber-start : Physics3D.position(root.world, root.amber);
+    out property <point3d> teal-position <- root.teal == 0 ? root.teal-start : Physics3D.position(root.world, root.teal);
+    out property <point3d> amber-center <- Physics3D.center-of-mass(root.world, root.amber);
+    out property <point3d> amber-local-center <- Physics3D.local-center-of-mass(root.world, root.amber);
+    out property <vector3d> amber-inertia <- Physics3D.principal-inertia(root.world, root.amber);
+    out property <vector3d> amber-column <- Physics3D.inertia-column(root.world, root.amber, 0);
+    out property <vector3d> amber-spin <- Physics3D.angular-velocity(root.world, root.amber);
+    out property <vector3d> teal-spin <- Physics3D.angular-velocity(root.world, root.teal);
+    out property <vector3d> amber-speed <- Physics3D.velocity(root.world, root.amber);
+    out property <vector3d> teal-speed <- Physics3D.velocity(root.world, root.teal);
 
     callback reset(mode: int);
     reset(mode) => {
@@ -85,7 +85,7 @@ export component PhysicsMassDemo inherits Window {
             if root.ticks >= 48 || root.amber-position.x > 3.6 { root.running = false; }
         }
     }
-    clock := Timer { interval: 16; repeat: true; running: root.running; triggered => { root.advance(); } }
+    clock := Timer { interval <- 16; repeat <- true; running <- root.running; triggered => { root.advance(); } }
 
     pure function rounded(value: float) -> float { Math.round(value * 100) / 100.0 }
     pure function part(id: string, mesh: string, center: point3d, scale: vector3d, rotation: vector3d, tint: color, visible: bool) -> MassActor {
@@ -95,7 +95,7 @@ export component PhysicsMassDemo inherits Window {
             yaw: rotation.x, pitch: rotation.y, roll: rotation.z, color: tint, visible: visible,
         }
     }
-    property <[MassActor]> actors: [
+    property <[MassActor]> actors <- [
         root.part("ground", "primitive:box", Point3D.new(0, -0.11, 0), Vector3D.new(8.5, 0.22, 4.6), root.zero, #304958, true),
         root.part("amber-lane", "primitive:box", Point3D.new(0, 0.005, -0.85), Vector3D.new(8.1, 0.012, 1.35), root.zero, #665344, true),
         root.part("teal-lane", "primitive:box", Point3D.new(0, 0.005, 0.85), Vector3D.new(8.1, 0.012, 1.35), root.zero, #2c5b63, true),
@@ -104,29 +104,29 @@ export component PhysicsMassDemo inherits Window {
         root.part("center-of-mass", "primitive:sphere", root.amber-center, Vector3D.new(0.2, 0.2, 0.2), root.zero, #ffe58d, root.amber > 0 && root.mode == 1),
     ];
     SceneView3D {
-        width: 736px; height: 378px; model: root.actors;
-        camera-yaw: -14; camera-pitch: 31; camera-distance: 10;
-        scene-background: #20394a; ambient-intensity: 0.57; multisampling: true;
+        width <- 736px; height <- 378px; model <- root.actors;
+        camera-yaw <- -14; camera-pitch <- 31; camera-distance <- 10;
+        scene-background <- #20394a; ambient-intensity <- 0.57; multisampling <- true;
     }
     mass-status := Text {
-        x: 18px; y: 15px; color: #f1ebdd;
-        text: "质量 · 橙 " + root.rounded(root.amber-mass) + "   ·   青 " + root.rounded(root.teal-mass)
+        x <- 18px; y <- 15px; color <- #f1ebdd;
+        text <- "质量 · 橙 " + root.rounded(root.amber-mass) + "   ·   青 " + root.rounded(root.teal-mass)
             + "   ·   世界密度 " + root.rounded(root.density);
     }
     motion-status := Text {
-        x: 18px; y: 44px; color: #cfeced;
-        text: root.mode == 0
+        x <- 18px; y <- 44px; color <- #cfeced;
+        text <- root.mode == 0
             ? "线速度 X · 橙 " + root.rounded(root.amber-speed.x) + "   ·   青 " + root.rounded(root.teal-speed.x)
             : root.mode == 1
                 ? "角速度 Z · 橙 " + root.rounded(root.amber-spin.z) + "   ·   青 " + root.rounded(root.teal-spin.z)
                 : "角速度 Y · 橙 " + root.rounded(root.amber-spin.y) + "   ·   青 " + root.rounded(root.teal-spin.y);
     }
     HorizontalLayout {
-        x: 16px; y: 397px; width: 704px; height: 44px; spacing: 9px;
-        density-demo := Button { text: "密度对比"; clicked => { root.reset(0); } }
-        world-density := Button { text: "切换世界密度"; clicked => { root.toggle-density(); } }
-        center-demo := Button { text: "偏心质心"; clicked => { root.reset(1); } }
-        matrix-demo := Button { text: "惯量矩阵"; clicked => { root.reset(2); } }
-        impulse := Button { text: "施加冲量"; clicked => { root.kick(); root.running = true; } }
+        x <- 16px; y <- 397px; width <- 704px; height <- 44px; spacing <- 9px;
+        density-demo := Button { text <- "密度对比"; clicked => { root.reset(0); } }
+        world-density := Button { text <- "切换世界密度"; clicked => { root.toggle-density(); } }
+        center-demo := Button { text <- "偏心质心"; clicked => { root.reset(1); } }
+        matrix-demo := Button { text <- "惯量矩阵"; clicked => { root.reset(2); } }
+        impulse := Button { text <- "施加冲量"; clicked => { root.kick(); root.running = true; } }
     }
 }

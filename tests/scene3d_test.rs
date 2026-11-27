@@ -232,7 +232,7 @@ fn scene_lut_uses_all_three_axes_and_reuses_uploaded_pngs() -> TestResult {
     const VIEW_BYTES: usize = 480 * 248 * 4;
     let invalid = r#"
         export component Invalid inherits Window {
-            SceneView3D { scene-lut: @image-url("models/lut-identity.png"); scene-lut-size: 4; }
+            SceneView3D { scene-lut <- @image-url("models/lut-identity.png"); scene-lut-size <- 4; }
         }
     "#;
     let preview = xrack_compiler::prepare_preview(invalid, NAME, Default::default())?;
@@ -21258,7 +21258,7 @@ fn typed_scene_lights_require_their_fields() -> TestResult {
         struct Lamp { kind: string }
         export component BadLight inherits Window {
             property <[Lamp]> lamps: [];
-            SceneView3D { lights: root.lamps; }
+            SceneView3D { lights <- root.lamps; }
         }
     "#;
     let missing = xrack_compiler::compile(scene, "bad_scene_lights.xr")

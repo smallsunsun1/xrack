@@ -510,7 +510,7 @@ pub(super) fn duplicate_declaration(
             let names: Vec<_> = parameters
                 .split(|token| token.text == ",")
                 .filter_map(|parameter| match parameter {
-                    [token, colon, ..] if colon.text == ":" && matches(token) => {
+                    [token, colon, ..] if matches!(colon.text, ":" | "<-") && matches(token) => {
                         Some(token.range.start)
                     }
                     _ => None,
@@ -763,7 +763,8 @@ impl<'a, 'w> Symbols<'a, 'w> {
                         match self.text(k) {
                             "," | ")" => {
                                 if k > start {
-                                    let (param, ty) = if self.text(start + 1) == ":" {
+                                    let (param, ty) = if matches!(self.text(start + 1), ":" | "<-")
+                                    {
                                         (Some(self.code[start]), start + 2)
                                     } else {
                                         (None, start)
@@ -1168,7 +1169,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
             }
             return Some(symbol);
         }
-        if matches!(next, ":" | "<=>")
+        if matches!(next, ":" | "<->")
             && i.checked_sub(1)
                 .is_some_and(|previous| matches!(self.text(previous), "{" | "}" | ";" | ","))
         {
@@ -1240,7 +1241,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
             return Some(symbol);
         }
         if i >= 2
-            && self.text(i - 1) == ":"
+            && matches!(self.text(i - 1), ":" | "<-")
             && let Some(ty) = self.at(i - 2).and_then(|symbol| symbol.ty)
             && ty.enum_variants().contains(&word)
         {

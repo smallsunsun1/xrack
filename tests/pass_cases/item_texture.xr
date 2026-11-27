@@ -15,6 +15,6 @@ component Example inherits Window {
     in property <bool> offscreen;
     in property <bool> mipmaps;
     in property <[Actor]> objects;
-    SceneView3D { model: root.objects; }
-    Rectangle { texture-source: root.name; texture-only: root.offscreen; texture-mipmaps: root.mipmaps; }
+    SceneView3D { model <- root.objects; }
+    Rectangle { texture-source <- root.name; texture-only <- root.offscreen; texture-mipmaps <- root.mipmaps; }
 }

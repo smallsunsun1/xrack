@@ -11,30 +11,30 @@ struct VertexActor {
 }
 
 export component VertexProgramDemo inherits Window {
-    title: "XRack · 可编程顶点";
-    width: 520px; height: 380px; resizable: false;
-    background: #182737;
+    title <- "XRack · 可编程顶点";
+    width <- 520px; height <- 380px; resizable <- false;
+    background <- #182737;
 
     in-out property <float> travel: -4.8;
     in-out property <float> wave: 0;
     in-out property <bool> temporal: true;
-    property <VertexStyle> base-style: VertexStyle {
+    property <VertexStyle> base-style <- VertexStyle {
         material-shader: "", shader-parameters: Vector3D.new(0, 0, 0), shader-displacement: 0,
         unlit: false, roughness: 1,
     };
-    property <VertexActor> base: VertexActor {
+    property <VertexActor> base <- VertexActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, camera-kind: "", camera-height: 4, material: root.base-style, casts-shadow: false,
     };
 
     SceneView3D {
-        width: 520px; height: 320px; camera: "eye"; frustum-culling: true;
-        scene-background: #1c2b3d; scene-tone-map: none;
-        temporal-aa: root.temporal; temporal-aa-mode: "motion-vectors";
-        shadows: true; shadow-map-size: 512; light-yaw: -22; light-elevation: 39;
-        ambient-intensity: 0.28; cache-rendering: true;
-        model: [
+        width <- 520px; height <- 320px; camera <- "eye"; frustum-culling <- true;
+        scene-background <- #1c2b3d; scene-tone-map <- none;
+        temporal-aa <- root.temporal; temporal-aa-mode <- "motion-vectors";
+        shadows <- true; shadow-map-size <- 512; light-yaw <- -22; light-elevation <- 39;
+        ambient-intensity <- 0.28; cache-rendering <- true;
+        model <- [
             VertexActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
             VertexActor {
                 id: "wall", mesh: "primitive:box", scale-x: 16, scale-y: 12, scale-z: 0.1,
@@ -53,15 +53,15 @@ export component VertexProgramDemo inherits Window {
     }
 
     move-switch := Button {
-        x: 14px; y: 334px; width: 116px; height: 32px;
-        text: "切换位置"; clicked => { root.travel = root.travel < -4 ? -2.4 : -4.8; }
+        x <- 14px; y <- 334px; width <- 116px; height <- 32px;
+        text <- "切换位置"; clicked => { root.travel = root.travel < -4 ? -2.4 : -4.8; }
     }
     Slider {
-        x: 146px; y: 335px; width: 209px; height: 28px;
-        minimum: 0; maximum: 0.3; step: 0.01; value <=> root.wave;
+        x <- 146px; y <- 335px; width <- 209px; height <- 28px;
+        minimum <- 0; maximum <- 0.3; step <- 0.01; value <-> root.wave;
     }
     CheckBox {
-        x: 368px; y: 333px; width: 140px; height: 31px;
-        checked <=> root.temporal; text: "运动矢量 TAA";
+        x <- 368px; y <- 333px; width <- 140px; height <- 31px;
+        checked <-> root.temporal; text <- "运动矢量 TAA";
     }
 }

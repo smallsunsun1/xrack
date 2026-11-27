@@ -2,20 +2,20 @@ export component Expressions inherits Rectangle {
     in-out property <int> base-value: 3;
     out property <int> precedence: 1 + 2 * 3;
     out property <int> left-associative: 10 - 3 - 2;
-    out property <float> promoted: base-value + 0.5;
-    out property <float> ratio: 12px / 4px;
+    out property <float> promoted <- base-value + 0.5;
+    out property <float> ratio <- 12px / 4px;
     out property <length> scaled: 8px * 2;
     out property <length> scalar-left: 2 * 1.5px;
     out property <length> negative: -3px;
-    out property <length> combined: (8px - 2px) / 2;
-    out property <bool> comparison: base-value >= 2 && !false;
+    out property <length> combined <- (8px - 2px) / 2;
+    out property <bool> comparison <- base-value >= 2 && !false;
     out property <color> foreground: #0f08;
-    out property <bool> same-color: foreground == #00ff0088;
+    out property <bool> same-color <- foreground == #00ff0088;
     out property <string> greeting: "hello " + "\u4f60\u597d\n\"UI\"";
-    out property <string> selected: comparison ? greeting : "other";
-    out property <string> numbers: "n=" + base-value + ", f=" + promoted + ", ok=" + comparison;
-    out property <int> safe-ratio: base-value == 0 ? 42 : 12 / base-value;
-    out property <bool> guarded: base-value != 0 && 12 / base-value > 0;
+    out property <string> selected <- comparison ? greeting : "other";
+    out property <string> numbers <- "n=" + base-value + ", f=" + promoted + ", ok=" + comparison;
+    out property <int> safe-ratio <- base-value == 0 ? 42 : 12 / base-value;
+    out property <bool> guarded <- base-value != 0 && 12 / base-value > 0;
     callback update(type: int);
     update(type) => { root.base-value = type; }
     callback step();
@@ -29,7 +29,7 @@ export component Expressions inherits Rectangle {
     out property <int> branch-value: 0;
     callback run-equal-branches();
     run-equal-branches() => { root.branch-value = root.touch() ? 7 : 7; }
-    width: scaled;
+    width <- scaled;
 }
 
 export component LiteralDecodingParity inherits Window {
@@ -39,8 +39,8 @@ export component LiteralDecodingParity inherits Window {
     out property <length> extent: 1.25e2px;
     out property <color> tint: #aB09;
     out property <string> caption: "版\n\"\u0041\"";
-    out property <StandardButtonKind> button: StandardButtonKind.yes-to-all;
-    out property <MessageButtons> buttons: MessageButtons.yes-no-cancel;
+    out property <StandardButtonKind> button <- StandardButtonKind.yes-to-all;
+    out property <MessageButtons> buttons <- MessageButtons.yes-no-cancel;
     out property <PointerEvent> pointer;
     out property <TouchPoint> touch;
 }
@@ -49,28 +49,28 @@ export component BrushPromotionParity inherits Window {
     in-out property <brush> paint: #f00;
     in-out property <color> tint: #f00;
     in-out property <bool> use-color: true;
-    out property <bool> left: root.paint == root.tint;
-    out property <bool> right: root.tint != root.paint;
-    out property <brush> first: root.use-color ? root.tint : root.paint;
-    out property <brush> second: root.use-color ? root.paint : root.tint;
-    Rectangle { background: root.first; }
-    Rectangle { background: root.second; }
+    out property <bool> left <- root.paint == root.tint;
+    out property <bool> right <- root.tint != root.paint;
+    out property <brush> first <- root.use-color ? root.tint : root.paint;
+    out property <brush> second <- root.use-color ? root.paint : root.tint;
+    Rectangle { background <- root.first; }
+    Rectangle { background <- root.second; }
 }
 
 export component FixedTextUpdates inherits Window {
     in-out property <string> message: "Ready";
     in-out property <string> summary: "Short";
-    Text { text: root.message; width: 180px; height: 28px; }
-    Label { text: root.message; width: 180px; height: 28px; y: 32px; }
-    Label { text: root.summary; y: 64px; }
+    Text { text <- root.message; width <- 180px; height <- 28px; }
+    Label { text <- root.message; width <- 180px; height <- 28px; y <- 32px; }
+    Label { text <- root.summary; y <- 64px; }
 }
 
 export component LocalAliasUpdates inherits Window {
     property <int> value: 7;
-    property <int> middle <=> root.value;
-    property <int> tail <=> root.middle;
-    in-out property <int> exposed <=> root.tail;
-    out property <int> observed: root.tail;
+    property <int> middle <-> root.value;
+    property <int> tail <-> root.middle;
+    in-out property <int> exposed <-> root.tail;
+    out property <int> observed <- root.tail;
     callback step();
     step => { root.tail += 2; }
 }
@@ -81,10 +81,10 @@ export component AnimationTimingParity inherits Window {
     motion(tag) => { true }
 
     Rectangle {
-        x: root.active ? 20px : 10px;
-        y: root.active ? 30px : 10px;
-        width: 100px;
-        height: 20px;
+        x <- root.active ? 20px : 10px;
+        y <- root.active ? 30px : 10px;
+        width <- 100px;
+        height <- 20px;
         animate x { duration: 0ms; enabled: root.motion(1); }
         animate y { delay: 20ms; enabled: root.motion(2); }
         animate height { duration: 0ms; }
@@ -104,9 +104,9 @@ export component StaticStatePlans inherits Window {
     fallback-width => { 20px }
 
     grid := GridLayout {
-        tile := Rectangle { col: 0; width: root.fallback-width(); height: 20px; }
+        tile := Rectangle { col <- 0; width <- root.fallback-width(); height <- 20px; }
     }
-    status := Text { text: root.message; width: 120px; }
+    status := Text { text <- root.message; width <- 120px; }
     states [
         settled when true: { tile.col: 1; tile.width: 40px; status.height: 24px; }
     ]
@@ -115,8 +115,8 @@ export component StaticStatePlans inherits Window {
 export component MergedStateCases inherits Window {
     in-out property <int> mode: 0;
     pure callback probe(int, int) -> bool;
-    out property <bool> flag: root.mode == 1 ? true : root.probe(4, root.mode);
-    panel := Text { text: "Base"; }
+    out property <bool> flag <- root.mode == 1 ? true : root.probe(4, root.mode);
+    panel := Text { text <- "Base"; }
     states [
         first when root.probe(1, root.mode): { panel.text: "Shared"; }
         second when root.probe(2, root.mode): { panel.text: "Shared"; }
@@ -131,12 +131,12 @@ export component ActionStateParity inherits Window {
     pure callback allow-button(int) -> bool;
 
     command := Action {
-        enabled: root.command-enabled;
+        enabled <- root.command-enabled;
         activated => { root.activations += 1; }
     }
     button := Button {
-        action: command;
-        enabled: root.allow-button(2);
+        action <- command;
+        enabled <- root.allow-button(2);
         states [ alternate when root.alternate: { enabled: root.allow-button(1); } ]
     }
 }
@@ -146,12 +146,12 @@ export component ActionPresentationParity inherits Window {
     pure callback read-label() -> string;
 
     command := Action {
-        enabled: root.read-flag(2);
-        checkable: root.read-flag(1);
-        checked: root.read-flag(3);
-        text: root.read-label();
+        enabled <- root.read-flag(2);
+        checkable <- root.read-flag(1);
+        checked <- root.read-flag(3);
+        text <- root.read-label();
     }
-    button := Button { action: command; }
+    button := Button { action <- command; }
 }
 
 export component LiveActionActivationParity inherits Window {
@@ -169,24 +169,24 @@ export component LiveActionActivationParity inherits Window {
     check-menu-item => { root.menu-checkable }
 
     command := Action {
-        enabled: root.command-enabled;
-        checkable: root.check-action();
-        checked <=> root.action-checked;
+        enabled <- root.command-enabled;
+        checkable <- root.check-action();
+        checked <-> root.action-checked;
         activated => { root.action-activations += 1; }
     }
-    button := Button { action: command; }
+    button := Button { action <- command; }
     MenuBar {
         Menu {
-            title: "Menu";
-            enabled: root.menu-parent-enabled;
+            title <- "Menu";
+            enabled <- root.menu-parent-enabled;
             item := MenuItem {
-                text: "Item";
-                enabled: root.menu-enabled;
-                checkable: root.check-menu-item();
-                checked <=> root.menu-checked;
+                text <- "Item";
+                enabled <- root.menu-enabled;
+                checkable <- root.check-menu-item();
+                checked <-> root.menu-checked;
                 activated => { root.menu-activations += 1; }
             }
-            linked-item := MenuItem { enabled: root.menu-enabled; action: command; }
+            linked-item := MenuItem { enabled <- root.menu-enabled; action <- command; }
         }
     }
 }
@@ -198,9 +198,9 @@ export component DelayActivationParity inherits Window {
     pure callback read-delay() -> int;
     read-delay => { 800 }
     button := DelayButton {
-        enabled: root.allowed;
-        delay: root.read-delay();
-        checked <=> root.confirmed;
+        enabled <- root.allowed;
+        delay <- root.read-delay();
+        checked <-> root.confirmed;
         activated => { root.activations += 1; }
     }
 }
@@ -213,9 +213,9 @@ export component TumblerSelectionParity inherits Window {
     pure callback read-count() -> int;
     read-count => { root.limit }
     wheel := Tumbler {
-        enabled: root.allowed;
-        count: root.read-count();
-        current-index <=> root.selected;
+        enabled <- root.allowed;
+        count <- root.read-count();
+        current-index <-> root.selected;
         changed(index) => { root.changes += 1; }
     }
 }
@@ -223,7 +223,7 @@ export component TumblerSelectionParity inherits Window {
 export struct ItemActivationRow { label: string, allowed: bool }
 
 export component ItemActivationParity inherits Window {
-    width: 300px; height: 120px;
+    width <- 300px; height <- 120px;
     in-out property <bool> locked: false;
     in-out property <[ItemActivationRow]> rows: [
         ItemActivationRow { label: "First", allowed: true },
@@ -233,10 +233,10 @@ export component ItemActivationParity inherits Window {
     pure callback allow-row(bool) -> bool;
     allow-row(value) => { value }
     ListView {
-        width: 280px; height: 100px; row-height: 32px;
+        width <- 280px; height <- 100px; row-height <- 32px;
         for entry[index] in root.rows : ItemDelegate {
-            text: entry.label;
-            enabled: root.allow-row(entry.allowed);
+            text <- entry.label;
+            enabled <- root.allow-row(entry.allowed);
             states [ locked when root.locked && index == 0: { enabled: false; } ]
             clicked => { root.activations += 1; }
         }
@@ -253,15 +253,15 @@ export component ItemActionRouteParity inherits Window {
     pure callback prepare-action() -> bool;
     prepare-action => { true }
     command := Action {
-        enabled: root.command-enabled && root.prepare-action();
+        enabled <- root.command-enabled && root.prepare-action();
         activated => { root.activations += 1; }
     }
     ListView {
-        width: 280px; height: 100px; row-height: 32px;
+        width <- 280px; height <- 100px; row-height <- 32px;
         for entry in root.rows : ItemDelegate {
-            text: entry.label;
-            enabled: entry.allowed;
-            action: command;
+            text <- entry.label;
+            enabled <- entry.allowed;
+            action <- command;
         }
     }
 }
@@ -280,15 +280,15 @@ export component FilteredItemActionRouteParity inherits Window {
     pure callback prepare-action() -> bool;
     prepare-action => { true }
     command := Action {
-        enabled: root.prepare-action();
+        enabled <- root.prepare-action();
         activated => { root.activations += 1; }
     }
     ListView {
-        width: 280px; height: 100px; row-height: 32px;
-        row-visible-field: "allowed";
+        width <- 280px; height <- 100px; row-height <- 32px;
+        row-visible-field <- "allowed";
         for entry in (root.use-rows(root.revision) ? root.rows : root.empty-rows) : ItemDelegate {
-            text: entry.label;
-            action: command;
+            text <- entry.label;
+            action <- command;
         }
     }
 }
@@ -299,8 +299,8 @@ export component StateOrderParity inherits Window {
     pure callback condition(int) -> bool;
     pure callback label(string) -> string;
 
-    first := Text { text: root.label(root.caption); }
-    target := Text { text: "Base"; }
+    first := Text { text <- root.label(root.caption); }
+    target := Text { text <- "Base"; }
     states [ active when root.condition(root.mode): { target.text: "Selected"; } ]
 }
 
@@ -309,7 +309,7 @@ export component RepeatParameterNamesParity inherits Window {
     count-value(a-b) => { a-b }
     for row-label in ["outer"] : Rectangle {
         for row_label in root.count-value(2) : Text {
-            text: row-label + "/" + row_label;
+            text <- row-label + "/" + row_label;
         }
     }
 }
@@ -318,7 +318,7 @@ export component InputStatePredicateParity inherits Window {
     pure callback locked() -> bool;
     out property <int> clicks: 0;
     target := Button {
-        text: "Run";
+        text <- "Run";
         states [ disabled when root.locked(): { enabled: false; } ]
         clicked => { root.clicks += 1; }
     }
@@ -355,14 +355,14 @@ export component StatefulSwipeParity inherits Window {
     pure callback page-flag(bool) -> bool;
 
     pages := SwipeView {
-        current-index <=> root.selection;
+        current-index <-> root.selection;
         changed(index) => { root.changes += 1; }
         first := SwipePage {
-            Text { text: root.page-body(0); }
+            Text { text <- root.page-body(0); }
             states [ hidden when root.hide-first: { visible: false; } ]
         }
         second := SwipePage {
-            detail := Text { text: root.page-body(1); }
+            detail := Text { text <- root.page-body(1); }
             states [
                 disabled when root.disable-second: { enabled: false; }
                 fallback when root.page-flag(root.hide-first): { detail.text: root.page-body(2); }
@@ -381,27 +381,27 @@ export component MountedPageInputParity inherits Window {
     callback advance();
     advance => { stack.push("second"); }
     TabWidget {
-        current-index <=> root.tab;
+        current-index <-> root.tab;
         Tab {
-            title: "First";
+            title <- "First";
             tab-click := Button { clicked => { root.clicks += 1; } }
         }
-        Tab { title: "Second"; Text { text: root.page-content(); } }
+        Tab { title <- "Second"; Text { text <- root.page-content(); } }
     }
     SwipeView {
-        current-index <=> root.swipe;
+        current-index <-> root.swipe;
         SwipePage {
-            visible: !root.hide-first;
+            visible <- !root.hide-first;
             swipe-click := Button { clicked => { root.clicks += 10; } }
         }
-        SwipePage { Text { text: root.page-content(); } }
+        SwipePage { Text { text <- root.page-content(); } }
     }
     stack := StackView {
-        initial-page: "first";
+        initial-page <- "first";
         first := StackPage {
             stack-click := Button { clicked => { root.clicks += 100; } }
         }
-        second := StackPage { Text { text: root.page-content(); } }
+        second := StackPage { Text { text <- root.page-content(); } }
     }
 }
 
@@ -410,16 +410,16 @@ export component ProgressRangeParity inherits Window {
     in-out property <float> upper-bound: 900.0;
     in-out property <bool> rtl: false;
     in-out property <bool> override-bound: false;
-    out property <float> fraction: meter.position;
-    out property <float> visual-fraction: meter.visual-position;
+    out property <float> fraction <- meter.position;
+    out property <float> visual-fraction <- meter.visual-position;
 
     Rectangle {
-        width: 320px; height: 48px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        width <- 320px; height <- 48px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         meter := ProgressIndicator {
-            width: 300px; height: 20px;
-            minimum: 100.0; maximum: root.upper-bound; progress: root.amount;
-            ProgressFill { background: #53af9b; }
+            width <- 300px; height <- 20px;
+            minimum <- 100.0; maximum <- root.upper-bound; progress <- root.amount;
+            ProgressFill { background <- #53af9b; }
             states [
                 narrow when root.override-bound: { maximum: 500.0; }
             ]
@@ -432,11 +432,11 @@ export component ComboContentParity inherits Window {
     in-out property <int> selection: 0;
     pure callback describe(string) -> string;
     choice := ComboBox {
-        model: ["Alpha", "Beta"];
-        current-index <=> root.selection;
-        editable: root.editing;
+        model <- ["Alpha", "Beta"];
+        current-index <-> root.selection;
+        editable <- root.editing;
         ComboContent {
-            Label { text: root.describe(choice.current-text); }
+            Label { text <- root.describe(choice.current-text); }
         }
     }
 }
@@ -456,23 +456,23 @@ export component NavigationSelectionParity inherits Window {
     pure callback label() -> string;
     label => { "b" }
     radio := RadioGroup {
-        current-value <=> root.choice;
+        current-value <-> root.choice;
         selected(value) => { root.events += value + ";"; }
-        RadioButton { text: "a"; }
-        RadioButton { text: root.label(); enabled: root.allowed; }
+        RadioButton { text <- "a"; }
+        RadioButton { text <- root.label(); enabled <- root.allowed; }
     }
     tabs := TabWidget {
-        current-index <=> root.tab;
+        current-index <-> root.tab;
         changed(index) => { root.events += "tab;"; }
-        Tab { title: "First"; }
-        Tab { title: "Second"; visible: root.shown; }
+        Tab { title <- "First"; }
+        Tab { title <- "Second"; visible <- root.shown; }
     }
     bar := TabBar {
-        current-index <=> root.repeated;
+        current-index <-> root.repeated;
         changed(index) => { root.events += "bar;"; }
         for name[index] in (root.use-labels(root.revision) ? root.labels : root.other-labels) : TabButton {
-            text: name;
-            enabled: index == 0 || root.allowed;
+            text <- name;
+            enabled <- index == 0 || root.allowed;
         }
     }
 }
@@ -486,14 +486,14 @@ export component NavigationOptionsSourceParity inherits Window {
     pure callback option-label(bool, string) -> string;
     option-label(radio, label) => { label }
     radio := RadioGroup {
-        current-index <=> root.profile;
+        current-index <-> root.profile;
         selected(label) => { root.events += label + ";"; }
-        for label in root.radio-labels : RadioButton { text: root.option-label(true, label); }
+        for label in root.radio-labels : RadioButton { text <- root.option-label(true, label); }
     }
     tabs := TabBar {
-        current-index <=> root.tab-index;
+        current-index <-> root.tab-index;
         changed(index) => { root.events += "tab:" + index + ";"; }
-        for label in root.tab-labels : TabButton { text: root.option-label(false, label); }
+        for label in root.tab-labels : TabButton { text <- root.option-label(false, label); }
     }
 }
 
@@ -505,15 +505,15 @@ export component DistributedSelectionParity inherits Window {
     out property <string> selected: "";
     out property <int> toggles: 0;
     radios := ButtonGroup {
-        current-value <=> root.choice;
+        current-value <-> root.choice;
         selected(value) => { root.selected = value; }
     }
-    checks := ButtonGroup { exclusive: false; enabled: root.allowed; }
-    RadioButton { group: radios; value: "a"; }
-    RadioButton { group: radios; value: root.label; }
+    checks := ButtonGroup { exclusive <- false; enabled <- root.allowed; }
+    RadioButton { group <- radios; value <- "a"; }
+    RadioButton { group <- radios; value <- root.label; }
     check := CheckBox {
-        group: checks;
-        checked <=> root.checked;
+        group <- checks;
+        checked <-> root.checked;
         toggled() => { root.toggles += 1; }
     }
 }
@@ -523,13 +523,13 @@ export component ButtonGroupRenderOrderParity inherits Window {
     pure callback sample(int, int) -> int;
     sample(tag, revision) => { tag }
     options := ButtonGroup {
-        accessible-name: "Options " + root.sample(1, root.revision);
-        current-index: root.sample(2, root.revision);
-        enabled: root.sample(3, root.revision) != 0;
+        accessible-name <- "Options " + root.sample(1, root.revision);
+        current-index <- root.sample(2, root.revision);
+        enabled <- root.sample(3, root.revision) != 0;
     }
-    RadioButton { group: options; text: "First"; }
-    RadioButton { group: options; text: "Second"; }
-    RadioButton { group: options; text: "Third"; }
+    RadioButton { group <- options; text <- "First"; }
+    RadioButton { group <- options; text <- "Second"; }
+    RadioButton { group <- options; text <- "Third"; }
 }
 
 component NestedMonthGridContent inherits Rectangle {
@@ -542,26 +542,26 @@ component NestedMonthGridContent inherits Rectangle {
     callback browsed(Date);
     callback picked(Date);
     calendar := MonthGrid {
-        date <=> root.date;
-        display-month <=> root.month;
-        week-start: root.week-start;
+        date <-> root.date;
+        display-month <-> root.month;
+        week-start <- root.week-start;
         changed(day) => { root.selected(day); }
         month-changed(month) => { root.browsed(month); }
         activated(day) => { root.picked(day); }
     }
-    Text { text: root.sibling(root.revision); }
+    Text { text <- root.sibling(root.revision); }
 }
 
 export component NestedMonthGridParity inherits Window {
     in-out property <int> revision: 0;
     in-out property <int> week-start: 1;
-    in-out property <Date> date <=> child.date;
-    in-out property <Date> month <=> child.month;
+    in-out property <Date> date <-> child.date;
+    in-out property <Date> month <-> child.month;
     out property <string> events: "";
     pure callback sibling(int) -> string;
     child := NestedMonthGridContent {
-        revision: root.revision;
-        week-start: root.week-start;
+        revision <- root.revision;
+        week-start <- root.week-start;
         sibling(revision) => { root.sibling(revision) }
         selected(day) => { root.events += "D" + day.day + "@" + root.month.month + ";"; }
         browsed(month) => { root.events += "M" + month.month + "@" + root.date.day + ";"; }
@@ -570,12 +570,12 @@ export component NestedMonthGridParity inherits Window {
 }
 
 export component ScrollReadOrderParity inherits Window {
-    out property <float> bar-position: bar.position;
-    out property <float> indicator-position: indicator.position;
-    out property <float> indicator-size: indicator.size;
+    out property <float> bar-position <- bar.position;
+    out property <float> indicator-position <- indicator.position;
+    out property <float> indicator-size <- indicator.size;
     pure callback read-metric(int) -> float;
-    bar := ScrollBar { position: root.read-metric(1); size: root.read-metric(2); }
-    indicator := ScrollIndicator { position: root.read-metric(3); size: root.read-metric(4); }
+    bar := ScrollBar { position <- root.read-metric(1); size <- root.read-metric(2); }
+    indicator := ScrollIndicator { position <- root.read-metric(3); size <- root.read-metric(4); }
 }
 
 export component OverlayTransitionParity inherits Window {
@@ -590,18 +590,18 @@ export component OverlayTransitionParity inherits Window {
 
     anchor := Button {
         popup := PopupWindow {
-            open: root.popup-open || root.read-popup-open();
+            open <- root.popup-open || root.read-popup-open();
             opened => { root.popup-open = true; root.events += "popup-open:" + root.popup-open + ";"; }
             closed => { root.popup-open = false; root.events += "popup-close:" + root.popup-open + ";"; }
         }
     }
     drawer := Drawer {
-        open <=> root.drawer-open;
+        open <-> root.drawer-open;
         opened => { root.events += "drawer-open:" + root.drawer-open + ";"; }
         closed => { root.events += "drawer-close:" + root.drawer-open + ";"; }
     }
     dialog := Dialog {
-        open <=> root.dialog-open;
+        open <-> root.dialog-open;
         applied => { root.events += "apply:" + root.dialog-open + ";"; }
         accepted => { root.events += "accept:" + root.dialog-open + ";"; }
     }
@@ -662,7 +662,7 @@ export component FocusCommandOrderParity inherits Window {
         entry.clear-focus();
     }
 
-    entry := LineEdit { text: "XRack"; }
+    entry := LineEdit { text <- "XRack"; }
 }
 
 export component FocusHandlerParity inherits Window {
@@ -680,8 +680,8 @@ export component FocusHandlerParity inherits Window {
 }
 
 export component RepeatedDragRoutingParity inherits Window {
-    for item in 2 : DragArea { data: "row " + item; }
-    source := DragArea { data: "static"; }
+    for item in 2 : DragArea { data <- "row " + item; }
+    source := DragArea { data <- "static"; }
 }
 
 component FocusRowContent inherits Rectangle {
@@ -695,7 +695,7 @@ component FocusRowContent inherits Rectangle {
         pointer-event(event) => { root.seen("pointer " + root.label); }
     }
     drag := DragArea {
-        data: root.label;
+        data <- root.label;
         drag-started() => { root.seen("start " + root.label); }
         drag-finished(action) => { root.seen("drag " + root.label); }
     }
@@ -708,34 +708,34 @@ export component TypedInputAvailabilityParity inherits Window {
         wheel(event) => { root.allowed = false; reject }
     }
     wheel := WheelHandler {
-        enabled: root.allowed;
+        enabled <- root.allowed;
         wheel(event) => { root.events += "wheel;"; accept }
     }
     focus := FocusScope {
-        enabled: root.allowed;
+        enabled <- root.allowed;
         key-pressed(event) => { root.events += "key;"; accept }
         focus-gained(reason) => { root.events += "gain;"; }
         focus-lost(reason) => { root.events += "loss;"; }
         focus-changed-event(reason) => { root.events += "focus;"; }
     }
     touch := TouchArea {
-        enabled: root.allowed;
+        enabled <- root.allowed;
         pointer-event(event) => { root.events += "pointer;"; }
     }
     drag := DragArea {
-        enabled: root.allowed;
-        data: "row";
+        enabled <- root.allowed;
+        data <- "row";
         drag-started() => { root.events += "start;"; }
         drag-finished(action) => { root.events += "finish;"; }
     }
 }
 
 component TypedInputChild inherits Rectangle {
-    visible: false;
+    visible <- false;
     callback seen(string);
     pure callback can-wheel() -> bool;
     wheel := WheelHandler {
-        enabled: root.can-wheel();
+        enabled <- root.can-wheel();
         wheel(event) => { root.seen("wheel;"); accept }
     }
     focus := FocusScope {
@@ -751,15 +751,15 @@ export component TypedInputAncestorParity inherits Window {
     pure callback check-wheel() -> bool;
     check-wheel => { true }
     parent := FocusScope {
-        enabled: root.allowed;
+        enabled <- root.allowed;
         child := TypedInputChild {
-            visible: root.shown;
+            visible <- root.shown;
             can-wheel => { root.check-wheel() }
             seen(value) => { root.events += value; }
         }
     }
     passive := WheelHandler {
-        enabled: false;
+        enabled <- false;
         inner := WheelHandler {
             wheel(event) => { root.events += "pass-through;"; accept }
         }
@@ -781,7 +781,7 @@ component ScopedInputProbe inherits FocusScope {
         exited() => { root.seen("exited-" + root.label + ";"); }
     }
     toggle := CheckBox {
-        checked: root.read-checked();
+        checked <- root.read-checked();
         toggled() => { root.seen("toggled-" + root.label + ";"); }
     }
 }
@@ -792,43 +792,43 @@ export component TypedInputScopeParity inherits Window {
     in-out property <bool> dialog-open: true;
     in-out property <bool> drawer-open: true;
     in-out property <bool> popup-open: true;
-    in-out property <SwipeSide> side: once left;
+    in-out property <SwipeSide> side: left;
     out property <string> events: "";
     pure callback read-popup-check() -> bool;
     read-popup-check => { false }
     GroupBox {
-        checkable: root.checkable;
-        checked <=> root.checked;
-        ScopedInputProbe { label: "group"; seen(value) => { root.events += value; } }
+        checkable <- root.checkable;
+        checked <-> root.checked;
+        ScopedInputProbe { label <- "group"; seen(value) => { root.events += value; } }
     }
     Dialog {
-        open <=> root.dialog-open;
-        ScopedInputProbe { label: "dialog"; seen(value) => { root.events += value; } }
+        open <-> root.dialog-open;
+        ScopedInputProbe { label <- "dialog"; seen(value) => { root.events += value; } }
     }
     Drawer {
-        open <=> root.drawer-open;
-        ScopedInputProbe { label: "drawer"; seen(value) => { root.events += value; } }
+        open <-> root.drawer-open;
+        ScopedInputProbe { label <- "drawer"; seen(value) => { root.events += value; } }
     }
     Rectangle {
         PopupWindow {
-            open <=> root.popup-open;
+            open <-> root.popup-open;
             ScopedInputProbe {
-                label: "popup";
+                label <- "popup";
                 seen(value) => { root.events += value; }
                 read-checked => { root.read-popup-check() }
             }
         }
     }
     SwipeDelegate {
-        open-side <=> root.side;
+        open-side <-> root.side;
         SwipeLeft {
-            ScopedInputProbe { label: "left"; seen(value) => { root.events += value; } }
+            ScopedInputProbe { label <- "left"; seen(value) => { root.events += value; } }
         }
         SwipeContent {
-            ScopedInputProbe { label: "content"; seen(value) => { root.events += value; } }
+            ScopedInputProbe { label <- "content"; seen(value) => { root.events += value; } }
         }
         SwipeRight {
-            ScopedInputProbe { label: "right"; seen(value) => { root.events += value; } }
+            ScopedInputProbe { label <- "right"; seen(value) => { root.events += value; } }
         }
     }
 }
@@ -836,16 +836,16 @@ export component TypedInputScopeParity inherits Window {
 export component SwipePanelAvailabilityParity inherits Window {
     in-out property <bool> panel-visible: true;
     in-out property <bool> enabled: true;
-    in-out property <SwipeSide> side: once closed;
+    in-out property <SwipeSide> side: closed;
     out property <int> changes: 0;
     pure callback panel-shown(bool) -> bool;
     panel-shown(shown) => { shown }
     row := SwipeDelegate {
-        enabled: root.enabled;
-        open-side <=> root.side;
+        enabled <- root.enabled;
+        open-side <-> root.side;
         changed(side) => { root.changes += 1; }
         SwipeContent {}
-        SwipeRight { visible: root.panel-shown(root.panel-visible); }
+        SwipeRight { visible <- root.panel-shown(root.panel-visible); }
         SwipeLeft {}
     }
 }
@@ -855,12 +855,12 @@ component RoutedEditor inherits LineEdit {
     in property <int> limit;
     in property <InputType> mode;
     in property <string> separator;
-    in-out property <string> value <=> root.text;
+    in-out property <string> value <-> root.text;
     callback submitted();
-    read-only: root.locked;
-    maximum-length: root.limit;
-    input-type: root.mode;
-    decimal-separator: root.separator;
+    read-only <- root.locked;
+    maximum-length <- root.limit;
+    input-type <- root.mode;
+    decimal-separator <- root.separator;
     accepted => { root.submitted(); }
 }
 
@@ -868,18 +868,18 @@ export component RoutedEditorParity inherits Window {
     in-out property <bool> opened: true;
     in-out property <bool> locked: false;
     in-out property <int> limit: 12;
-    in-out property <InputType> mode: once text;
+    in-out property <InputType> mode: text;
     in-out property <string> separator: ".";
     in-out property <string> value: "1";
     out property <string> submitted: "";
     Dialog {
-        open <=> root.opened;
+        open <-> root.opened;
         RoutedEditor {
-            locked: root.locked;
-            limit: root.limit;
-            mode: root.mode;
-            separator: root.separator;
-            value <=> root.value;
+            locked <- root.locked;
+            limit <- root.limit;
+            mode <- root.mode;
+            separator <- root.separator;
+            value <-> root.value;
             submitted => { root.submitted = root.value; }
         }
     }
@@ -893,16 +893,16 @@ export component TextEditConflictParity inherits Window {
     pure callback line-limit() -> int;
     line-limit => { 40 }
     single := LineEdit {
-        text <=> root.line;
-        maximum-length: root.line-limit();
+        text <-> root.line;
+        maximum-length <- root.line-limit();
         edited => { root.edits += 1; }
     }
     multi := TextArea {
-        text <=> root.paragraph;
+        text <-> root.paragraph;
         edited(text) => { root.edits += 1; }
     }
     search := SearchField {
-        text <=> root.query;
+        text <-> root.query;
         edited(text) => { root.edits += 1; }
     }
 }
@@ -913,9 +913,9 @@ component RoutedChoice inherits Rectangle {
     pure callback can-edit() -> bool;
     callback selected-value(string);
     choice := ComboBox {
-        model: root.options;
-        editable: root.can-edit();
-        current-index <=> root.selection;
+        model <- root.options;
+        editable <- root.can-edit();
+        current-index <-> root.selection;
         selected(value) => { root.selected-value(value); }
     }
 }
@@ -929,15 +929,15 @@ export component RoutedChoiceParity inherits Window {
     pure callback can-edit() -> bool;
     can-edit => { false }
     Dialog {
-        open <=> root.opened;
+        open <-> root.opened;
         RoutedChoice {
-            selection <=> root.selection;
-            options: root.options;
+            selection <-> root.selection;
+            options <- root.options;
             can-edit => { root.can-edit() }
             selected-value(value) => { root.selected = value; }
         }
     }
-    Drawer { open <=> root.drawer-open; }
+    Drawer { open <-> root.drawer-open; }
 }
 
 component RoutedRanges inherits Rectangle {
@@ -945,9 +945,9 @@ component RoutedRanges inherits Rectangle {
     in-out property <float> position: 0.2;
     in-out property <float> upper: 70;
     pure callback limit() -> float;
-    Slider { value <=> root.amount; maximum: root.limit(); }
-    ScrollBar { position <=> root.position; size: 0.25; }
-    RangeSlider { upper-value <=> root.upper; }
+    Slider { value <-> root.amount; maximum <- root.limit(); }
+    ScrollBar { position <-> root.position; size <- 0.25; }
+    RangeSlider { upper-value <-> root.upper; }
 }
 
 export component RoutedRangeParity inherits Window {
@@ -959,11 +959,11 @@ export component RoutedRangeParity inherits Window {
     pure callback limit() -> float;
     limit => { 100 }
     Dialog {
-        open <=> root.opened;
+        open <-> root.opened;
         RoutedRanges {
-            amount <=> root.amount;
-            position <=> root.position;
-            upper <=> root.upper;
+            amount <-> root.amount;
+            position <-> root.position;
+            upper <-> root.upper;
             limit => { root.limit() }
         }
         split := SplitView {
@@ -972,7 +972,7 @@ export component RoutedRangeParity inherits Window {
             Rectangle {}
         }
         sized := SplitView {
-            fill-pane: content;
+            fill-pane <- content;
             resized() => { root.split-edits += 1; }
             Rectangle {}
             content := Rectangle {}
@@ -984,30 +984,30 @@ export component MovedFocusRowParity inherits Window {
     in-out property <[string]> labels: ["A", "B"];
     out property <string> events: "";
     ListView {
-        row-height: 28px;
+        row-height <- 28px;
         for label[index] in root.labels : FocusRowContent {
-            label: label;
+            label <- label;
             seen(value) => { root.events += value + "@" + index + ";"; }
         }
     }
 }
 
-component HiddenFocusRowContent inherits FocusRowContent { visible: false; }
+component HiddenFocusRowContent inherits FocusRowContent { visible <- false; }
 
 export component TableDelegateInputParity inherits Window {
-    width: 320px; height: 200px;
+    width <- 320px; height <- 200px;
     in-out property <bool> pane-enabled: true;
     in-out property <bool> delegate-visible: true;
     in-out property <[string]> labels: ["A", "B"];
     out property <string> events: "";
     TableView {
-        TableColumn { title: "Name"; }
+        TableColumn { title <- "Name"; }
         for input[node] in root.labels : TableRow {
             Pane {
-                enabled: root.pane-enabled;
+                enabled <- root.pane-enabled;
                 HiddenFocusRowContent {
-                    visible: root.delegate-visible && node == 0;
-                    label: input;
+                    visible <- root.delegate-visible && node == 0;
+                    label <- input;
                     seen(value) => { root.events += value + "@" + node + ";"; }
                 }
             }
@@ -1016,17 +1016,17 @@ export component TableDelegateInputParity inherits Window {
 }
 
 export component TableRowStatePredicateParity inherits Window {
-    width: 320px; height: 200px;
+    width <- 320px; height <- 200px;
     out property <string> events: "";
     pure callback row-locked(int) -> bool;
     row-locked(index) => { false }
     TableView {
-        TableColumn { title: "Name"; }
+        TableColumn { title <- "Name"; }
         for label[index] in ["A", "B"] : TableRow {
             Pane {
                 states [ locked when root.row-locked(index): { enabled: false; visible: false; } ]
                 FocusRowContent {
-                    label: label;
+                    label <- label;
                     seen(value) => { root.events += value + ";"; }
                 }
             }
@@ -1038,23 +1038,23 @@ component NestedFocusRows inherits Rectangle {
     in property <[string]> labels;
     callback seen(string);
     ListView {
-        width: 280px; height: 70px; row-height: 28px;
+        width <- 280px; height <- 70px; row-height <- 28px;
         for label[index] in root.labels : FocusRowContent {
-            label: label;
+            label <- label;
             seen(value) => { root.seen(value + "@" + index); }
         }
     }
 }
 
 export component NestedMovedFocusParity inherits Window {
-    width: 360px; height: 240px;
+    width <- 360px; height <- 240px;
     in-out property <[string]> groups: ["first", "second"];
     in-out property <[string]> labels: ["A", "B"];
     out property <string> events: "";
     ListView {
-        width: 320px; height: 210px; row-height: 96px;
+        width <- 320px; height <- 210px; row-height <- 96px;
         for group[index] in root.groups : NestedFocusRows {
-            labels: root.labels;
+            labels <- root.labels;
             seen(value) => { root.events += value + "/" + group + "@" + index + ";"; }
         }
     }
@@ -1062,8 +1062,8 @@ export component NestedMovedFocusParity inherits Window {
 
 export component NativeDialogOptionOrderParity inherits Window {
     in-out property <bool> can-open: true;
-    out property <bool> file-pending: file.pending;
-    out property <bool> message-pending: message.pending;
+    out property <bool> file-pending <- file.pending;
+    out property <bool> message-pending <- message.pending;
     pure callback file-enabled() -> bool;
     file-enabled => { true }
     pure callback file-mode() -> FileDialogMode;
@@ -1077,43 +1077,43 @@ export component NativeDialogOptionOrderParity inherits Window {
     open-message => { message.open(); }
 
     file := FileDialog {
-        enabled: root.file-enabled();
-        mode: root.file-mode();
-        title: root.text-option(2);
-        directory: root.text-option(3);
-        file-name: root.text-option(4);
-        name-filters: root.filters();
+        enabled <- root.file-enabled();
+        mode <- root.file-mode();
+        title <- root.text-option(2);
+        directory <- root.text-option(3);
+        file-name <- root.text-option(4);
+        name-filters <- root.filters();
     }
     message := MessageDialog {
-        enabled: root.file-enabled();
-        level: root.message-level();
-        buttons: root.message-buttons();
-        title: root.text-option(8);
-        text: root.text-option(9);
-        informative-text: root.text-option(10);
+        enabled <- root.file-enabled();
+        level <- root.message-level();
+        buttons <- root.message-buttons();
+        title <- root.text-option(8);
+        text <- root.text-option(9);
+        informative-text <- root.text-option(10);
     }
 }
 
 export component StaticRepeatScenes inherits Window {
     in-out property <string> caption: "Before";
-    Text { text: root.caption; }
-    for row in 48 : Rectangle { width: 120px; height: 24px; Text { text: "Static"; } }
-    for row in 48 : Rectangle { width: 120px; height: 24px; Text { text: "Static"; } }
-    for row in 3 : Rectangle { x: 2px; width: 32px; height: 18px; }
-    for row in 3 : Text { text: "Row " + row; }
+    Text { text <- root.caption; }
+    for row in 48 : Rectangle { width <- 120px; height <- 24px; Text { text <- "Static"; } }
+    for row in 48 : Rectangle { width <- 120px; height <- 24px; Text { text <- "Static"; } }
+    for row in 3 : Rectangle { x <- 2px; width <- 32px; height <- 18px; }
+    for row in 3 : Text { text <- "Row " + row; }
 }
 
 export component ReactiveBrushScenes inherits Window {
     in-out property <color> accent: #48a;
-    Rectangle { background: @linear-gradient(90deg, root.accent, #fff); }
-    Rectangle { background: @linear-gradient(90deg, root.accent, #fff); }
+    Rectangle { background <- @linear-gradient(90deg, root.accent, #fff); }
+    Rectangle { background <- @linear-gradient(90deg, root.accent, #fff); }
     for row in 5 : Rectangle {
-        background: @linear-gradient(90deg, root.accent, #fff);
-        Text { text: "Row " + row; }
+        background <- @linear-gradient(90deg, root.accent, #fff);
+        Text { text <- "Row " + row; }
     }
     for row in 5 : Rectangle {
-        background: @linear-gradient(90deg, root.accent, #fff);
-        Text { text: "Cell " + row; }
+        background <- @linear-gradient(90deg, root.accent, #fff);
+        Text { text <- "Cell " + row; }
     }
 }
 
@@ -1126,7 +1126,7 @@ export component FileEventListParity inherits Window {
         accepted(paths) => { root.first = paths; root.second = paths; }
     }
     drop-zone := DropArea {
-        accept-files: true;
+        accept-files <- true;
         files-dropped(paths) => { root.first = paths; root.second = paths; }
     }
 }
@@ -1135,7 +1135,7 @@ export component RepeatModelReadParity inherits Window {
     in-out property <int> revision: 0;
     pure callback sample-count(int) -> int;
     sample-count(revision) => { 2 }
-    for row in root.sample-count(root.revision) : Text { text: "Row " + row; }
+    for row in root.sample-count(root.revision) : Text { text <- "Row " + row; }
 }
 
 export component OrdinaryRepeatSourceParity inherits Window {
@@ -1143,8 +1143,8 @@ export component OrdinaryRepeatSourceParity inherits Window {
     in-out property <[string]> group-rows: ["first", "second"];
     pure callback describe(int, string) -> string;
     describe(kind, label) => { label }
-    for row in root.text-rows : Text { text: root.describe(0, row); }
-    for row in root.group-rows : GroupBox { title: root.describe(1, row); }
+    for row in root.text-rows : Text { text <- root.describe(0, row); }
+    for row in root.group-rows : GroupBox { title <- root.describe(1, row); }
 }
 
 export component EmptyOrdinaryRepeats inherits Window {
@@ -1152,14 +1152,14 @@ export component EmptyOrdinaryRepeats inherits Window {
     out property <int> clicks: 0;
     pure callback describe(int) -> string;
     describe(index) => { "" + index }
-    for row in 0 : Text { text: root.describe(row); }
+    for row in 0 : Text { text <- root.describe(row); }
     for row in -1 : Rectangle {}
-    for item in [] : Text { text: item; }
-    for row in root.count : Text { text: root.describe(row); }
+    for item in [] : Text { text <- item; }
+    for row in root.count : Text { text <- root.describe(row); }
     ListView { for row in 0 : Text {} }
     natural := Rectangle {
-        Rectangle { z: 1; }
-        Rectangle { z: 2; }
+        Rectangle { z <- 1; }
+        Rectangle { z <- 2; }
     }
     tail := Button { clicked => { root.clicks += 1; } }
 }
@@ -1169,9 +1169,9 @@ export struct VisualStrings { prefix: string, suffix: string }
 export component RecordVisualCaches inherits Window {
     in-out property <VisualStrings> style: VisualStrings { prefix: "old ", suffix: "end" };
     in-out property <[string]> items: ["A", "B"];
-    Text { text: root.style.prefix + root.style.suffix; }
-    Text { text: root.style.prefix + root.style.suffix; }
-    for item in root.items : Text { text: root.style.prefix + item; }
+    Text { text <- root.style.prefix + root.style.suffix; }
+    Text { text <- root.style.prefix + root.style.suffix; }
+    for item in root.items : Text { text <- root.style.prefix + item; }
 }
 
 export component StaticBuiltinValues inherits Window {
@@ -1179,28 +1179,28 @@ export component StaticBuiltinValues inherits Window {
     in-out property <Time> live: Time { hour: 30, minute: -2, second: 99 };
     property <Date> today: Date { year: 2026, month: 11, day: 12 };
     property <Font> face: Font { family: "sans-serif", size: 18px, weight: 500, italic: false };
-    out property <int> fixed-hour: root.fixed.hour;
-    out property <int> fixed-minute: root.fixed.minute;
-    out property <int> fixed-second: root.fixed.second;
-    out property <int> live-hour: root.live.hour;
-    out property <int> date-day: root.today.day;
-    out property <length> font-size-value: root.face.size;
+    out property <int> fixed-hour <- root.fixed.hour;
+    out property <int> fixed-minute <- root.fixed.minute;
+    out property <int> fixed-second <- root.fixed.second;
+    out property <int> live-hour <- root.live.hour;
+    out property <int> date-day <- root.today.day;
+    out property <length> font-size-value <- root.face.size;
 }
 
 export component InternedScenes inherits Window {
-    out property <length> observed-width: observed.layout-width;
-    Label { text: "Same"; width: 80px; height: 24px; }
-    Label { text: "Same"; width: 80px; height: 24px; }
-    first := Rectangle { background: @linear-gradient(90deg, #111, #eee); }
-    second := Rectangle { background: @linear-gradient(90deg, #111, #eee); }
-    observed := Rectangle { width: 120px; height: 24px; }
+    out property <length> observed-width <- observed.layout-width;
+    Label { text <- "Same"; width <- 80px; height <- 24px; }
+    Label { text <- "Same"; width <- 80px; height <- 24px; }
+    first := Rectangle { background <- @linear-gradient(90deg, #111, #eee); }
+    second := Rectangle { background <- @linear-gradient(90deg, #111, #eee); }
+    observed := Rectangle { width <- 120px; height <- 24px; }
 }
 
 export component FixedImageUpdates inherits Window {
-    in-out property <image> picture: once @image-url("");
-    in-out property <image> intrinsic-picture: once @image-url("");
-    Image { source: root.picture; width: 120px; height: 80px; }
-    Image { source: root.intrinsic-picture; }
+    in-out property <image> picture: @image-url("");
+    in-out property <image> intrinsic-picture: @image-url("");
+    Image { source <- root.picture; width <- 120px; height <- 80px; }
+    Image { source <- root.intrinsic-picture; }
 }
 
 // Component names must not shadow paths used by generated code.
@@ -1211,8 +1211,8 @@ export component type inherits Window { out property <float> value: 1; }
 export component SelectionByValue inherits Rectangle {
     in-out property <string> selection: "beta";
     choice := ComboBox {
-        model: ["alpha", "beta"];
-        current-value <=> root.selection;
+        model <- ["alpha", "beta"];
+        current-value <-> root.selection;
     }
 }
 
@@ -1226,10 +1226,10 @@ export component ComboTextParity inherits Window {
     pure callback allow-edit() -> bool;
     allow-edit => { root.can-edit }
     choice := ComboBox {
-        enabled: root.allowed;
-        editable: root.allow-edit();
-        model: root.choices;
-        current-index <=> root.selection;
+        enabled <- root.allowed;
+        editable <- root.allow-edit();
+        model <- root.choices;
+        current-index <-> root.selection;
         accepted(text) => { root.accepted = text; }
         selected(text) => { root.selections += 1; }
     }
@@ -1246,10 +1246,10 @@ export component ComboRenderSampleParity inherits Window {
     pure callback sample-options() -> [ComboCommitOption];
     sample-options => { root.options }
     ComboBox {
-        model: root.sample-options();
-        text-role: "label";
-        value-role: "code";
-        current-value <=> root.current;
+        model <- root.sample-options();
+        text-role <- "label";
+        value-role <- "code";
+        current-value <-> root.current;
     }
 }
 
@@ -1258,12 +1258,12 @@ export component ComboCommitParity inherits Window {
     in-out property <string> draft: "";
     out property <string> events: "";
     combo := ComboBox {
-        model: [ComboCommitOption { label: "A", code: 1 }, ComboCommitOption { label: "B", code: 2 }];
-        text-role: "label";
-        value-role: "code";
-        editable: true;
-        current-value <=> root.current;
-        edit-text <=> root.draft;
+        model <- [ComboCommitOption { label: "A", code: 1 }, ComboCommitOption { label: "B", code: 2 }];
+        text-role <- "label";
+        value-role <- "code";
+        editable <- true;
+        current-value <-> root.current;
+        edit-text <-> root.draft;
         selected(label) => { root.events += "select:" + label + ":" + root.current + ":" + root.draft + ";"; }
         value-selected(code) => { root.events += "value:" + code + ":" + root.current + ":" + root.draft + ";"; }
         accepted(text) => { root.events += "accept:" + text + ":" + root.current + ":" + root.draft + ";"; }
@@ -1281,12 +1281,12 @@ export component SearchInputParity inherits Window {
     live-search => { true }
 
     search := SearchField {
-        enabled: root.allowed;
-        read-only: root.locked;
-        text <=> root.query;
-        live: root.live-search();
-        suggestions: root.suggestions;
-        suggestions-for: root.result-query;
+        enabled <- root.allowed;
+        read-only <- root.locked;
+        text <-> root.query;
+        live <- root.live-search();
+        suggestions <- root.suggestions;
+        suggestions-for <- root.result-query;
         edited(value) => { root.events += "edit:" + value + ";"; }
         accepted(value) => { root.events += "accept:" + value + ";"; }
         selected(value) => { root.events += "select:" + value + ";"; }
@@ -1297,15 +1297,15 @@ export component SearchInputParity inherits Window {
 export component RadioByValue inherits Rectangle {
     in-out property <string> selection: "beta";
     group := RadioGroup {
-        current-value <=> root.selection;
-        RadioButton { text: "alpha"; }
-        RadioButton { text: "beta"; }
+        current-value <-> root.selection;
+        RadioButton { text <- "alpha"; }
+        RadioButton { text <- "beta"; }
     }
 }
 
 component LazyChild inherits Rectangle {
     in property <int> input: 0;
-    out property <int> doubled: input * 2;
+    out property <int> doubled <- input * 2;
 }
 
 export component LazyProperties inherits Window {
@@ -1318,13 +1318,13 @@ export component LazyProperties inherits Window {
     pure callback format-right(int) -> string;
     in-out property <int> manual-result;
     in-out property <bool> manual-result-active;
-    out property <int> result: root.manual-result-active
+    out property <int> result <- root.manual-result-active
         ? root.manual-result
         : root.observe(root.use-left ? root.left : root.right);
-    out property <int> shown: child.doubled;
-    child := LazyChild { input: root.result; }
-    label := Text { text: root.format-value(root.shown); }
-    right-label := Text { text: root.format-right(root.right); }
+    out property <int> shown <- child.doubled;
+    child := LazyChild { input <- root.result; }
+    label := Text { text <- root.format-value(root.shown); }
+    right-label := Text { text <- root.format-right(root.right); }
 }
 
 export component LazyList inherits Window {
@@ -1338,13 +1338,13 @@ export component LazyList inherits Window {
     pure callback row-index(int) -> string;
     pure callback detail-label(string, int, int) -> string;
 
-    Text { text: "unrelated=" + root.unrelated; }
+    Text { text <- "unrelated=" + root.unrelated; }
     if root.show-list : VerticalLayout {
         for item[index] in root.items : HorizontalLayout {
-            Text { text: root.row-label(item, index, index == 2 && root.use-suffix ? root.suffix : ""); }
-            Text { text: root.row-index(index); }
+            Text { text <- root.row-label(item, index, index == 2 && root.use-suffix ? root.suffix : ""); }
+            Text { text <- root.row-index(index); }
             if index == 2 : VerticalLayout {
-                for detail in root.details : Text { text: root.detail-label(item, index, detail); }
+                for detail in root.details : Text { text <- root.detail-label(item, index, detail); }
             }
         }
     }
@@ -1354,21 +1354,21 @@ export component SharedVisuals inherits Window {
     in-out property <int> count: 0;
     in-out property <[string]> items: ["A", "B"];
     pure callback describe() -> string;
-    out property <string> caption: root.describe();
-    first := Text { text: "Count " + root.count; }
-    second := Text { text: "Count " + root.count; }
+    out property <string> caption <- root.describe();
+    first := Text { text <- "Count " + root.count; }
+    second := Text { text <- "Count " + root.count; }
     for item in root.items : VerticalLayout {
-        Text { text: "Row " + item; }
-        Text { text: "Row " + item; }
-        Text { text: "Caption " + root.caption; }
+        Text { text <- "Row " + item; }
+        Text { text <- "Row " + item; }
+        Text { text <- "Caption " + root.caption; }
     }
-    if false : Text { text: "not-rendered-marker"; }
-    tail := Text { text: "tail"; }
+    if false : Text { text <- "not-rendered-marker"; }
+    tail := Text { text <- "tail"; }
 }
 
 component StringRows inherits ListView {
     in property <[string]> items: [];
-    for item[index] in root.items : Text { text: index + ": " + item; }
+    for item[index] in root.items : Text { text <- index + ": " + item; }
 }
 
 export component ScenePlans inherits Window {
@@ -1376,14 +1376,14 @@ export component ScenePlans inherits Window {
     in-out property <length> swatch-width: 40px;
     in-out property <bool> show-caption: false;
     pure callback describe() -> string;
-    out property <string> caption: root.describe();
-    swatch := Rectangle { background: root.tint; width: root.swatch-width; }
+    out property <string> caption <- root.describe();
+    swatch := Rectangle { background <- root.tint; width <- root.swatch-width; }
     panel := VerticalLayout {
-        Text { text: "static label"; }
-        Rectangle { background: #112233; }
+        Text { text <- "static label"; }
+        Rectangle { background <- #112233; }
     }
     for item in ["A", "B"] : Text {
-        text: root.show-caption ? ("Caption " + root.caption + ": ") + item : item;
+        text <- root.show-caption ? ("Caption " + root.caption + ": ") + item : item;
     }
 }
 
@@ -1391,49 +1391,49 @@ export component GradientPlans inherits Window {
     in-out property <color> tint: #abc;
     in-out property <length> swatch-width: 40px;
     fixed := Rectangle {
-        width: root.swatch-width;
-        background: @linear-gradient(90deg, #000, #fff);
+        width <- root.swatch-width;
+        background <- @linear-gradient(90deg, #000, #fff);
     }
     live := Rectangle {
-        background: @radial-gradient(circle, #000, root.tint);
+        background <- @radial-gradient(circle, #000, root.tint);
     }
 }
 
 export component EmbeddedList inherits Window {
     in-out property <[string]> items: ["a", "b", "c"];
-    records := StringRows { items: root.items; }
+    records := StringRows { items <- root.items; }
 }
 
 export component GridPlans inherits Window {
     in-out property <bool> show-extra: true;
     fixed := GridLayout {
-        width: 150px; height: 100px; spacing: 4px;
-        Rectangle { rowspan: 2; min-width: 20px; min-height: 20px; }
-        Rectangle { colspan: 2; min-width: 30px; min-height: 20px; }
+        width <- 150px; height <- 100px; spacing <- 4px;
+        Rectangle { rowspan <- 2; min-width <- 20px; min-height <- 20px; }
+        Rectangle { colspan <- 2; min-width <- 30px; min-height <- 20px; }
         Row {
-            Rectangle { visible: false; }
-            Rectangle { min-width: 20px; min-height: 20px; }
-            Rectangle { min-width: 20px; min-height: 20px; }
+            Rectangle { visible <- false; }
+            Rectangle { min-width <- 20px; min-height <- 20px; }
+            Rectangle { min-width <- 20px; min-height <- 20px; }
         }
     }
     live := GridLayout {
-        y: 104px; width: 150px; height: 80px;
-        Rectangle { visible: root.show-extra; }
+        y <- 104px; width <- 150px; height <- 80px;
+        Rectangle { visible <- root.show-extra; }
         Rectangle {}
     }
 }
 
 component PlannedGridInstance inherits GridLayout {
-    Rectangle { min-width: 20px; min-height: 15px; z: 2; }
-    Rectangle { min-width: 30px; min-height: 15px; z: 1; }
+    Rectangle { min-width <- 20px; min-height <- 15px; z <- 2; }
+    Rectangle { min-width <- 30px; min-height <- 15px; z <- 1; }
 }
 
 export component InstanceScenePlans inherits Window {
     in-out property <bool> wide: false;
-    out property <bool> mounted: grid.layout-ready;
+    out property <bool> mounted <- grid.layout-ready;
     grid := PlannedGridInstance {
-        width: 100px;
-        height: 60px;
+        width <- 100px;
+        height <- 60px;
         states [ expanded when root.wide: { width: 150px; } ]
     }
 }
@@ -1442,8 +1442,8 @@ export component ModelBindings inherits Window {
     in-out property <[string]> records: ["first", "second"];
     pure callback mirror([string]) -> [string];
     mirror(rows) => { rows }
-    out property <[string]> mirrored: root.mirror(root.records);
-    out property <bool> equal: root.mirrored == root.records;
+    out property <[string]> mirrored <- root.mirror(root.records);
+    out property <bool> equal <- root.mirrored == root.records;
 }
 
 export struct CallbackSnapshotRow {
@@ -1454,14 +1454,14 @@ export component ListEqualityBindings inherits Window {
     in-out property <[string]> strings: ["before"];
     in-out property <[CallbackSnapshotRow]> rows: [CallbackSnapshotRow { text: "before" }];
     in-out property <[TouchPoint]> points;
-    out property <bool> same-strings: root.strings == ["before"];
-    out property <bool> different-rows: root.rows != [CallbackSnapshotRow { text: "before" }];
+    out property <bool> same-strings <- root.strings == ["before"];
+    out property <bool> different-rows <- root.rows != [CallbackSnapshotRow { text: "before" }];
     pure callback empty-points() -> [TouchPoint];
     empty-points => { [] }
-    out property <bool> no-points: root.points == root.empty-points();
+    out property <bool> no-points <- root.points == root.empty-points();
 
     Text {
-        text: root.same-strings + "/" + root.different-rows + "/" + root.no-points;
+        text <- root.same-strings + "/" + root.different-rows + "/" + root.no-points;
     }
 }
 
@@ -1476,28 +1476,28 @@ component RetainedWindowChild inherits Window {
     out property <int> pings: 0;
     pure callback answer() -> RetainedWindowReply;
     answer => { RetainedWindowReply { code: 99 } }
-    out property <RetainedWindowReply> reply: root.answer();
+    out property <RetainedWindowReply> reply <- root.answer();
     pure callback messages() -> [string];
     messages => { ["child"] }
-    out property <bool> empty: root.messages() == [];
+    out property <bool> empty <- root.messages() == [];
     callback ping;
     ping => { root.pings += 1; }
 
-    Text { text: root.bound + "/" + root.fixed + "/" + root.linked; }
-    Text { text: root.reply.code + "/" + root.empty + "/" + root.pings; }
-    ping-button := Button { text: "Ping"; clicked => { root.ping(); } }
-    entry := LineEdit { text <=> root.linked; }
+    Text { text <- root.bound + "/" + root.fixed + "/" + root.linked; }
+    Text { text <- root.reply.code + "/" + root.empty + "/" + root.pings; }
+    ping-button := Button { text <- "Ping"; clicked => { root.ping(); } }
+    entry := LineEdit { text <-> root.linked; }
 }
 
 export component RetainedWindowParent inherits Window {
     in-out property <int> count: 12;
     in-out property <string> shared: "parent";
     child-window := SecondaryWindow {
-        visible: true;
+        visible <- true;
         RetainedWindowChild {
-            bound: root.count;
-            fixed: 41;
-            linked <=> root.shared;
+            bound <- root.count;
+            fixed <- 41;
+            linked <-> root.shared;
             answer => { RetainedWindowReply { code: 7 } }
             messages => { ["parent"] }
             ping => { root.shared = "pinged"; }
@@ -1510,7 +1510,7 @@ export component WindowCommandParity inherits Window {
     initial-visible => { false }
     pure callback full-screen-argument() -> bool;
     full-screen-argument => { true }
-    in-out property <bool> shown: once root.initial-visible();
+    in-out property <bool> shown: root.initial-visible();
     callback hide-child();
     hide-child => { child.hide(); }
     callback close-child();
@@ -1522,7 +1522,7 @@ export component WindowCommandParity inherits Window {
         root.restore();
     }
     child := SecondaryWindow {
-        visible <=> root.shown;
+        visible <-> root.shown;
         RetainedWindowChild {}
     }
 }
@@ -1533,8 +1533,8 @@ export component CallbackModelSnapshots inherits Window {
     out property <bool> saw-original: false;
     out property <[string]> saved-strings;
     out property <[CallbackSnapshotRow]> saved-rows;
-    out property <[TouchPoint]> empty-points: root.copy-points([]);
-    out property <styled-text> styled-copy: root.copy-style(@markdown("**bold**"));
+    out property <[TouchPoint]> empty-points <- root.copy-points([]);
+    out property <styled-text> styled-copy <- root.copy-style(@markdown("**bold**"));
 
     pure callback change-models() -> bool;
     pure callback compare([string], [CallbackSnapshotRow], bool) -> bool;
@@ -1564,9 +1564,9 @@ export struct ToggleDelegateRow {
 }
 
 export component ToggleDelegateEvents inherits Window {
-    width: 240px;
-    height: 180px;
-    in-out property <[ToggleDelegateRow]> rows: once root.initial-rows();
+    width <- 240px;
+    height <- 180px;
+    in-out property <[ToggleDelegateRow]> rows: root.initial-rows();
     out property <int> trace: 0;
     in-out property <bool> three-states: true;
     callback reload-rows();
@@ -1582,10 +1582,10 @@ export component ToggleDelegateEvents inherits Window {
     copy-rows(rows) => { rows }
 
     checks := ListView {
-        x: 0px; y: 0px; width: 200px; height: 72px; row-height: 32px;
+        x <- 0px; y <- 0px; width <- 200px; height <- 72px; row-height <- 32px;
         for row in root.rows : CheckDelegate {
-            text: self.checked ? "Checked" : "Unchecked";
-            checked <=> row.enabled;
+            text <- self.checked ? "Checked" : "Unchecked";
+            checked <-> row.enabled;
             toggled => {
                 root.before-observe();
                 root.trace = root.trace * 10 + (self.checked ? 1 : 2);
@@ -1596,12 +1596,12 @@ export component ToggleDelegateEvents inherits Window {
         }
     }
     states-list := ListView {
-        row-visible-field: "shown";
-        x: 0px; y: 80px; width: 200px; height: 72px; row-height: 32px;
+        row-visible-field <- "shown";
+        x <- 0px; y <- 80px; width <- 200px; height <- 72px; row-height <- 32px;
         for row in root.rows : CheckDelegate {
-            text: self.check-state == CheckState.partially-checked ? "Mixed" : "Tristate";
-            tristate: root.read-three-states();
-            check-state <=> row.state;
+            text <- self.check-state == CheckState.partially-checked ? "Mixed" : "Tristate";
+            tristate <- root.read-three-states();
+            check-state <-> row.state;
             toggled => {
                 root.trace = root.trace * 10 + (self.check-state == CheckState.partially-checked && !self.checked ? 5 : 7);
             }
@@ -1613,28 +1613,28 @@ export component ToggleDelegateEvents inherits Window {
 }
 
 export component PaintOrderPlans inherits Window {
-    width: 240px; height: 100px;
+    width <- 240px; height <- 100px;
     in-out property <float> live-z: -1;
     out property <string> winner: "";
     fixed := Rectangle {
-        width: 100px; height: 80px; z: 2;
+        width <- 100px; height <- 80px; z <- 2;
         upper := Button {
-            width: 80px; height: 60px; z: 2;
+            width <- 80px; height <- 60px; z <- 2;
             clicked => { root.winner = "upper"; }
         }
         lower := Button {
-            width: 80px; height: 60px; z: 1;
+            width <- 80px; height <- 60px; z <- 1;
             clicked => { root.winner = "lower"; }
         }
     }
     live := Rectangle {
-        x: 120px; width: 100px; height: 80px; z: 1;
+        x <- 120px; width <- 100px; height <- 80px; z <- 1;
         changing := Button {
-            width: 80px; height: 60px; z: root.live-z;
+            width <- 80px; height <- 60px; z <- root.live-z;
             clicked => { root.winner = "changing"; }
         }
         fixed-peer := Button {
-            width: 80px; height: 60px; z: 0;
+            width <- 80px; height <- 60px; z <- 0;
             clicked => { root.winner = "fixed-peer"; }
         }
     }
@@ -1647,10 +1647,10 @@ export component OperandCacheProbe inherits Window {
     pure callback describe(value: string) -> string;
     pure callback field-label(value: string) -> string;
     pure callback extra-label(value: string) -> string;
-    label := Text { text: root.describe(root.payload); }
-    field := LineEdit { text: root.field-label(root.payload); }
-    if root.show-extra : Text { text: root.extra-label(root.payload); }
-    Rectangle { width: root.panel-width; height: 20px; }
+    label := Text { text <- root.describe(root.payload); }
+    field := LineEdit { text <- root.field-label(root.payload); }
+    if root.show-extra : Text { text <- root.extra-label(root.payload); }
+    Rectangle { width <- root.panel-width; height <- 20px; }
 }
 
 struct ClipboardProbeRow { text: string }
@@ -1659,13 +1659,13 @@ export component ClipboardProbe inherits Window {
     in property <[ClipboardProbeRow]> records: [ClipboardProbeRow { text: "item" }];
     pure callback format-copy(string) -> string;
     TableView {
-        copyable: true;
-        current-row: 0;
-        TableColumn { title: "Cell"; }
-        TableColumn { title: "Next"; }
+        copyable <- true;
+        current-row <- 0;
+        TableColumn { title <- "Cell"; }
+        TableColumn { title <- "Next"; }
         for row in root.records : TableRow {
-            TableCell { text: row.text; clipboard-text: root.format-copy(row.text); }
-            TableCell { text: row.text; clipboard-text: root.format-copy(row.text + " next"); }
+            TableCell { text <- row.text; clipboard-text <- root.format-copy(row.text); }
+            TableCell { text <- row.text; clipboard-text <- root.format-copy(row.text + " next"); }
         }
     }
 }
@@ -1676,15 +1676,15 @@ export component ClipboardProjectionParity inherits Window {
     show-row => { true }
     pure callback show-decoration() -> bool;
     TableView {
-        copyable: true;
-        current-row: 0;
-        TableColumn { title: "First"; }
-        TableColumn { title: "Second"; }
-        TableColumn { title: "Decoration"; }
+        copyable <- true;
+        current-row <- 0;
+        TableColumn { title <- "First"; }
+        TableColumn { title <- "Second"; }
+        TableColumn { title <- "Decoration"; }
         for row in ["one", "two"] : TableRow {
-            visible: root.show-row();
-            Text { text: root.cell-text(); }
-            Text { text: root.cell-text(); }
+            visible <- root.show-row();
+            Text { text <- root.cell-text(); }
+            Text { text <- root.cell-text(); }
             if root.show-decoration() : Rectangle {}
         }
     }
@@ -1692,23 +1692,23 @@ export component ClipboardProjectionParity inherits Window {
 
 component ClipboardNamedContent inherits Rectangle {
     in-out property <int> clipboard-text: 7;
-    in-out property <int> copy-value <=> root.clipboard-text;
-    Text { text: "stored " + root.clipboard-text; }
+    in-out property <int> copy-value <-> root.clipboard-text;
+    Text { text <- "stored " + root.clipboard-text; }
 }
 
 export component ClipboardBindingParity inherits Window {
     in-out property <int> source: 42;
     private property <int> copy-row;
-    out property <int> observed: child.clipboard-text;
-    child := ClipboardNamedContent { clipboard-text: root.source; }
+    out property <int> observed <- child.clipboard-text;
+    child := ClipboardNamedContent { clipboard-text <- root.source; }
     table := TableView {
-        copyable: true;
-        current-row <=> root.copy-row;
-        TableColumn { title: "Cell"; }
-        TableColumn { title: "Nested"; }
+        copyable <- true;
+        current-row <-> root.copy-row;
+        TableColumn { title <- "Cell"; }
+        TableColumn { title <- "Nested"; }
         for row in 1 : TableRow {
-            ClipboardNamedContent { clipboard-text: "copy projection"; }
-            Rectangle { ClipboardNamedContent { clipboard-text: root.source; } }
+            ClipboardNamedContent { clipboard-text <- "copy projection"; }
+            Rectangle { ClipboardNamedContent { clipboard-text <- root.source; } }
         }
     }
 }
@@ -1717,33 +1717,33 @@ component DirectDispatchLeaf inherits Rectangle {
     out property <int> calls: 0;
     out property <bool> checked: false;
     hidden-button := Button {
-        visible: false;
+        visible <- false;
         clicked => { root.calls = root.calls + 1; }
     }
     hidden-switch := CheckBox {
-        enabled: false;
-        checked <=> root.checked;
+        enabled <- false;
+        checked <-> root.checked;
         toggled => { root.calls = root.calls + 10; }
     }
 }
 
 component DirectDispatchMiddle inherits Rectangle {
-    out property <int> calls: leaf.calls;
-    out property <bool> checked: leaf.checked;
+    out property <int> calls <- leaf.calls;
+    out property <bool> checked <- leaf.checked;
     leaf := DirectDispatchLeaf {}
 }
 
 export component DirectDispatchScene inherits Window {
-    out property <int> calls: middle.calls;
-    out property <bool> checked: middle.checked;
+    out property <int> calls <- middle.calls;
+    out property <bool> checked <- middle.checked;
     out property <int> endings: 0;
     hidden-root-button := Button {
-        visible: false;
+        visible <- false;
         clicked => { root.endings = root.endings + 10; }
     }
     middle := DirectDispatchMiddle {}
     gesture := ScaleRotateGestureHandler {
-        enabled: false;
+        enabled <- false;
         ended => { root.endings = root.endings + 1; }
         cancelled => { root.endings = root.endings + 2; }
     }
@@ -1758,12 +1758,12 @@ export component MountedListParity inherits Window {
     pure callback row-label(int) -> string;
 
     tabs := TabWidget {
-        current-index <=> root.page;
-        Tab { title: "Overview"; Text { text: "Overview"; } }
+        current-index <-> root.page;
+        Tab { title <- "Overview"; Text { text <- "Overview"; } }
         Tab {
-            title: "Rows";
+            title <- "Rows";
             if root.show-list : ListView {
-                for row in 3 : Text { text: root.row-label(row); }
+                for row in 3 : Text { text <- root.row-label(row); }
             }
         }
     }
@@ -1781,10 +1781,10 @@ export component ListSelectionParity inherits Window {
     read-selection => { root.selected }
 
     entries := ListView {
-        enabled: root.allowed;
-        current-index: root.selection-changed-by-control ? root.selected : root.read-selection();
+        enabled <- root.allowed;
+        current-index <- root.selection-changed-by-control ? root.selected : root.read-selection();
         changed(index) => { root.selected = index; root.selection-changed-by-control = true; root.changes += 1; }
-        for label in root.labels : Text { text: label; }
+        for label in root.labels : Text { text <- label; }
     }
 }
 
@@ -1801,14 +1801,14 @@ export component TableRowSelectionParity inherits Window {
     read-row => { root.current }
 
     table := TableView {
-        enabled: root.allowed;
-        multi-select: root.multiple;
-        current-row: root.selection-changed-by-control ? root.current : root.read-row();
+        enabled <- root.allowed;
+        multi-select <- root.multiple;
+        current-row <- root.selection-changed-by-control ? root.current : root.read-row();
         current-row-changed(row) => { root.current = row; root.selection-changed-by-control = true; root.row-events += 1; }
         current-cell-changed(row, column) => { root.cell-events += 1; }
         selection-changed(count) => { root.selection-events += 1; }
-        TableColumn { title: "Label"; }
-        for label in root.labels : TableRow { TableCell { text: label; } }
+        TableColumn { title <- "Label"; }
+        for label in root.labels : TableRow { TableCell { text <- label; } }
     }
 }
 
@@ -1817,7 +1817,7 @@ export struct TreeInputParityRow { id: int, parent: int, label: string }
 component SampledRowButton inherits Button {
     in property <string> label;
     callback activated();
-    text: root.label;
+    text <- root.label;
     clicked => { root.activated(); }
 }
 
@@ -1833,21 +1833,21 @@ export component ProjectedDelegateModelParity inherits Window {
     in-out property <bool> expanded: true;
     pure callback use-first(int) -> bool;
     use-first(revision) => { revision == 0 }
-    out property <[TreeInputParityRow]> rows: root.use-first(root.revision) ? root.first : root.second;
+    out property <[TreeInputParityRow]> rows <- root.use-first(root.revision) ? root.first : root.second;
     TreeView {
-        width: 240px; height: 80px; row-height: 36px;
+        width <- 240px; height <- 80px; row-height <- 36px;
         for row in root.rows : TreeRow {
-            key: row.id;
-            parent-key: row.parent;
+            key <- row.id;
+            parent-key <- row.parent;
             HorizontalLayout {
-                SampledRowButton { label: row.label; activated => { root.activated = row.id; } }
+                SampledRowButton { label <- row.label; activated => { root.activated = row.id; } }
                 GroupBox {
-                    title: row.label;
-                    checkable: true;
-                    checked <=> root.expanded;
+                    title <- row.label;
+                    checkable <- true;
+                    checked <-> root.expanded;
                 }
             }
-            TreeCell { text: row.label; }
+            TreeCell { text <- row.label; }
         }
     }
 }
@@ -1864,15 +1864,15 @@ export component VirtualModelSampleParity inherits Window {
     sample(revision, rows) => { rows }
     TreeView {
         for row in root.sample(root.revision, root.revision == 0 ? root.first : root.second) : TreeRow {
-            key: row.id;
-            parent-key: row.parent;
-            TreeCell { text: row.label; }
+            key <- row.id;
+            parent-key <- row.parent;
+            TreeCell { text <- row.label; }
         }
     }
     TableView {
-        TableColumn { title: "Label"; }
+        TableColumn { title <- "Label"; }
         for row in root.sample(root.revision, root.revision == 0 ? root.first : root.second) : TableRow {
-            TableCell { text: row.label; }
+            TableCell { text <- row.label; }
         }
     }
 }
@@ -1887,31 +1887,31 @@ export component VirtualSceneOrderParity inherits Window {
     pure callback row-text(string) -> string;
     row-text(text) => { text }
     anchored := ListView {
-        width: 160px;
-        height: 60px;
-        row-height: 20px;
-        preserve-scroll-anchor: true;
-        for row in root.rows : Text { text: root.row-text(row.text); }
+        width <- 160px;
+        height <- 60px;
+        row-height <- 20px;
+        preserve-scroll-anchor <- true;
+        for row in root.rows : Text { text <- root.row-text(row.text); }
     }
     GridView {
-        row-visible-field: "shown";
-        for row in root.rows : SampledRowButton { label: root.row-text(row.text); }
+        row-visible-field <- "shown";
+        for row in root.rows : SampledRowButton { label <- root.row-text(row.text); }
     }
     StandardListView {
-        model: root.rows;
-        row-visible-field: "shown";
+        model <- root.rows;
+        row-visible-field <- "shown";
     }
     TableView {
-        TableColumn { title: "Text"; }
+        TableColumn { title <- "Text"; }
         for row in root.rows : TableRow {
-            TableCell { text: root.row-text(row.text); }
+            TableCell { text <- root.row-text(row.text); }
         }
     }
     TreeView {
         for row in root.rows : TreeRow {
-            key: row.id;
-            parent-key: row.parent;
-            TreeCell { text: root.row-text(row.text); }
+            key <- row.id;
+            parent-key <- row.parent;
+            TreeCell { text <- root.row-text(row.text); }
         }
     }
 }
@@ -1919,11 +1919,11 @@ export component VirtualSceneOrderParity inherits Window {
 export component TreeInputParity inherits Window {
     pure callback query-key(int) -> int;
     query-key(tag) => { tag }
-    out property <int> queried-depth: branches.depth(root.query-key(1));
-    out property <int> queried-row: branches.row-for-key(root.query-key(2));
-    out property <bool> queried-expanded: branches.is-expanded(root.query-key(3));
-    out property <int> queried-view-index: branches.view-index-for-source(root.query-key(4));
-    out property <int> queried-source-index: branches.source-index-for-view(root.query-key(5));
+    out property <int> queried-depth <- branches.depth(root.query-key(1));
+    out property <int> queried-row <- branches.row-for-key(root.query-key(2));
+    out property <bool> queried-expanded <- branches.is-expanded(root.query-key(3));
+    out property <int> queried-view-index <- branches.view-index-for-source(root.query-key(4));
+    out property <int> queried-source-index <- branches.source-index-for-view(root.query-key(5));
     in-out property <[TreeInputParityRow]> records: [
         TreeInputParityRow { id: 1, parent: -1, label: "One" },
         TreeInputParityRow { id: 2, parent: -1, label: "Two" },
@@ -1959,17 +1959,17 @@ export component TreeInputParity inherits Window {
     read-key => { root.current }
 
     branches := TreeView {
-        root-key: root.query-root();
-        enabled: root.allowed;
-        multi-select: root.multiple;
-        current-key: root.selection-changed-by-control ? root.current : root.read-key();
+        root-key <- root.query-root();
+        enabled <- root.allowed;
+        multi-select <- root.multiple;
+        current-key <- root.selection-changed-by-control ? root.current : root.read-key();
         changed(key) => { root.current = key; root.selection-changed-by-control = true; root.changes += 1; }
         expanded(key) => { root.expansions += 1; }
         collapsed(key) => { root.collapses += 1; root.current-at-collapse = root.current; }
         selection-changed(count) => { root.selected-count = count; }
         for entry in root.records : TreeRow {
-            key: entry.id; parent-key: entry.parent;
-            TreeCell { text: entry.label; }
+            key <- entry.id; parent-key <- entry.parent;
+            TreeCell { text <- entry.label; }
         }
     }
 }
@@ -1984,29 +1984,29 @@ export component TreeModelReplacementParity inherits Window {
     pure callback query-text() -> string;
     query-text => { "" }
     plain := TreeView {
-        visible: !root.filtering;
-        root-key: root.query-root();
+        visible <- !root.filtering;
+        root-key <- root.query-root();
         for row in root.rows : TreeRow {
-            key: row.id;
-            parent-key: row.parent;
-            TreeCell { text <=> row.label; }
+            key <- row.id;
+            parent-key <- row.parent;
+            TreeCell { text <-> row.label; }
         }
     }
     filtered := TreeView {
-        visible: root.filtering;
-        filter-field: "label";
-        filter-text: root.query-text();
+        visible <- root.filtering;
+        filter-field <- "label";
+        filter-text <- root.query-text();
         for row in root.rows : TreeRow {
-            key: row.id;
-            parent-key: row.parent;
-            TreeCell { text <=> row.label; }
+            key <- row.id;
+            parent-key <- row.parent;
+            TreeCell { text <-> row.label; }
         }
     }
 }
 
 export component CallbackReplacementParity inherits Window {
     out property <int> steps: 0;
-    out property <int> observed: root.probe();
+    out property <int> observed <- root.probe();
     callback replace();
     callback advance() -> int;
     pure callback probe() -> int;
@@ -2016,179 +2016,179 @@ export component CallbackReplacementParity inherits Window {
 }
 
 component AliasedRangeContent inherits Rectangle {
-    in-out property <float> lower <=> interval.lower-value;
-    in-out property <float> upper <=> interval.upper-value;
-    interval := RangeSlider { minimum: 10; maximum: 90; }
+    in-out property <float> lower <-> interval.lower-value;
+    in-out property <float> upper <-> interval.upper-value;
+    interval := RangeSlider { minimum <- 10; maximum <- 90; }
 }
 
 export component RangeAliasParity inherits Window {
-    in-out property <float> lower <=> editor.lower;
-    in-out property <float> upper <=> editor.upper;
+    in-out property <float> lower <-> editor.lower;
+    in-out property <float> upper <-> editor.upper;
     editor := AliasedRangeContent {}
 }
 
 export component HiddenSliderContent inherits Slider {
     in-out property <float> level: 10;
-    visible: false;
-    value <=> root.level;
+    visible <- false;
+    value <-> root.level;
 }
 
 export component HiddenIntervalContent inherits RangeSlider {
     in-out property <float> upper: 20;
-    visible: false;
-    lower-value: 10;
-    upper-value <=> root.upper;
+    visible <- false;
+    lower-value <- 10;
+    upper-value <-> root.upper;
 }
 
 export component HiddenSpinContent inherits SpinBox {
     in-out property <int> amount: 10;
-    visible: false;
-    value <=> root.amount;
+    visible <- false;
+    value <-> root.amount;
 }
 
 export component InstanceRangeVisibilityParity inherits Window {
     in-out property <bool> shown: true;
-    out property <float> level: slider.level;
-    out property <float> upper: interval.upper;
-    out property <int> amount: spin.amount;
-    slider := HiddenSliderContent { visible: root.shown; }
-    interval := HiddenIntervalContent { visible: root.shown; }
-    spin := HiddenSpinContent { visible: root.shown; }
+    out property <float> level <- slider.level;
+    out property <float> upper <- interval.upper;
+    out property <int> amount <- spin.amount;
+    slider := HiddenSliderContent { visible <- root.shown; }
+    interval := HiddenIntervalContent { visible <- root.shown; }
+    spin := HiddenSpinContent { visible <- root.shown; }
 }
 
 component HiddenComboContent inherits ComboBox {
     in-out property <int> selected-index: 0;
-    current-index <=> root.selected-index;
-    visible: false;
-    model: ["A", "B"];
+    current-index <-> root.selected-index;
+    visible <- false;
+    model <- ["A", "B"];
 }
 
 component HiddenSearchContent inherits SearchField {
     out property <int> submissions: 0;
-    visible: false;
-    text: "test";
+    visible <- false;
+    text <- "test";
     accepted(value) => { root.submissions += 1; }
 }
 
 component HiddenListContent inherits StandardListView {
     in-out property <int> selected-index: 0;
-    current-index <=> root.selected-index;
-    visible: false;
-    model: ["A", "B"];
+    current-index <-> root.selected-index;
+    visible <- false;
+    model <- ["A", "B"];
 }
 
 component HiddenDelayContent inherits DelayButton {
     in-out property <bool> confirmed: false;
-    checked <=> root.confirmed;
-    visible: false;
-    delay: 800;
+    checked <-> root.confirmed;
+    visible <- false;
+    delay <- 800;
 }
 
 component HiddenTumblerContent inherits Tumbler {
     in-out property <int> selected-index: 0;
-    current-index <=> root.selected-index;
-    visible: false;
-    count: 3;
+    current-index <-> root.selected-index;
+    visible <- false;
+    count <- 3;
 }
 
 component HiddenIndicatorContent inherits PageIndicator {
     in-out property <int> selected-index: 0;
-    current-index <=> root.selected-index;
-    visible: false;
-    count: 3;
-    interactive: true;
+    current-index <-> root.selected-index;
+    visible <- false;
+    count <- 3;
+    interactive <- true;
 }
 
 component HiddenTableContent inherits TableView {
     in-out property <int> selected-index: 0;
-    visible: false;
-    current-row <=> root.selected-index;
-    TableColumn { title: "Label"; }
-    for label in ["A", "B"] : TableRow { TableCell { text: label; } }
+    visible <- false;
+    current-row <-> root.selected-index;
+    TableColumn { title <- "Label"; }
+    for label in ["A", "B"] : TableRow { TableCell { text <- label; } }
 }
 
 component HiddenTreeContent inherits TreeView {
     in-out property <int> selected-key: -1;
-    visible: false;
-    current-key <=> root.selected-key;
+    visible <- false;
+    current-key <-> root.selected-key;
     for entry in [TreeInputParityRow { id: 1, parent: -1, label: "A" }] : TreeRow {
-        key: entry.id;
-        parent-key: entry.parent;
-        TreeCell { text: entry.label; }
+        key <- entry.id;
+        parent-key <- entry.parent;
+        TreeCell { text <- entry.label; }
     }
 }
 
 export component InstanceControlVisibilityParity inherits Window {
     in-out property <bool> shown: true;
-    out property <int> combo-index: combo.selected-index;
-    out property <int> submissions: search.submissions;
-    out property <int> list-index: list.selected-index;
-    out property <bool> confirmed: button.confirmed;
-    out property <int> tumbler-index: tumbler.selected-index;
-    out property <int> indicator-index: indicator.selected-index;
-    out property <int> table-index: table.selected-index;
-    out property <int> tree-key: tree.selected-key;
-    combo := HiddenComboContent { visible: root.shown; }
-    search := HiddenSearchContent { visible: root.shown; }
-    list := HiddenListContent { visible: root.shown; }
-    button := HiddenDelayContent { visible: root.shown; }
-    tumbler := HiddenTumblerContent { visible: root.shown; }
-    indicator := HiddenIndicatorContent { visible: root.shown; }
-    table := HiddenTableContent { visible: root.shown; }
-    tree := HiddenTreeContent { visible: root.shown; }
+    out property <int> combo-index <- combo.selected-index;
+    out property <int> submissions <- search.submissions;
+    out property <int> list-index <- list.selected-index;
+    out property <bool> confirmed <- button.confirmed;
+    out property <int> tumbler-index <- tumbler.selected-index;
+    out property <int> indicator-index <- indicator.selected-index;
+    out property <int> table-index <- table.selected-index;
+    out property <int> tree-key <- tree.selected-key;
+    combo := HiddenComboContent { visible <- root.shown; }
+    search := HiddenSearchContent { visible <- root.shown; }
+    list := HiddenListContent { visible <- root.shown; }
+    button := HiddenDelayContent { visible <- root.shown; }
+    tumbler := HiddenTumblerContent { visible <- root.shown; }
+    indicator := HiddenIndicatorContent { visible <- root.shown; }
+    table := HiddenTableContent { visible <- root.shown; }
+    tree := HiddenTreeContent { visible <- root.shown; }
 }
 
 component HiddenEditableTable inherits StandardTableView {
     in-out property <[ProjectedPasteRow]> rows: [
         ProjectedPasteRow { first: "one", second: "two" },
     ];
-    width: 240px;
-    height: 160px;
-    visible: false;
-    model: root.rows;
-    current-row: 0;
-    copyable: true;
-    pasteable: true;
-    edit-on-tab: true;
-    TableColumn { title: "First"; field: "first"; editable: true; }
-    TableColumn { title: "Second"; field: "second"; editable: true; }
+    width <- 240px;
+    height <- 160px;
+    visible <- false;
+    model <- root.rows;
+    current-row <- 0;
+    copyable <- true;
+    pasteable <- true;
+    edit-on-tab <- true;
+    TableColumn { title <- "First"; field <- "first"; editable <- true; }
+    TableColumn { title <- "Second"; field <- "second"; editable <- true; }
 }
 
 export component InstanceTableVisibilityParity inherits Window {
     in-out property <bool> shown: true;
-    HiddenEditableTable { visible: root.shown; }
+    HiddenEditableTable { visible <- root.shown; }
 }
 
 export struct VisibilityEditorRow { key: int, parent: int, title: string, linked: string, checked: bool, amount: int }
 
 component HiddenRowEditorTable inherits TableView {
     in-out property <[VisibilityEditorRow]> rows;
-    visible: false;
+    visible <- false;
     pure callback record-history() -> bool;
     record-history => { true }
-    undoable: root.record-history();
-    width: 480px; height: 120px;
-    TableColumn { title: "Text"; }
-    TableColumn { title: "Linked"; }
-    TableColumn { title: "Checked"; }
-    TableColumn { title: "Amount"; }
+    undoable <- root.record-history();
+    width <- 480px; height <- 120px;
+    TableColumn { title <- "Text"; }
+    TableColumn { title <- "Linked"; }
+    TableColumn { title <- "Checked"; }
+    TableColumn { title <- "Amount"; }
     for row in root.rows : TableRow {
-        TableCell { text <=> row.title; }
-        StatefulPasteEditor { value <=> row.linked; }
-        CheckBox { checked <=> row.checked; }
-        SpinBox { value <=> row.amount; }
+        TableCell { text <-> row.title; }
+        StatefulPasteEditor { value <-> row.linked; }
+        CheckBox { checked <-> row.checked; }
+        SpinBox { value <-> row.amount; }
     }
 }
 
 component HiddenRowEditorTree inherits TreeView {
     in-out property <[VisibilityEditorRow]> rows;
-    visible: false;
-    y: 130px; width: 480px; height: 120px;
+    visible <- false;
+    y <- 130px; width <- 480px; height <- 120px;
     for row in root.rows : TreeRow {
-        key: row.key;
-        parent-key: row.parent;
-        TreeCell { text <=> row.title; }
-        SpinBox { value <=> row.amount; }
+        key <- row.key;
+        parent-key <- row.parent;
+        TreeCell { text <-> row.title; }
+        SpinBox { value <-> row.amount; }
     }
 }
 
@@ -2200,52 +2200,52 @@ export component InstanceRowEditorVisibilityParity inherits Window {
     pure callback record-history() -> bool;
     record-history => { true }
     HiddenRowEditorTable {
-        rows <=> root.rows;
-        visible: root.shown;
+        rows <-> root.rows;
+        visible <- root.shown;
         record-history => { root.record-history() }
     }
-    HiddenRowEditorTree { rows <=> root.rows; visible: root.shown; }
+    HiddenRowEditorTree { rows <-> root.rows; visible <- root.shown; }
 }
 
 export component ControlStorageParity inherits Window {
     in-out property <float> minimum-value: 4.5;
-    in-out property <float> level <=> slider.value;
-    in-out property <int> amount <=> spin.value;
+    in-out property <float> level <-> slider.value;
+    in-out property <int> amount <-> spin.value;
     out property <CheckState> last-state;
 
-    slider := Slider { minimum: root.minimum-value; }
-    spin := SpinBox { minimum: 6; }
+    slider := Slider { minimum <- root.minimum-value; }
+    spin := SpinBox { minimum <- 6; }
     check := CheckBox {
-        tristate: true;
+        tristate <- true;
         check-state-changed(state) => { root.last-state = state; }
     }
-    choice := ComboBox { editable: true; model: ["A", "B"]; }
+    choice := ComboBox { editable <- true; model <- ["A", "B"]; }
 }
 
 export component ToggleInputParity inherits Window {
-    in-out property <CheckState> state: once CheckState.unchecked;
+    in-out property <CheckState> state: CheckState.unchecked;
     out property <int> changes: 0;
     pure callback read-tristate() -> bool;
     read-tristate => { true }
 
     check := CheckBox {
-        check-state <=> root.state;
-        tristate: root.read-tristate();
+        check-state <-> root.state;
+        tristate <- root.read-tristate();
         toggled => { root.changes += 1; }
     }
 }
 
 component RetryBindingChild inherits Text {
     in property <string> label: "fallback";
-    text: root.label;
+    text <- root.label;
 }
 
 export component RetryBindingParity inherits Window {
     pure callback source(int) -> string;
     source(tag) => { "" + tag }
-    out property <string> observed: root.source(1);
-    RetryBindingChild { label: root.source(2); }
-    Text { text: root.source(3); }
+    out property <string> observed <- root.source(1);
+    RetryBindingChild { label <- root.source(2); }
+    Text { text <- root.source(3); }
 }
 
 export component SpinOptionsParity inherits Window {
@@ -2258,16 +2258,16 @@ export component SpinOptionsParity inherits Window {
     out property <int> edits: 0;
 
     integer-spin := SpinBox {
-        maximum: root.integer-limit;
-        value <=> root.amount;
-        read-only: !root.unlocked;
+        maximum <- root.integer-limit;
+        value <-> root.amount;
+        read-only <- !root.unlocked;
         edited(value) => { root.edits += 1; }
     }
     decimal-spin := DoubleSpinBox {
-        maximum: root.decimal-limit;
-        decimals: root.precision;
-        value <=> root.level;
-        read-only: !root.unlocked;
+        maximum <- root.decimal-limit;
+        decimals <- root.precision;
+        value <-> root.level;
+        read-only <- !root.unlocked;
         edited(value) => { root.edits += 1; }
     }
 }
@@ -2286,17 +2286,17 @@ export component RangeOptionsParity inherits Window {
     callback after-change;
 
     slider := Slider {
-        maximum: root.limit; value <=> root.amount;
+        maximum <- root.limit; value <-> root.amount;
         changed(value) => { root.changes += 1; root.after-change(); }
         released(value) => { root.releases += 1; root.last-release = value; }
     }
     dial := Dial {
-        maximum: root.limit; value <=> root.dial-value;
+        maximum <- root.limit; value <-> root.dial-value;
         changed(value) => { root.changes += 1; }
         released(value) => { root.releases += 1; root.last-release = value; }
     }
     band := RangeSlider {
-        maximum: root.limit; lower-value <=> root.lower; upper-value <=> root.upper;
+        maximum <- root.limit; lower-value <-> root.lower; upper-value <-> root.upper;
         changed(lower, upper) => { root.changes += 1; root.band-changed-upper = upper; root.after-change(); }
         released(lower, upper) => { root.releases += 1; root.last-release = upper; root.band-released-lower = lower; }
     }
@@ -2309,21 +2309,21 @@ export component RangeWithoutReleaseHandlerParity inherits Window {
     pure callback limit(int) -> float;
     limit(tag) => { 100.0 }
 
-    Slider { maximum: root.limit(1); value <=> root.amount; }
+    Slider { maximum <- root.limit(1); value <-> root.amount; }
     RangeSlider {
-        maximum: root.limit(2);
-        lower-value <=> root.lower;
-        upper-value <=> root.upper;
+        maximum <- root.limit(2);
+        lower-value <-> root.lower;
+        upper-value <-> root.upper;
     }
     empty-slider := Slider {
-        maximum: root.limit(3);
-        value <=> root.amount;
+        maximum <- root.limit(3);
+        value <-> root.amount;
         released(value) => {}
     }
     empty-band := RangeSlider {
-        maximum: root.limit(4);
-        lower-value <=> root.lower;
-        upper-value <=> root.upper;
+        maximum <- root.limit(4);
+        lower-value <-> root.lower;
+        upper-value <-> root.upper;
         changed(lower, upper) => {}
         released(lower, upper) => {}
     }
@@ -2338,7 +2338,7 @@ export struct SpinEditorRow {
 }
 
 export component RowSpinOptionsParity inherits Window {
-    width: 480px; height: 250px;
+    width <- 480px; height <- 250px;
     in-out property <int> precision: 2;
     in-out property <bool> row-visible: true;
     in-out property <bool> dial-wrap: false;
@@ -2352,37 +2352,37 @@ export component RowSpinOptionsParity inherits Window {
     pure callback record-history() -> bool;
     record-history => { true }
     TableView {
-        width: 450px; height: 112px; row-height: 36px;
-        undoable: root.record-history();
-        TableColumn { title: "Integer"; }
-        TableColumn { title: "Decimal"; }
-        TableColumn { title: "Slider"; }
-        TableColumn { title: "Dial"; }
+        width <- 450px; height <- 112px; row-height <- 36px;
+        undoable <- root.record-history();
+        TableColumn { title <- "Integer"; }
+        TableColumn { title <- "Decimal"; }
+        TableColumn { title <- "Slider"; }
+        TableColumn { title <- "Dial"; }
         for cell[visual_index] in root.rows : TableRow {
             states [ hidden when !root.row-visible: { visible: false; } ]
-            SpinBox { maximum: cell.limit; value <=> cell.amount; }
-            DoubleSpinBox { maximum: cell.limit; decimals: root.precision; value <=> cell.level; }
-            Slider { maximum: cell.limit; value <=> cell.level; }
-            Dial { maximum: cell.limit; wrap: root.dial-wrap; value <=> cell.level; }
+            SpinBox { maximum <- cell.limit; value <-> cell.amount; }
+            DoubleSpinBox { maximum <- cell.limit; decimals <- root.precision; value <-> cell.level; }
+            Slider { maximum <- cell.limit; value <-> cell.level; }
+            Dial { maximum <- cell.limit; wrap <- root.dial-wrap; value <-> cell.level; }
         }
     }
     TreeView {
         states [ hidden when root.tree-hidden(): { visible: false; } ]
-        y: 122px; width: 450px; height: 112px; row-height: 36px;
+        y <- 122px; width <- 450px; height <- 112px; row-height <- 36px;
         for row in root.rows : TreeRow {
             states [ hidden when !root.row-visible: { visible: false; } ]
-            key: row.key;
-            parent-key: row.parent;
-            SpinBox { maximum: root.read-limit(row.limit); value <=> row.amount; }
-            DoubleSpinBox { maximum: row.limit; decimals: root.precision; value <=> row.level; }
-            Slider { maximum: row.limit; value <=> row.level; }
-            Dial { maximum: row.limit; wrap: root.dial-wrap; value <=> row.level; }
+            key <- row.key;
+            parent-key <- row.parent;
+            SpinBox { maximum <- root.read-limit(row.limit); value <-> row.amount; }
+            DoubleSpinBox { maximum <- row.limit; decimals <- root.precision; value <-> row.level; }
+            Slider { maximum <- row.limit; value <-> row.level; }
+            Dial { maximum <- row.limit; wrap <- root.dial-wrap; value <-> row.level; }
         }
     }
 }
 
 export component NumericEditScopeParity inherits Window {
-    width: 300px; height: 180px;
+    width <- 300px; height <- 180px;
     in-out property <bool> accepting-input: true;
     in-out property <[SpinEditorRow]> rows: [
         SpinEditorRow { key: 1, parent: -1, amount: 10, level: 10.0, limit: 100 },
@@ -2394,16 +2394,16 @@ export component NumericEditScopeParity inherits Window {
     pure callback record-history() -> bool;
     record-history => { true }
     Pane {
-        enabled: root.accepting-input;
-        width: 300px; height: 180px;
+        enabled <- root.accepting-input;
+        width <- 300px; height <- 180px;
         TableView {
-            width: 288px; height: 120px;
-            undoable: root.record-history();
-            TableColumn { title: "Integer"; }
-            TableColumn { title: "Slider"; }
+            width <- 288px; height <- 120px;
+            undoable <- root.record-history();
+            TableColumn { title <- "Integer"; }
+            TableColumn { title <- "Slider"; }
             for row in root.rows : TableRow {
-                SpinBox { maximum: root.read-limit(row.limit); value <=> row.amount; }
-                Slider { maximum: root.read-range-limit(row.limit); value <=> row.level; }
+                SpinBox { maximum <- root.read-limit(row.limit); value <-> row.amount; }
+                Slider { maximum <- root.read-range-limit(row.limit); value <-> row.level; }
             }
         }
     }
@@ -2413,19 +2413,19 @@ export component IntegerArithmeticParity inherits Window {
     in-out property <int> left: 9223372036854775807;
     in-out property <int> right: 1;
     in-out property <bool> evaluate-right: false;
-    out property <int> sum: root.left + root.right;
-    out property <int> difference: root.left - root.right;
-    out property <int> product: root.left * root.right;
-    out property <int> negated: -root.left;
-    out property <int> quotient: root.left / root.right;
-    out property <int> remainder: root.left % root.right;
+    out property <int> sum <- root.left + root.right;
+    out property <int> difference <- root.left - root.right;
+    out property <int> product <- root.left * root.right;
+    out property <int> negated <- -root.left;
+    out property <int> quotient <- root.left / root.right;
+    out property <int> remainder <- root.left % root.right;
     out property <int> fixed-sum: 9223372036854775807 + 1;
     out property <int> fixed-difference: (0 - 9223372036854775807 - 1) - 1;
     out property <int> fixed-product: 4611686018427387904 * 2;
     out property <int> fixed-negated: -(0 - 9223372036854775807 - 1);
-    out property <int> guarded: root.evaluate-right ? (12 / 0) : 42;
-    out property <bool> short-and: root.evaluate-right && ((12 / 0) > 0);
-    out property <bool> short-or: !root.evaluate-right || ((12 % 0) > 0);
+    out property <int> guarded <- root.evaluate-right ? (12 / 0) : 42;
+    out property <bool> short-and <- root.evaluate-right && ((12 / 0) > 0);
+    out property <bool> short-or <- !root.evaluate-right || ((12 % 0) > 0);
 }
 
 export struct InputSnapshotParity {
@@ -2454,19 +2454,19 @@ export component BuiltinFieldParity inherits Window {
     in-out property <Time> time;
     in-out property <Font> font;
 
-    out property <string> text: root.snapshot.key.text;
-    out property <bool> chord: root.snapshot.key.modifiers.shift && root.snapshot.modifiers.meta;
-    out property <length> delta: root.snapshot.wheel.delta-x;
-    out property <float> lines: root.snapshot.wheel.lines-y;
-    out property <PointerButton> button: root.snapshot.pointer.button;
-    out property <bool> touch: root.snapshot.pointer.is-touch && root.snapshot.point.inside;
-    out property <int> contact: root.snapshot.pointer.touch-finger-id;
-    out property <length> start: root.snapshot.point.start-y;
-    out property <int> year: root.date.year;
-    out property <int> seconds: root.time.second;
-    out property <string> family: root.font.family;
-    out property <length> size: root.font.size;
-    out property <bool> italic: root.font.italic;
+    out property <string> text <- root.snapshot.key.text;
+    out property <bool> chord <- root.snapshot.key.modifiers.shift && root.snapshot.modifiers.meta;
+    out property <length> delta <- root.snapshot.wheel.delta-x;
+    out property <float> lines <- root.snapshot.wheel.lines-y;
+    out property <PointerButton> button <- root.snapshot.pointer.button;
+    out property <bool> touch <- root.snapshot.pointer.is-touch && root.snapshot.point.inside;
+    out property <int> contact <- root.snapshot.pointer.touch-finger-id;
+    out property <length> start <- root.snapshot.point.start-y;
+    out property <int> year <- root.date.year;
+    out property <int> seconds <- root.time.second;
+    out property <string> family <- root.font.family;
+    out property <length> size <- root.font.size;
+    out property <bool> italic <- root.font.italic;
 }
 
 export struct ComparedPicture {
@@ -2483,10 +2483,10 @@ export component ImageRecordEqualityParity inherits Window {
     in-out property <ComparedCard> candidate;
     in-out property <[ComparedCard]> originals;
     in-out property <[ComparedCard]> candidates;
-    out property <bool> same-source: root.original.picture.source == root.candidate.picture.source;
-    out property <bool> same-record: root.original == root.candidate;
-    out property <bool> different-record: root.original != root.candidate;
-    out property <bool> same-list: root.originals == root.candidates;
+    out property <bool> same-source <- root.original.picture.source == root.candidate.picture.source;
+    out property <bool> same-record <- root.original == root.candidate;
+    out property <bool> different-record <- root.original != root.candidate;
+    out property <bool> same-list <- root.originals == root.candidates;
     out property <int> received: 0;
     callback receive(card: ComparedCard);
     callback supply() -> ComparedCard;
@@ -2508,21 +2508,21 @@ export struct LiveCheckedRow {
 }
 
 export component LiveRecordValidationParity inherits Window {
-    in-out property <[LiveCheckedRow]> rows: once [
+    in-out property <[LiveCheckedRow]> rows: [
         LiveCheckedRow { title: "first", picture: ComparedPicture { source: @image-url(""), score: 1.0 } },
         LiveCheckedRow { title: "second", picture: ComparedPicture { source: @image-url(""), score: 2.0 } },
     ];
     in-out property <int> mode: 0;
     if root.mode == 0 : ListView {
-        for row in root.rows : Text { text: row.title + row.picture.score; }
+        for row in root.rows : Text { text <- row.title + row.picture.score; }
     }
     if root.mode == 1 : StandardTableView {
-        model: root.rows;
-        auto-sort: true;
-        TableColumn { title: "Score"; field: "picture.score"; }
+        model <- root.rows;
+        auto-sort <- true;
+        TableColumn { title <- "Score"; field <- "picture.score"; }
     }
     if root.mode == 2 : ComboBox {
-        model: root.rows; text-role: "title"; value-role: "picture.score"; current-value: 1.0;
+        model <- root.rows; text-role <- "title"; value-role <- "picture.score"; current-value <- 1.0;
     }
 }
 
@@ -2536,20 +2536,20 @@ export component PasteBoundsParity inherits Window {
     integer-maximum => { 100 }
 
     TableView {
-        pasteable: true;
-        undoable: true;
-        TableColumn { title: "Count"; }
-        TableColumn { title: "Load"; }
+        pasteable <- true;
+        undoable <- true;
+        TableColumn { title <- "Count"; }
+        TableColumn { title <- "Load"; }
         for row in root.rows : TableRow {
             SpinBox {
-                minimum: root.integer-minimum(row.count);
-                maximum: root.integer-maximum();
-                value <=> row.count;
+                minimum <- root.integer-minimum(row.count);
+                maximum <- root.integer-maximum();
+                value <-> row.count;
             }
             DoubleSpinBox {
-                minimum: root.decimal-minimum(row.load);
-                maximum: 1.0;
-                value <=> row.load;
+                minimum <- root.decimal-minimum(row.load);
+                maximum <- 1.0;
+                value <-> row.load;
             }
         }
     }
@@ -2566,12 +2566,12 @@ export component PastePermissionOrderParity inherits Window {
     cell-enabled => { true }
 
     TableView {
-        pasteable: root.paste-active;
-        TableColumn { title: "Name"; }
-        TableColumn { title: "Decoration"; }
+        pasteable <- root.paste-active;
+        TableColumn { title <- "Name"; }
+        TableColumn { title <- "Decoration"; }
         for row in root.rows : TableRow {
-            visible: root.row-visible();
-            TableCell { text <=> row; enabled: root.cell-enabled(); }
+            visible <- root.row-visible();
+            TableCell { text <-> row; enabled <- root.cell-enabled(); }
             Rectangle {}
         }
     }
@@ -2586,12 +2586,12 @@ export component ProjectedPasteParity inherits Window {
     allow-second => { true }
 
     StandardTableView {
-        enabled: root.table-enabled;
-        model: root.rows;
-        pasteable: true;
-        edit-on-tab: true;
-        TableColumn { title: "First"; field: "first"; editable: true; }
-        TableColumn { title: "Second"; field: "second"; editable: root.allow-second(); }
+        enabled <- root.table-enabled;
+        model <- root.rows;
+        pasteable <- true;
+        edit-on-tab <- true;
+        TableColumn { title <- "First"; field <- "first"; editable <- true; }
+        TableColumn { title <- "Second"; field <- "second"; editable <- root.allow-second(); }
     }
 }
 
@@ -2599,7 +2599,7 @@ export struct StatefulPasteRow { name: string, note: string }
 struct StatefulTextPaste { accepted: bool, value: string }
 
 component StatefulPasteEditor inherits HorizontalLayout {
-    in-out property <string> value <=> input.text;
+    in-out property <string> value <-> input.text;
     input := LineEdit {}
 }
 
@@ -2622,29 +2622,29 @@ export component RoutedCellCommitParity inherits Window {
     pure callback copy-value(string) -> string;
     copy-value(value) => { value }
     Dialog {
-        open <=> root.opened;
+        open <-> root.opened;
         direct := TableView {
-            undoable: root.record-history();
-            current-row: 0;
-            copyable: true;
-            TableColumn { title: "Direct"; }
+            undoable <- root.record-history();
+            current-row <- 0;
+            copyable <- true;
+            TableColumn { title <- "Direct"; }
             for row in root.rows : TableRow {
                 states [ hidden when !root.direct-row-visible: { visible: false; } ]
                 TableCell {
-                    enabled: root.allow-direct-cell();
-                    read-only: root.direct-read-only();
-                    text <=> row.direct;
-                    clipboard-text: root.copy-value(row.direct);
+                    enabled <- root.allow-direct-cell();
+                    read-only <- root.direct-read-only();
+                    text <-> row.direct;
+                    clipboard-text <- root.copy-value(row.direct);
                 }
             }
         }
         projected := StandardTableView {
-            model: root.rows;
-            undoable: root.record-history();
-            pasteable: true;
-            edit-on-tab: true;
-            TableColumn { title: "Linked"; field: "linked"; editable: root.allow-column(); }
-            TableColumn { title: "Direct"; field: "direct"; editable: root.allow-column(); }
+            model <- root.rows;
+            undoable <- root.record-history();
+            pasteable <- true;
+            edit-on-tab <- true;
+            TableColumn { title <- "Linked"; field <- "linked"; editable <- root.allow-column(); }
+            TableColumn { title <- "Direct"; field <- "direct"; editable <- root.allow-column(); }
         }
     }
 }
@@ -2661,14 +2661,14 @@ export component HistoryCallbackParity inherits Window {
     undo-edit => { grid.undo(); }
 
     grid := TableView {
-        enabled: root.table-enabled;
-        visible: root.table-visible;
-        undoable: root.record-history();
-        TableColumn { title: "Direct"; }
-        TableColumn { title: "Linked"; }
+        enabled <- root.table-enabled;
+        visible <- root.table-visible;
+        undoable <- root.record-history();
+        TableColumn { title <- "Direct"; }
+        TableColumn { title <- "Linked"; }
         for row in root.rows : TableRow {
-            TableCell { text <=> row.direct; }
-            StatefulPasteEditor { value <=> row.linked; }
+            TableCell { text <-> row.direct; }
+            StatefulPasteEditor { value <-> row.linked; }
         }
     }
 }
@@ -2676,10 +2676,10 @@ export component HistoryCallbackParity inherits Window {
 export struct RowToggleInput { key: int, parent: int, checked: bool, state: CheckState }
 
 export component RowToggleInputParity inherits Window {
-    width: 420px; height: 300px;
+    width <- 420px; height <- 300px;
     in-out property <bool> allowed: true;
     in-out property <bool> three-states: true;
-    in-out property <[RowToggleInput]> rows: once [
+    in-out property <[RowToggleInput]> rows: [
         RowToggleInput { key: 1, parent: 0, checked: false, state: CheckState.unchecked },
     ];
     pure callback read-tristate() -> bool;
@@ -2688,22 +2688,22 @@ export component RowToggleInputParity inherits Window {
     record-history => { true }
     VerticalLayout {
         TableView {
-            height: 125px;
-            undoable: root.record-history();
-            TableColumn { title: "Checked"; }
-            TableColumn { title: "State"; }
+            height <- 125px;
+            undoable <- root.record-history();
+            TableColumn { title <- "Checked"; }
+            TableColumn { title <- "State"; }
             for row in root.rows : TableRow {
-                CheckBox { enabled: root.allowed; checked <=> row.checked; }
-                CheckBox { tristate: root.read-tristate(); check-state <=> row.state; }
+                CheckBox { enabled <- root.allowed; checked <-> row.checked; }
+                CheckBox { tristate <- root.read-tristate(); check-state <-> row.state; }
             }
         }
         TreeView {
-            height: 125px;
+            height <- 125px;
             for row in root.rows : TreeRow {
-                key: row.key;
-                parent-key: row.parent;
-                CheckBox { enabled: root.allowed; checked <=> row.checked; }
-                CheckBox { tristate: root.read-tristate(); check-state <=> row.state; }
+                key <- row.key;
+                parent-key <- row.parent;
+                CheckBox { enabled <- root.allowed; checked <-> row.checked; }
+                CheckBox { tristate <- root.read-tristate(); check-state <-> row.state; }
             }
         }
     }
@@ -2716,12 +2716,12 @@ export component PlainTableAvailability inherits Window {
     ];
 
     TableView {
-        enabled: root.table-enabled;
-        TableColumn { title: "Direct"; }
-        TableColumn { title: "Linked"; }
+        enabled <- root.table-enabled;
+        TableColumn { title <- "Direct"; }
+        TableColumn { title <- "Linked"; }
         for row in root.rows : TableRow {
-            TableCell { text <=> row.direct; }
-            StatefulPasteEditor { value <=> row.linked; }
+            TableCell { text <-> row.direct; }
+            StatefulPasteEditor { value <-> row.linked; }
         }
     }
 }
@@ -2736,14 +2736,14 @@ export component TableBindingCacheParity inherits Window {
     sample(kind, value) => { value }
 
     if root.sample(1, root.mounted) : TableView {
-        enabled: root.sample(2, root.table-enabled);
-        visible: root.sample(3, true);
-        undoable: root.sample(4, true);
-        TableColumn { title: "Direct"; }
-        TableColumn { title: "Linked"; }
+        enabled <- root.sample(2, root.table-enabled);
+        visible <- root.sample(3, true);
+        undoable <- root.sample(4, true);
+        TableColumn { title <- "Direct"; }
+        TableColumn { title <- "Linked"; }
         for row in root.rows : TableRow {
-            TableCell { text <=> row.direct; }
-            StatefulPasteEditor { value <=> row.linked; }
+            TableCell { text <-> row.direct; }
+            StatefulPasteEditor { value <-> row.linked; }
         }
     }
 }
@@ -2761,16 +2761,16 @@ export component TableReadViewParity inherits Window {
     allow-edit => { true }
 
     TableView {
-        enabled: root.table-enabled;
-        copyable: root.copy-enabled;
-        edit-on-tab: root.tab-enabled;
-        movable-columns: true;
-        current-row: 0;
-        TableColumn { title: "First"; }
-        TableColumn { title: "Second"; }
+        enabled <- root.table-enabled;
+        copyable <- root.copy-enabled;
+        edit-on-tab <- root.tab-enabled;
+        movable-columns <- true;
+        current-row <- 0;
+        TableColumn { title <- "First"; }
+        TableColumn { title <- "Second"; }
         for row in root.rows : TableRow {
-            TableCell { text <=> row.direct; clipboard-text: root.format-copy(row.direct); }
-            TableCell { text <=> row.linked; enabled: root.allow-edit(); }
+            TableCell { text <-> row.direct; clipboard-text <- root.format-copy(row.direct); }
+            TableCell { text <-> row.linked; enabled <- root.allow-edit(); }
         }
     }
 }
@@ -2788,26 +2788,26 @@ export component StatefulPasteParity inherits Window {
     pure callback hide-proxy(string) -> bool;
 
     TableView {
-        pasteable: true;
-        copyable: true;
-        current-row: 0;
-        edit-on-tab: true;
+        pasteable <- true;
+        copyable <- true;
+        current-row <- 0;
+        edit-on-tab <- true;
         states [ hidden when root.hide-table(): { visible: false; } ]
-        TableColumn { title: "Name"; }
-        TableColumn { title: "Note"; }
-        TableColumn { title: "Proxy"; }
+        TableColumn { title <- "Name"; }
+        TableColumn { title <- "Note"; }
+        TableColumn { title <- "Proxy"; }
         for row[index] in root.rows : TableRow {
             states [ hidden when root.hide-row(row.name): { visible: false; } ]
-            TableCell { text <=> row.name; enabled: root.may-edit(row.name); }
-            TableCell { text <=> row.note; enabled: root.may-edit(row.name); }
+            TableCell { text <-> row.name; enabled <- root.may-edit(row.name); }
+            TableCell { text <-> row.note; enabled <- root.may-edit(row.name); }
             Pane {
                 states [
                     hidden when root.hide-proxy(row.name): { visible: false; }
                     locked when index == 0 && root.lock-cell: { enabled: false; }
                 ]
                 StatefulPasteEditor {
-                    value <=> row.note;
-                    clipboard-target: "value";
+                    value <-> row.note;
+                    clipboard-target <- "value";
                     clipboard-paste(text) => { StatefulTextPaste { accepted: true, value: text } }
                 }
             }
@@ -2824,14 +2824,14 @@ export component TimerRevisionParity inherits Window {
     restart => { timer.restart(); }
     interval => { 10 }
     timer := Timer {
-        running <=> root.running;
-        interval: root.interval();
+        running <-> root.running;
+        interval <- root.interval();
         triggered => { root.running-at-tick = root.running; root.ticks += 1; }
     }
 }
 
 export component TimerCommandReadParity inherits Window {
-    in-out property <bool> running: once root.initial-running();
+    in-out property <bool> running: root.initial-running();
     pure callback initial-running() -> bool;
     initial-running => { true }
     callback start();
@@ -2840,28 +2840,28 @@ export component TimerCommandReadParity inherits Window {
     stop => { timer.stop(); }
     callback restart();
     restart => { timer.restart(); }
-    timer := Timer { running <=> root.running; }
+    timer := Timer { running <-> root.running; }
 }
 
 export component AnimatedImageStateParity inherits Window {
     in-out property <bool> show-animation: false;
-    in-out property <image> animation: once @image-url("");
-    out property <int> frame-total: player.frame-count;
+    in-out property <image> animation: @image-url("");
+    out property <int> frame-total <- player.frame-count;
     out property <int> completions: 0;
     player := AnimatedImage {
-        source: @image-url("");
-        loops: 1;
+        source <- @image-url("");
+        loops <- 1;
         states [ playing-image when root.show-animation: { source: root.animation; } ]
         finished => { root.completions += 1; }
     }
     empty-handler := AnimatedImage {
-        source: root.animation;
-        loops: 1;
+        source <- root.animation;
+        loops <- 1;
         finished => {}
     }
     no-handler := AnimatedImage {
-        source: root.animation;
-        loops: 1;
+        source <- root.animation;
+        loops <- 1;
     }
 }
 
@@ -2875,10 +2875,10 @@ export component TableFilterMutationParity inherits Window {
     pure callback filter() -> string;
     filter => { "" }
     table := StandardTableView {
-        model: root.rows;
-        filter-field: "name";
-        filter-text: root.filter();
-        TableColumn { title: "Name"; field: "name"; }
+        model <- root.rows;
+        filter-field <- "name";
+        filter-text <- root.filter();
+        TableColumn { title <- "Name"; field <- "name"; }
     }
 }
 
@@ -2889,13 +2889,13 @@ export component TableMoveOrderParity inherits Window {
     in-out property <string> query: "";
     out property <int> moves: 0;
     out property <string> events: "";
-    out property <int> sort-column: table.current-sort-column;
-    out property <bool> sort-descending: table.current-sort-descending;
-    out property <int> selected-column: table.current-column;
-    out property <int> selected-count: table.selection-count;
-    out property <bool> has-selection: table.has-selection;
-    out property <bool> can-undo: table.can-undo;
-    out property <bool> can-redo: table.can-redo;
+    out property <int> sort-column <- table.current-sort-column;
+    out property <bool> sort-descending <- table.current-sort-descending;
+    out property <int> selected-column <- table.current-column;
+    out property <int> selected-count <- table.selection-count;
+    out property <bool> has-selection <- table.has-selection;
+    out property <bool> can-undo <- table.can-undo;
+    out property <bool> can-redo <- table.can-redo;
     pure callback automatic() -> bool;
     pure callback source() -> [TableMoveOrderRow];
     pure callback selected() -> int;
@@ -2933,14 +2933,14 @@ export component TableMoveOrderParity inherits Window {
         table.position-view-at-source-cell(root.selection-position(row), root.selection-position(column), contain, beginning);
     }
     table := StandardTableView {
-        model: root.source();
-        auto-sort: root.automatic();
-        current-row: root.cursor-changed ? root.current : root.selected();
-        selection-target: root.selection-mode();
-        multi-select: true;
-        movable-rows: true;
-        filter-field: "name";
-        filter-text: root.filter(root.query);
+        model <- root.source();
+        auto-sort <- root.automatic();
+        current-row <- root.cursor-changed ? root.current : root.selected();
+        selection-target <- root.selection-mode();
+        multi-select <- true;
+        movable-rows <- true;
+        filter-field <- "name";
+        filter-text <- root.filter(root.query);
         current-cell-changed(row, column) => { root.events += "cell:" + row + "/" + column + ";"; }
         current-row-changed(row) => { root.current = row; root.cursor-changed = true; root.events += "cursor:" + row + ";"; }
         row-moved(row, from, to) => {
@@ -2948,7 +2948,7 @@ export component TableMoveOrderParity inherits Window {
             root.events += "move:" + row + "/" + from + "/" + to + ";";
         }
         sort-descending(column) => { root.events += "descending:" + column + ";"; }
-        TableColumn { title: root.column-title(); field: "name"; }
+        TableColumn { title <- root.column-title(); field <- "name"; }
     }
 }
 
@@ -2958,16 +2958,16 @@ export component TableRowNotificationParity inherits Window {
     pure callback selection-mode(int) -> SelectionTarget;
     selection-mode(revision) => { SelectionTarget.cells }
     table := TableView {
-        selection-target: root.selection-mode(root.revision);
-        multi-select: true;
+        selection-target <- root.selection-mode(root.revision);
+        multi-select <- true;
         current-row-changed(row) => {
             root.revision += 1;
             root.events += "row:" + row + ";";
         }
         current-cell-changed(row, column) => {}
         selection-changed(count) => { root.events += "count:" + count + ";"; }
-        TableColumn { title: "Value"; }
-        for label in ["one", "two"] : TableRow { TableCell { text: label; } }
+        TableColumn { title <- "Value"; }
+        for label in ["one", "two"] : TableRow { TableCell { text <- label; } }
     }
 }
 
@@ -2981,13 +2981,13 @@ export component TableColumnEditorParity inherits Window {
     pure callback editable-column(int) -> bool;
     editable-column(column) => { true }
     StandardTableView {
-        model: root.rows;
-        resizable-columns: root.resize-columns;
-        resizable-rows: root.resize-rows;
-        movable-columns: root.move-columns;
-        movable-rows: root.move-rows;
-        TableColumn { title: "Name"; field: "name"; resizable: root.first-resizable; editable: root.editable-column(0); }
-        TableColumn { title: "Other"; field: "name"; editable: root.editable-column(1); }
+        model <- root.rows;
+        resizable-columns <- root.resize-columns;
+        resizable-rows <- root.resize-rows;
+        movable-columns <- root.move-columns;
+        movable-rows <- root.move-rows;
+        TableColumn { title <- "Name"; field <- "name"; resizable <- root.first-resizable; editable <- root.editable-column(0); }
+        TableColumn { title <- "Other"; field <- "name"; editable <- root.editable-column(1); }
     }
 }
 
@@ -2996,12 +2996,12 @@ export component ControlRenderOrderParity inherits Window {
     pure callback sample(int) -> float;
     sample(tag) => { tag * 10.0 }
     interval := RangeSlider {
-        upper-value: root.sample(3);
-        lower-value: root.sample(2);
-        minimum: root.sample(1);
+        upper-value <- root.sample(3);
+        lower-value <- root.sample(2);
+        minimum <- root.sample(1);
     }
     group := GroupBox {
-        checkable: true;
+        checkable <- true;
         toggled(checked) => { root.last-checked = checked; }
     }
 }
@@ -3015,8 +3015,8 @@ export component TumblerModelOrderParity inherits Window {
     read-items => { ["One", "Two", "Three"] }
     read-index => { root.selected }
     wheel := Tumbler {
-        model: root.read-items();
-        current-index: root.selection-changed-by-control ? root.selected : root.read-index();
+        model <- root.read-items();
+        current-index <- root.selection-changed-by-control ? root.selected : root.read-index();
         changed(index) => { root.selected = index; root.selection-changed-by-control = true; root.changes += 1; }
     }
 }
@@ -3038,23 +3038,23 @@ export component PickerCancelBindingsParity inherits Window {
     inline-time-format => { true }
 
     color-popup := ColorPickerPopup {
-        open <=> root.color-open;
-        show-alpha: root.color-alpha();
+        open <-> root.color-open;
+        show-alpha <- root.color-alpha();
         canceled => { root.cancels += 1; }
         states [ hidden when !root.color-visible(): { visible: false; } ]
     }
     date-popup := DatePickerPopup {
-        open <=> root.date-open;
-        maximum-date: root.date-maximum();
+        open <-> root.date-open;
+        maximum-date <- root.date-maximum();
         canceled => { root.cancels += 1; }
     }
     time-popup := TimePickerPopup {
-        open <=> root.time-open;
-        use-24-hour-format: root.time-format();
+        open <-> root.time-open;
+        use-24-hour-format <- root.time-format();
         canceled => { root.cancels += 1; }
     }
     inline-time := TimePicker {
-        use-24-hour-format: root.inline-time-format();
+        use-24-hour-format <- root.inline-time-format();
     }
 }
 
@@ -3063,8 +3063,8 @@ export component ViewportOffsetRetryParity inherits Window {
     pure callback read-offset(length) -> length;
     read-offset(value) => { value }
     ScrollView {
-        content-y: root.read-offset(root.offset);
-        content-height: 300px;
+        content-y <- root.read-offset(root.offset);
+        content-height <- 300px;
     }
 }
 
@@ -3074,24 +3074,24 @@ export component ReadOnlyTableHistoryParity inherits Window {
     rows => { 2 }
     history-enabled => { true }
     in property <[TouchPoint]> touches: [];
-    out property <bool> undo-available: table.can-undo;
-    out property <bool> redo-available: table.can-redo;
-    out property <bool> touch-undo-available: touch-table.can-undo;
-    out property <bool> touch-redo-available: touch-table.can-redo;
+    out property <bool> undo-available <- table.can-undo;
+    out property <bool> redo-available <- table.can-redo;
+    out property <bool> touch-undo-available <- touch-table.can-undo;
+    out property <bool> touch-redo-available <- touch-table.can-redo;
     callback undo();
     undo => { table.undo(); touch-table.undo(); }
 
     table := TableView {
-        undoable: root.history-enabled();
-        pasteable: true;
+        undoable <- root.history-enabled();
+        pasteable <- true;
         TableColumn {}
-        for row in root.rows() : TableRow { Text { text: "Row " + row; } }
+        for row in root.rows() : TableRow { Text { text <- "Row " + row; } }
     }
     touch-table := TableView {
-        undoable: root.history-enabled();
-        pasteable: true;
+        undoable <- root.history-enabled();
+        pasteable <- true;
         TableColumn {}
-        for point in root.touches : TableRow { Text { text: "Touch " + point.id; } }
+        for point in root.touches : TableRow { Text { text <- "Touch " + point.id; } }
     }
 }
 
@@ -3101,14 +3101,14 @@ component CallbackPrecedenceLeaf inherits Rectangle {
 }
 
 component CallbackPrecedenceInner inherits Rectangle {
-    pure callback first <=> leaf.score;
-    pure callback second <=> leaf.score;
+    pure callback first <-> leaf.score;
+    pure callback second <-> leaf.score;
     leaf := CallbackPrecedenceLeaf {}
 }
 
 component CallbackPrecedenceOuter inherits Rectangle {
-    pure callback supplied <=> inner.first;
-    pure callback fallback <=> inner.second;
+    pure callback supplied <-> inner.first;
+    pure callback fallback <-> inner.second;
     fallback(value) => { value + 10 }
     inner := CallbackPrecedenceInner {
         first(value) => { value + 20 }
@@ -3116,10 +3116,10 @@ component CallbackPrecedenceOuter inherits Rectangle {
 }
 
 export component CallbackPrecedenceParity inherits Window {
-    pure callback public-score <=> with-override.fallback;
-    out property <int> overridden: with-override.fallback(1);
-    out property <int> same-slot: with-override.supplied(2);
-    out property <int> fallback: with-default.supplied(1);
+    pure callback public-score <-> with-override.fallback;
+    out property <int> overridden <- with-override.fallback(1);
+    out property <int> same-slot <- with-override.supplied(2);
+    out property <int> fallback <- with-default.supplied(1);
     with-override := CallbackPrecedenceOuter { supplied(value) => { value + 30 } }
     with-default := CallbackPrecedenceOuter {}
 }
@@ -3129,33 +3129,33 @@ component PropertyForwardLeaf inherits Rectangle {
 }
 
 component PropertyForwardInner inherits Rectangle {
-    in-out property <int> first <=> leaf.value;
-    in-out property <int> second <=> leaf.value;
+    in-out property <int> first <-> leaf.value;
+    in-out property <int> second <-> leaf.value;
     leaf := PropertyForwardLeaf {}
 }
 
 component PropertyForwardOuter inherits Rectangle {
-    in-out property <int> supplied <=> inner.first;
-    in-out property <int> fallback <=> inner.second;
+    in-out property <int> supplied <-> inner.first;
+    in-out property <int> fallback <-> inner.second;
     property <int> value: 20;
-    inner := PropertyForwardInner { second <=> root.value; }
+    inner := PropertyForwardInner { second <-> root.value; }
 }
 
 export component PropertyForwardParity inherits Window {
     in-out property <int> external: 30;
-    in-out property <int> edited <=> with-override.fallback;
-    out property <int> overridden: with-override.supplied;
-    out property <int> fallback: with-default.supplied;
-    with-override := PropertyForwardOuter { supplied <=> root.external; }
+    in-out property <int> edited <-> with-override.fallback;
+    out property <int> overridden <- with-override.supplied;
+    out property <int> fallback <- with-default.supplied;
+    with-override := PropertyForwardOuter { supplied <-> root.external; }
     with-default := PropertyForwardOuter {}
 }
 
 export component PropertyForwardStateParity inherits Window {
     in-out property <bool> active: false;
     in-out property <int> base: 30;
-    out property <int> edited: editor.fallback;
-    out property <int> observed: editor.supplied;
-    editor := PropertyForwardOuter { supplied: root.base; }
+    out property <int> edited <- editor.fallback;
+    out property <int> observed <- editor.supplied;
+    editor := PropertyForwardOuter { supplied <- root.base; }
     states [ active-state when root.active: { editor.fallback: 40; } ]
 }
 
@@ -3163,26 +3163,26 @@ export struct RowGroupInputRecord { name: string, expanded: bool }
 
 component RowGroupInputContent inherits Rectangle {
     callback hit();
-    button := Button { text: "Hit"; clicked => { root.hit(); } }
+    button := Button { text <- "Hit"; clicked => { root.hit(); } }
 }
 
 export component RowGroupInputParity inherits Window {
-    width: 320px; height: 200px;
+    width <- 320px; height <- 200px;
     in-out property <[RowGroupInputRecord]> rows: [
         RowGroupInputRecord { name: "A", expanded: true },
         RowGroupInputRecord { name: "B", expanded: false },
     ];
     out property <string> hits: "";
     TableView {
-        row-height: 64px;
-        TableColumn { title: "Group"; width: 280px; }
+        row-height <- 64px;
+        TableColumn { title <- "Group"; width <- 280px; }
         for row[index] in root.rows : TableRow {
             GroupBox {
-                checkable: true;
+                checkable <- true;
                 RowGroupInputContent { hit => { root.hits += row.name; } }
                 for child in index + 2 : GroupBox {
-                    checkable: true;
-                    Text { text: row.name; }
+                    checkable <- true;
+                    Text { text <- row.name; }
                 }
             }
         }
@@ -3192,7 +3192,7 @@ export component RowGroupInputParity inherits Window {
 export struct TreeEditScopeRow { key: int, parent: int, label: string }
 
 export component TreeEditScopeParity inherits Window {
-    width: 320px; height: 200px;
+    width <- 320px; height <- 200px;
     in-out property <bool> shown: true;
     in-out property <[TreeEditScopeRow]> rows: [TreeEditScopeRow { key: 1, parent: -1, label: "original" }];
     pure callback row-visible() -> bool;
@@ -3201,9 +3201,9 @@ export component TreeEditScopeParity inherits Window {
     cell-enabled => { true }
     TreeView {
         for row in root.rows : TreeRow {
-            key: row.key; parent-key: row.parent;
-            visible: root.shown && root.row-visible();
-            TreeCell { enabled: root.cell-enabled(); text <=> row.label; }
+            key <- row.key; parent-key <- row.parent;
+            visible <- root.shown && root.row-visible();
+            TreeCell { enabled <- root.cell-enabled(); text <-> row.label; }
         }
     }
 }
@@ -3212,36 +3212,36 @@ export component RepeatedGroupParity inherits Window {
     in-out property <[string]> labels: ["A", "B"];
     in-out property <bool> allow-rows: true;
     for label in root.labels : GroupBox {
-        title: label;
-        enabled: root.allow-rows;
-        checkable: true;
+        title <- label;
+        enabled <- root.allow-rows;
+        checkable <- true;
         for child in 2 : GroupBox {
-            checkable: true;
-            Text { text: label; }
+            checkable <- true;
+            Text { text <- label; }
         }
     }
 }
 
 export component VirtualListGroupParity inherits Window {
-    width: 320px; height: 270px;
+    width <- 320px; height <- 270px;
     in-out property <[string]> labels: ["A", "B"];
     in-out property <bool> allow-rows: true;
     ListView {
-        width: 320px; height: 126px; row-height: 60px;
+        width <- 320px; height <- 126px; row-height <- 60px;
         for label in root.labels : GroupBox {
-            title: label;
-            enabled: root.allow-rows;
-            checkable: true;
-            for item in 1 : GroupBox { checkable: true; }
+            title <- label;
+            enabled <- root.allow-rows;
+            checkable <- true;
+            for item in 1 : GroupBox { checkable <- true; }
         }
     }
     GridView {
-        y: 134px; width: 320px; height: 126px; cell-width: 144px; cell-height: 60px;
+        y <- 134px; width <- 320px; height <- 126px; cell-width <- 144px; cell-height <- 60px;
         for label in root.labels : GroupBox {
-            title: label;
-            enabled: root.allow-rows;
-            checkable: true;
-            for item in 1 : GroupBox { checkable: true; }
+            title <- label;
+            enabled <- root.allow-rows;
+            checkable <- true;
+            for item in 1 : GroupBox { checkable <- true; }
         }
     }
 }
@@ -3249,32 +3249,32 @@ export component VirtualListGroupParity inherits Window {
 export struct LinkedGroupRow { name: string, shown: bool }
 
 export component LinkedGroupRepeatParity inherits Window {
-    width: 320px; height: 230px;
+    width <- 320px; height <- 230px;
     in-out property <bool> expanded: true;
     in-out property <[LinkedGroupRow]> rows: [
         LinkedGroupRow { name: "hidden", shown: false },
         LinkedGroupRow { name: "visible", shown: true },
     ];
     for index in 2 : GroupBox {
-        x: index * 150px; width: 140px; height: 60px;
-        checkable: true;
-        checked <=> root.expanded;
+        x <- index * 150px; width <- 140px; height <- 60px;
+        checkable <- true;
+        checked <-> root.expanded;
     }
     ListView {
-        y: 68px; width: 320px; height: 150px; row-height: 60px;
-        row-visible-field: "shown";
+        y <- 68px; width <- 320px; height <- 150px; row-height <- 60px;
+        row-visible-field <- "shown";
         for row in root.rows : GroupBox {
-            title: row.name;
-            checkable: true;
-            checked <=> root.expanded;
+            title <- row.name;
+            checkable <- true;
+            checked <-> root.expanded;
         }
     }
 }
 
 export component SplitPaneNamesParity inherits SplitView {
     in property <bool> show-middle: true;
-    fill-pane: fill;
-    SplitHandle { background: #224466; }
+    fill-pane <- fill;
+    SplitHandle { background <- #224466; }
     Rectangle {}
     if root.show-middle : Rectangle {}
     fill := Rectangle {}
@@ -3287,10 +3287,10 @@ export component RecordUpdateParity inherits Window {
     in-out property <UpdateRecord> source: UpdateRecord {
         first: 10, second: 20, revision: 30, details: UpdateDetails { label: "original" },
     };
-    in-out property <UpdateRecord> record: once root.source;
+    in-out property <UpdateRecord> record: root.source;
     callback restore-record();
     restore-record => { root.record = root.source; }
-    out property <string> summary: root.record.details.label + ":" + root.record.revision;
+    out property <string> summary <- root.record.details.label + ":" + root.record.revision;
 
     pure callback mark(int) -> int;
     pure callback base() -> UpdateRecord;
@@ -3359,14 +3359,14 @@ component ComposedList inherits VerticalLayout {
 
 export component LanguageCompositionParity inherits Window {
     in-out property <CompositionMode> mode: CompositionMode::Idle;
-    out property <string> summary: root.describe(root.mode);
+    out property <string> summary <- root.describe(root.mode);
     in-out property <string> query: "";
     in-out property <[CompositionRow]> rows: [
         CompositionRow { id: 3, title: "Beta" },
         CompositionRow { id: 1, title: "Alpha" },
         CompositionRow { id: 2, title: "Alpine" },
     ];
-    out property <[CompositionRow]> shown: Model.sort-by(Model.filter(root.rows, "title", root.query), "id", true);
+    out property <[CompositionRow]> shown <- Model.sort-by(Model.filter(root.rows, "title", root.query), "id", true);
     out property <int> calls: 0;
     callback next() -> int;
     next => { root.calls += 1; root.calls }
@@ -3385,19 +3385,19 @@ export component LanguageCompositionParity inherits Window {
     }
 
     entries := ComposedList {
-        rows: root.shown;
+        rows <- root.shown;
         slot toolbar {
-            title := Text { text: root.summary; }
+            title := Text { text <- root.summary; }
             match root.mode: {
-                Idle => idle-action := Text { text: "Waiting"; },
-                Active => active-action := Text { text: "Working"; },
-                Failed => failed-action := Text { text: "Retry"; },
+                Idle => idle-action := Text { text <- "Waiting"; },
+                Active => active-action := Text { text <- "Working"; },
+                Failed => failed-action := Text { text <- "Retry"; },
             }
         }
         slot row(item, position) {
-            Text { text: position + ":" + item.title; }
+            Text { text <- position + ":" + item.title; }
         }
-        footer := Text { text: "Results " + Model.count(root.shown); }
+        footer := Text { text <- "Results " + Model.count(root.shown); }
     }
 }
 
@@ -3443,8 +3443,8 @@ export component OrdinaryRowSceneCache inherits Window {
 
     for value[index] in root.rows : VerticalLayout {
         if value != "" : Button {
-            text: index + ":" + root.caption(value);
-            checkable: true;
+            text <- index + ":" + root.caption(value);
+            checkable <- true;
             clicked => { root.clicked-index = index; }
         }
     }

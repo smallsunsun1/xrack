@@ -423,6 +423,7 @@ type VisualSlot = VisualCacheKey<usize>;
 enum Expression {
     Literal(Value),
     CachedVisual(VisualSlot, Expr),
+    CachedInitializer(VisualSlot, Expr),
     Read(Member),
     Param(usize),
     RowParam(String),
@@ -853,7 +854,7 @@ impl Input {
 
 #[derive(Clone)]
 enum InputSource {
-    Binding(Expr),
+    Binding { expression: Expr, initial: bool },
     Linked(Member),
     RowLink(RowField),
 }

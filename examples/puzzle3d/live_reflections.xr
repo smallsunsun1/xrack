@@ -14,11 +14,11 @@ struct CaptureProbe {
 }
 
 export component LiveReflectionsDemo inherits Window {
-    title: "XRack · 实时场景反射";
-    width: 532px;
-    height: 382px;
-    resizable: false;
-    background: #141d29;
+    title <- "XRack · 实时场景反射";
+    width <- 532px;
+    height <- 382px;
+    resizable <- false;
+    background <- #141d29;
 
     in-out property <bool> warm: true;
     in-out property <bool> casts: true;
@@ -37,7 +37,7 @@ export component LiveReflectionsDemo inherits Window {
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #ffffff, casts-reflections: true, receives-reflections: true,
     };
-    property <[CaptureActor]> scene: [
+    property <[CaptureActor]> scene <- [
         CaptureActor {
             id: "mirror", mesh: @mesh-url("models/probe-sphere.gltf"),
             scale-x: 1.55, scale-y: 1.55, scale-z: 1.55, casts-reflections: false,
@@ -60,7 +60,7 @@ export component LiveReflectionsDemo inherits Window {
             scale-x: 0.62, scale-y: 1.8, scale-z: 0.7, color: #75b9aa, ..root.defaults
         },
     ];
-    property <[CaptureProbe]> probes: [
+    property <[CaptureProbe]> probes <- [
         CaptureProbe {
             position: Point3D.new(root.probe-x, 0, 0), box-size: Vector3D.new(8, 8, 16),
             box-offset: Vector3D.new(root.probe-box-x, 0, 0), debug-view: root.debug-view,
@@ -72,35 +72,35 @@ export component LiveReflectionsDemo inherits Window {
     ];
 
     SceneView3D {
-        width: 532px; height: 270px;
-        model: root.scene; reflection-probes: root.probes;
-        cache-rendering: true;
-        multisampling: root.antialias; supersampling: root.guide-resolution-scale;
-        camera-yaw: root.orbit; camera-pitch: 0; camera-distance: 8;
-        scene-background: #24354d; light-yaw: -30; light-elevation: 58;
-        scene-hdr: true;
+        width <- 532px; height <- 270px;
+        model <- root.scene; reflection-probes <- root.probes;
+        cache-rendering <- true;
+        multisampling <- root.antialias; supersampling <- root.guide-resolution-scale;
+        camera-yaw <- root.orbit; camera-pitch <- 0; camera-distance <- 8;
+        scene-background <- #24354d; light-yaw <- -30; light-elevation <- 58;
+        scene-hdr <- true;
     }
     HorizontalLayout {
-        x: 12px; y: 279px; width: 508px; height: 45px; spacing: 8px;
-        card := Button { width: 116px; text: "切换反射颜色"; clicked => { root.warm = !root.warm; } }
+        x <- 12px; y <- 279px; width <- 508px; height <- 45px; spacing <- 8px;
+        card := Button { width <- 116px; text <- "切换反射颜色"; clicked => { root.warm = !root.warm; } }
         mode := Button {
-            width: 99px; text: root.refresh == "on-change" ? "按变化" : root.refresh == "first-frame" ? "固定首帧" : "逐帧";
+            width <- 99px; text <- root.refresh == "on-change" ? "按变化" : root.refresh == "first-frame" ? "固定首帧" : "逐帧";
             clicked => { root.refresh = root.refresh == "on-change" ? "first-frame" : root.refresh == "first-frame" ? "every-frame" : "on-change"; }
         }
-        capture := Button { width: 94px; text: "刷新探针"; clicked => { root.revision += 1; } }
+        capture := Button { width <- 94px; text <- "刷新探针"; clicked => { root.revision += 1; } }
         slicing-mode := Button {
-            width: 129px;
-            text: root.slicing == "none" ? "同帧更新" : root.slicing == "individual-faces" ? "逐面更新" : "分级预滤波";
+            width <- 129px;
+            text <- root.slicing == "none" ? "同帧更新" : root.slicing == "individual-faces" ? "逐面更新" : "分级预滤波";
             clicked => { root.slicing = root.slicing == "none" ? "individual-faces"
                 : root.slicing == "individual-faces" ? "all-faces-at-once" : "none"; }
         }
     }
     HorizontalLayout {
-        x: 12px; y: 329px; width: 508px; height: 40px; spacing: 10px;
-        Text { text: "观察角度"; color: #e2eaf4; }
-        angle := Slider { minimum: -22; maximum: 22; value <=> root.orbit; }
+        x <- 12px; y <- 329px; width <- 508px; height <- 40px; spacing <- 10px;
+        Text { text <- "观察角度"; color <- #e2eaf4; }
+        angle := Slider { minimum <- -22; maximum <- 22; value <-> root.orbit; }
         guides := Button {
-            width: 108px; text: root.debug-view ? "隐藏范围" : "探针范围";
+            width <- 108px; text <- root.debug-view ? "隐藏范围" : "探针范围";
             clicked => { root.debug-view = !root.debug-view; }
         }
     }

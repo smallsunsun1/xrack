@@ -56,7 +56,7 @@
 
 component Cell inherits Rectangle {
     in property <string> caption;
-    Text { text: root.caption; }
+    Text { text <- root.caption; }
 }
 
 struct Probe3D { source: string, position: point3d, box-size: vector3d }
@@ -78,59 +78,59 @@ export component Plans inherits Window {
     ]
 
     panel := Rectangle {
-        width: 200px;
-        Rectangle { z: 2; }
-        Text { z: 1; color: root.ink; text: "text"; }
+        width <- 200px;
+        Rectangle { z <- 2; }
+        Text { z <- 1; color <- root.ink; text <- "text"; }
     }
     ListView {
-        for item[index] in root.items : Cell { caption: item + index; }
+        for item[index] in root.items : Cell { caption <- item + index; }
     }
     SceneView3D {
-        reflection-probes: root.probes;
-        imported-lights: root.compact;
-        multisampling: root.compact;
-        progressive-aa: root.compact ? 4 : 0;
-        temporal-aa: root.compact;
-        temporal-aa-mode: root.compact ? "motion-vectors" : "blend";
-        temporal-aa-strength: root.compact ? 0.3 : 0.2;
-        screen-space-reflections: root.compact;
-        ssr-steps: root.compact ? 96 : 64;
-        ssr-thickness: root.compact ? 0.2 : 0.1;
-        screen-space-global-illumination: root.compact;
-        ssgi-rays: root.compact ? 12 : 8;
-        ssgi-radius: root.compact ? 3.0 : 2.0;
-        supersampling: root.compact ? 1.5 : 1;
-        texture-width: root.compact ? 256 : 0;
-        texture-height: root.compact ? 192 : 0;
-        render-scale: root.compact ? 0.5 : 1.0;
-        layer-mask: root.compact ? 2 : 1;
-        cache-rendering: root.compact;
-        specular-aa: root.compact;
-        order-independent-transparency: root.compact;
-        ambient-occlusion: root.compact;
-        ao-strength: 0.8;
-        ao-distance: 1.35;
-        ao-bias: 0.025;
-        scene-hdr: true;
-        bloom: root.compact;
-        bloom-strength: 0.75;
-        bloom-threshold: 1;
-        bloom-levels: 5;
-        depth-of-field: root.compact;
-        dof-blur-radius: 24px;
-        dof-focus-distance: 12;
-        dof-focus-range: 0.8;
-        scene-tone-map: SceneToneMap.hejl-dawson;
-        scene-white-point: 11.2;
-        scene-brightness: 1;
-        scene-contrast: 1;
-        scene-saturation: 1;
-        scene-lut: @image-url("");
-        scene-lut-size: 16;
-        scene-lut-strength: 0.75;
-        fog-color: root.ink;
-        fog-near: 8;
-        fog-far: 28;
-        fog-density: 0.65;
+        reflection-probes <- root.probes;
+        imported-lights <- root.compact;
+        multisampling <- root.compact;
+        progressive-aa <- root.compact ? 4 : 0;
+        temporal-aa <- root.compact;
+        temporal-aa-mode <- root.compact ? "motion-vectors" : "blend";
+        temporal-aa-strength <- root.compact ? 0.3 : 0.2;
+        screen-space-reflections <- root.compact;
+        ssr-steps <- root.compact ? 96 : 64;
+        ssr-thickness <- root.compact ? 0.2 : 0.1;
+        screen-space-global-illumination <- root.compact;
+        ssgi-rays <- root.compact ? 12 : 8;
+        ssgi-radius <- root.compact ? 3.0 : 2.0;
+        supersampling <- root.compact ? 1.5 : 1;
+        texture-width <- root.compact ? 256 : 0;
+        texture-height <- root.compact ? 192 : 0;
+        render-scale <- root.compact ? 0.5 : 1.0;
+        layer-mask <- root.compact ? 2 : 1;
+        cache-rendering <- root.compact;
+        specular-aa <- root.compact;
+        order-independent-transparency <- root.compact;
+        ambient-occlusion <- root.compact;
+        ao-strength <- 0.8;
+        ao-distance <- 1.35;
+        ao-bias <- 0.025;
+        scene-hdr <- true;
+        bloom <- root.compact;
+        bloom-strength <- 0.75;
+        bloom-threshold <- 1;
+        bloom-levels <- 5;
+        depth-of-field <- root.compact;
+        dof-blur-radius <- 24px;
+        dof-focus-distance <- 12;
+        dof-focus-range <- 0.8;
+        scene-tone-map <- SceneToneMap.hejl-dawson;
+        scene-white-point <- 11.2;
+        scene-brightness <- 1;
+        scene-contrast <- 1;
+        scene-saturation <- 1;
+        scene-lut <- @image-url("");
+        scene-lut-size <- 16;
+        scene-lut-strength <- 0.75;
+        fog-color <- root.ink;
+        fog-near <- 8;
+        fog-far <- 28;
+        fog-density <- 0.65;
     }
 }

@@ -15,16 +15,16 @@ struct AtlasLight {
 }
 
 export component UvAtlasDemo inherits Window {
-    title: "XRack · glTF 纹理坐标";
-    width: 400px;
-    height: 288px;
-    background: #141d29;
+    title <- "XRack · glTF 纹理坐标";
+    width <- 400px;
+    height <- 288px;
+    background <- #141d29;
 
     in-out property <float> light-yaw: -40;
     in-out property <bool> shadows: false;
     in-out property <bool> shadow-screen: false;
     in-out property <point2d> pointer;
-    property <[AtlasObject]> scene: [
+    property <[AtlasObject]> scene <- [
         AtlasObject {
             id: "atlas", mesh: @mesh-url("models/uv-atlas.gltf"),
             x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
@@ -44,30 +44,30 @@ export component UvAtlasDemo inherits Window {
             camera-kind: "", camera-height: 6.4, casts-shadow: false,
         },
     ];
-    property <[AtlasLight]> lamps: [
+    property <[AtlasLight]> lamps <- [
         AtlasLight {
             kind: "directional", x: 0, y: 0, z: 0,
             yaw: root.light-yaw, elevation: 0, intensity: 4, color: #ffffff,
             range: 0, inner-angle: 0, outer-angle: 45,
         },
     ];
-    out property <string> picked: Scene3D.pick-camera(root.scene, "eye",
+    out property <string> picked <- Scene3D.pick-camera(root.scene, "eye",
         Point2D.new(400px, 230px), root.pointer);
 
     view := SceneView3D {
-        width: 400px;
-        height: 230px;
-        model: root.scene;
-        camera: "eye";
-        lights: root.lamps;
-        shadows: root.shadows;
-        shadow-map-size: 128;
-        ambient-intensity: 0.3;
-        scene-background: #172333;
+        width <- 400px;
+        height <- 230px;
+        model <- root.scene;
+        camera <- "eye";
+        lights <- root.lamps;
+        shadows <- root.shadows;
+        shadow-map-size <- 128;
+        ambient-intensity <- 0.3;
+        scene-background <- #172333;
     }
 
-    Label { x: 94px; y: 229px; width: 86px; height: 22px; text: "原始 UV"; }
-    Label { x: 219px; y: 229px; width: 100px; height: 22px; text: "UV 变换"; }
-    Label { x: 18px; y: 251px; width: 90px; height: 31px; text: "光照方向"; }
-    light := Slider { x: 118px; y: 250px; width: 260px; height: 32px; minimum: -50; maximum: 50; value <=> root.light-yaw; }
+    Label { x <- 94px; y <- 229px; width <- 86px; height <- 22px; text <- "原始 UV"; }
+    Label { x <- 219px; y <- 229px; width <- 100px; height <- 22px; text <- "UV 变换"; }
+    Label { x <- 18px; y <- 251px; width <- 90px; height <- 31px; text <- "光照方向"; }
+    light := Slider { x <- 118px; y <- 250px; width <- 260px; height <- 32px; minimum <- -50; maximum <- 50; value <-> root.light-yaw; }
 }

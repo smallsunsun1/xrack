@@ -10,10 +10,10 @@ struct SpriteEmitter {
 }
 
 export component SpriteParticlesDemo inherits Window {
-    title: "XRack · 粒子序列帧";
-    width: 620px;
-    height: 416px;
-    background: #182333;
+    title <- "XRack · 粒子序列帧";
+    width <- 620px;
+    height <- 416px;
+    background <- #182333;
 
     in-out property <float> time: 0.10;
     in-out property <float> epoch: 0.0;
@@ -25,15 +25,15 @@ export component SpriteParticlesDemo inherits Window {
     in-out property <int> cells: 4;
 
     clock := Timer {
-        interval: 16;
-        running: root.animating;
+        interval <- 16;
+        running <- root.animating;
         triggered => {
             root.time += 0.016;
             if root.time - root.epoch > 4.2 { root.epoch = root.time; }
         }
     }
 
-    property <SpriteEmitter> defaults: SpriteEmitter {
+    property <SpriteEmitter> defaults <- SpriteEmitter {
         position: Point3D.new(0, 0, 0), color: #ffffff, size: 1.45, lifetime: 4,
         bursts: [ParticleBurst { time: 0, count: 1 }], sprite: @image-url("models/particle-marks.png"), sprite-frames: root.cells,
         sprite-duration: 1.2, sprite-duration-variation: 0,
@@ -41,7 +41,7 @@ export component SpriteParticlesDemo inherits Window {
         sprite-random-start: false, velocity: Vector3D.new(0,0,0), velocity-spread: Vector3D.new(0,0,0),
         gravity: Vector3D.new(0,0,0), start-time: root.epoch, seed: 57,
     };
-    property <[SpriteEmitter]> emitters: [
+    property <[SpriteEmitter]> emitters <- [
         SpriteEmitter { position: Point3D.new(-1.9, 0, 0), ..root.defaults },
         SpriteEmitter {
             sprite: @image-url("models/particle-ring.png"), sprite-frames: 1,
@@ -56,30 +56,30 @@ export component SpriteParticlesDemo inherits Window {
     ];
 
     SceneView3D {
-        width: 620px; height: 320px;
-        camera-yaw: 0; camera-pitch: 0; camera-distance: 7;
-        scene-background: #111a29;
-        particle-time: root.time; particle-emitters: root.emitters;
-        cache-rendering: true;
-        order-independent-transparency: root.weighted;
+        width <- 620px; height <- 320px;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 7;
+        scene-background <- #111a29;
+        particle-time <- root.time; particle-emitters <- root.emitters;
+        cache-rendering <- true;
+        order-independent-transparency <- root.weighted;
     }
-    Label { x: 18px; y: 327px; width: 60px; height: 34px; text: "时间"; }
-    timeline := Slider { x: 72px; y: 328px; width: 531px; height: 34px; minimum: 0; maximum: 3.6; value <=> root.time; }
-    play := CheckBox { x: 18px; y: 369px; width: 79px; height: 35px; text: "播放"; checked <=> root.animating; }
+    Label { x <- 18px; y <- 327px; width <- 60px; height <- 34px; text <- "时间"; }
+    timeline := Slider { x <- 72px; y <- 328px; width <- 531px; height <- 34px; minimum <- 0; maximum <- 3.6; value <-> root.time; }
+    play := CheckBox { x <- 18px; y <- 369px; width <- 79px; height <- 35px; text <- "播放"; checked <-> root.animating; }
     restart := Button {
-        x: 105px; y: 369px; width: 75px; height: 35px; text: "爆发";
+        x <- 105px; y <- 369px; width <- 75px; height <- 35px; text <- "爆发";
         clicked => { root.epoch = root.time - 0.35; }
     }
     playback-mode := Button {
-        x: 189px; y: 369px; width: 98px; height: 35px;
-        text: root.playback == "loop" ? "循环" : root.playback == "reverse" ? "倒放" : "往返";
+        x <- 189px; y <- 369px; width <- 98px; height <- 35px;
+        text <- root.playback == "loop" ? "循环" : root.playback == "reverse" ? "倒放" : "往返";
         clicked => {
             root.playback = root.playback == "loop" ? "reverse" : root.playback == "reverse" ? "ping-pong" : "loop";
         }
     }
-    interpolation := CheckBox { x: 306px; y: 369px; width: 86px; height: 35px; text: "插值"; checked <=> root.interpolate-frames; }
-    randomness := CheckBox { x: 410px; y: 369px; width: 105px; height: 35px; text: "随机起帧"; checked <=> root.random-start; }
-    transparency := CheckBox { x: 529px; y: 369px; width: 82px; height: 35px; text: "加权"; checked <=> root.weighted; }
+    interpolation := CheckBox { x <- 306px; y <- 369px; width <- 86px; height <- 35px; text <- "插值"; checked <-> root.interpolate-frames; }
+    randomness := CheckBox { x <- 410px; y <- 369px; width <- 105px; height <- 35px; text <- "随机起帧"; checked <-> root.random-start; }
+    transparency := CheckBox { x <- 529px; y <- 369px; width <- 82px; height <- 35px; text <- "加权"; checked <-> root.weighted; }
 }
 
 struct BirthEmitter {
@@ -101,8 +101,8 @@ struct BirthCamera {
 }
 
 export component ParticleBirthVariationsDemo inherits Window {
-    title: "XRack · 粒子出生变体";
-    width: 624px; height: 414px; background: #182333;
+    title <- "XRack · 粒子出生变体";
+    width <- 624px; height <- 414px; background <- #182333;
 
     in-out property <float> time: 0.65;
     in-out property <int> seed: 5;
@@ -116,7 +116,7 @@ export component ParticleBirthVariationsDemo inherits Window {
     in-out property <bool> textured: true;
     in-out property <bool> model-particles: false;
     property <image> empty-image;
-    property <BirthEmitter> baseline: BirthEmitter {
+    property <BirthEmitter> baseline <- BirthEmitter {
         position: Point3D.new(-1.5, 0, 0.4), color: root.textured ? #ffffff : #ff46d9,
         size: 0.45, lifetime: 1, fade-out: 0,
         lifetime-variation: 0, size-variation: 0, end-size-variation: 0,
@@ -135,8 +135,8 @@ export component ParticleBirthVariationsDemo inherits Window {
         scale-x: 1, scale-y: 1, scale-z: 1, camera-kind: "orthographic", camera-height: 6,
     };
     SceneView3D {
-        width: 624px; height: 300px; camera: "eye"; scene-background: #101925;
-        model: [
+        width <- 624px; height <- 300px; camera <- "eye"; scene-background <- #101925;
+        model <- [
             root.eye,
             BirthCamera {
                 id: "floor", mesh: root.model-particles ? "primitive:box" : "",
@@ -144,9 +144,9 @@ export component ParticleBirthVariationsDemo inherits Window {
                 camera-kind: "", ..root.eye
             },
         ];
-        shadows: root.model-particles; shadow-map-size: 128;
-        particle-time: root.time;
-        particle-emitters: [
+        shadows <- root.model-particles; shadow-map-size <- 128;
+        particle-time <- root.time;
+        particle-emitters <- [
             root.baseline,
             BirthEmitter {
                 position: Point3D.new(1.5, 0, 0.4),
@@ -159,19 +159,19 @@ export component ParticleBirthVariationsDemo inherits Window {
             },
         ];
     }
-    Label { x: 18px; y: 18px; width: 176px; height: 28px; text: "固定参数"; color: #cce2f2; }
-    Label { x: 329px; y: 18px; width: 176px; height: 28px; text: "每颗粒子的出生变体"; color: #cce2f2; }
-    Label { x: 18px; y: 310px; width: 58px; height: 32px; text: "时间"; }
+    Label { x <- 18px; y <- 18px; width <- 176px; height <- 28px; text <- "固定参数"; color <- #cce2f2; }
+    Label { x <- 329px; y <- 18px; width <- 176px; height <- 28px; text <- "每颗粒子的出生变体"; color <- #cce2f2; }
+    Label { x <- 18px; y <- 310px; width <- 58px; height <- 32px; text <- "时间"; }
     timeline := Slider {
-        x: 78px; y: 310px; width: 528px; height: 32px;
-        minimum: 0; maximum: 2.1; value <=> root.time;
+        x <- 78px; y <- 310px; width <- 528px; height <- 32px;
+        minimum <- 0; maximum <- 2.1; value <-> root.time;
     }
-    variations := CheckBox { x: 18px; y: 363px; width: 103px; text: "变体"; checked <=> root.variant; }
-    trails := CheckBox { x: 132px; y: 363px; width: 103px; text: "拖尾"; checked <=> root.trail; }
-    texture := CheckBox { x: 246px; y: 363px; width: 105px; text: "序列帧"; checked <=> root.textured; }
-    meshes := CheckBox { x: 362px; y: 363px; width: 105px; text: "模型"; checked <=> root.model-particles; }
+    variations := CheckBox { x <- 18px; y <- 363px; width <- 103px; text <- "变体"; checked <-> root.variant; }
+    trails := CheckBox { x <- 132px; y <- 363px; width <- 103px; text <- "拖尾"; checked <-> root.trail; }
+    texture := CheckBox { x <- 246px; y <- 363px; width <- 105px; text <- "序列帧"; checked <-> root.textured; }
+    meshes := CheckBox { x <- 362px; y <- 363px; width <- 105px; text <- "模型"; checked <-> root.model-particles; }
     reseed := Button {
-        x: 476px; y: 361px; width: 128px; height: 34px; text: "更换种子";
+        x <- 476px; y <- 361px; width <- 128px; height <- 34px; text <- "更换种子";
         clicked => { root.seed += 1; }
     }
 }

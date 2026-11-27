@@ -18,53 +18,53 @@ struct BoxActor {
 }
 
 export component HostValues inherits Window {
-    in-out property <color> ink: once #123456;
-    in-out property <brush> fill: once #234567;
-    in-out property <length> offset: once 12px;
-    in-out property <point3d> world: once Point3D.new(1, 2, 0);
-    out property <projectedpoint3d> projection: Scene3D.project(
+    in-out property <color> ink: #123456;
+    in-out property <brush> fill: #234567;
+    in-out property <length> offset: 12px;
+    in-out property <point3d> world: Point3D.new(1, 2, 0);
+    out property <projectedpoint3d> projection <- Scene3D.project(
         0, 0, 8, Point2D.new(200px, 200px), root.world);
     property <[BoxActor]> scene: [BoxActor {
         id: "cube", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #ffffff, trigger: false,
     }];
-    out property <hit3d> hit: Scene3D.ray-hit(
+    out property <hit3d> hit <- Scene3D.ray-hit(
         root.scene, Point3D.new(0, 0, 3), Vector3D.new(0, 0, -2), 5);
-    out property <[hit3d]> hits: Scene3D.ray-hit-all(
+    out property <[hit3d]> hits <- Scene3D.ray-hit-all(
         root.scene, Point3D.new(0, 0, 3), Vector3D.new(0, 0, -2), 5);
     property <[BoxActor]> zones: [BoxActor {
         id: "zone", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #ffffff, trigger: true,
     }];
-    out property <[hit3d]> crossings: Scene3D.capsule-trigger-crossings(
+    out property <[hit3d]> crossings <- Scene3D.capsule-trigger-crossings(
         root.zones, Point3D.new(-2, 0, 0), Point3D.new(2, 0, 0), 0.25, 0.5);
-    out property <walkresult3d> movement: Scene3D.capsule-walk-result(
+    out property <walkresult3d> movement <- Scene3D.capsule-walk-result(
         root.zones, Point3D.new(-2, 0, 0), Vector3D.new(4, 0, 0), 0.25, 0.5, 0, 0, 45);
-    out property <walkresult3d> collision: Scene3D.capsule-walk-with-contacts(
+    out property <walkresult3d> collision <- Scene3D.capsule-walk-with-contacts(
         root.scene, Point3D.new(-2, 0, 0), Vector3D.new(2, 0, 0), 0.25, 0.5, 0, 0, 45);
-    out property <walkresult3d> standing: Scene3D.capsule-walk-with-contacts(
+    out property <walkresult3d> standing <- Scene3D.capsule-walk-with-contacts(
         root.scene, Point3D.new(0, 1, 0), Vector3D.new(0, 0, 0), 0.25, 0.5, 0, 0, 45);
     in-out property <walkresult3d> saved-movement;
-    in-out property <[hit3d]> saved-hits: once [];
-    in-out property <LayoutDirection> direction: once LayoutDirection.left-to-right;
+    in-out property <[hit3d]> saved-hits: [];
+    in-out property <LayoutDirection> direction: LayoutDirection.left-to-right;
     in-out property <ButtonDisplay> presentation;
-    in-out property <InputType> input-mode: once InputType.email;
-    in-out property <InputPurpose> input-hint: once InputPurpose.username;
-    in-out property <KeyboardCapitalization> keyboard-case: once KeyboardCapitalization.words;
-    in-out property <ReturnKey> enter-action: once ReturnKey.next;
-    in-out property <AccessibleLive> status-priority: once AccessibleLive.polite;
+    in-out property <InputType> input-mode: InputType.email;
+    in-out property <InputPurpose> input-hint: InputPurpose.username;
+    in-out property <KeyboardCapitalization> keyboard-case: KeyboardCapitalization.words;
+    in-out property <ReturnKey> enter-action: ReturnKey.next;
+    in-out property <AccessibleLive> status-priority: AccessibleLive.polite;
     in-out property <SceneToneMap> tone;
     in-out property <Date> date;
     in-out property <Time> time;
     in-out property <Font> font;
-    in-out property <styled-text> label: once @markdown("**XRack**");
-    in-out property <image> icon: once @image-url("");
-    in-out property <[SearchRow]> rows: once [];
+    in-out property <styled-text> label: @markdown("**XRack**");
+    in-out property <image> icon: @image-url("");
+    in-out property <[SearchRow]> rows: [];
     in-out property <[TouchPoint]> contacts;
-    in-out property <[string]> names: once ["one"];
-    out property <int> count: Model.count(root.names);
+    in-out property <[string]> names: ["one"];
+    out property <int> count <- Model.count(root.names);
     callback inspect-key(KeyEvent) -> EventResult;
     callback recolor(color) -> color;
     callback reflect-hits([hit3d]) -> [hit3d];
@@ -95,8 +95,8 @@ class BindingTest(unittest.TestCase):
         source = """
             export component App inherits Window {
                 in property <meshasset3d> loaded;
-                out property <bounds3d> bounds: root.loaded.bounds;
-                out property <meshnode3d> absent: Scene3D.mesh-node(root.loaded, 0);
+                out property <bounds3d> bounds <- root.loaded.bounds;
+                out property <meshnode3d> absent <- Scene3D.mesh-node(root.loaded, 0);
             }
         """
         with tempfile.TemporaryDirectory() as directory:
@@ -137,8 +137,8 @@ class BindingTest(unittest.TestCase):
                 yaw: float, pitch: float, roll: float, color: color,
             }
             export component App inherits Window {
-                property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, 0, 0), 0.04);
-                property <[Actor]> actors: [
+                property <physicsworld3d> world <- Physics3D.new(Vector3D.new(0, 0, 0), 0.04);
+                property <[Actor]> actors <- [
                     Actor {
                         id: "rig", mesh: @mesh-url("rig.gltf"), physics-body: "body",
                         parent: "", parent-node: "",
@@ -152,8 +152,8 @@ class BindingTest(unittest.TestCase):
                         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
                     },
                 ];
-                out property <scenemodel3d> scene: Scene3D.prepare(root.actors, root.world);
-                out property <meshnode3d> mount: Scene3D.scene-node(root.scene, "rig", "/Anchor");
+                out property <scenemodel3d> scene <- Scene3D.prepare(root.actors, root.world);
+                out property <meshnode3d> mount <- Scene3D.scene-node(root.scene, "rig", "/Anchor");
                 callback install();
                 install() => {
                     Physics3D.sync-bodies(root.world, [
@@ -214,8 +214,8 @@ class BindingTest(unittest.TestCase):
     def test_int_lists_round_trip_through_values_and_callbacks(self) -> None:
         source = """
             export component App inherits Window {
-                in-out property <[int]> values: once [1, 2];
-                out property <int> first: Model.at(root.values, 0, -1);
+                in-out property <[int]> values: [1, 2];
+                out property <int> first <- Model.at(root.values, 0, -1);
                 pure callback echo([int]) -> [int];
                 echo(keys) => { keys }
             }
@@ -242,13 +242,13 @@ class BindingTest(unittest.TestCase):
                 yaw: float, pitch: float, roll: float, color: color,
             }
             export component App inherits Window {
-                in-out property <scenemodel3d> scene: once Scene3D.prepare([
+                in-out property <scenemodel3d> scene: Scene3D.prepare([
                     Actor { id: "cube", mesh: "primitive:box", x: 2, y: 1, z: -3,
                         scale-x: 2, scale-y: 3, scale-z: 4, yaw: 0, pitch: 0, roll: 90,
                         color: #ffffff },
                 ]);
-                out property <instance3d> selected: Scene3D.instance(root.scene, 0, -1, -1);
-                SceneView3D { model: root.scene; }
+                out property <instance3d> selected <- Scene3D.instance(root.scene, 0, -1, -1);
+                SceneView3D { model <- root.scene; }
             }
         """
         with tempfile.TemporaryDirectory() as directory:
@@ -283,11 +283,11 @@ class BindingTest(unittest.TestCase):
     def test_file_instance_table_reads_source_rows_without_a_scene(self) -> None:
         source = """
             export component App inherits Window {
-                in-out property <bool> binary: once false;
-                out property <instancetable3d> table: root.binary
+                in-out property <bool> binary: false;
+                out property <instancetable3d> table <- root.binary
                     ? @instance-table-url("sample.bin") : @instance-table-url("sample.xml");
-                out property <int> rows: root.table.count;
-                out property <instance3d> item: Scene3D.table-instance(root.table, 0);
+                out property <int> rows <- root.table.count;
+                out property <instance3d> item <- Scene3D.table-instance(root.table, 0);
             }
         """
         with tempfile.TemporaryDirectory() as directory:
@@ -361,8 +361,8 @@ class BindingTest(unittest.TestCase):
                 export component App inherits Window {
                     in-out property <quaternion3d> rotation;
                     in-out property <rotationtrack3d> track;
-                    out property <vector3d> direction: Quaternion3D.rotate(root.rotation, Vector3D.new(1, 0, 0));
-                    out property <quaternion3d> sampled: Quaternion3D.sample(root.track, 0.5);
+                    out property <vector3d> direction <- Quaternion3D.rotate(root.rotation, Vector3D.new(1, 0, 0));
+                    out property <quaternion3d> sampled <- Quaternion3D.sample(root.track, 0.5);
                 }
                 """,
                 encoding="utf-8",
@@ -409,13 +409,13 @@ class BindingTest(unittest.TestCase):
                 position-min: vector3d, position-max: vector3d,
             }
             export component App inherits Window {
-                in-out property <int> count: once 4096;
-                in-out property <bool> enabled: once true;
-                out property <instancetable3d> table: Scene3D.random-instance-table(Spread {
+                in-out property <int> count: 4096;
+                in-out property <bool> enabled: true;
+                out property <instancetable3d> table <- Scene3D.random-instance-table(Spread {
                     count: root.count, enabled: root.enabled, seed: 27,
                     position-min: Vector3D.new(0, 0, 0), position-max: Vector3D.new(10, 5, 3),
                 });
-                out property <instance3d> first: Scene3D.table-instance(root.table, 0);
+                out property <instance3d> first <- Scene3D.table-instance(root.table, 0);
             }
         """
         with tempfile.TemporaryDirectory() as directory:
@@ -458,7 +458,7 @@ class BindingTest(unittest.TestCase):
             export component App inherits Window {
                 in-out property <physicsworld3d> world;
                 in-out property <int> body;
-                out property <point3d> position: Physics3D.position(root.world, root.body);
+                out property <point3d> position <- Physics3D.position(root.world, root.body);
                 callback advance();
                 advance() => { Physics3D.step(root.world); }
             }

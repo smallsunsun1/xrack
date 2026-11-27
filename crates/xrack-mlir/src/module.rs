@@ -434,6 +434,10 @@ pub struct OperationRef<'m> {
 }
 
 impl<'m> OperationRef<'m> {
+    pub(crate) fn identity(self) -> usize {
+        self.raw.ptr as usize
+    }
+
     fn from_raw(raw: ffi::MlirOperation) -> Option<Self> {
         (!raw.ptr.is_null()).then_some(Self {
             raw,

@@ -82,7 +82,7 @@ impl OwnershipChecks {
                 return Err(Diagnostic {
                     span: access.site,
                     message: format!(
-                        "cannot write read-only property `{}`: its storage is supplied by a one-way input at {}; use `<=>` to share writable storage",
+                        "cannot write read-only property `{}`: its storage is supplied by a one-way input at {}; use `<->` to share writable storage",
                         display_endpoint(&access.endpoint),
                         location(binding, source_files),
                     ),
@@ -98,7 +98,7 @@ impl OwnershipChecks {
                 return Err(Diagnostic {
                     span: access.site,
                     message: format!(
-                        "callback `{}` {certainty} read-only property `{}` at {}; its storage is supplied by a one-way input at {}; use `<=>` to share writable storage",
+                        "callback `{}` {certainty} read-only property `{}` at {}; its storage is supplied by a one-way input at {}; use `<->` to share writable storage",
                         display_endpoint(&access.endpoint),
                         display_endpoint(&effect.endpoint),
                         location(effect.site, source_files),

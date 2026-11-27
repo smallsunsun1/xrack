@@ -4,101 +4,101 @@ component RecordEditor inherits HorizontalLayout {
     property <bool> pinned: false;
     property <int> clicks: 0;
 
-    spacing: 8px;
-    padding-left: 10px;
-    padding-right: 12px;
-    cross-axis-alignment: center;
-    Text { text: "#" + (root.position + 1); width: 54px; color: #acc0db; }
-    name-field := LineEdit { text: root.label; }
-    pin := CheckBox { text: "置顶"; checked <=> root.pinned; }
+    spacing <- 8px;
+    padding-left <- 10px;
+    padding-right <- 12px;
+    cross-axis-alignment <- center;
+    Text { text <- "#" + (root.position + 1); width <- 54px; color <- #acc0db; }
+    name-field := LineEdit { text <- root.label; }
+    pin := CheckBox { text <- "置顶"; checked <-> root.pinned; }
     bump := Button {
-        text: "加一 · " + root.clicks;
+        text <- "加一 · " + root.clicks;
         clicked() => { root.clicks += 1; }
     }
 }
 
 component RecordList inherits ListView {
     in property <[string]> records;
-    row-height: 46px;
-    background: #223249;
+    row-height <- 46px;
+    background <- #223249;
 
     for label[index] in root.records : RecordEditor {
-        label: label;
-        position: index;
+        label <- label;
+        position <- index;
     }
 }
 
 export component DelegatesDemo inherits Window {
-    title: "XRack · 可编辑虚拟列表";
-    width: 630px;
-    height: 396px;
-    background: #182331;
+    title <- "XRack · 可编辑虚拟列表";
+    width <- 630px;
+    height <- 396px;
+    background <- #182331;
     in-out property <[string]> records;
     callback insert-first();
     callback remove-first();
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 8px;
-        Text { text: "可编辑虚拟列表"; font-size: 22px; }
-        Text { text: "编辑一行，然后滚动或在首行插入记录"; color: #acc0db; }
-        rows := RecordList { records: root.records; }
+        padding <- 16px;
+        spacing <- 8px;
+        Text { text <- "可编辑虚拟列表"; font-size <- 22px; }
+        Text { text <- "编辑一行，然后滚动或在首行插入记录"; color <- #acc0db; }
+        rows := RecordList { records <- root.records; }
         HorizontalLayout {
-            spacing: 8px;
-            insert := Button { text: "在首行插入"; clicked() => { root.insert-first(); } }
-            remove := Button { text: "删除首行"; clicked() => { root.remove-first(); } }
+            spacing <- 8px;
+            insert := Button { text <- "在首行插入"; clicked() => { root.insert-first(); } }
+            remove := Button { text <- "删除首行"; clicked() => { root.remove-first(); } }
         }
     }
 }
 component MailRow inherits SwipeDelegate {
     in property <string> subject;
-    property <SwipeSide> revealed: once closed;
+    property <SwipeSide> revealed: closed;
     property <bool> archived: false;
     property <bool> pinned: false;
     property <int> clicks: 0;
-    open-side <=> root.revealed;
-    accessible-name: root.subject;
+    open-side <-> root.revealed;
+    accessible-name <- root.subject;
     clicked() => { root.clicks += 1; }
 
     SwipeLeft {
-        width: 96px;
-        background: #304966;
+        width <- 96px;
+        background <- #304966;
         pin-mail := Button {
-            text: "置顶"; width: 96px;
+            text <- "置顶"; width <- 96px;
             clicked() => { root.pinned = !root.pinned; root.revealed = closed; }
         }
     }
     SwipeContent {
-        background: #263750;
-        padding-left: 14px;
-        cross-axis-alignment: center;
+        background <- #263750;
+        padding-left <- 14px;
+        cross-axis-alignment <- center;
         Text {
-            text: root.subject + (root.archived ? " · 已归档" : root.pinned ? " · 已置顶" : "") + " · 点击 " + root.clicks;
+            text <- root.subject + (root.archived ? " · 已归档" : root.pinned ? " · 已置顶" : "") + " · 点击 " + root.clicks;
         }
     }
     SwipeRight {
-        width: 96px;
-        background: #355b50;
+        width <- 96px;
+        background <- #355b50;
         archive := Button {
-            text: "归档"; width: 96px; background: #355b50;
+            text <- "归档"; width <- 96px; background <- #355b50;
             clicked() => { root.archived = true; root.revealed = closed; }
         }
     }
 }
 
 export component SwipeDemo inherits Window {
-    title: "XRack · 可滑动列表项";
-    width: 560px; height: 370px;
-    background: #182331;
+    title <- "XRack · 可滑动列表项";
+    width <- 560px; height <- 370px;
+    background <- #182331;
     in-out property <[string]> messages;
 
     VerticalLayout {
-        padding: 16px; spacing: 8px;
-        Text { text: "邮件 · 横向拖动露出操作"; font-size: 22px; }
-        Text { text: "也可聚焦后按左右方向键，Esc 收起"; color: #acc0db; }
+        padding <- 16px; spacing <- 8px;
+        Text { text <- "邮件 · 横向拖动露出操作"; font-size <- 22px; }
+        Text { text <- "也可聚焦后按左右方向键，Esc 收起"; color <- #acc0db; }
         mail := ListView {
-            row-height: 48px;
-            for subject in root.messages : MailRow { subject: subject; }
+            row-height <- 48px;
+            for subject in root.messages : MailRow { subject <- subject; }
         }
     }
 }

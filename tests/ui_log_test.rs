@@ -85,7 +85,7 @@ fn display_repeat_reuses_bindings_for_equal_rows_across_model_replacement() {
 fn standalone_mlir_validates_repeat_parameters_before_selecting_a_backend() {
     let doc = parse(
         r#"export component Rows inherits Window {
-            for row-item[row-index] in ["entry"] : Text { text: row-item + row-index; }
+            for row-item[row-index] in ["entry"] : Text { text <- row-item + row-index; }
         }"#,
     )
     .unwrap();
@@ -107,7 +107,7 @@ fn standalone_mlir_validates_repeat_parameters_before_selecting_a_backend() {
         .unwrap();
     let unused_item = parse(
         r#"export component Rows inherits Window {
-            for row-item in ["entry"] : Text { text: "fixed"; }
+            for row-item in ["entry"] : Text { text <- "fixed"; }
         }"#,
     )
     .unwrap();

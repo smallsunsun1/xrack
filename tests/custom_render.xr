@@ -1,96 +1,96 @@
 export component CustomRenderProbe inherits Window {
-    width: 64px;
-    height: 48px;
-    background: #112233;
+    width <- 64px;
+    height <- 48px;
+    background <- #112233;
     in-out property <int> paint-revision: 0;
     in-out property <string> paint-data: "warm";
 
     geometry := CustomRender {
-        x: 6px;
-        y: 6px;
-        width: 20px;
-        height: 20px;
-        renderer: "custom-render-test/geometry";
-        data: root.paint-data;
-        revision: root.paint-revision;
+        x <- 6px;
+        y <- 6px;
+        width <- 20px;
+        height <- 20px;
+        renderer <- "custom-render-test/geometry";
+        data <- root.paint-data;
+        revision <- root.paint-revision;
     }
 
     gpu := CustomRender {
-        x: 12px;
-        y: 12px;
-        width: 20px;
-        height: 20px;
-        renderer: "custom-render-test/gpu";
-        data: root.paint-data;
-        revision: root.paint-revision;
-        z: 1;
+        x <- 12px;
+        y <- 12px;
+        width <- 20px;
+        height <- 20px;
+        renderer <- "custom-render-test/gpu";
+        data <- root.paint-data;
+        revision <- root.paint-revision;
+        z <- 1;
     }
 
     Rectangle {
-        x: 18px;
-        y: 18px;
-        width: 4px;
-        height: 4px;
-        background: #0000ff;
-        z: 2;
+        x <- 18px;
+        y <- 18px;
+        width <- 4px;
+        height <- 4px;
+        background <- #0000ff;
+        z <- 2;
     }
 
     Rectangle {
-        x: 42px;
-        y: 6px;
-        width: 12px;
-        height: 12px;
-        clip: true;
-        opacity: 0.5;
+        x <- 42px;
+        y <- 6px;
+        width <- 12px;
+        height <- 12px;
+        clip <- true;
+        opacity <- 0.5;
         CustomRender {
-            x: 4px;
-            y: 4px;
-            width: 12px;
-            height: 12px;
-            renderer: "custom-render-test/gpu";
-            data: root.paint-data;
-            revision: root.paint-revision;
+            x <- 4px;
+            y <- 4px;
+            width <- 12px;
+            height <- 12px;
+            renderer <- "custom-render-test/gpu";
+            data <- root.paint-data;
+            revision <- root.paint-revision;
         }
     }
 }
 
 export component RetainedSceneProbe inherits Window {
-    width: 128px;
-    height: 64px;
-    background: #111822;
+    width <- 128px;
+    height <- 64px;
+    background <- #111822;
     in-out property <length> offset: 8px;
     in-out property <string> caption: "Retained text";
     in property <image> picture;
     Rectangle {
-        x: root.offset;
-        y: 8px;
-        width: 84px;
-        height: 44px;
-        background: #304060;
-        clip: true;
-        Image { x: 4px; y: 4px; width: 12px; height: 12px; source: root.picture; }
-        Text { x: 20px; y: 12px; width: 56px; height: 24px; text: root.caption; color: #ffffff; }
+        x <- root.offset;
+        y <- 8px;
+        width <- 84px;
+        height <- 44px;
+        background <- #304060;
+        clip <- true;
+        Image { x <- 4px; y <- 4px; width <- 12px; height <- 12px; source <- root.picture; }
+        Text { x <- 20px; y <- 12px; width <- 56px; height <- 24px; text <- root.caption; color <- #ffffff; }
     }
 }
 
 export component DisplayListProbe inherits Window {
-    width: 112px;
-    height: 80px;
-    background: #112233;
+    width <- 112px;
+    height <- 80px;
+    background <- #112233;
     in property <image> picture;
 
-    Image { x: 4px; y: 4px; width: 24px; height: 24px; source: root.picture; }
-    Image { x: 16px; y: 4px; width: 24px; height: 24px; source: root.picture; }
-    Rectangle { x: 36px; y: 4px; width: 12px; height: 24px; background: #596979; }
-    Image { x: 44px; y: 4px; width: 24px; height: 24px; source: root.picture; }
+    Image { x <- 4px; y <- 4px; width <- 24px; height <- 24px; source <- root.picture; }
+    Image { x <- 16px; y <- 4px; width <- 24px; height <- 24px; source <- root.picture; }
+    Rectangle { x <- 36px; y <- 4px; width <- 12px; height <- 24px; background <- #596979; }
+    Image { x <- 44px; y <- 4px; width <- 24px; height <- 24px; source <- root.picture; }
     Label {
-        x: 4px;
-        y: 32px;
-        width: 104px;
-        height: 44px;
-        font-family: "XRack Demo";
-        font-size: 13px;
-        text: "XRACK WWWW\nWWWW XRACK";
+        x <- 4px;
+        y <- 32px;
+        width <- 104px;
+        height <- 44px;
+        font-family <- "XRack Demo";
+        font-size <- 13px;
+        text <- "XRACK WWWW\nWWWW XRACK";
     }
 }
 
@@ -100,29 +100,29 @@ export component PerformanceProbe inherits Window {
     private property <int> amount: 3;
     in property <[PerformanceRow]> rows;
     in-out property <string> search: "one";
-    out property <[PerformanceRow]> selected: Model.lookup(root.rows, "owner", root.search);
-    out property <[PerformanceRow]> filtered: Model.filter(root.rows, "owner", root.search);
-    out property <[PerformanceRow]> sorted: Model.sort-by(root.rows, "owner", false);
-    out property <string> summary: "[" + root.calculate() + "]: " + root.search;
+    out property <[PerformanceRow]> selected <- Model.lookup(root.rows, "owner", root.search);
+    out property <[PerformanceRow]> filtered <- Model.filter(root.rows, "owner", root.search);
+    out property <[PerformanceRow]> sorted <- Model.sort-by(root.rows, "owner", false);
+    out property <string> summary <- "[" + root.calculate() + "]: " + root.search;
     in-out property <color> ink: #123456;
 
-    out property <bool> has-one: Strings.contains(root.search, "one");
-    out property <int> plus-result: root.add-amount(8);
+    out property <bool> has-one <- Strings.contains(root.search, "one");
+    out property <int> plus-result <- root.add-amount(8);
     pure function calculate() -> int { root.amount * 2 + 1 }
     pure function add-amount(value: int) -> int { root.amount + value }
     callback advance();
     advance => { root.amount += 1; }
 
-    Label { text: root.summary; color: root.ink; }
+    Label { text <- root.summary; color <- root.ink; }
 }
 
 export component RetainedGeometryProbe inherits Window {
     in-out property <length> offset: 0px;
     for i in 12 : Rectangle {
-        x: root.offset + (i * 8px);
-        y: 10px;
-        width: 7px;
-        height: 7px;
-        background: #ff355f;
+        x <- root.offset + (i * 8px);
+        y <- 10px;
+        width <- 7px;
+        height <- 7px;
+        background <- #ff355f;
     }
 }

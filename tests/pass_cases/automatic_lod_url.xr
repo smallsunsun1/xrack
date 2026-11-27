@@ -3,5 +3,5 @@
 // CHECK: "xr.property"(%[[MESH]]) <{mode = "formula", name = "surface", visibility = "out"}>
 
 export component AutoLodAssets inherits Window {
-    out property <string> surface: @mesh-url("models/surface.glb", auto-lod);
+    out property <string> surface <- @mesh-url("models/surface.glb", auto-lod);
 }

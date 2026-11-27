@@ -19,8 +19,8 @@ struct GridLight {
 }
 
 export component InstanceShadowBoundsDemo inherits Window {
-    title: "XRack · Instance shadow bounds";
-    width: 400px; height: 286px; background: #172538;
+    title <- "XRack · Instance shadow bounds";
+    width <- 400px; height <- 286px; background <- #172538;
     in-out property <bool> bounded: true;
     in-out property <bool> shadows: true;
     in-out property <int> cascades: 1;
@@ -28,19 +28,19 @@ export component InstanceShadowBoundsDemo inherits Window {
     in-out property <float> envelope: 5.0;
     in-out property <float> shift: 0;
 
-    property <vector3d> zero: Vector3D.new(0, 0, 0);
-    property <ShadowGrid> inactive: ShadowGrid {
+    property <vector3d> zero <- Vector3D.new(0, 0, 0);
+    property <ShadowGrid> inactive <- ShadowGrid {
         enabled: false, count: 0, seed: 7,
         position-min: root.zero, position-max: root.zero, grid-spacing: root.zero,
     };
-    property <GridActor> base: GridActor {
+    property <GridActor> base <- GridActor {
         id: "", mesh: "", parent: "", instance-root: "",
         x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #fff, camera-kind: "", camera-height: 4,
         casts-shadow: false, receives-shadow: true, random-instances: root.inactive,
         instance-shadow-bounds-min: root.zero, instance-shadow-bounds-max: root.zero,
     };
-    property <scenemodel3d> scene: Scene3D.prepare([
+    property <scenemodel3d> scene <- Scene3D.prepare([
         GridActor { id: "eye", z: 8, camera-kind: "orthographic", ..root.base },
         GridActor { id: "wall", mesh: "primitive:box", z: -0.05,
             scale-x: 7, scale-y: 4.2, scale-z: 0.1, color: #c7cad1, ..root.base },
@@ -59,37 +59,37 @@ export component InstanceShadowBoundsDemo inherits Window {
             ..root.base
         },
     ]);
-    property <[GridLight]> lamps: [
+    property <[GridLight]> lamps <- [
         GridLight {
             kind: root.light-kind, x: 6.5, y: 0, z: 4, yaw: 60, elevation: 0,
             intensity: root.light-kind == "directional" ? 3 : 55, color: #fff,
             range: 16, inner-angle: 32, outer-angle: 49, shadow-filter: "hard",
         }
     ];
-    property <point2d> viewport: Point2D.new(400px, 240px);
-    out property <string> picked: Scene3D.pick-camera(
+    property <point2d> viewport <- Point2D.new(400px, 240px);
+    out property <string> picked <- Scene3D.pick-camera(
         root.scene, "eye", root.viewport, Point2D.new(260px, 120px));
-    out property <instance3d> first: Scene3D.instance(root.scene, 3, -1, 0);
+    out property <instance3d> first <- Scene3D.instance(root.scene, 3, -1, 0);
 
     SceneView3D {
-        width: root.viewport.x; height: root.viewport.y; model: root.scene; camera: "eye";
-        lights: root.lamps; shadows: root.shadows; shadow-map-size: 256; shadow-cascades: root.cascades;
-        ambient-intensity: 0.15; scene-tone-map: none; scene-background: #1f3044;
-        frustum-culling: true;
+        width <- root.viewport.x; height <- root.viewport.y; model <- root.scene; camera <- "eye";
+        lights <- root.lamps; shadows <- root.shadows; shadow-map-size <- 256; shadow-cascades <- root.cascades;
+        ambient-intensity <- 0.15; scene-tone-map <- none; scene-background <- #1f3044;
+        frustum-culling <- true;
     }
     bounds-toggle := CheckBox {
-        x: 10px; y: 248px; width: 150px; text: "Shared bounds"; checked <=> root.bounded;
+        x <- 10px; y <- 248px; width <- 150px; text <- "Shared bounds"; checked <-> root.bounded;
     }
     lights-toggle := Button {
-        x: 163px; y: 248px; width: 113px; height: 29px; text: root.light-kind;
+        x <- 163px; y <- 248px; width <- 113px; height <- 29px; text <- root.light-kind;
         clicked => {
             root.light-kind = root.light-kind == "directional" ? "point"
                 : (root.light-kind == "point" ? "spot" : "directional");
         }
     }
     cascades-toggle := CheckBox {
-        x: 278px; y: 248px; width: 118px; text: "Cascades";
-        checked: root.cascades > 1;
+        x <- 278px; y <- 248px; width <- 118px; text <- "Cascades";
+        checked <- root.cascades > 1;
         toggled => { root.cascades = self.checked ? 3 : 1; }
     }
 }

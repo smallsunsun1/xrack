@@ -903,6 +903,8 @@ pub struct Binding {
     pub span: Span,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub two_way: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub initial: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

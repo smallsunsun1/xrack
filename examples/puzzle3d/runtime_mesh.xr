@@ -5,8 +5,8 @@ struct RuntimeActor {
 }
 
 export component RuntimeMeshDemo inherits Window {
-    title: "XRack · 运行时网格";
-    width: 540px; height: 387px; background: #192638;
+    title <- "XRack · 运行时网格";
+    width <- 540px; height <- 387px; background <- #192638;
 
     in property <meshasset3d> loaded;
     in property <bool> loading: false;
@@ -15,40 +15,40 @@ export component RuntimeMeshDemo inherits Window {
     in-out property <float> turn: 0;
     callback load-mesh(path: string);
 
-    property <[RuntimeActor]> world: [
+    property <[RuntimeActor]> world <- [
         RuntimeActor {
             id: "object", mesh: "primitive:box", mesh-asset: root.loaded,
             x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
             yaw: root.turn, pitch: 0, roll: 0, color: #fff,
         },
     ];
-    out property <hit3d> hit: Scene3D.ray-hit(
+    out property <hit3d> hit <- Scene3D.ray-hit(
         root.world, Point3D.new(0, 0.6, 5), Vector3D.new(0, 0, -1), 10);
 
     SceneView3D {
-        width: 540px; height: 270px; model: root.world;
-        camera-yaw: 0; camera-pitch: 0; camera-distance: 6;
-        scene-background: #101827; cache-rendering: true;
+        width <- 540px; height <- 270px; model <- root.world;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 6;
+        scene-background <- #101827; cache-rendering <- true;
     }
     chooser := FileDialog {
-        mode: FileDialogMode.open-file;
-        title: "打开 3D 网格";
-        name-filters: ["3D 网格 (*.obj *.gltf *.glb *.png)"];
+        mode <- FileDialogMode.open-file;
+        title <- "打开 3D 网格";
+        name-filters <- ["3D 网格 (*.obj *.gltf *.glb *.png)"];
         accepted(selection) => { root.load-mesh(chooser.selected-file); }
     }
     open-model := Button {
-        x: 14px; y: 280px; width: 121px; height: 36px;
-        text: "打开模型…"; enabled: !root.loading && !chooser.pending;
+        x <- 14px; y <- 280px; width <- 121px; height <- 36px;
+        text <- "打开模型…"; enabled <- !root.loading && !chooser.pending;
         clicked => { chooser.open(); }
     }
-    Text { x: 153px; y: 291px; text: "旋转"; color: #dae6f2; }
+    Text { x <- 153px; y <- 291px; text <- "旋转"; color <- #dae6f2; }
     Slider {
-        x: 203px; y: 282px; width: 319px; height: 32px;
-        minimum: -180; maximum: 180; value <=> root.turn;
+        x <- 203px; y <- 282px; width <- 319px; height <- 32px;
+        minimum <- -180; maximum <- 180; value <-> root.turn;
     }
     Label {
-        x: 14px; y: 324px; width: 510px; height: 46px;
-        text: root.loading ? "正在准备网格…" : root.load-error != "" ? root.load-error :
+        x <- 14px; y <- 324px; width <- 510px; height <- 46px;
+        text <- root.loading ? "正在准备网格…" : root.load-error != "" ? root.load-error :
             root.source-name == "" ? "选择文件查看模型" : root.source-name;
     }
 }

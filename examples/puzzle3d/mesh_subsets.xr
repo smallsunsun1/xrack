@@ -15,8 +15,8 @@ struct SegmentedActor {
 }
 
 export component MeshSubsetsDemo inherits Window {
-    title: "XRack · Mesh material subsets";
-    width: 600px; height: 372px; background: #192330;
+    title <- "XRack · Mesh material subsets";
+    width <- 600px; height <- 372px; background <- #192330;
 
     in-out property <bool> hidden-badge: false;
     in-out property <bool> secondary-uv: true;
@@ -28,7 +28,7 @@ export component MeshSubsetsDemo inherits Window {
             position: Point3D.new(x, y, 0), u: 0.25, v: 0.25, u1: 0.75, v1: 0.25,
         }
     }
-    property <[SegmentVertex]> vertices: [
+    property <[SegmentVertex]> vertices <- [
         root.vertex(-2.35, -0.85), root.vertex(-1.05, -0.85),
         root.vertex(-1.05, 0.85), root.vertex(-2.35, 0.85),
         root.vertex(-0.65, -0.85), root.vertex(0.65, -0.85),
@@ -54,11 +54,11 @@ export component MeshSubsetsDemo inherits Window {
     property <SegmentTexture> empty-map: SegmentTexture {
         source: "", uv-set: 0, min-filter: "nearest", mag-filter: "nearest", mip-filter: "none",
     };
-    property <SegmentFinish> flat: SegmentFinish {
+    property <SegmentFinish> flat <- SegmentFinish {
         slot: "surface", base-color: #d9dde5, unlit: true, alpha-mode: "opaque",
         specular-amount: 0, emissive-color: #000, emissive-map: root.empty-map,
     };
-    property <SegmentPalette> palette: SegmentPalette {
+    property <SegmentPalette> palette <- SegmentPalette {
         badge: SegmentFinish {
             slot: "badge", alpha-mode: "mask", base-color: root.hidden-badge ? #d8724900 : #d87249,
             ..root.flat
@@ -73,13 +73,13 @@ export component MeshSubsetsDemo inherits Window {
             ..root.flat
         },
     };
-    property <SegmentedActor> defaults: SegmentedActor {
+    property <SegmentedActor> defaults <- SegmentedActor {
         id: "", geometry: SegmentedGeometry { vertices: [], indices: [], subsets: [] },
         material-slots: root.palette, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
         camera-kind: "", camera-height: 4, instance-of: "", visible: true,
     };
-    out property <[SegmentedActor]> world: [
+    out property <[SegmentedActor]> world <- [
         SegmentedActor { id: "eye", camera-kind: "orthographic", z: 8, ..root.defaults },
         SegmentedActor {
             id: "tiles", geometry: SegmentedGeometry {
@@ -91,20 +91,20 @@ export component MeshSubsetsDemo inherits Window {
             scale-x: 0.8, scale-y: 0.45, ..root.defaults
         }
     ];
-    out property <string> left-hit: Scene3D.pick-camera(
+    out property <string> left-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(600px, 320px), Point2D.new(164px, 160px));
-    out property <string> middle-hit: Scene3D.pick-camera(
+    out property <string> middle-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(600px, 320px), Point2D.new(300px, 160px));
 
     SceneView3D {
-        width: 600px; height: 320px; model: root.world; camera: "eye";
-        scene-background: #22334b; ambient-intensity: 0;
+        width <- 600px; height <- 320px; model <- root.world; camera <- "eye";
+        scene-background <- #22334b; ambient-intensity <- 0;
     }
     move-button := Button {
-        x: 12px; y: 334px; width: 132px; height: 30px; text: root.moved ? "Restore badge" : "Move badge";
+        x <- 12px; y <- 334px; width <- 132px; height <- 30px; text <- root.moved ? "Restore badge" : "Move badge";
         clicked => { root.move-badge(); }
     }
-    CheckBox { x: 153px; y: 334px; width: 130px; text: "Hide badge"; checked <=> root.hidden-badge; }
-    CheckBox { x: 293px; y: 334px; width: 138px; text: "Second UV"; checked <=> root.secondary-uv; }
-    CheckBox { x: 443px; y: 334px; width: 140px; text: "Instance"; checked <=> root.duplicate; }
+    CheckBox { x <- 153px; y <- 334px; width <- 130px; text <- "Hide badge"; checked <-> root.hidden-badge; }
+    CheckBox { x <- 293px; y <- 334px; width <- 138px; text <- "Second UV"; checked <-> root.secondary-uv; }
+    CheckBox { x <- 443px; y <- 334px; width <- 140px; text <- "Instance"; checked <-> root.duplicate; }
 }

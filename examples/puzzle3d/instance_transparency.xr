@@ -16,8 +16,8 @@ struct InstanceActor {
 }
 
 export component InstanceTransparencyDemo inherits Window {
-    title: "XRack · Instance transparency";
-    width: 400px; height: 326px; background: #172538;
+    title <- "XRack · Instance transparency";
+    width <- 400px; height <- 326px; background <- #172538;
 
     in-out property <bool> instance-alpha: false;
     in-out property <bool> weighted: false;
@@ -29,12 +29,12 @@ export component InstanceTransparencyDemo inherits Window {
     in-out property <float> spacing: 0.7;
     in-out property <float> table-bias: 0;
     property <instancetable3d> empty-table;
-    property <instancetable3d> table: Scene3D.instance-table([
+    property <instancetable3d> table <- Scene3D.instance-table([
         InstanceTint { position: Point3D.new(-1.8, 0, 0), color: #ff000080 },
         InstanceTint { position: Point3D.new(0, 0, 0), color: #00ff0000 },
         InstanceTint { position: Point3D.new(1.8, 0, 0), color: #ffcc00 },
     ]);
-    property <instancetable3d> stack-table: Scene3D.instance-table([
+    property <instancetable3d> stack-table <- Scene3D.instance-table([
         InstanceTint { position: Point3D.new(0, 0, root.spacing), color: #ff000080 },
         InstanceTint { position: Point3D.new(0, 0, -root.spacing), color: #00ff0080 },
     ]);
@@ -42,14 +42,14 @@ export component InstanceTransparencyDemo inherits Window {
         alpha-mode: "opaque", alpha-cutoff: 0.2, base-color: #fff,
         depth-draw-mode: "opaque-only", unlit: true,
     };
-    property <InstanceActor> base: InstanceActor {
+    property <InstanceActor> base <- InstanceActor {
         id: "", mesh: "", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, material: root.paint, camera-kind: "", camera-height: 4,
         instance-table: root.empty-table, instance-has-transparency: false,
         instance-depth-sorting: false, depth-bias: 0, visible: true,
     };
-    property <scenemodel3d> scene: Scene3D.prepare([
+    property <scenemodel3d> scene <- Scene3D.prepare([
         InstanceActor { id: "eye", z: 8, camera-kind: "orthographic", ..root.base },
         InstanceActor {
             id: "panels", mesh: "primitive:rectangle", scale-x: 1.33, scale-y: 1.6,
@@ -68,31 +68,31 @@ export component InstanceTransparencyDemo inherits Window {
             scale-x: 1.2, scale-y: 1.45, color: #0000ff80, visible: root.stacked,
             material: InstancePaint { alpha-mode: "blend", ..root.paint }, ..root.base },
     ]);
-    property <point2d> size: Point2D.new(400px, 240px);
-    out property <hit3d> center-hit: Scene3D.hit-camera(root.scene, "eye", root.size, Point2D.new(200px, 120px));
-    out property <[int]> center-rows: Scene3D.pick-in-rect-camera(
+    property <point2d> size <- Point2D.new(400px, 240px);
+    out property <hit3d> center-hit <- Scene3D.hit-camera(root.scene, "eye", root.size, Point2D.new(200px, 120px));
+    out property <[int]> center-rows <- Scene3D.pick-in-rect-camera(
         root.scene, "eye", root.size, Point2D.new(176px, 96px), Point2D.new(224px, 144px));
 
     SceneView3D {
-        width: root.size.x; height: root.size.y; model: root.scene; camera: "eye";
-        scene-tone-map: none; order-independent-transparency: root.weighted;
-        shadows: root.depth-effects; shadow-map-size: 128;
-        temporal-aa: root.depth-effects; temporal-aa-mode: "motion-vectors";
+        width <- root.size.x; height <- root.size.y; model <- root.scene; camera <- "eye";
+        scene-tone-map <- none; order-independent-transparency <- root.weighted;
+        shadows <- root.depth-effects; shadow-map-size <- 128;
+        temporal-aa <- root.depth-effects; temporal-aa-mode <- "motion-vectors";
     }
     alpha-toggle := CheckBox {
-        x: 12px; y: 249px; width: 145px; text: "Instance alpha"; checked <=> root.instance-alpha;
+        x <- 12px; y <- 249px; width <- 145px; text <- "Instance alpha"; checked <-> root.instance-alpha;
     }
     weighted-toggle := CheckBox {
-        x: 160px; y: 249px; width: 118px; text: "Weighted"; checked <=> root.weighted;
+        x <- 160px; y <- 249px; width <- 118px; text <- "Weighted"; checked <-> root.weighted;
     }
     material-toggle := Button {
-        x: 281px; y: 248px; width: 107px; height: 29px; text: root.mode;
+        x <- 281px; y <- 248px; width <- 107px; height <- 29px; text <- root.mode;
         clicked => { root.mode = root.mode == "opaque" ? "mask" : (root.mode == "mask" ? "blend" : "opaque"); }
     }
     stack-toggle := CheckBox {
-        x: 12px; y: 285px; width: 154px; text: "Stack instances"; checked <=> root.stacked;
+        x <- 12px; y <- 285px; width <- 154px; text <- "Stack instances"; checked <-> root.stacked;
     }
     sort-toggle := CheckBox {
-        x: 177px; y: 285px; width: 200px; text: "Sort within table"; checked <=> root.depth-sorting;
+        x <- 177px; y <- 285px; width <- 200px; text <- "Sort within table"; checked <-> root.depth-sorting;
     }
 }

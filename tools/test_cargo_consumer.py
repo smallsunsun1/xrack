@@ -90,7 +90,7 @@ fn main() {
     (app / "ui/split.xr").write_text("""export component SplitProbe inherits Window {
     out property <int> edits: 0;
     work := SplitView {
-        fill-pane: body;
+        fill-pane <- body;
         resized() => { root.edits += 1; }
         sidebar := Rectangle {}
         body := Rectangle {}

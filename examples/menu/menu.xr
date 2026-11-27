@@ -1,8 +1,8 @@
 export component MenuDemo inherits Window {
-    title: "XRack · 菜单";
-    width: 620px;
-    height: 366px;
-    background: #182331;
+    title <- "XRack · 菜单";
+    width <- 620px;
+    height <- 366px;
+    background <- #182331;
 
     in-out property <bool> show-grid: false;
     in-out property <bool> rtl: false;
@@ -14,12 +14,12 @@ export component MenuDemo inherits Window {
     out property <string> command: "请选择一条命令";
 
     grid-command := Action {
-        text: "显示网格";
-        icon: @image-url("assets/grid.svg");
-        shortcut: "Primary+G";
-        enabled: root.grid-enabled;
-        checkable: true;
-        checked <=> root.show-grid;
+        text <- "显示网格";
+        icon <- @image-url("assets/grid.svg");
+        shortcut <- "Primary+G";
+        enabled <- root.grid-enabled;
+        checkable <- true;
+        checked <-> root.show-grid;
         activated() => {
             root.grid-activations += 1;
             root.command = root.show-grid ? "已显示网格" : "已隐藏网格";
@@ -27,77 +27,77 @@ export component MenuDemo inherits Window {
     }
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 10px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        padding <- 16px;
+        spacing <- 10px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         MenuBar {
             file-menu := Menu {
-                title: "文件";
-                MenuItem { text: "新建"; shortcut: root.new-shortcut; activated() => { root.command = "已新建"; } }
-                MenuItem { text: "导入"; shortcut: "Primary+I"; enabled: false; }
+                title <- "文件";
+                MenuItem { text <- "新建"; shortcut <- root.new-shortcut; activated() => { root.command = "已新建"; } }
+                MenuItem { text <- "导入"; shortcut <- "Primary+I"; enabled <- false; }
                 MenuSeparator { }
                 Menu {
-                    title: "导出为";
-                    MenuItem { text: "纯文本"; activated() => { root.command = "已导出纯文本"; } }
-                    MenuItem { text: "图像"; shortcut: "Primary+Shift+E"; activated() => { root.command = "已导出图像"; } }
+                    title <- "导出为";
+                    MenuItem { text <- "纯文本"; activated() => { root.command = "已导出纯文本"; } }
+                    MenuItem { text <- "图像"; shortcut <- "Primary+Shift+E"; activated() => { root.command = "已导出图像"; } }
                 }
             }
             view-menu := Menu {
-                title: "视图";
-                grid-item := MenuItem { action: grid-command; }
+                title <- "视图";
+                grid-item := MenuItem { action <- grid-command; }
             }
         }
         workspace := ContextMenuArea {
             Rectangle {
-                background: #25364e;
-                border-radius: 10px;
-                Text { x: 16px; y: 16px; text: "工作区"; font-size: 22px; }
-                Text { x: 16px; y: 56px; text: "右键或 Shift+F10 打开上下文菜单"; color: #acc0db; }
-                Text { x: 16px; y: 89px; text: root.show-grid ? "网格已显示" : "网格已隐藏"; }
+                background <- #25364e;
+                border-radius <- 10px;
+                Text { x <- 16px; y <- 16px; text <- "工作区"; font-size <- 22px; }
+                Text { x <- 16px; y <- 56px; text <- "右键或 Shift+F10 打开上下文菜单"; color <- #acc0db; }
+                Text { x <- 16px; y <- 89px; text <- root.show-grid ? "网格已显示" : "网格已隐藏"; }
             }
             Menu {
-                MenuItem { text: "刷新"; shortcut: "Primary+R"; activated() => { root.command = "已刷新工作区"; } }
+                MenuItem { text <- "刷新"; shortcut <- "Primary+R"; activated() => { root.command = "已刷新工作区"; } }
                 MenuSeparator { }
-                MenuItem { text: "重置视图"; activated() => { root.show-grid = false; root.command = "已重置视图"; } }
+                MenuItem { text <- "重置视图"; activated() => { root.show-grid = false; root.command = "已重置视图"; } }
             }
         }
         ToolBar {
-            spacing: 8px;
-            wrap: true;
+            spacing <- 8px;
+            wrap <- true;
             grid-button := ToolButton {
-                action: grid-command;
-                icon-only: true;
-                accessible-name: "显示网格";
-                Tooltip { text: "显示网格 · Primary+G"; }
+                action <- grid-command;
+                icon-only <- true;
+                accessible-name <- "显示网格";
+                Tooltip { text <- "显示网格 · Primary+G"; }
             }
-            dialog-button := ToolButton { text: "对话框"; clicked() => { root.dialog-open = true; } }
-            background-button := ToolButton { text: "背景计数 · " + root.background-clicks; clicked() => { root.background-clicks += 1; } }
+            dialog-button := ToolButton { text <- "对话框"; clicked() => { root.dialog-open = true; } }
+            background-button := ToolButton { text <- "背景计数 · " + root.background-clicks; clicked() => { root.background-clicks += 1; } }
         }
-        status := Text { text: root.command; color: #acc0db; }
+        status := Text { text <- root.command; color <- #acc0db; }
         inspector := Dialog {
-            open <=> root.dialog-open;
-            title: "对话框中的菜单";
-            width: 370px;
-            height: 210px;
+            open <-> root.dialog-open;
+            title <- "对话框中的菜单";
+            width <- 370px;
+            height <- 210px;
             inspector-area := ContextMenuArea {
-                Rectangle { background: #344866; border-radius: 6px; Text { x: 10px; y: 10px; text: "右键检查此区域"; } }
-                Menu { MenuItem { text: "检查属性"; shortcut: "Primary+R"; activated() => { root.command = "已检查属性"; } } }
+                Rectangle { background <- #344866; border-radius <- 6px; Text { x <- 10px; y <- 10px; text <- "右键检查此区域"; } }
+                Menu { MenuItem { text <- "检查属性"; shortcut <- "Primary+R"; activated() => { root.command = "已检查属性"; } } }
             }
-            DialogButton { text: "关闭"; role: reject; }
+            DialogButton { text <- "关闭"; role <- reject; }
         }
         direction := Button {
-            text: root.rtl ? "RTL · 切换方向" : "LTR · 切换方向";
+            text <- root.rtl ? "RTL · 切换方向" : "LTR · 切换方向";
             clicked => { root.rtl = !root.rtl; }
         }
     }
 }
 
 export component ButtonAppearanceDemo inherits Window {
-    title: "XRack · 按钮外观";
-    width: 440px; height: 250px;
-    background: #182331;
-    color-scheme: dark;
-    accent-color: #f2a354;
+    title <- "XRack · 按钮外观";
+    width <- 440px; height <- 250px;
+    background <- #182331;
+    color-scheme <- dark;
+    accent-color <- #f2a354;
     in-out property <bool> emphasize: true;
     in-out property <bool> flat-save: false;
     in-out property <bool> save-enabled: true;
@@ -105,76 +105,76 @@ export component ButtonAppearanceDemo inherits Window {
     out property <int> activations: 0;
 
     save := Button {
-        x: 18px; y: 20px; width: 122px; height: 46px;
-        text: "保存";
-        primary: root.emphasize;
-        flat: root.flat-save;
-        enabled: root.save-enabled;
+        x <- 18px; y <- 20px; width <- 122px; height <- 46px;
+        text <- "保存";
+        primary <- root.emphasize;
+        flat <- root.flat-save;
+        enabled <- root.save-enabled;
         clicked => { root.activations += 1; }
     }
     cancel := Button {
-        x: 155px; y: 20px; width: 122px; height: 46px;
-        text: "取消"; primary: false;
+        x <- 155px; y <- 20px; width <- 122px; height <- 46px;
+        text <- "取消"; primary <- false;
         clicked => { root.activations += 1; }
     }
     pin := ToolButton {
-        x: 292px; y: 20px; width: 122px; height: 46px;
-        text: "固定"; primary: false; flat: true;
-        checkable: true; checked <=> root.pinned;
+        x <- 292px; y <- 20px; width <- 122px; height <- 46px;
+        text <- "固定"; primary <- false; flat <- true;
+        checkable <- true; checked <-> root.pinned;
         toggled => { root.activations += 1; }
     }
-    emphasis := CheckBox { x: 18px; y: 86px; width: 130px; text: "强调保存"; checked <=> root.emphasize; }
-    flatten := CheckBox { x: 155px; y: 86px; width: 130px; text: "扁平保存"; checked <=> root.flat-save; }
-    enable-save := CheckBox { x: 292px; y: 86px; width: 130px; text: "允许保存"; checked <=> root.save-enabled; }
-    appearance-status := Label { x: 18px; y: 140px; text: "激活次数 " + root.activations; }
+    emphasis := CheckBox { x <- 18px; y <- 86px; width <- 130px; text <- "强调保存"; checked <-> root.emphasize; }
+    flatten := CheckBox { x <- 155px; y <- 86px; width <- 130px; text <- "扁平保存"; checked <-> root.flat-save; }
+    enable-save := CheckBox { x <- 292px; y <- 86px; width <- 130px; text <- "允许保存"; checked <-> root.save-enabled; }
+    appearance-status := Label { x <- 18px; y <- 140px; text <- "激活次数 " + root.activations; }
 }
 
 export component ButtonDisplayDemo inherits Window {
-    title: "XRack · 按钮图标布局";
-    width: 475px; height: 300px;
+    title <- "XRack · 按钮图标布局";
+    width <- 475px; height <- 300px;
     in-out property <bool> rtl: false;
     out property <int> activations: 0;
 
     grid := Action {
-        text: "网格";
-        icon: @image-url("assets/grid.svg");
+        text <- "网格";
+        icon <- @image-url("assets/grid.svg");
         activated => { root.activations += 1; }
     }
     VerticalLayout {
-        padding: 18px; spacing: 12px;
+        padding <- 18px; spacing <- 12px;
         ToolBar {
-            spacing: 10px;
-            layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+            spacing <- 10px;
+            layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
             beside := ToolButton {
-                action: grid; display: ButtonDisplay.text-beside-icon;
+                action <- grid; display <- ButtonDisplay.text-beside-icon;
             }
             stacked := ToolButton {
-                action: grid; display: ButtonDisplay.text-under-icon;
-                spacing: 5px; color: #e7a646; colorize-icon: true;
+                action <- grid; display <- ButtonDisplay.text-under-icon;
+                spacing <- 5px; color <- #e7a646; colorize-icon <- true;
             }
             only-icon := RoundButton {
-                action: grid; display: ButtonDisplay.icon-only;
-                accessible-name: "图标网格";
+                action <- grid; display <- ButtonDisplay.icon-only;
+                accessible-name <- "图标网格";
             }
             only-text := Button {
-                action: grid; display: ButtonDisplay.text-only;
+                action <- grid; display <- ButtonDisplay.text-only;
             }
             custom := ToolButton {
-                text: "自定义";
+                text <- "自定义";
                 clicked => { root.activations += 1; }
-                ButtonContent { Text { text: "自定义"; color: #f3b787; } }
+                ButtonContent { Text { text <- "自定义"; color <- #f3b787; } }
             }
         }
-        direction := CheckBox { text: "从右到左显示"; checked <=> root.rtl; }
-        display-status := Label { text: "激活次数 " + root.activations; }
+        direction := CheckBox { text <- "从右到左显示"; checked <-> root.rtl; }
+        display-status := Label { text <- "激活次数 " + root.activations; }
     }
 }
 
 export component RoundToolbarDemo inherits Window {
-    title: "XRack · 圆形按钮";
-    width: 480px; height: 280px;
-    background: #182331;
-    color-scheme: dark;
+    title <- "XRack · 圆形按钮";
+    width <- 480px; height <- 280px;
+    background <- #182331;
+    color-scheme <- dark;
     in-out property <bool> grid-enabled: true;
     in-out property <bool> show-grid: false;
     in property <length> corner-radius: 5px;
@@ -183,62 +183,62 @@ export component RoundToolbarDemo inherits Window {
     out property <int> plain-clicks: 0;
 
     grid := Action {
-        text: "网格";
-        icon: @image-url("assets/grid.svg");
-        shortcut: "Primary+G";
-        enabled: root.grid-enabled;
-        checkable: true;
-        checked <=> root.show-grid;
+        text <- "网格";
+        icon <- @image-url("assets/grid.svg");
+        shortcut <- "Primary+G";
+        enabled <- root.grid-enabled;
+        checkable <- true;
+        checked <-> root.show-grid;
         activated() => { root.activations += 1; }
     }
 
     underlying := Button {
-        x: 24px; y: 56px; width: 64px; height: 64px;
-        border-radius: 0px; background: #384960;
-        accessible-name: "底层按钮";
+        x <- 24px; y <- 56px; width <- 64px; height <- 64px;
+        border-radius <- 0px; background <- #384960;
+        accessible-name <- "底层按钮";
         clicked() => { root.underlying-clicks += 1; }
     }
     circle := RoundButton {
-        x: 24px; y: 56px; width: 64px; height: 64px;
-        action: grid; icon-only: true; icon-size: 20px;
-        background: #4969df;
-        accessible-name: "切换网格";
+        x <- 24px; y <- 56px; width <- 64px; height <- 64px;
+        action <- grid; icon-only <- true; icon-size <- 20px;
+        background <- #4969df;
+        accessible-name <- "切换网格";
     }
     custom := RoundButton {
-        x: 24px; y: 143px; width: 64px; height: 42px;
-        text: "执行"; radius: root.corner-radius;
+        x <- 24px; y <- 143px; width <- 64px; height <- 42px;
+        text <- "执行"; radius <- root.corner-radius;
         clicked() => { root.plain-clicks += 1; }
     }
     horizontal := ToolBar {
-        x: 115px; y: 56px; width: 340px; height: 58px;
-        padding: 8px; spacing: 8px; alignment: start;
-        command := RoundButton { action: grid; width: 96px; }
-        vertical-line := ToolSeparator { stroke-width: 2px; color: #e4b678; }
-        tools := ToolButton { text: "清除"; clicked() => { root.show-grid = false; } }
+        x <- 115px; y <- 56px; width <- 340px; height <- 58px;
+        padding <- 8px; spacing <- 8px; alignment <- start;
+        command := RoundButton { action <- grid; width <- 96px; }
+        vertical-line := ToolSeparator { stroke-width <- 2px; color <- #e4b678; }
+        tools := ToolButton { text <- "清除"; clicked() => { root.show-grid = false; } }
     }
     vertical := ToolBar {
-        x: 115px; y: 131px; width: 60px; height: 124px;
-        orientation: vertical;
-        padding: 6px; spacing: 4px; alignment: start;
-        reset := ToolButton { text: "重置"; height: 32px; clicked() => { root.show-grid = false; } }
-        horizontal-line := ToolSeparator { orientation: horizontal; stroke-width: 2px; color: #9cdbbd; }
-        toggle := ToolButton { text: "切换"; height: 32px; clicked() => { root.grid-enabled = !root.grid-enabled; } }
+        x <- 115px; y <- 131px; width <- 60px; height <- 124px;
+        orientation <- vertical;
+        padding <- 6px; spacing <- 4px; alignment <- start;
+        reset := ToolButton { text <- "重置"; height <- 32px; clicked() => { root.show-grid = false; } }
+        horizontal-line := ToolSeparator { orientation <- horizontal; stroke-width <- 2px; color <- #9cdbbd; }
+        toggle := ToolButton { text <- "切换"; height <- 32px; clicked() => { root.grid-enabled = !root.grid-enabled; } }
     }
     Text {
-        x: 195px; y: 150px; color: #acc0db;
-        text: "网格 " + (root.show-grid ? "开" : "关") + " · 命令 " + root.activations;
+        x <- 195px; y <- 150px; color <- #acc0db;
+        text <- "网格 " + (root.show-grid ? "开" : "关") + " · 命令 " + root.activations;
     }
     Text {
-        x: 195px; y: 180px; color: #acc0db;
-        text: "底层点击 " + root.underlying-clicks;
+        x <- 195px; y <- 180px; color <- #acc0db;
+        text <- "底层点击 " + root.underlying-clicks;
     }
 }
 
 export component ActionGroupDemo inherits Window {
-    title: "XRack · 命令组";
-    width: 620px;
-    height: 300px;
-    background: #182331;
+    title <- "XRack · 命令组";
+    width <- 620px;
+    height <- 300px;
+    background <- #182331;
 
     in-out property <string> mode: "detail";
     in-out property <bool> modes-enabled: true;
@@ -251,79 +251,79 @@ export component ActionGroupDemo inherits Window {
     out property <int> overlay-activations: 0;
 
     view-modes := ActionGroup {
-        enabled: root.modes-enabled;
-        current-value <=> root.mode;
+        enabled <- root.modes-enabled;
+        current-value <-> root.mode;
         activated(value) => {
             root.last-command = value;
             root.mode-activations += 1;
         }
         detail-command := Action {
-            text: "详细";
-            value: "detail";
-            shortcut: "Primary+1";
+            text <- "详细";
+            value <- "detail";
+            shortcut <- "Primary+1";
             activated => { root.mode-at-action = view-modes.current-value; }
         }
         refresh-command := Action {
-            text: "刷新";
-            checkable: false;
+            text <- "刷新";
+            checkable <- false;
         }
     }
     compact-command := Action {
-        group: view-modes;
-        text: "紧凑";
-        value: "compact";
-        shortcut: "Primary+2";
-        enabled: root.compact-enabled;
+        group <- view-modes;
+        text <- "紧凑";
+        value <- "compact";
+        shortcut <- "Primary+2";
+        enabled <- root.compact-enabled;
         activated => { root.mode-at-action = view-modes.current-value; }
     }
     overlays := ActionGroup {
-        exclusive: false;
+        exclusive <- false;
         activated(value) => {
             root.last-command = value;
             root.overlay-activations += 1;
         }
-        grid := Action { text: "网格"; checkable: true; checked <=> root.show-grid; }
-        guides := Action { text: "参考线"; checkable: true; checked <=> root.show-guides; }
+        grid := Action { text <- "网格"; checkable <- true; checked <-> root.show-grid; }
+        guides := Action { text <- "参考线"; checkable <- true; checked <-> root.show-guides; }
     }
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 12px;
-        alignment: start;
+        padding <- 16px;
+        spacing <- 12px;
+        alignment <- start;
         MenuBar {
             modes-menu := Menu {
-                title: "显示模式";
-                detail-item := MenuItem { action: detail-command; }
-                compact-item := MenuItem { action: compact-command; }
+                title <- "显示模式";
+                detail-item := MenuItem { action <- detail-command; }
+                compact-item := MenuItem { action <- compact-command; }
                 MenuSeparator { }
-                MenuItem { action: refresh-command; }
+                MenuItem { action <- refresh-command; }
             }
         }
-        Text { text: "同一组命令 · 菜单、工具栏、Primary+1 和 Primary+2"; }
+        Text { text <- "同一组命令 · 菜单、工具栏、Primary+1 和 Primary+2"; }
         ToolBar {
-            spacing: 8px;
-            detail-button := ToolButton { action: detail-command; width: 84px; }
+            spacing <- 8px;
+            detail-button := ToolButton { action <- detail-command; width <- 84px; }
             compact-button := ToolButton {
-                action: compact-command;
-                width: 84px;
-                enabled: true;
+                action <- compact-command;
+                width <- 84px;
+                enabled <- true;
                 states [ show-disabled-command when !root.modes-enabled: { enabled: true; } ]
             }
-            refresh-button := ToolButton { action: refresh-command; width: 84px; }
+            refresh-button := ToolButton { action <- refresh-command; width <- 84px; }
         }
         ToolBar {
-            spacing: 8px;
-            grid-button := ToolButton { action: grid; width: 84px; }
-            guides-button := ToolButton { action: guides; width: 84px; }
+            spacing <- 8px;
+            grid-button := ToolButton { action <- grid; width <- 84px; }
+            guides-button := ToolButton { action <- guides; width <- 84px; }
         }
-        Text { text: "当前模式 · " + view-modes.current-value; }
-        Text { text: "最近命令 · " + root.last-command; }
+        Text { text <- "当前模式 · " + view-modes.current-value; }
+        Text { text <- "最近命令 · " + root.last-command; }
     }
 }
 
 export component ShortcutDemo inherits Window {
-    title: "XRack · 快捷键";
-    width: 532px; height: 344px;
+    title <- "XRack · 快捷键";
+    width <- 532px; height <- 344px;
 
     in-out property <bool> conflict: false;
     in-out property <bool> command-enabled: true;
@@ -337,58 +337,58 @@ export component ShortcutDemo inherits Window {
     out property <int> conflicts: 0;
 
     palette-command := Action {
-        text: "命令面板";
-        shortcut: "F9";
-        enabled: root.command-enabled;
+        text <- "命令面板";
+        shortcut <- "F9";
+        enabled <- root.command-enabled;
         activated => { root.commands += 1; }
     }
     Shortcut {
-        action: palette-command;
-        sequences: ["Primary+K, Primary+P", "F9"];
+        action <- palette-command;
+        sequences <- ["Primary+K, Primary+P", "F9"];
     }
     Shortcut {
-        sequence: "F6";
+        sequence <- "F6";
         activated => { root.window-hits += 1; }
         activated-ambiguously => { root.conflicts += 1; }
     }
     Shortcut {
-        sequence: "F6";
-        enabled: root.conflict;
+        sequence <- "F6";
+        enabled <- root.conflict;
         activated-ambiguously => { root.conflicts += 1; }
     }
     Shortcut {
-        sequence: "F7";
-        auto-repeat: true;
+        sequence <- "F7";
+        auto-repeat <- true;
         activated => { root.repeats += 1; }
     }
 
     VerticalLayout {
-        padding: 18px;
-        spacing: 8px;
-        alignment: start;
-        MenuBar { Menu { title: "操作"; MenuItem { action: palette-command; } } }
-        Text { text: "命令面板 · Primary+K 后按 Primary+P，或 F9"; }
-        Text { text: "已执行命令 · " + root.commands; }
+        padding <- 18px;
+        spacing <- 8px;
+        alignment <- start;
+        MenuBar { Menu { title <- "操作"; MenuItem { action <- palette-command; } } }
+        Text { text <- "命令面板 · Primary+K 后按 Primary+P，或 F9"; }
+        Text { text <- "已执行命令 · " + root.commands; }
         GroupBox {
-            title: "编辑区 · 聚焦后按 F8";
-            height: 94px;
-            entry := LineEdit { text <=> root.draft; placeholder-text: "这里可以正常输入"; }
-            Shortcut { sequence: "F8"; focus-within: true; activated => { root.focused-hits += 1; } }
+            title <- "编辑区 · 聚焦后按 F8";
+            height <- 94px;
+            entry := LineEdit { text <-> root.draft; placeholder-text <- "这里可以正常输入"; }
+            Shortcut { sequence <- "F8"; focus-within <- true; activated => { root.focused-hits += 1; } }
         }
-        Text { text: "窗口 F6 · " + root.window-hits + "    F7 · " + root.repeats + "    编辑区 F8 · " + root.focused-hits; }
+        Text { text <- "窗口 F6 · " + root.window-hits + "    F7 · " + root.repeats + "    编辑区 F8 · " + root.focused-hits; }
         HorizontalLayout {
-            spacing: 10px;
-            conflict-toggle := CheckBox { text: "制造 F6 冲突"; checked <=> root.conflict; }
-            open-shortcut-dialog := Button { text: "打开模态窗口"; clicked => { root.dialog-open = true; } }
+            spacing <- 10px;
+            conflict-toggle := CheckBox { text <- "制造 F6 冲突"; checked <-> root.conflict; }
+            open-shortcut-dialog := Button { text <- "打开模态窗口"; clicked => { root.dialog-open = true; } }
         }
-        Text { text: "冲突通知 · " + root.conflicts; }
+        Text { text <- "冲突通知 · " + root.conflicts; }
     }
     shortcut-dialog := Dialog {
-        open <=> root.dialog-open;
-        title: "模态窗口快捷键";
-        width: 350px;
-        Text { text: "对话框 F6 · " + root.dialog-hits; }
-        DialogButton { text: "关闭"; role: reject; }
-        Shortcut { sequence: "F6"; activated => { root.dialog-hits += 1; } }
+        open <-> root.dialog-open;
+        title <- "模态窗口快捷键";
+        width <- 350px;
+        Text { text <- "对话框 F6 · " + root.dialog-hits; }
+        DialogButton { text <- "关闭"; role <- reject; }
+        Shortcut { sequence <- "F6"; activated => { root.dialog-hits += 1; } }
     }
 }

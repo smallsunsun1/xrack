@@ -3,6 +3,6 @@
 
 export component PickInstance inherits Window {
     in property <hit3d> hit;
-    out property <int> node: root.hit.mesh-node-index;
-    out property <int> instance: root.hit.instance-index;
+    out property <int> node <- root.hit.mesh-node-index;
+    out property <int> instance <- root.hit.instance-index;
 }

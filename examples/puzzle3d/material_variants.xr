@@ -8,9 +8,9 @@ struct VariantObject {
 }
 
 export component MaterialVariantsDemo inherits Window {
-    title: "XRack · glTF material variants";
-    width: 634px; height: 377px;
-    background: #1a2638;
+    title <- "XRack · glTF material variants";
+    width <- 634px; height <- 377px;
+    background <- #1a2638;
 
     in-out property <string> variant: "";
     in-out property <bool> recolor: false;
@@ -23,7 +23,7 @@ export component MaterialVariantsDemo inherits Window {
         },
         camera-kind: "", camera-height: 5.4,
     };
-    property <[VariantObject]> world: [
+    property <[VariantObject]> world <- [
         VariantObject { id: "eye", z: 8, camera-kind: "orthographic", ..root.base },
         VariantObject {
             id: "wall", mesh: "primitive:box", z: -1.7,
@@ -38,17 +38,17 @@ export component MaterialVariantsDemo inherits Window {
             ..root.base
         },
     ];
-    out property <string> shell-hit: Scene3D.pick-camera(
+    out property <string> shell-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(634px, 324px), Point2D.new(183px, 162px));
     SceneView3D {
-        width: 634px; height: 324px; model: root.world; camera: "eye";
-        scene-background: #263b54; ambient-intensity: 0.44; light-yaw: -22; light-elevation: 39;
-        shadows: true; shadow-map-size: 512; cache-rendering: true;
+        width <- 634px; height <- 324px; model <- root.world; camera <- "eye";
+        scene-background <- #263b54; ambient-intensity <- 0.44; light-yaw <- -22; light-elevation <- 39;
+        shadows <- true; shadow-map-size <- 512; cache-rendering <- true;
     }
-    default-button := Button { x: 12px; y: 334px; width: 92px; text: "Default"; clicked => { root.variant = ""; } }
-    copper-button := Button { x: 112px; y: 334px; width: 92px; text: "Copper"; clicked => { root.variant = "Copper"; } }
-    cutout-button := Button { x: 212px; y: 334px; width: 92px; text: "Cutout"; clicked => { root.variant = "Cutout"; } }
-    uv-zero-button := Button { x: 312px; y: 334px; width: 82px; text: "UV 0"; clicked => { root.variant = "UV0"; } }
-    uv-one-button := Button { x: 402px; y: 334px; width: 82px; text: "UV 1"; clicked => { root.variant = "UV1"; } }
-    recolor-box := CheckBox { x: 496px; y: 334px; width: 125px; text: "Recolor copper"; checked <=> root.recolor; }
+    default-button := Button { x <- 12px; y <- 334px; width <- 92px; text <- "Default"; clicked => { root.variant = ""; } }
+    copper-button := Button { x <- 112px; y <- 334px; width <- 92px; text <- "Copper"; clicked => { root.variant = "Copper"; } }
+    cutout-button := Button { x <- 212px; y <- 334px; width <- 92px; text <- "Cutout"; clicked => { root.variant = "Cutout"; } }
+    uv-zero-button := Button { x <- 312px; y <- 334px; width <- 82px; text <- "UV 0"; clicked => { root.variant = "UV0"; } }
+    uv-one-button := Button { x <- 402px; y <- 334px; width <- 82px; text <- "UV 1"; clicked => { root.variant = "UV1"; } }
+    recolor-box := CheckBox { x <- 496px; y <- 334px; width <- 125px; text <- "Recolor copper"; checked <-> root.recolor; }
 }

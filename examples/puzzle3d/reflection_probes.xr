@@ -15,11 +15,11 @@ struct Reflector {
 }
 
 export component ReflectionProbesDemo inherits Window {
-    title: "XRack · 局部反射探针";
-    width: 580px;
-    height: 310px;
-    resizable: false;
-    background: #141d29;
+    title <- "XRack · 局部反射探针";
+    width <- 580px;
+    height <- 310px;
+    resizable <- false;
+    background <- #141d29;
     in-out property <bool> enabled: true;
     in-out property <bool> parallax: true;
     in-out property <bool> receive-right: false;
@@ -27,19 +27,19 @@ export component ReflectionProbesDemo inherits Window {
     in-out property <float> warm-x: 1.7;
     in-out property <float> orbit: 0;
 
-    property <Reflector> sphere: Reflector {
+    property <Reflector> sphere <- Reflector {
         id: "", mesh: @mesh-url("models/probe-sphere.gltf"), x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #ffffff, receives-reflections: true,
     };
-    property <[Reflector]> actors: [
+    property <[Reflector]> actors <- [
         Reflector { id: "cool", x: -4.25, ..root.sphere },
         Reflector { id: "overlap", x: -1.5, ..root.sphere },
         Reflector { id: "warm", x: 1.5, ..root.sphere },
         Reflector { id: "global", x: 4.25, receives-reflections: root.receive-right, ..root.sphere },
         Reflector { id: "outside-view", x: 25, ..root.sphere },
     ];
-    property <[Probe]> probes: [
+    property <[Probe]> probes <- [
         Probe {
             source: @environment-url("models/probe-blue.hdr"), position: Point3D.new(-3.8, 0, 0.5),
             box-size: Vector3D.new(7, 5, 6), box-offset: Vector3D.new(0, 0, 0),
@@ -55,27 +55,27 @@ export component ReflectionProbesDemo inherits Window {
     ];
 
     SceneView3D {
-        width: 580px; height: 250px;
-        model: root.actors;
-        reflection-probes: root.probes;
-        camera-yaw: root.orbit; camera-pitch: 0; camera-distance: 8;
-        frustum-culling: root.culling;
-        environment: @environment-url("models/studio.hdr");
-        environment-intensity: 0.6;
-        scene-background: #34435a;
+        width <- 580px; height <- 250px;
+        model <- root.actors;
+        reflection-probes <- root.probes;
+        camera-yaw <- root.orbit; camera-pitch <- 0; camera-distance <- 8;
+        frustum-culling <- root.culling;
+        environment <- @environment-url("models/studio.hdr");
+        environment-intensity <- 0.6;
+        scene-background <- #34435a;
     }
     HorizontalLayout {
-        x: 14px; y: 257px; width: 552px; height: 42px; spacing: 8px;
+        x <- 14px; y <- 257px; width <- 552px; height <- 42px; spacing <- 8px;
         local-switch := Button {
-            width: 105px;
-            text: root.enabled ? "局部探针" : "全局反射";
+            width <- 105px;
+            text <- root.enabled ? "局部探针" : "全局反射";
             clicked => { root.enabled = !root.enabled; }
         }
         parallax-switch := Button {
-            width: 114px;
-            text: root.parallax ? "视差已校正" : "关闭视差";
+            width <- 114px;
+            text <- root.parallax ? "视差已校正" : "关闭视差";
             clicked => { root.parallax = !root.parallax; }
         }
-        orbit-slider := Slider { minimum: -30; maximum: 30; value <=> root.orbit; }
+        orbit-slider := Slider { minimum <- -30; maximum <- 30; value <-> root.orbit; }
     }
 }

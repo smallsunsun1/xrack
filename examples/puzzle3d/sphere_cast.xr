@@ -10,10 +10,10 @@ struct SweepActor {
 }
 
 export component SphereCastDemo inherits Window {
-    title: "XRack · 球体扫掠";
-    width: 604px; height: 422px;
-    resizable: false;
-    background: #172638;
+    title <- "XRack · 球体扫掠";
+    width <- 604px; height <- 422px;
+    resizable <- false;
+    background <- #172638;
 
     in-out property <float> lane: 0.9;
     in-out property <float> radius: 0.5;
@@ -23,11 +23,11 @@ export component SphereCastDemo inherits Window {
     in-out property <bool> proxy: false;
     in-out property <bool> capsule-proxy: false;
     property <[SweepCollider]> no-shapes: [];
-    in-out property <[SweepCollider]> wall-shapes: once [
+    in-out property <[SweepCollider]> wall-shapes: [
         SweepCollider { shape: "box", position: Point3D.new(-1.25, 0, 0.6), size: Vector3D.new(1, 1, 1), mesh: "" },
         SweepCollider { shape: "box", position: Point3D.new(-1.25, 0, -0.6), size: Vector3D.new(1, 1, 1), mesh: "" },
     ];
-    property <[SweepCollider]> capsule-shapes: [
+    property <[SweepCollider]> capsule-shapes <- [
         SweepCollider { shape: "capsule", position: Point3D.new(-1.25, 0, 0.6), size: Vector3D.new(1, 1.3, 1), mesh: "" },
         SweepCollider { shape: "capsule", position: Point3D.new(-1.25, 0, -0.6), size: Vector3D.new(1, 1.3, 1), mesh: "" },
     ];
@@ -43,22 +43,22 @@ export component SphereCastDemo inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #7185a1, layers: 1,
         visible: true, pickable: true, collidable: true, collision-shapes: [],
     };
-    property <SweepActor> wall: SweepActor {
+    property <SweepActor> wall <- SweepActor {
         id: "wall", x: 0, y: 0.35, scale-x: 0.4, scale-y: 1.7, scale-z: 1.4,
         color: #789ab8, collidable: root.blocking,
         collision-shapes: root.proxy ? (root.capsule-proxy ? root.capsule-shapes : root.wall-shapes) : root.no-shapes,
         ..root.unit
     };
-    property <SweepActor> gate: SweepActor {
+    property <SweepActor> gate <- SweepActor {
         id: "gate", x: 1.55, y: 0.35, z: 0.78, scale-x: 0.55, scale-y: 1.3, scale-z: 0.8,
         color: #a184ab, layers: 2, ..root.unit
     };
-    property <SweepActor> terrain: SweepActor {
+    property <SweepActor> terrain <- SweepActor {
         id: "terrain", mesh: @mesh-url("models/ridge.png"), y: -1.45,
         scale-x: 8.4, scale-y: 0.55, scale-z: 4.8,
         color: #415e59, layers: 4, ..root.unit
     };
-    property <SweepActor> terrain-collider: SweepActor {
+    property <SweepActor> terrain-collider <- SweepActor {
         mesh: "",
         collision-shapes: [SweepCollider {
             shape: "mesh", mesh: @mesh-url("models/ridge.png"),
@@ -66,18 +66,18 @@ export component SphereCastDemo inherits Window {
         }],
         ..root.terrain
     };
-    property <[SweepActor]> world: [root.wall, root.gate, root.terrain-collider];
-    property <point3d> origin: Point3D.new(-3, 0.35, root.lane);
-    property <vector3d> forward: Vector3D.new(1, 0, 0);
-    out property <hit3d> contact: Scene3D.sphere-cast(
+    property <[SweepActor]> world <- [root.wall, root.gate, root.terrain-collider];
+    property <point3d> origin <- Point3D.new(-3, 0.35, root.lane);
+    property <vector3d> forward <- Vector3D.new(1, 0, 0);
+    out property <hit3d> contact <- Scene3D.sphere-cast(
         root.world, root.origin, root.forward, root.requested, root.radius, root.mask);
-    out property <hit3d> point-ray: Scene3D.ray-hit(root.world, root.origin, root.forward, root.requested, root.mask);
-    out property <[hit3d]> overlap: Scene3D.sphere-overlap(
+    out property <hit3d> point-ray <- Scene3D.ray-hit(root.world, root.origin, root.forward, root.requested, root.mask);
+    out property <[hit3d]> overlap <- Scene3D.sphere-overlap(
         root.world, Point3D.new(0.63, 0.35, 0.25), 0.9, 3);
-    out property <hit3d> terrain-hit: Scene3D.sphere-cast(
+    out property <hit3d> terrain-hit <- Scene3D.sphere-cast(
         root.world, Point3D.new(0, 4, 0), Vector3D.new(0, -1, 0), 10, 0.3, 4);
-    property <float> travel: root.contact.valid ? root.contact.distance : root.requested;
-    property <[SweepActor]> view: [
+    property <float> travel <- root.contact.valid ? root.contact.distance : root.requested;
+    property <[SweepActor]> view <- [
         root.wall, root.gate, root.terrain,
         SweepActor {
             mesh: "primitive:sphere", x: -3 + root.travel, y: 0.35, z: root.lane,
@@ -98,24 +98,24 @@ export component SphereCastDemo inherits Window {
         },
     ];
     SceneView3D {
-        width: 604px; height: 354px;
-        model: root.view; camera-yaw: -16; camera-pitch: 27; camera-distance: 9.5;
-        scene-background: #223b51; layer-mask: 7;
-        multisampling: true; ambient-intensity: 0.32;
+        width <- 604px; height <- 354px;
+        model <- root.view; camera-yaw <- -16; camera-pitch <- 27; camera-distance <- 9.5;
+        scene-background <- #223b51; layer-mask <- 7;
+        multisampling <- true; ambient-intensity <- 0.32;
     }
     proxy-toggle := CheckBox {
-        x: 413px; y: 12px; width: 170px; height: 35px;
-        text: "独立碰撞形状"; checked <=> root.proxy;
+        x <- 413px; y <- 12px; width <- 170px; height <- 35px;
+        text <- "独立碰撞形状"; checked <-> root.proxy;
     }
     capsule-toggle := CheckBox {
-        x: 413px; y: 51px; width: 170px; height: 35px;
-        text: "胶囊碰撞形状"; enabled: root.proxy; checked <=> root.capsule-proxy;
+        x <- 413px; y <- 51px; width <- 170px; height <- 35px;
+        text <- "胶囊碰撞形状"; enabled <- root.proxy; checked <-> root.capsule-proxy;
     }
     HorizontalLayout {
-        x: 14px; y: 365px; width: 580px; height: 42px; spacing: 12px;
-        block-toggle := CheckBox { width: 98px; text: "墙体阻挡"; checked <=> root.blocking; }
-        Text { width: 91px; color: #dbe6ef; text: root.contact.valid ? "接触 " + root.contact.object-id : "可通过"; }
-        travel-slider := Slider { width: 165px; minimum: 0; maximum: 6.5; value <=> root.requested; }
-        radius-slider := Slider { width: 169px; minimum: 0.09; maximum: 0.8; value <=> root.radius; }
+        x <- 14px; y <- 365px; width <- 580px; height <- 42px; spacing <- 12px;
+        block-toggle := CheckBox { width <- 98px; text <- "墙体阻挡"; checked <-> root.blocking; }
+        Text { width <- 91px; color <- #dbe6ef; text <- root.contact.valid ? "接触 " + root.contact.object-id : "可通过"; }
+        travel-slider := Slider { width <- 165px; minimum <- 0; maximum <- 6.5; value <-> root.requested; }
+        radius-slider := Slider { width <- 169px; minimum <- 0.09; maximum <- 0.8; value <-> root.radius; }
     }
 }

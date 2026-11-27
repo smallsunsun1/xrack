@@ -12,7 +12,7 @@ export component Counter inherits Window {
     width: 320px;
     height: 180px;
     label := Text {
-        text: "计数：" + root.count;
+        text <- "计数：" + root.count;
     }
     add := Button {
         text: "加一";
@@ -27,7 +27,7 @@ export component Counter inherits Window {
 
 `root.property` 引用当前组件的根属性，`self.property` 引用当前元素声明的属性，`id.property` 引用指定元素或组件实例声明的属性。无前缀的属性名从当前元素向外查找，回调参数优先。子元素可以声明自己的属性。
 
-同一文件内可以实例化用户定义的组件，例如 `left := Stepper { step: root.step; }`。实例内的绑定可设置 `in` 和 `in-out` 输入，父组件可以读取非私有属性。组件内部可通过事件写自己的 `out`、`in-out` 和私有属性。每个实例有独立的属性状态和事件路径，嵌套实例的按钮可通过 `dispatch("left/add", "clicked")` 调用。双计数器示例演示了父组件读数、惰性输入绑定与实例隔离。
+同一文件内可以实例化用户定义的组件，例如 `left := Stepper { step <- root.step; }`。实例内的绑定可设置 `in` 和 `in-out` 输入，父组件可以读取非私有属性。组件内部可通过事件写自己的 `out`、`in-out` 和私有属性。每个实例有独立的属性状态和事件路径，嵌套实例的按钮可通过 `dispatch("left/add", "clicked")` 调用。双计数器示例演示了父组件读数、惰性输入绑定与实例隔离。
 
 内建元素包括 `Window`、`Rectangle`、`Text`、`Button`、`TouchArea`、`TextInput`、`LineEdit`、`TextEdit`（也可写 `TextArea`）、`CheckBox`、`Switch`、`Slider`、`SpinBox`、`ComboBox`、`RadioGroup`、`TabWidget`、`ListView`、`Dialog`、`DialogButton`、`ProgressIndicator`、`ScrollView`、`VerticalLayout`、`HorizontalLayout`、`VerticalBox`、`HorizontalBox`、`GridLayout`、`Image` 和 `Path`。声明事件处理器的子元素需要显式 ID。
 
@@ -47,7 +47,7 @@ rename(new-name) => {
 
 这里的赋值遵循整属性写入规则。`user` 须声明为可写存储。直接给 `root.user.name` 赋值仍不支持。
 
-直接写在元素上的普通计算绑定也使用缓存，例如 `Text { text: "计数：" + root.count; }`。纯回调被 Rust 重新注册时，依赖它的绑定会失效。生成组件通过 `Component::render_shared()` 复用干净的 `Node` 快照。
+直接写在元素上的普通计算绑定也使用缓存，例如 `Text { text <- "计数：" + root.count; }`。纯回调被 Rust 重新注册时，依赖它的绑定会失效。生成组件通过 `Component::render_shared()` 复用干净的 `Node` 快照。
 
 `for` 按位置保存每行的场景和绑定缓存。替换字符串列表时会比较被使用的行，值相同的位置复用原有绑定。嵌套 `for` 各自跟踪依赖，`if` 隐藏的列表会等到再次显示才求值。普通重复项最多生成 4096 行。
 
@@ -84,21 +84,20 @@ refresh => {
 
 DSL 调用与 Rust 的 `invoke_*()` 共用同一处理逻辑。注册了 Rust `on_*()` 闭包时，有返回类型的调用返回闭包的结果。纯回调接收 `Fn` 闭包，调用方需保证闭包没有副作用。元素事件通过 `dispatch(id, event)` 分发。
 
-`callback submitted <=> editor.accepted;` 可以把内部控件事件或子组件的回调作为组件 API 公开。别名沿用目标的参数、返回类型和纯度，调用别名与调用目标进入同一个回调。也可以在命名元素上声明自定义回调。组件实例可写 `entry := Editor { submitted => { root.save(); } }`，类型化的处理器可以返回结果。列表和网格的实例处理器可读取当前模型项和索引。
+`callback submitted <-> editor.accepted;` 可以把内部控件事件或子组件的回调作为组件 API 公开。别名沿用目标的参数、返回类型和纯度，调用别名与调用目标进入同一个回调。也可以在命名元素上声明自定义回调。组件实例可写 `entry := Editor { submitted => { root.save(); } }`，类型化的处理器可以返回结果。列表和网格的实例处理器可读取当前模型项和索引。
 
 实例处理器和 Rust `on_*()` 设置目标回调的实现。声明上已有的普通 DSL 回调语句仍先执行，返回值以当前注册实现为准。别名上声明的处理器可作为默认实现。纯回调的注册变化会让依赖该回调的绑定失效。运行 `bazel run //examples/stepper:stepper -- --linked`，在共享编辑器或任务行按 Enter 体验转发。
 
 ### 属性初始化与绑定
 
-| 声明 | 行为 |
+| 写法 | 行为 |
 | --- | --- |
-| `property <T> name: constant;` | 用常量初始化可写存储，例如 `count: 3;` 或 `count: 1 + 2;`。 |
-| `property <T> name: expression;` | 持续从非常量表达式取值。读取时求值，依赖变化后重新求值。公式属性只读。 |
-| `property <T> name: once expression;` | 在实例及其输入连接完成后计算一次，把结果存入可写属性。读写权限仍由 `in`、`out` 等可见性限定。 |
-| `property <T> name;` | 分配可写存储，初始值为该类型的默认值。 |
-| `property <T> name <=> target;` | 别名沿着连接读写目标，目标必须是可写存储。 |
+| `property <T> name: expression;` | 在构造时求值一次，把结果存入属性。可写权限由 `in`、`out` 等可见性限定。 |
+| `property <T> name <- expression;` | 建立持续绑定。读取时求值，依赖变化后重新求值。公式属性只读。 |
+| `property <T> name <-> target;` | 建立可写别名，沿连接读写目标。目标需要是可写存储。 |
+| `property <T> name;` | 分配存储，初值为该类型的默认值。 |
 
-常量初值按源码判定，包括字面量、由常量组成的列表、结构体和枚举，以及由它们组成的基础运算和条件表达式。属性读取、函数调用、除法和取余等表达式可以写成绑定。需要在构造时取一次值时，加 `once`。实例体里给控件或子组件传值的 `name: expression;` 始终是单向接线。
+实例体内也使用同一套含义。`Text { text: root.title; }` 在初始化时取标题，`Text { text <- root.title; }` 持续跟随。重复项的视觉初值在各行首次创建时分别取值。结构体字段、回调参数类型和状态声明各自使用冒号作为分隔符。
 
 例如，编辑器同时保留上游文档名和自己的草稿。
 
@@ -107,16 +106,16 @@ enum TitleMode { Follow, Custom(string) }
 
 component DocumentEditor inherits Rectangle {
     in property <string> document-title;
-    out property <string> live-title: root.document-title;
-    private property <string> draft: once root.document-title;
+    out property <string> live-title <- root.document-title;
+    private property <string> draft: root.document-title;
 
     private property <TitleMode> title-mode: TitleMode::Follow;
-    out property <string> display-title: match root.title-mode {
+    out property <string> display-title <- match root.title-mode {
         Follow => root.document-title,
         Custom(text) => text,
     };
 
-    TextInput { text <=> root.draft; }
+    TextInput { text <-> root.draft; }
 
     callback rename(string);
     rename(text) => { root.title-mode = TitleMode::Custom(text); }
@@ -126,17 +125,17 @@ component DocumentEditor inherits Rectangle {
 
 export component App inherits Window {
     in-out property <string> title-source: "A";
-    DocumentEditor { document-title: root.title-source; }
+    DocumentEditor { document-title <- root.title-source; }
 }
 ```
 
 父组件把 `"A"` 接入编辑器。Rust 调用 `app.set_title_source("B".into())` 后，`live-title` 变成 `"B"`，草稿保留 `"A"`。如果用户显式使用 `rename("A")` 接管标题，`display-title` 就保留 `"A"`，直到调用 `restore-default()` 后重新显示最新的上游名称。公式属性没有 Rust setter，一次性初始化属性没有重新执行初始化表达式的 reset 方法。
 
-实例上的 `document-title: root.title-source` 由提供输入的组件拥有。即使接收端声明为 `in-out`，从接收端写入也无法替换这条绑定。双方需要共享可写存储时，使用 `<=>`。给实例接上单向绑定后，经由同一存储的其他别名写入也会报错。如果显式调用的 DSL 回调会写入这个输入，编译器会指出调用、写入和绑定的位置。条件未知时，可能执行的写入也会导致编译错误。明确不可达的写入分支（例如 `if false`）不影响回调能否调用。
+实例上的 `document-title <- root.title-source` 由提供输入的组件拥有。即使接收端声明为 `in-out`，从接收端写入也无法替换这条绑定。双方需要共享可写存储时，使用 `<->`。给实例接上单向绑定后，经由同一存储的其他别名写入也会报错。如果显式调用的 DSL 回调会写入这个输入，编译器会指出调用、写入和绑定的位置。条件未知时，可能执行的写入也会导致编译错误。明确不可达的写入分支（例如 `if false`）不影响回调能否调用。
 
-`in-out` 属性需有可写存储或可写别名。用 `out property <T> value: expression;` 公开计算结果，用 `in-out property <T> value: once expression;` 声明可写的初值。
+`in-out` 属性需有可写存储或可写别名。用 `out property <T> value <- expression;` 公开计算结果，用 `in-out property <T> value: expression;` 声明可写的初值。
 
-`TextEdit { text: root.title-source; }` 持续显示上游值，`edited(value)` 仍会报告输入，应用可以在事件处理器里更新上游。需要独立草稿时，可以把文本双向绑定到 一次性初始化的属性。类似地，`ScrollView` 的单向 `content-y:` 保留计算绑定，`content-y <=>` 会把滚动偏移写回可写属性。
+`TextEdit { text <- root.title-source; }` 持续显示上游值，`edited(value)` 仍会报告输入，应用可以在事件处理器里更新上游。需要独立草稿时，可以把文本双向绑定到一次性初始化的属性。类似地，`ScrollView` 的单向 `content-y <- expression;` 保留计算绑定，`content-y <->` 会把滚动偏移写回可写属性。
 
 ## 局部变量、纯函数和枚举
 
@@ -160,11 +159,11 @@ component StatusLine inherits VerticalLayout {
         "状态 " + caption
     }
 
-    Label { text: root.status-text(root.state); }
+    Label { text <- root.status-text(root.state); }
     match root.state: {
-        Idle => Label { text: "可以启动"; },
-        Ready(document) => Label { text: document; },
-        Failed { message, retryable: _ } => Label { text: message; },
+        Idle => Label { text <- "可以启动"; },
+        Ready(document) => Label { text <- document; },
+        Failed { message, retryable: _ } => Label { text <- message; },
     }
 }
 ```
@@ -181,9 +180,9 @@ component StatusLine inherits VerticalLayout {
 
 ```xr
 component Panel inherits VerticalLayout {
-    Label { text: "Settings"; }
+    Label { text <- "Settings"; }
     VerticalLayout {
-        spacing: 8px;
+        spacing <- 8px;
         @children
     }
 }
@@ -193,7 +192,7 @@ export global Session {
 }
 
 export component App inherits Window {
-    Panel { Label { text: Session.user-name; } }
+    Panel { Label { text <- Session.user-name; } }
 }
 ```
 
@@ -212,10 +211,10 @@ component Results inherits VerticalLayout {
 
 export component ResultsDemo inherits Window {
     Results {
-        rows: ["Alpha", "Beta"];
-        slot toolbar { Text { text: "结果"; } }
+        rows <- ["Alpha", "Beta"];
+        slot toolbar { Text { text <- "结果"; } }
         slot row(item, position) {
-            Text { text: position + " " + item; }
+            Text { text <- position + " " + item; }
         }
     }
 }
@@ -255,16 +254,16 @@ export component ResultsDemo inherits Window {
 ```xr
 export component TransformExample inherits Window {
     in-out property <float> angle: 30;
-    property <transform2d> tilt: Transform2D.around(
+    property <transform2d> tilt <- Transform2D.around(
         Transform2D.rotation(root.angle),
         Point2D.new(40px, 20px),
     );
 
     Rectangle {
-        x: 12px; y: 12px;
-        width: 80px; height: 40px;
-        background: #378ac8;
-        transform: root.tilt;
+        x <- 12px; y <- 12px;
+        width <- 80px; height <- 40px;
+        background <- #378ac8;
+        transform <- root.tilt;
     }
 }
 ```
@@ -277,12 +276,12 @@ export component TransformExample inherits Window {
 
 ```xr
 Rectangle {
-    x: root.card-x;
-    width: 160px;
-    height: 80px;
-    background: #263854;
-    cache-rendering-hint: true;
-    Text { text: "状态概览"; color: #ffffff; }
+    x <- root.card-x;
+    width <- 160px;
+    height <- 80px;
+    background <- #263854;
+    cache-rendering-hint <- true;
+    Text { text <- "状态概览"; color <- #ffffff; }
 }
 ```
 
@@ -306,8 +305,8 @@ Rectangle {
 
 ```xr
 in property <Date> selected: Date { year: 2024, month: 1, day: 31 };
-out property <Date> next-month: Dates.add-months(root.selected, 1, root.selected);
-out property <int> weekday: Dates.weekday(root.next-month);
+out property <Date> next-month <- Dates.add-months(root.selected, 1, root.selected);
+out property <int> weekday <- Dates.weekday(root.next-month);
 ```
 
 ### 本地化数字
@@ -318,8 +317,8 @@ out property <int> weekday: Dates.weekday(root.next-month);
 
 ```xr
 in-out property <string> amount-input;
-out property <float> amount: I18n.parse-number(root.amount-input, 0.0);
-out property <string> amount-display: I18n.format-number(root.amount, 2);
+out property <float> amount <- I18n.parse-number(root.amount-input, 0.0);
+out property <string> amount-display <- I18n.format-number(root.amount, 2);
 ```
 
 两个函数都会随 UI 语言切换刷新。数字使用应用请求的地区规则，例如 `fr-CA`，即使翻译词条回退到 `fr`。未设置语言时使用 Fluent 目录的默认语言，没有目录时使用 ICU 根语言环境。面向机器的文本可继续用固定语法的 `Strings.format` 和 `Strings.to-float`。
@@ -347,7 +346,7 @@ translations "i18n/catalog.toml";
 
 export component Counter inherits Window {
     in-out property <int> count: 0;
-    Text { text: @tr("counter-count", count: root.count); }
+    Text { text <- @tr("counter-count", count: root.count); }
 }
 ```
 

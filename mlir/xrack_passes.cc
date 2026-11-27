@@ -1674,7 +1674,7 @@ void materializeState(IRRewriter &rewriter, StateSetOp state) {
     if (binding.getName() == state.getName())
       rewriter.eraseOp(binding);
   rewriter.setInsertionPoint(state);
-  rewriter.replaceOpWithNewOp<Binding>(state, state.getInput(), state.getNameAttr());
+  rewriter.replaceOpWithNewOp<Binding>(state, state.getInput(), state.getNameAttr(), StringAttr{});
 }
 
 struct MaterializeStaticStates

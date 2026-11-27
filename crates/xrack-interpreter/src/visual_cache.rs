@@ -59,7 +59,7 @@ impl<'m> VisualBindings<'m> {
         }
         let index = self.slots.len();
         self.slots.entry((scope, key)).or_insert_with(|| match key {
-            Key::Operand(_) => VisualSlot::Operand(index),
+            Key::Operand(_) | Key::Initializer(_) => VisualSlot::Operand(index),
             Key::Planned(group) => VisualSlot::Planned(group),
         });
     }

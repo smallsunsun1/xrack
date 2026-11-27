@@ -204,9 +204,9 @@ fn standalone_mlir_rejects_global_property_and_callback_cycles() {
 
     let source = r#"
         export global Left {
-            in-out property <int> initial: once 4;
-            in-out property <int> seed: once 4;
-            out property <int> value: Right.value;
+            in-out property <int> initial: 4;
+            in-out property <int> seed: 4;
+            out property <int> value <- Right.value;
             pure callback read() -> int;
             read => { Right.read() }
             callback kick();
@@ -215,14 +215,14 @@ fn standalone_mlir_rejects_global_property_and_callback_cycles() {
             stop => { root.seed += 1; }
         }
         export global Right {
-            out property <int> value: Left.initial;
+            out property <int> value <- Left.initial;
             pure callback read() -> int;
             read => { Left.seed }
             callback finish();
             finish => { Left.stop(); }
         }
         export component App inherits Window {
-            out property <int> result: Left.read();
+            out property <int> result <- Left.read();
         }
     "#;
     let document = xrack_compiler::parse(source).unwrap();
@@ -280,17 +280,17 @@ fn standalone_mlir_rejects_component_property_and_callback_cycles() {
 
     let source = r#"
         component Worker inherits Rectangle {
-            in-out property <int> seed: once 2;
+            in-out property <int> seed: 2;
             pure callback value() -> int;
             value => { root.seed }
         }
         export component App inherits Window {
-            in-out property <int> initial: once 4;
-            out property <int> derived: root.initial;
-            out property <int> result: worker.value();
+            in-out property <int> initial: 4;
+            out property <int> derived <- root.initial;
+            out property <int> result <- worker.value();
             pure callback read() -> int;
             read => { root.derived }
-            worker := Worker { seed: root.initial; }
+            worker := Worker { seed <- root.initial; }
             states [ alternate when root.initial > 4: { worker.seed: root.derived + 1; } ]
         }
     "#;
@@ -354,12 +354,12 @@ fn standalone_mlir_globals_follow_source_structure_and_callback_rules() {
         export global Settings {
             pure callback score() -> int;
             score => { 7 }
-            pure callback local-score <=> root.score;
+            pure callback local-score <-> root.score;
         }
         export component App inherits Rectangle {
             pure callback score() -> int;
             score => { Settings.score() }
-            pure callback exposed <=> root.score;
+            pure callback exposed <-> root.score;
         }
     "#;
     let file = "global-structure.xr";
@@ -375,7 +375,7 @@ fn standalone_mlir_globals_follow_source_structure_and_callback_rules() {
     );
 
     let alias_error = "global callbacks can be called but cannot be aliased";
-    let invalid_source = source.replace("exposed <=> root.score", "exposed <=> Settings.score");
+    let invalid_source = source.replace("exposed <-> root.score", "exposed <-> Settings.score");
     let source_error = xrack_compiler::compile(&invalid_source, file)
         .err()
         .unwrap();

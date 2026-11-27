@@ -7,11 +7,11 @@ struct QualityActor {
 }
 
 export component QualityDemo inherits Window {
-    title: "XRack · 视口画质";
-    width: 480px;
-    height: 300px;
-    resizable: false;
-    background: #141d29;
+    title <- "XRack · 视口画质";
+    width <- 480px;
+    height <- 300px;
+    resizable <- false;
+    background <- #141d29;
 
     in-out property <bool> smooth: false;
     in-out property <int> aa-frames: 0;
@@ -26,7 +26,7 @@ export component QualityDemo inherits Window {
         scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
     };
-    property <[QualityActor]> scene: [
+    property <[QualityActor]> scene <- [
         QualityActor {
             id: "near", x: -2, z: 2.5, scale-x: 1.65, scale-y: 1.65, scale-z: 1.25,
             yaw: -16, pitch: 12, roll: 28, color: #efad60, ..root.defaults
@@ -40,51 +40,51 @@ export component QualityDemo inherits Window {
             scale-x: 0.85, scale-y: 0.85, roll: 15, visible: root.show-glass, ..root.defaults
         },
     ];
-    out property <string> picked: Scene3D.pick(root.scene, 0, 0, 10,
+    out property <string> picked <- Scene3D.pick(root.scene, 0, 0, 10,
         Point2D.new(480px, 248px), Point2D.new(148px, 124px));
 
     view := SceneView3D {
-        width: 480px;
-        height: 248px;
-        model: root.scene;
-        camera-yaw: root.yaw;
-        camera-pitch: 0;
-        camera-distance: 10;
-        scene-background: #172333;
-        multisampling: root.smooth;
-        progressive-aa: root.aa-frames;
-        supersampling: root.aa-scale;
-        fog-color: #4e80b3;
-        fog-near: 8;
-        fog-far: root.fog-far;
-        fog-density: root.fog ? 1 : 0;
-        environment: root.hdr ? @environment-url("models/studio.hdr") : "";
-        environment-skybox: root.hdr;
+        width <- 480px;
+        height <- 248px;
+        model <- root.scene;
+        camera-yaw <- root.yaw;
+        camera-pitch <- 0;
+        camera-distance <- 10;
+        scene-background <- #172333;
+        multisampling <- root.smooth;
+        progressive-aa <- root.aa-frames;
+        supersampling <- root.aa-scale;
+        fog-color <- #4e80b3;
+        fog-near <- 8;
+        fog-far <- root.fog-far;
+        fog-density <- root.fog ? 1 : 0;
+        environment <- root.hdr ? @environment-url("models/studio.hdr") : "";
+        environment-skybox <- root.hdr;
     }
 
     HorizontalLayout {
-        y: 248px;
-        height: 52px;
-        width: 480px;
-        padding: 10px;
-        spacing: 6px;
+        y <- 248px;
+        height <- 52px;
+        width <- 480px;
+        padding <- 10px;
+        spacing <- 6px;
         smooth-toggle := CheckBox {
-            width: 78px;
-            text: "MSAA";
-            enabled: root.aa-scale <= 1;
-            checked <=> root.smooth;
+            width <- 78px;
+            text <- "MSAA";
+            enabled <- root.aa-scale <= 1;
+            checked <-> root.smooth;
         }
         ssaa-toggle := Button {
-            width: 72px;
-            text: root.aa-scale > 1 ? "1.5×" : "SSAA";
+            width <- 72px;
+            text <- root.aa-scale > 1 ? "1.5×" : "SSAA";
             clicked => { root.aa-scale = root.aa-scale > 1 ? 1 : 1.5; }
         }
-        fog-toggle := CheckBox { width: 54px; text: "雾"; checked <=> root.fog; }
-        hdr-toggle := CheckBox { width: 68px; text: "HDR"; checked <=> root.hdr; }
-        glass-toggle := CheckBox { width: 65px; text: "玻璃"; checked <=> root.show-glass; }
+        fog-toggle := CheckBox { width <- 54px; text <- "雾"; checked <-> root.fog; }
+        hdr-toggle := CheckBox { width <- 68px; text <- "HDR"; checked <-> root.hdr; }
+        glass-toggle := CheckBox { width <- 65px; text <- "玻璃"; checked <-> root.show-glass; }
         progressive-toggle := Button {
-            width: 78px;
-            text: root.aa-frames == 0 ? "累积" : "累积 " + root.aa-frames;
+            width <- 78px;
+            text <- root.aa-frames == 0 ? "累积" : "累积 " + root.aa-frames;
             clicked => {
                 root.aa-frames = root.aa-frames == 0 ? 2
                     : root.aa-frames == 2 ? 4

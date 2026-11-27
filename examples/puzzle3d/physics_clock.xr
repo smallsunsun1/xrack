@@ -5,14 +5,14 @@ struct ClockActor {
 }
 
 export component PhysicsClockDemo inherits Window {
-    title: "XRack · 物理时钟与插值";
-    width: 736px; height: 462px; resizable: false; background: #172735;
+    title <- "XRack · 物理时钟与插值";
+    width <- 736px; height <- 462px; resizable <- false; background <- #172735;
 
-    property <vector3d> zero: Vector3D.new(0, 0, 0);
+    property <vector3d> zero <- Vector3D.new(0, 0, 0);
     // A deliberately low physics frequency makes the two poses easy to compare.
-    property <physicsworld3d> world: Physics3D.new(root.zero, 0.12);
-    property <point3d> origin: Point3D.new(-2.0, 0.62, 0);
-    property <vector3d> size: Vector3D.new(0.6, 0.55, 0.6);
+    property <physicsworld3d> world <- Physics3D.new(root.zero, 0.12);
+    property <point3d> origin <- Point3D.new(-2.0, 0.62, 0);
+    property <vector3d> size <- Vector3D.new(0.6, 0.55, 0.6);
     property <bool> realtime: false;
     out property <int> body: 0;
     out property <int> sensor: 0;
@@ -23,15 +23,15 @@ export component PhysicsClockDemo inherits Window {
     out property <int> entered: 0;
     out property <int> exited: 0;
     out property <bool> interpolate: true;
-    out property <bool> world-running: Physics3D.is-running(root.world);
-    out property <float> scale: Physics3D.time-scale(root.world);
-    out property <float> simulated: Physics3D.simulation-time(root.world);
-    out property <float> dropped: Physics3D.dropped-time(root.world);
-    out property <float> alpha: Physics3D.interpolation-alpha(root.world);
-    out property <point3d> actual: root.body == 0 ? root.origin : Physics3D.position(root.world, root.body);
-    out property <point3d> drawn: root.body == 0 ? root.origin : Physics3D.interpolated-position(root.world, root.body);
-    out property <vector3d> yaw-pitch-roll: Physics3D.interpolated-rotation(root.world, root.body);
-    out property <vector3d> actual-yaw: Physics3D.rotation(root.world, root.body);
+    out property <bool> world-running <- Physics3D.is-running(root.world);
+    out property <float> scale <- Physics3D.time-scale(root.world);
+    out property <float> simulated <- Physics3D.simulation-time(root.world);
+    out property <float> dropped <- Physics3D.dropped-time(root.world);
+    out property <float> alpha <- Physics3D.interpolation-alpha(root.world);
+    out property <point3d> actual <- root.body == 0 ? root.origin : Physics3D.position(root.world, root.body);
+    out property <point3d> drawn <- root.body == 0 ? root.origin : Physics3D.interpolated-position(root.world, root.body);
+    out property <vector3d> yaw-pitch-roll <- Physics3D.interpolated-rotation(root.world, root.body);
+    out property <vector3d> actual-yaw <- Physics3D.rotation(root.world, root.body);
 
     callback reset();
     reset() => {
@@ -88,7 +88,7 @@ export component PhysicsClockDemo inherits Window {
         driver.restart();
     }
     driver := FrameAnimation {
-        running: root.realtime && root.world-running;
+        running <- root.realtime && root.world-running;
         triggered(delta, elapsed, frame) => {
             root.frame-delta = delta;
             root.frame-elapsed = elapsed;
@@ -105,7 +105,7 @@ export component PhysicsClockDemo inherits Window {
             yaw: rotation.x, pitch: rotation.y, roll: rotation.z, color: tint,
         }
     }
-    property <[ClockActor]> actors: [
+    property <[ClockActor]> actors <- [
         root.part("stage", "primitive:box", Point3D.new(0, -0.09, 0), Vector3D.new(8.5, 0.18, 4.1), root.zero, #304858),
         root.part("sensor", "primitive:box", Point3D.new(-0.45, 0.006, 0), Vector3D.new(0.75, 0.016, 1.7), root.zero, #57638a),
         root.part("raw-pose", "primitive:sphere", Point3D.new(root.actual.x, 0.27, 0.58),
@@ -113,30 +113,30 @@ export component PhysicsClockDemo inherits Window {
         root.part("render-pose", "primitive:box", root.drawn, root.size, root.yaw-pitch-roll, #ffcf7a),
     ];
     SceneView3D {
-        width: 736px; height: 378px; model: root.actors;
-        camera-yaw: -15; camera-pitch: 34; camera-distance: 10;
-        scene-background: #203949; ambient-intensity: 0.57; multisampling: true;
+        width <- 736px; height <- 378px; model <- root.actors;
+        camera-yaw <- -15; camera-pitch <- 34; camera-distance <- 10;
+        scene-background <- #203949; ambient-intensity <- 0.57; multisampling <- true;
     }
     clock-status := Text {
-        x: 18px; y: 14px; color: #f1ebdd;
-        text: "子步 " + root.steps + "   ·   模拟 " + root.rounded(root.simulated)
+        x <- 18px; y <- 14px; color <- #f1ebdd;
+        text <- "子步 " + root.steps + "   ·   模拟 " + root.rounded(root.simulated)
             + " s   ·   丢弃 " + root.rounded(root.dropped) + " s   ·   插值 " + root.rounded(root.alpha);
     }
     pose-status := Text {
-        x: 18px; y: 42px; color: #cfeced;
-        text: "X 蓝 " + root.rounded(root.actual.x) + "   ·   黄 " + root.rounded(root.drawn.x)
+        x <- 18px; y <- 42px; color <- #cfeced;
+        text <- "X 蓝 " + root.rounded(root.actual.x) + "   ·   黄 " + root.rounded(root.drawn.x)
             + "   ·   进入 " + root.entered + "   ·   离开 " + root.exited;
     }
     HorizontalLayout {
-        x: 16px; y: 397px; width: 704px; height: 44px; spacing: 9px;
-        play := Button { text: "实时播放"; clicked => { root.start-realtime(); } }
-        pause := Button { text: root.world-running ? "暂停" : "继续"; clicked => { root.pause(!root.world-running); } }
-        burst := Button { text: "卡顿帧"; clicked => { root.reset(); root.frame(1.37, 8); } }
-        step := Button { text: "单步"; clicked => { root.manual(); } }
+        x <- 16px; y <- 397px; width <- 704px; height <- 44px; spacing <- 9px;
+        play := Button { text <- "实时播放"; clicked => { root.start-realtime(); } }
+        pause := Button { text <- root.world-running ? "暂停" : "继续"; clicked => { root.pause(!root.world-running); } }
+        burst := Button { text <- "卡顿帧"; clicked => { root.reset(); root.frame(1.37, 8); } }
+        step := Button { text <- "单步"; clicked => { root.manual(); } }
         smooth := Button {
-            text: root.interpolate ? "插值开启" : "插值关闭";
+            text <- root.interpolate ? "插值开启" : "插值关闭";
             clicked => { root.toggle-interpolation(); }
         }
-        scale-button := Button { text: root.scale == 1 ? "正常速度" : "半速"; clicked => { root.slow(root.scale == 1 ? 0.5 : 1); } }
+        scale-button := Button { text <- root.scale == 1 ? "正常速度" : "半速"; clicked => { root.slow(root.scale == 1 ? 0.5 : 1); } }
     }
 }

@@ -5,29 +5,29 @@ struct CcdActor {
 }
 
 export component PhysicsCcdDemo inherits Window {
-    title: "XRack · 连续碰撞对照";
-    width: 736px; height: 462px; resizable: false; background: #172735;
+    title <- "XRack · 连续碰撞对照";
+    width <- 736px; height <- 462px; resizable <- false; background <- #172735;
 
-    property <vector3d> zero: Vector3D.new(0, 0, 0);
-    property <physicsworld3d> discrete: Physics3D.new(root.zero, 0.1);
-    property <physicsworld3d> swept: Physics3D.new(root.zero, 0.1);
-    property <point3d> blue-start: Point3D.new(-1.8, 0.64, 0.91);
-    property <point3d> gold-start: Point3D.new(-1.8, 0.64, -0.91);
-    property <point3d> blue-wall: Point3D.new(0, 0.64, 0.91);
-    property <point3d> gold-wall: Point3D.new(0, 0.64, -0.91);
-    property <vector3d> wall-size: Vector3D.new(0.08, 1.28, 1.0);
+    property <vector3d> zero <- Vector3D.new(0, 0, 0);
+    property <physicsworld3d> discrete <- Physics3D.new(root.zero, 0.1);
+    property <physicsworld3d> swept <- Physics3D.new(root.zero, 0.1);
+    property <point3d> blue-start <- Point3D.new(-1.8, 0.64, 0.91);
+    property <point3d> gold-start <- Point3D.new(-1.8, 0.64, -0.91);
+    property <point3d> blue-wall <- Point3D.new(0, 0.64, 0.91);
+    property <point3d> gold-wall <- Point3D.new(0, 0.64, -0.91);
+    property <vector3d> wall-size <- Vector3D.new(0.08, 1.28, 1.0);
     out property <int> blue: 0;
     out property <int> gold: 0;
     in-out property <bool> speculative: false;
     in-out property <bool> dynamic-wall: false;
     in-out property <float> units: 1;
-    out property <float> solver-length: Physics3D.length-unit(root.swept);
-    out property <int> budget: Physics3D.ccd-substeps(root.swept);
-    out property <float> horizon: Physics3D.soft-ccd(root.swept, root.gold) / root.units;
-    out property <bool> gold-full: Physics3D.body-ccd(root.swept, root.gold);
-    out property <point3d> blue-position: root.blue == 0 ? root.blue-start
+    out property <float> solver-length <- Physics3D.length-unit(root.swept);
+    out property <int> budget <- Physics3D.ccd-substeps(root.swept);
+    out property <float> horizon <- Physics3D.soft-ccd(root.swept, root.gold) / root.units;
+    out property <bool> gold-full <- Physics3D.body-ccd(root.swept, root.gold);
+    out property <point3d> blue-position <- root.blue == 0 ? root.blue-start
         : root.to-view(Physics3D.position(root.discrete, root.blue));
-    out property <point3d> gold-position: root.gold == 0 ? root.gold-start
+    out property <point3d> gold-position <- root.gold == 0 ? root.gold-start
         : root.to-view(Physics3D.position(root.swept, root.gold));
 
     pure function to-solver(point: point3d) -> point3d {
@@ -81,7 +81,7 @@ export component PhysicsCcdDemo inherits Window {
             color: tint,
         }
     }
-    property <[CcdActor]> actors: [
+    property <[CcdActor]> actors <- [
         root.part("floor", "primitive:box", Point3D.new(0, -0.10, 0), Vector3D.new(8.35, 0.20, 4.8), #304858),
         root.part("blue-lane", "primitive:box", Point3D.new(0, 0.003, 0.91), Vector3D.new(7.9, 0.012, 1.45), #364f76),
         root.part("gold-lane", "primitive:box", Point3D.new(0, 0.003, -0.91), Vector3D.new(7.9, 0.012, 1.45), #64513f),
@@ -91,35 +91,35 @@ export component PhysicsCcdDemo inherits Window {
         root.part("gold-ball", "primitive:sphere", root.gold-position, Vector3D.new(0.24, 0.24, 0.24), #ffd488),
     ];
     SceneView3D {
-        width: 736px; height: 378px; model: root.actors;
-        camera-yaw: 23; camera-pitch: 33; camera-distance: 10.2;
-        scene-background: #203949; ambient-intensity: 0.59; multisampling: true;
+        width <- 736px; height <- 378px; model <- root.actors;
+        camera-yaw <- 23; camera-pitch <- 33; camera-distance <- 10.2;
+        scene-background <- #203949; ambient-intensity <- 0.59; multisampling <- true;
     }
     hit-status := Text {
-        x: 18px; y: 14px; color: #edf1f7;
-        text: "测试球 X · 蓝 " + root.rounded(root.blue-position.x)
+        x <- 18px; y <- 14px; color <- #edf1f7;
+        text <- "测试球 X · 蓝 " + root.rounded(root.blue-position.x)
             + "   ·   金 " + root.rounded(root.gold-position.x);
     }
     ccd-status := Text {
-        x: 18px; y: 42px; color: #c3d6e1;
-        text: "金色通道 · 子步 " + root.budget + "   ·   预测 " + root.rounded(root.horizon)
+        x <- 18px; y <- 42px; color <- #c3d6e1;
+        text <- "金色通道 · 子步 " + root.budget + "   ·   预测 " + root.rounded(root.horizon)
             + "   ·   长度单位 " + root.solver-length;
     }
     HorizontalLayout {
-        x: 16px; y: 397px; width: 704px; height: 44px; spacing: 9px;
-        launch := Button { text: "推进测试球"; clicked => { root.shoot(); } }
+        x <- 16px; y <- 397px; width <- 704px; height <- 44px; spacing <- 9px;
+        launch := Button { text <- "推进测试球"; clicked => { root.shoot(); } }
         mode := Button {
-            text: root.speculative ? "预测 CCD" : "完整 CCD";
+            text <- root.speculative ? "预测 CCD" : "完整 CCD";
             clicked => { root.speculative = !root.speculative; root.setup(); }
         }
         target := Button {
-            text: root.dynamic-wall ? "动态薄壁" : "固定薄壁";
+            text <- root.dynamic-wall ? "动态薄壁" : "固定薄壁";
             clicked => { root.dynamic-wall = !root.dynamic-wall; root.setup(); }
         }
         units := Button {
-            text: root.units == 1 ? "米尺度" : "厘米尺度";
+            text <- root.units == 1 ? "米尺度" : "厘米尺度";
             clicked => { root.units = root.units == 1 ? 100 : 1; root.setup(); }
         }
-        reset := Button { text: "重置"; clicked => { root.setup(); } }
+        reset := Button { text <- "重置"; clicked => { root.setup(); } }
     }
 }

@@ -161,7 +161,9 @@ impl<'a> Index<'a> {
                     let role = match scopes[current].role {
                         Role::States
                             if scopes[current].brackets == 1
-                                && head.last().is_some_and(|token| token.text == ":") =>
+                                && head
+                                    .last()
+                                    .is_some_and(|token| matches!(token.text, ":" | "<-")) =>
                         {
                             Role::State
                         }
@@ -217,7 +219,7 @@ impl<'a> Index<'a> {
                     if scopes[current].statement == i
                         && tokens
                             .get(i + 1)
-                            .is_some_and(|op| matches!(op.text, ":" | "<=>"))
+                            .is_some_and(|op| matches!(op.text, ":" | "<-" | "<->"))
                         && match scopes[current].role {
                             Role::Element { kind, .. } | Role::Component { base: kind, .. } => {
                                 builtins::navigation_group(kind)
@@ -239,7 +241,9 @@ impl<'a> Index<'a> {
                                 ..
                             }
                         )
-                        && tokens.get(i + 1).is_some_and(|next| next.text == ":") =>
+                        && tokens
+                            .get(i + 1)
+                            .is_some_and(|next| matches!(next.text, ":" | "<-")) =>
                 {
                     let spelling =
                         |offset: usize| tokens.get(i + offset).map_or("", |token| token.text);
@@ -312,7 +316,9 @@ impl<'a> Index<'a> {
                 }
                 _ if matches!(scopes[current].role, Role::Record { .. })
                     && name(token.text)
-                    && tokens.get(i + 1).is_some_and(|t| t.text == ":") =>
+                    && tokens
+                        .get(i + 1)
+                        .is_some_and(|t| matches!(t.text, ":" | "<-")) =>
                 {
                     if let Some(ty) = read_type(&tokens[i + 2..]) {
                         scopes[current].members.push(Member {
@@ -422,7 +428,7 @@ impl<'a> Index<'a> {
             let [role, colon, field] = window else {
                 continue;
             };
-            if colon.text != ":"
+            if !matches!(colon.text, ":" | "<-")
                 || !field.quoted()
                 || !matches!(role.text, "text-role" | "value-role")
             {
@@ -717,7 +723,7 @@ fn role<'a>(head: &[&Token<'a>], top_level: bool) -> Role<'a> {
     let target = match first {
         "if" | "for" => head
             .iter()
-            .rposition(|t| t.text == ":")
+            .rposition(|t| matches!(t.text, ":" | "<-"))
             .map(|i| &head[i + 1..]),
         _ => Some(head),
     };
@@ -777,7 +783,7 @@ fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
                 let [name, colon, ty @ ..] = parameter else {
                     return None;
                 };
-                (colon.text == ":").then(|| (*name, read_type(ty)))
+                (matches!(colon.text, ":" | "<-")).then(|| (*name, read_type(ty)))
             })
             .collect()
     } else {
@@ -838,7 +844,7 @@ fn repeat_model<'a>(head: &[&Token<'a>], role: Role<'_>) -> Vec<&'a str> {
     let end = if matches!(role, Role::StatementBlock) {
         Some(head.len())
     } else {
-        head.iter().rposition(|t| t.text == ":")
+        head.iter().rposition(|t| matches!(t.text, ":" | "<-"))
     };
     start
         .zip(end)
@@ -864,7 +870,7 @@ fn callback_signature(tokens: &[&Token<'_>]) -> CallbackSignature {
     let [open, tail @ ..] = tokens else {
         return signature;
     };
-    if open.text == "<=>" {
+    if open.text == "<->" {
         let target = tail
             .iter()
             .take_while(|token| token.text != ";")
@@ -883,7 +889,7 @@ fn callback_signature(tokens: &[&Token<'_>]) -> CallbackSignature {
         .unwrap_or(tail.len());
     for parameter in tail[..end].split(|token| token.text == ",") {
         let (name, ty) = match parameter {
-            [name, colon, ty @ ..] if colon.text == ":" => (Some(name.text), ty),
+            [name, colon, ty @ ..] if matches!(colon.text, ":" | "<-") => (Some(name.text), ty),
             _ => (None, parameter),
         };
         if let Some(kind) = read_type(ty) {
@@ -1155,13 +1161,14 @@ fn shortcut_values(
         .map_or(before, |position| &before[position + 1..]);
     let name = match statement {
         [binding, separator]
-            if separator.text == ":" && matches!(binding.text, "shortcut" | "sequence") =>
+            if matches!(separator.text, ":" | "<-")
+                && matches!(binding.text, "shortcut" | "sequence") =>
         {
             binding.text
         }
         [binding, separator, list, rest @ ..]
             if binding.text == "sequences"
-                && separator.text == ":"
+                && matches!(separator.text, ":" | "<-")
                 && list.text == "["
                 && rest.iter().all(|token| token.text == ",") =>
         {
@@ -1567,7 +1574,7 @@ fn member_head<'a, 't>(
     }
     let Some(binding) = previous
         .iter()
-        .position(|token| matches!(token.text, ":" | "<=>" | "="))
+        .position(|token| matches!(token.text, ":" | "<-" | "<->" | "="))
     else {
         return head;
     };
@@ -1812,7 +1819,9 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             items.add("when", KEYWORD, "state condition");
             return;
         }
-        Role::State | Role::StateTransition if !head.iter().any(|token| token.text == ":") => {
+        Role::State | Role::StateTransition
+            if !head.iter().any(|token| matches!(token.text, ":" | "<-")) =>
+        {
             let timing = matches!(role, Role::StateTransition);
             if timing && first != "animate" {
                 items.add("animate", KEYWORD, "state transition");
@@ -1837,9 +1846,13 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             }
             return;
         }
-        Role::Animation if first == "enabled" && head.iter().any(|token| token.text == ":") => "",
+        Role::Animation
+            if first == "enabled" && head.iter().any(|token| matches!(token.text, ":" | "<-")) =>
+        {
+            ""
+        }
         Role::Animation => {
-            if first == "easing" && head.iter().any(|token| token.text == ":") {
+            if first == "easing" && head.iter().any(|token| matches!(token.text, ":" | "<-")) {
                 items.words(
                     "linear ease ease-in ease-out ease-in-out cubic-bezier",
                     ENUM_MEMBER,
@@ -1858,7 +1871,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     };
     if (builtins::button_group_member(kind) || kind == "Action")
         && first == "group"
-        && head.iter().any(|token| token.text == ":")
+        && head.iter().any(|token| matches!(token.text, ":" | "<-"))
     {
         let group_kind = if kind == "Action" {
             "ActionGroup"
@@ -1897,15 +1910,8 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         || matches!(first, "if" | "for" | "..")
         || head
             .iter()
-            .any(|t| matches!(t.text, ":" | "<=>" | "=" | "+=" | "-="));
+            .any(|t| matches!(t.text, ":" | "<-" | "<->" | "=" | "+=" | "-="));
     if expression {
-        if last == ":" && head.iter().any(|token| token.text == "property") {
-            items.add(
-                "once",
-                KEYWORD,
-                "evaluate once when the component is initialized",
-            );
-        }
         if in_handler && head.is_empty() {
             items.words("if for let", KEYWORD, "XRack statement");
         }
@@ -2216,7 +2222,7 @@ fn expected_type(index: &Index<'_>, scope: usize, head: &[&Token<'_>], kind: &st
         return property_type(&head[start + 1..]).map(|(ty, _)| ty);
     }
     let name = head.first()?.text;
-    if !head.get(1).is_some_and(|t| t.text == ":") {
+    if !head.get(1).is_some_and(|t| matches!(t.text, ":" | "<-")) {
         return None;
     }
     let members = match index.scopes[scope].role {
@@ -2361,14 +2367,14 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
     if receiver.is_empty()
         && let Some(owner) = owner
         && matches!(role, Role::State | Role::StateTransition)
-        && !head.iter().any(|token| token.text == ":")
+        && !head.iter().any(|token| matches!(token.text, ":" | "<-"))
     {
         add_state_properties(index, owner, matches!(role, Role::StateTransition), items);
         return;
     }
     if receiver.is_empty()
         && let Some(owner) = owner
-        && head.iter().any(|token| token.text == "<=>")
+        && head.iter().any(|token| token.text == "<->")
         && head.iter().any(|token| token.text == "callback")
     {
         let kind = match index.scopes[owner].role {
@@ -2384,7 +2390,7 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
     }
     if receiver.is_empty()
         && let Some(owner) = owner
-        && head.iter().any(|token| token.text == "<=>")
+        && head.iter().any(|token| token.text == "<->")
         && head.iter().any(|token| token.text == "property")
     {
         let kind = match index.scopes[owner].role {
@@ -3400,7 +3406,7 @@ mod tests {
         assert_eq!(entries[0]["label"], "MouseBack");
         assert_eq!(entries[0]["textEdit"]["newText"], "MouseBack");
 
-        let source = "component App inherits Window { Shortcut { sequence: \"Primary+\"; } }";
+        let source = "component App inherits Window { Shortcut { sequence <- \"Primary+\"; } }";
         let offset = source.find("Primary+").unwrap() + "Primary+".len();
         let labels: Vec<_> = complete(source, 0, offset, None)
             .into_iter()
@@ -3418,7 +3424,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["textEdit"]["newText"], "Ctrl+Tab");
 
-        let source = "component App inherits Window { Shortcut { sequence: \"Ctrl+Shift+T\"; } }";
+        let source = "component App inherits Window { Shortcut { sequence <- \"Ctrl+Shift+T\"; } }";
         let cursor = source.find("Ctrl+Shift+T").unwrap() + "Ctrl+Shift+T".len();
         let entries = complete(source, 0, cursor, None);
         assert_eq!(entries.len(), 1);

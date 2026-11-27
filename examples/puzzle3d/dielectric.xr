@@ -15,14 +15,14 @@ struct ReflectionLamp {
 }
 
 export component DielectricDemo inherits Window {
-    title: "XRack · 介电材质反射";
-    width: 480px;
-    height: 290px;
-    background: #141d29;
+    title <- "XRack · 介电材质反射";
+    width <- 480px;
+    height <- 290px;
+    background <- #141d29;
 
     in-out property <bool> studio: false;
     in-out property <float> light-yaw: 0;
-    property <[ReflectionSwatch]> model: [
+    property <[ReflectionSwatch]> model <- [
         ReflectionSwatch {
             id: "swatches", mesh: @mesh-url("models/dielectric.gltf"),
             x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
@@ -36,7 +36,7 @@ export component DielectricDemo inherits Window {
             camera-kind: "orthographic", camera-height: 6,
         },
     ];
-    property <[ReflectionLamp]> direct: [
+    property <[ReflectionLamp]> direct <- [
         ReflectionLamp {
             kind: "directional", x: 0, y: 0, z: 0,
             yaw: root.light-yaw, elevation: 0, intensity: 0.65, color: #ffffff,
@@ -46,27 +46,27 @@ export component DielectricDemo inherits Window {
     property <[ReflectionLamp]> empty;
 
     SceneView3D {
-        width: 480px;
-        height: 240px;
-        model: root.model;
-        camera: "eye";
-        lights: root.studio ? root.empty : root.direct;
-        ambient-intensity: 0;
-        scene-background: #172333;
-        environment: root.studio ? @environment-url("models/studio.hdr") : "";
+        width <- 480px;
+        height <- 240px;
+        model <- root.model;
+        camera <- "eye";
+        lights <- root.studio ? root.empty : root.direct;
+        ambient-intensity <- 0;
+        scene-background <- #172333;
+        environment <- root.studio ? @environment-url("models/studio.hdr") : "";
     }
-    Label { x: 40px; y: 103px; width: 94px; text: "IOR 1.5"; }
-    Label { x: 155px; y: 103px; width: 94px; text: "IOR 1.0"; }
-    Label { x: 263px; y: 103px; width: 94px; text: "IOR 2.42"; }
-    Label { x: 377px; y: 103px; width: 94px; text: "IOR 0"; }
-    Label { x: 31px; y: 220px; width: 105px; text: "强度与色图"; }
-    Label { x: 151px; y: 220px; width: 97px; text: "镜面着色"; }
-    Label { x: 257px; y: 220px; width: 112px; text: "金属 · 扩展"; }
-    Label { x: 371px; y: 220px; width: 108px; text: "金属 · 对照"; }
-    studio-toggle := CheckBox { x: 22px; y: 251px; width: 124px; text: "环境反射"; checked <=> root.studio; }
-    Label { x: 164px; y: 251px; width: 90px; text: "光照方向"; }
+    Label { x <- 40px; y <- 103px; width <- 94px; text <- "IOR 1.5"; }
+    Label { x <- 155px; y <- 103px; width <- 94px; text <- "IOR 1.0"; }
+    Label { x <- 263px; y <- 103px; width <- 94px; text <- "IOR 2.42"; }
+    Label { x <- 377px; y <- 103px; width <- 94px; text <- "IOR 0"; }
+    Label { x <- 31px; y <- 220px; width <- 105px; text <- "强度与色图"; }
+    Label { x <- 151px; y <- 220px; width <- 97px; text <- "镜面着色"; }
+    Label { x <- 257px; y <- 220px; width <- 112px; text <- "金属 · 扩展"; }
+    Label { x <- 371px; y <- 220px; width <- 108px; text <- "金属 · 对照"; }
+    studio-toggle := CheckBox { x <- 22px; y <- 251px; width <- 124px; text <- "环境反射"; checked <-> root.studio; }
+    Label { x <- 164px; y <- 251px; width <- 90px; text <- "光照方向"; }
     light := Slider {
-        x: 250px; y: 250px; width: 208px; height: 34px;
-        enabled: !root.studio; minimum: -28; maximum: 28; value <=> root.light-yaw;
+        x <- 250px; y <- 250px; width <- 208px; height <- 34px;
+        enabled <- !root.studio; minimum <- -28; maximum <- 28; value <-> root.light-yaw;
     }
 }

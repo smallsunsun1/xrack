@@ -1,14 +1,14 @@
 export component TableDemo inherits Window {
-    title: "XRack · TableView";
-    width: 560px;
-    height: 370px;
-    background: #182331;
+    title <- "XRack · TableView";
+    width <- 560px;
+    height <- 370px;
+    background <- #182331;
 
     in-out property <[string]> records;
     in-out property <int> current: -1;
     out property <int> selections: 0;
     out property <int> selected-count: 0;
-    in property <SelectionTarget> target: once rows;
+    in property <SelectionTarget> target: rows;
     in property <int> pinned: 0;
     in property <bool> resize-rows: false;
     in property <length> row-header-size: 0px;
@@ -16,53 +16,53 @@ export component TableDemo inherits Window {
     callback sort-requested(column: int, descending: bool);
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 8px;
-        Text { text: "工作区记录"; font-size: 22px; }
+        padding <- 16px;
+        spacing <- 8px;
+        Text { text <- "工作区记录"; font-size <- 22px; }
         Text {
-            text: root.target == SelectionTarget.cells ? "拖动框选单元格 · Esc 取消"
+            text <- root.target == SelectionTarget.cells ? "拖动框选单元格 · Esc 取消"
                 : root.target == SelectionTarget.columns ? "列选择 · Alt+点击表头排序"
                 : "Shift 连选 · Ctrl/Cmd 增减 · 双击名称编辑";
-            color: #acc0db;
+            color <- #acc0db;
         }
         records-table := TableView {
-            row-height: 32px;
-            header-height: 36px;
-            row-header-width: root.row-header-size;
-            resizable-columns: true;
-            resizable-rows: root.resize-rows;
-            movable-columns: true;
-            copyable: true;
-            frozen-columns: root.pinned;
-            multi-select: true;
-            drag-select: true;
-            selection-target: root.target;
-            background: #223249;
-            current-row <=> root.current;
+            row-height <- 32px;
+            header-height <- 36px;
+            row-header-width <- root.row-header-size;
+            resizable-columns <- true;
+            resizable-rows <- root.resize-rows;
+            movable-columns <- true;
+            copyable <- true;
+            frozen-columns <- root.pinned;
+            multi-select <- true;
+            drag-select <- true;
+            selection-target <- root.target;
+            background <- #223249;
+            current-row <-> root.current;
             current-row-changed(row) => { root.selections += 1; }
             selection-changed(count) => { root.selected-count = count; }
             sort-ascending(column) => { root.sort-requested(column, false); }
             sort-descending(column) => { root.sort-requested(column, true); }
-            TableColumn { title: "名称"; min-width: 140px; max-width: 640px; }
-            TableColumn { title: "显示序号"; width: 148px; sortable: false; resizable: false; }
+            TableColumn { title <- "名称"; min-width <- 140px; max-width <- 640px; }
+            TableColumn { title <- "显示序号"; width <- 148px; sortable <- false; resizable <- false; }
             for label[index] in root.records : TableRow {
                 TableCell {
-                    background: index % 2 == 0 ? #263750 : #223249;
-                    padding: 8px;
-                    text <=> label;
+                    background <- index % 2 == 0 ? #263750 : #223249;
+                    padding <- 8px;
+                    text <-> label;
                 }
                 Rectangle {
-                    background: index % 2 == 0 ? #2b3c57 : #263750;
-                    clipboard-text: "#" + (index + 1);
+                    background <- index % 2 == 0 ? #2b3c57 : #263750;
+                    clipboard-text <- "#" + (index + 1);
                     states [ hidden when !root.show-sequence: { visible: false; } ]
-                    Text { x: 8px; y: 5px; text: "#" + (index + 1); color: #acc0db; }
+                    Text { x <- 8px; y <- 5px; text <- "#" + (index + 1); color <- #acc0db; }
                 }
             }
         }
         Text {
-            text: "已选 " + root.selected-count + (root.target == SelectionTarget.cells ? " 个单元格"
+            text <- "已选 " + root.selected-count + (root.target == SelectionTarget.cells ? " 个单元格"
                 : root.target == SelectionTarget.columns ? " 列" : " 行");
-            color: #b8caff;
+            color <- #b8caff;
         }
     }
 }
@@ -84,9 +84,9 @@ export struct RowVisibilityRecord {
 }
 
 export component RowVisibilityDemo inherits Window {
-    title: "XRack · 按记录隐藏行";
-    width: 720px; height: 320px;
-    background: #182331;
+    title <- "XRack · 按记录隐藏行";
+    width <- 720px; height <- 320px;
+    background <- #182331;
     in-out property <[RowVisibilityRecord]> records: [
         RowVisibilityRecord { name: "交换机", rank: 3, flags: RowVisibilityFlags { shown: true } },
         RowVisibilityRecord { name: "工作站", rank: 2, flags: RowVisibilityFlags { shown: true } },
@@ -96,9 +96,9 @@ export component RowVisibilityDemo inherits Window {
     in-out property <string> query: "";
     in property <int> inspected-source: 24;
     in property <int> inspected-view: 0;
-    out property <int> custom-visible: custom.view-index-for-source(root.inspected-source);
-    out property <int> standard-visible: standard.view-index-for-source(root.inspected-source);
-    out property <int> standard-source: standard.source-index-for-view(root.inspected-view);
+    out property <int> custom-visible <- custom.view-index-for-source(root.inspected-source);
+    out property <int> standard-visible <- standard.view-index-for-source(root.inspected-source);
+    out property <int> standard-source <- standard.source-index-for-view(root.inspected-view);
     callback select-source(int, int);
     select-source(source, column) => {
         custom.select-source-index(source);
@@ -118,53 +118,53 @@ export component RowVisibilityDemo inherits Window {
     }
 
     HorizontalLayout {
-        x: 12px; y: 8px; width: 696px; height: 32px;
-        spacing: 8px;
-        toggle := Button { text: "切换首条记录"; clicked => { root.toggle-first(); } }
-        sort := Button { text: "右表按优先级排序"; clicked => { standard.sort-by(1, false); } }
+        x <- 12px; y <- 8px; width <- 696px; height <- 32px;
+        spacing <- 8px;
+        toggle := Button { text <- "切换首条记录"; clicked => { root.toggle-first(); } }
+        sort := Button { text <- "右表按优先级排序"; clicked => { standard.sort-by(1, false); } }
         locate := Button {
-            text: "定位源索引 24";
+            text <- "定位源索引 24";
             clicked => {
                 root.select-source(24, 1);
                 root.locate-source-row(24);
                 root.locate-source-cell(24, 1);
             }
         }
-        SearchField { placeholder-text: "搜索右表"; text <=> root.query; }
+        SearchField { placeholder-text <- "搜索右表"; text <-> root.query; }
     }
     custom := TableView {
-        x: 12px; y: 50px; width: 340px; height: 254px;
-        row-height: 24px;
-        row-visible-field: "flags.shown";
-        preserve-scroll-anchor: true;
-        movable-rows: true;
-        row-header-width: 32px;
-        TableColumn { title: "原顺序"; width: 188px; }
-        TableColumn { title: "优先级"; width: 96px; }
+        x <- 12px; y <- 50px; width <- 340px; height <- 254px;
+        row-height <- 24px;
+        row-visible-field <- "flags.shown";
+        preserve-scroll-anchor <- true;
+        movable-rows <- true;
+        row-header-width <- 32px;
+        TableColumn { title <- "原顺序"; width <- 188px; }
+        TableColumn { title <- "优先级"; width <- 96px; }
         for record in root.records : TableRow {
-            TableCell { text <=> record.name; }
-            Text { text: "" + record.rank; }
+            TableCell { text <-> record.name; }
+            Text { text <- "" + record.rank; }
         }
     }
     standard := StandardTableView {
-        x: 368px; y: 50px; width: 340px; height: 254px;
-        row-height: 24px;
-        row-visible-field: "flags.shown";
-        filter-field: "name";
-        filter-text: root.query;
-        auto-sort: true;
-        copyable: true;
-        selection-target: SelectionTarget.cells;
-        model: root.records;
-        TableColumn { title: "可排序和筛选"; field: "name"; width: 220px; }
-        TableColumn { title: "优先级"; field: "rank"; width: 200px; }
+        x <- 368px; y <- 50px; width <- 340px; height <- 254px;
+        row-height <- 24px;
+        row-visible-field <- "flags.shown";
+        filter-field <- "name";
+        filter-text <- root.query;
+        auto-sort <- true;
+        copyable <- true;
+        selection-target <- SelectionTarget.cells;
+        model <- root.records;
+        TableColumn { title <- "可排序和筛选"; field <- "name"; width <- 220px; }
+        TableColumn { title <- "优先级"; field <- "rank"; width <- 200px; }
     }
 }
 
 export component WideTableDemo inherits Window {
-    title: "XRack · 宽表格";
-    width: 620px; height: 320px;
-    background: #182331;
+    title <- "XRack · 宽表格";
+    width <- 620px; height <- 320px;
+    background <- #182331;
     in property <int> rows: 50000;
     in-out property <bool> show-number: true;
     in-out property <bool> show-february: true;
@@ -174,48 +174,48 @@ export component WideTableDemo inherits Window {
     locate(row, column) => { sheet.position-view-at-cell(row, column, contain, contain); }
 
     HorizontalLayout {
-        x: 12px; y: 8px; width: 590px; height: 32px;
-        spacing: 8px;
-        first := Button { text: "回到首列"; clicked => { sheet.position-view-at-column(1, beginning); } }
-        last := Button { text: "末列"; clicked => { sheet.position-view-at-column(11, ScrollAlignment.end); } }
-        end := Button { text: "末行末列"; clicked => { root.locate(root.rows - 1, 11); } }
-        CheckBox { text: "编号列"; checked <=> root.show-number; }
-        CheckBox { text: "二月列"; checked <=> root.show-february; }
+        x <- 12px; y <- 8px; width <- 590px; height <- 32px;
+        spacing <- 8px;
+        first := Button { text <- "回到首列"; clicked => { sheet.position-view-at-column(1, beginning); } }
+        last := Button { text <- "末列"; clicked => { sheet.position-view-at-column(11, ScrollAlignment.end); } }
+        end := Button { text <- "末行末列"; clicked => { root.locate(root.rows - 1, 11); } }
+        CheckBox { text <- "编号列"; checked <-> root.show-number; }
+        CheckBox { text <- "二月列"; checked <-> root.show-february; }
     }
     sheet := TableView {
-        x: 12px; y: 50px; width: 596px; height: 254px;
-        row-height: 24px;
-        header-height: 32px;
-        frozen-columns: 1;
-        movable-columns: true;
-        resizable-columns: true;
-        selection-target: SelectionTarget.cells;
-        copyable: true;
-        TableColumn { title: "编号"; width: 104px; visible: root.show-number; }
-        TableColumn { title: "一月"; width: 124px; }
-        TableColumn { title: "二月"; width: 124px; visible: root.show-february; }
-        TableColumn { title: "三月"; width: 124px; }
-        TableColumn { title: "四月"; width: 124px; }
-        TableColumn { title: "五月"; width: 124px; }
-        TableColumn { title: "六月"; width: 124px; }
-        TableColumn { title: "七月"; width: 124px; }
-        TableColumn { title: "八月"; width: 124px; }
-        TableColumn { title: "九月"; width: 124px; }
-        TableColumn { title: "十月"; width: 124px; }
-        TableColumn { title: "十一月"; width: 124px; }
+        x <- 12px; y <- 50px; width <- 596px; height <- 254px;
+        row-height <- 24px;
+        header-height <- 32px;
+        frozen-columns <- 1;
+        movable-columns <- true;
+        resizable-columns <- true;
+        selection-target <- SelectionTarget.cells;
+        copyable <- true;
+        TableColumn { title <- "编号"; width <- 104px; visible <- root.show-number; }
+        TableColumn { title <- "一月"; width <- 124px; }
+        TableColumn { title <- "二月"; width <- 124px; visible <- root.show-february; }
+        TableColumn { title <- "三月"; width <- 124px; }
+        TableColumn { title <- "四月"; width <- 124px; }
+        TableColumn { title <- "五月"; width <- 124px; }
+        TableColumn { title <- "六月"; width <- 124px; }
+        TableColumn { title <- "七月"; width <- 124px; }
+        TableColumn { title <- "八月"; width <- 124px; }
+        TableColumn { title <- "九月"; width <- 124px; }
+        TableColumn { title <- "十月"; width <- 124px; }
+        TableColumn { title <- "十一月"; width <- 124px; }
         for row in root.rows : TableRow {
-            TableCell { text: root.cell-text(row, 0); }
-            TableCell { text: root.cell-text(row, 1); }
-            TableCell { text: root.cell-text(row, 2); }
-            TableCell { text: root.cell-text(row, 3); }
-            TableCell { text: root.cell-text(row, 4); }
-            TableCell { text: root.cell-text(row, 5); }
-            TableCell { text: root.cell-text(row, 6); }
-            TableCell { text: root.cell-text(row, 7); }
-            TableCell { text: root.cell-text(row, 8); }
-            TableCell { text: root.cell-text(row, 9); }
-            TableCell { text: root.cell-text(row, 10); }
-            TableCell { text: root.cell-text(row, 11); }
+            TableCell { text <- root.cell-text(row, 0); }
+            TableCell { text <- root.cell-text(row, 1); }
+            TableCell { text <- root.cell-text(row, 2); }
+            TableCell { text <- root.cell-text(row, 3); }
+            TableCell { text <- root.cell-text(row, 4); }
+            TableCell { text <- root.cell-text(row, 5); }
+            TableCell { text <- root.cell-text(row, 6); }
+            TableCell { text <- root.cell-text(row, 7); }
+            TableCell { text <- root.cell-text(row, 8); }
+            TableCell { text <- root.cell-text(row, 9); }
+            TableCell { text <- root.cell-text(row, 10); }
+            TableCell { text <- root.cell-text(row, 11); }
         }
     }
 }
@@ -227,60 +227,60 @@ export struct LogRow {
 }
 
 export component ProjectedRowsDemo inherits Window {
-    title: "XRack · 模型行高";
-    width: 660px; height: 310px;
-    background: #182331;
+    title <- "XRack · 模型行高";
+    width <- 660px; height <- 310px;
+    background <- #182331;
     in-out property <[LogRow]> entries: [];
-    out property <length> offset: table.content-y;
+    out property <length> offset <- table.content-y;
     callback set-height(int, length);
     set-height(row, height) => { table.set-row-height(row, height); }
     callback center-row(int);
     center-row(row) => { table.position-view-at-index(row, center); }
     callback grow-record();
 
-    Text { x: 16px; y: 12px; text: "记录字段提供行高 · 可拖动表格行缝"; font-size: 18px; }
+    Text { x <- 16px; y <- 12px; text <- "记录字段提供行高 · 可拖动表格行缝"; font-size <- 18px; }
     table := StandardTableView {
-        x: 16px; y: 44px; width: 412px; height: 204px;
-        row-height: 32px; row-height-field: "height";
-        resizable-rows: true;
-        preserve-scroll-anchor: true;
-        model: root.entries;
-        TableColumn { title: "日志"; field: "message"; min-width: 200px; }
-        TableColumn { title: "级别"; field: "severity"; width: 90px; }
+        x <- 16px; y <- 44px; width <- 412px; height <- 204px;
+        row-height <- 32px; row-height-field <- "height";
+        resizable-rows <- true;
+        preserve-scroll-anchor <- true;
+        model <- root.entries;
+        TableColumn { title <- "日志"; field <- "message"; min-width <- 200px; }
+        TableColumn { title <- "级别"; field <- "severity"; width <- 90px; }
     }
     list := ListView {
-        x: 444px; y: 44px; width: 200px; height: 204px;
-        row-height-field: "height";
+        x <- 444px; y <- 44px; width <- 200px; height <- 204px;
+        row-height-field <- "height";
         for item in root.entries : Rectangle {
-            background: item.severity == "warn" ? #405971 : #263750;
-            Text { x: 8px; y: 5px; text: item.message; }
+            background <- item.severity == "warn" ? #405971 : #263750;
+            Text { x <- 8px; y <- 5px; text <- item.message; }
         }
     }
     locate := Button {
-        x: 16px; y: 263px; width: 162px; height: 34px;
-        text: "定位到记录 12000";
+        x <- 16px; y <- 263px; width <- 162px; height <- 34px;
+        text <- "定位到记录 12000";
         clicked() => { root.center-row(12000); list.position-view-at-index(12000, center); }
     }
     grow := Button {
-        x: 194px; y: 263px; width: 180px; height: 34px;
-        text: "改写记录中的高度";
+        x <- 194px; y <- 263px; width <- 180px; height <- 34px;
+        text <- "改写记录中的高度";
         clicked() => { root.grow-record(); }
     }
     reset := Button {
-        x: 390px; y: 263px; width: 188px; height: 34px;
-        text: "清除该行的手动高度";
+        x <- 390px; y <- 263px; width <- 188px; height <- 34px;
+        text <- "清除该行的手动高度";
         clicked() => { root.set-height(12000, -1px); }
     }
 }
 
 export component StandardTableDemo inherits Window {
-    title: "XRack · 标准表格";
-    width: root.window-width; height: 380px;
-    background: #182331;
+    title <- "XRack · 标准表格";
+    width <- root.window-width; height <- 380px;
+    background <- #182331;
     in-out property <[InventoryRow]> inventory;
     in-out property <int> current: -1;
     in property <int> target-row: 0;
-    in property <SelectionTarget> target: once rows;
+    in property <SelectionTarget> target: rows;
     in property <length> window-width: 620px;
     in property <int> pinned: 0;
     in property <bool> resize-rows: false;
@@ -295,16 +295,16 @@ export component StandardTableDemo inherits Window {
     in property <bool> lock-refresh-time: false;
     in property <bool> auto-sort-fields: false;
     in property <bool> multiple: true;
-    out property <int> selected-items: inventory-table.selection-count;
-    out property <bool> has-selection: inventory-table.has-selection;
-    out property <int> current-column: inventory-table.current-column;
+    out property <int> selected-items <- inventory-table.selection-count;
+    out property <bool> has-selection <- inventory-table.has-selection;
+    out property <int> current-column <- inventory-table.current-column;
     out property <int> cell-changes: 0;
-    out property <length> table-x: inventory-table.content-x;
-    out property <length> table-y: inventory-table.content-y;
+    out property <length> table-x <- inventory-table.content-x;
+    out property <length> table-y <- inventory-table.content-y;
     in property <bool> quantity-sortable: true;
     in property <bool> show-quantity: true;
-    out property <int> sort-column: inventory-table.current-sort-column;
-    out property <bool> sort-descending: inventory-table.current-sort-descending;
+    out property <int> sort-column <- inventory-table.current-sort-column;
+    out property <bool> sort-descending <- inventory-table.current-sort-descending;
     in property <length> row-header-size: 0px;
     out property <int> selections: 0;
     out property <int> moved-column: -1;
@@ -340,31 +340,31 @@ export component StandardTableDemo inherits Window {
     }
 
     VerticalLayout {
-        padding: 16px; spacing: 8px;
-        Text { text: root.resize-rows ? "库存 · 拖动行缝调整高度" : "库存 · 字段投影与虚拟滚动"; font-size: 22px; }
+        padding <- 16px; spacing <- 8px;
+        Text { text <- root.resize-rows ? "库存 · 拖动行缝调整高度" : "库存 · 字段投影与虚拟滚动"; font-size <- 22px; }
         inventory-table := StandardTableView {
-            accessible-name: "库存表";
-            row-height: 32px;
-            row-header-width: root.row-header-size;
-            row-header-field: "name";
-            resizable-columns: true;
-            resizable-rows: root.resize-rows;
-            movable-columns: true;
-            movable-rows: root.move-rows;
-            copyable: true;
-            pasteable: root.paste-cells;
-            undoable: root.edit-columns;
-            frozen-columns: root.pinned;
-            multi-select: root.multiple;
-            drag-select: true;
-            selection-target: root.target;
-            model: root.inventory;
-            auto-sort: root.auto-sort-fields;
-            filter-field: "name";
-            filter-text: root.filter-query;
-            edit-on-typing: root.edit-columns;
-            edit-on-tab: root.edit-columns;
-            current-row <=> root.current;
+            accessible-name <- "库存表";
+            row-height <- 32px;
+            row-header-width <- root.row-header-size;
+            row-header-field <- "name";
+            resizable-columns <- true;
+            resizable-rows <- root.resize-rows;
+            movable-columns <- true;
+            movable-rows <- root.move-rows;
+            copyable <- true;
+            pasteable <- root.paste-cells;
+            undoable <- root.edit-columns;
+            frozen-columns <- root.pinned;
+            multi-select <- root.multiple;
+            drag-select <- true;
+            selection-target <- root.target;
+            model <- root.inventory;
+            auto-sort <- root.auto-sort-fields;
+            filter-field <- "name";
+            filter-text <- root.filter-query;
+            edit-on-typing <- root.edit-columns;
+            edit-on-tab <- root.edit-columns;
+            current-row <-> root.current;
             current-row-changed(index) => { root.selections += 1; }
             current-cell-changed(row, column) => { root.cell-changes += 1; }
             sort-ascending(column) => { root.sort-requested(column, false); }
@@ -378,101 +378,101 @@ export component StandardTableDemo inherits Window {
                 root.moved-row-from = from;
                 root.moved-row-to = to;
             }
-            TableColumn { title: "设备"; field: "name"; min-width: 160px; editable: root.edit-columns; }
-            TableColumn { title: "数量"; field: "units"; min-width: 100px; visible: root.show-quantity; sortable: root.quantity-sortable; editable: root.edit-columns; }
-            TableColumn { title: "可用"; field: "available"; min-width: 100px; editable: root.edit-columns; }
-            TableColumn { title: "刷新时间"; field: "refreshed"; min-width: 160px; editable: root.edit-columns && !root.lock-refresh-time; }
+            TableColumn { title <- "设备"; field <- "name"; min-width <- 160px; editable <- root.edit-columns; }
+            TableColumn { title <- "数量"; field <- "units"; min-width <- 100px; visible <- root.show-quantity; sortable <- root.quantity-sortable; editable <- root.edit-columns; }
+            TableColumn { title <- "可用"; field <- "available"; min-width <- 100px; editable <- root.edit-columns; }
+            TableColumn { title <- "刷新时间"; field <- "refreshed"; min-width <- 160px; editable <- root.edit-columns && !root.lock-refresh-time; }
         }
         HorizontalLayout {
-            spacing: 12px;
-            cross-axis-alignment: center;
-            jump := Button { text: "跳到目标行"; clicked() => { root.current = root.target-row; } }
-            move-first := Button { text: "首列移到末尾"; clicked() => { root.move-visible-column(0, 3); } }
-            Text { text: "当前索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color: #b8caff; }
+            spacing <- 12px;
+            cross-axis-alignment <- center;
+            jump := Button { text <- "跳到目标行"; clicked() => { root.current = root.target-row; } }
+            move-first := Button { text <- "首列移到末尾"; clicked() => { root.move-visible-column(0, 3); } }
+            Text { text <- "当前索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color <- #b8caff; }
         }
         if root.filter-tools : filter-inventory := SearchField {
-            placeholder-text: "按设备名称筛选";
-            text <=> root.filter-query;
+            placeholder-text <- "按设备名称筛选";
+            text <-> root.filter-query;
         }
         if root.edit-columns : HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             edit-target := Button {
-                text: "编辑目标行数量";
-                focus-on-click: false;
+                text <- "编辑目标行数量";
+                focus-on-click <- false;
                 clicked => { root.edit-inventory-cell(root.target-row, 1); }
             }
             cancel-editor := Button {
-                text: "取消编辑";
-                focus-on-click: false;
+                text <- "取消编辑";
+                focus-on-click <- false;
                 clicked => { inventory-table.cancel-edit(); }
             }
             undo-edit := Button {
-                text: "撤销";
-                enabled: inventory-table.can-undo;
+                text <- "撤销";
+                enabled <- inventory-table.can-undo;
                 clicked => { inventory-table.undo(); }
             }
             redo-edit := Button {
-                text: "重做";
-                enabled: inventory-table.can-redo;
+                text <- "重做";
+                enabled <- inventory-table.can-redo;
                 clicked => { inventory-table.redo(); }
             }
         }
         if root.sort-tools : HorizontalLayout {
-            spacing: 8px;
-            cross-axis-alignment: center;
-            sort-quantity := Button { text: "数量升序"; clicked => { inventory-table.sort-by(1, false); } }
-            clear-sort := Button { text: "清除排序标记"; clicked => { inventory-table.clear-sort(); } }
+            spacing <- 8px;
+            cross-axis-alignment <- center;
+            sort-quantity := Button { text <- "数量升序"; clicked => { inventory-table.sort-by(1, false); } }
+            clear-sort := Button { text <- "清除排序标记"; clicked => { inventory-table.clear-sort(); } }
             Text {
-                text: root.sort-column < 0 ? "未标记排序" : "声明列 " + (root.sort-column + 1) + (root.sort-descending ? " · 降序" : " · 升序");
-                color: #b8caff;
+                text <- root.sort-column < 0 ? "未标记排序" : "声明列 " + (root.sort-column + 1) + (root.sort-descending ? " · 降序" : " · 升序");
+                color <- #b8caff;
             }
         }
         if root.selection-tools : HorizontalLayout {
-            spacing: 8px; cross-axis-alignment: center;
+            spacing <- 8px; cross-axis-alignment <- center;
             select-block := Button {
-                text: "选择 2×2 区域";
+                text <- "选择 2×2 区域";
                 clicked => { inventory-table.select-range(0, 0, 1, 1); }
             }
             move-cursor := Button {
-                text: "移动到第 3 行第 3 列";
+                text <- "移动到第 3 行第 3 列";
                 clicked => { inventory-table.set-current-cell(2, 2); }
             }
             clear-selection := Button {
-                text: "清空选区";
+                text <- "清空选区";
                 clicked => { inventory-table.clear-selection(); }
             }
         }
         if root.selection-tools : Text {
-            text: "光标 " + root.current + "，" + root.current-column + " · 已选 " + root.selected-items + " 项";
-            color: #acc0db;
+            text <- "光标 " + root.current + "，" + root.current-column + " · 已选 " + root.selected-items + " 项";
+            color <- #acc0db;
         }
         if root.position-tools : HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             reveal-last := Button {
-                text: "末行末列";
+                text <- "末行末列";
                 clicked => { root.position-cell(root.target-row, 3, end, end); }
             }
             reveal-first := Button {
-                text: "首行首列";
+                text <- "首行首列";
                 clicked => { root.position-cell(0, 0, beginning, beginning); }
             }
             center-quantity := Button {
-                text: "数量列居中";
+                text <- "数量列居中";
                 clicked => { root.position-column(1, center); }
             }
         }
         if root.position-tools : Text {
-            text: "偏移 " + (root.table-x / 1px) + "，" + (root.table-y / 1px) + " · 定位保留光标和选区";
-            color: #acc0db;
+            text <- "偏移 " + (root.table-x / 1px) + "，" + (root.table-y / 1px) + " · 定位保留光标和选区";
+            color <- #acc0db;
         }
     }
 }
 
 
 export component TableSortViewsDemo inherits Window {
-    title: "XRack · 独立排序视图";
-    width: 680px; height: 370px;
-    background: #182331;
+    title <- "XRack · 独立排序视图";
+    width <- 680px; height <- 370px;
+    background <- #182331;
     in-out property <[InventoryRow]> inventory: [
         InventoryRow { name: "Zulu", units: 30, available: true, refreshed: Time { hour: 9 } },
         InventoryRow { name: "Alpha", units: 20, available: true, refreshed: Time { hour: 9 } },
@@ -485,92 +485,92 @@ export component TableSortViewsDemo inherits Window {
     callback reduce-zulu();
 
     VerticalLayout {
-        padding: 16px; spacing: 10px;
-        Text { text: "共享库存"; font-size: 23px; }
+        padding <- 16px; spacing <- 10px;
+        Text { text <- "共享库存"; font-size <- 23px; }
         HorizontalLayout {
-            spacing: 14px;
+            spacing <- 14px;
             VerticalLayout {
-                horizontal-stretch: 1;
-                spacing: 6px;
-                Text { text: "数量排序视图"; color: #acc0db; }
+                horizontal-stretch <- 1;
+                spacing <- 6px;
+                Text { text <- "数量排序视图"; color <- #acc0db; }
                 quantity-table := StandardTableView {
-                    model: root.inventory;
-                    auto-sort: true;
-                    current-row <=> root.left-current;
-                    movable-rows: true;
-                    multi-select: true;
-                    TableColumn { title: "设备"; field: "name"; min-width: 120px; }
-                    TableColumn { title: "数量"; field: "units"; min-width: 80px; }
+                    model <- root.inventory;
+                    auto-sort <- true;
+                    current-row <-> root.left-current;
+                    movable-rows <- true;
+                    multi-select <- true;
+                    TableColumn { title <- "设备"; field <- "name"; min-width <- 120px; }
+                    TableColumn { title <- "数量"; field <- "units"; min-width <- 80px; }
                 }
             }
             VerticalLayout {
-                horizontal-stretch: 1;
-                spacing: 6px;
-                Text { text: "名称排序视图"; color: #acc0db; }
+                horizontal-stretch <- 1;
+                spacing <- 6px;
+                Text { text <- "名称排序视图"; color <- #acc0db; }
                 name-table := StandardTableView {
-                    model: root.inventory;
-                    auto-sort: true;
-                    TableColumn { title: "设备"; field: "name"; min-width: 120px; }
-                    TableColumn { title: "数量"; field: "units"; min-width: 80px; }
+                    model <- root.inventory;
+                    auto-sort <- true;
+                    TableColumn { title <- "设备"; field <- "name"; min-width <- 120px; }
+                    TableColumn { title <- "数量"; field <- "units"; min-width <- 80px; }
                 }
             }
         }
         HorizontalLayout {
-            spacing: 10px;
-            reduce := Button { text: "减少 Zulu 的数量"; clicked => { root.reduce-zulu(); } }
-            clear-quantity-sort := Button { text: "左侧恢复源顺序"; clicked => { quantity-table.clear-sort(); } }
+            spacing <- 10px;
+            reduce := Button { text <- "减少 Zulu 的数量"; clicked => { root.reduce-zulu(); } }
+            clear-quantity-sort := Button { text <- "左侧恢复源顺序"; clicked => { quantity-table.clear-sort(); } }
         }
     }
 }
 
 export component DirectionalTableDemo inherits Window {
-    title: "XRack · 表格方向";
-    width: 520px; height: 300px;
-    background: #182331;
+    title <- "XRack · 表格方向";
+    width <- 520px; height <- 300px;
+    background <- #182331;
     in-out property <bool> rtl: true;
     in-out property <[InventoryRow]> inventory: [
         InventoryRow { name: "路由器", units: 12, available: true, refreshed: Time { hour: 8 } },
         InventoryRow { name: "交换机", units: 26, available: true, refreshed: Time { hour: 9 } },
         InventoryRow { name: "网关", units: 7, available: false, refreshed: Time { hour: 10 } },
     ];
-    out property <int> column: table.current-column;
-    out property <length> offset: table.content-x;
+    out property <int> column <- table.current-column;
+    out property <length> offset <- table.content-x;
 
     flip := Button {
-        x: 20px; y: 18px; width: 164px; height: 32px;
-        text: root.rtl ? "从右到左 · 切换" : "从左到右 · 切换";
+        x <- 20px; y <- 18px; width <- 164px; height <- 32px;
+        text <- root.rtl ? "从右到左 · 切换" : "从左到右 · 切换";
         clicked => { root.rtl = !root.rtl; }
     }
     reveal := Button {
-        x: 200px; y: 18px; width: 148px; height: 32px;
-        text: "定位到刷新时间";
+        x <- 200px; y <- 18px; width <- 148px; height <- 32px;
+        text <- "定位到刷新时间";
         clicked => { table.position-view-at-column(3, contain); }
     }
     Rectangle {
-        x: 20px; y: 62px; width: 480px; height: 218px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        x <- 20px; y <- 62px; width <- 480px; height <- 218px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         table := StandardTableView {
-            width: 480px; height: 174px;
-            accessible-name: "库存表";
-            model: root.inventory;
-            selection-target: cells;
-            multi-select: true;
-            drag-select: true;
-            row-height: 34px;
-            row-header-width: 56px;
-            frozen-columns: 1;
-            movable-columns: true;
-            resizable-columns: true;
-            edit-on-typing: true;
-            edit-on-tab: true;
-            TableColumn { title: "设备"; field: "name"; width: 128px; min-width: 100px; max-width: 220px; }
-            TableColumn { title: "数量"; field: "units"; width: 120px; editable: true; }
-            TableColumn { title: "可用"; field: "available"; width: 106px; }
-            TableColumn { title: "刷新时间"; field: "refreshed"; width: 164px; }
+            width <- 480px; height <- 174px;
+            accessible-name <- "库存表";
+            model <- root.inventory;
+            selection-target <- cells;
+            multi-select <- true;
+            drag-select <- true;
+            row-height <- 34px;
+            row-header-width <- 56px;
+            frozen-columns <- 1;
+            movable-columns <- true;
+            resizable-columns <- true;
+            edit-on-typing <- true;
+            edit-on-tab <- true;
+            TableColumn { title <- "设备"; field <- "name"; width <- 128px; min-width <- 100px; max-width <- 220px; }
+            TableColumn { title <- "数量"; field <- "units"; width <- 120px; editable <- true; }
+            TableColumn { title <- "可用"; field <- "available"; width <- 106px; }
+            TableColumn { title <- "刷新时间"; field <- "refreshed"; width <- 164px; }
         }
         status := Text {
-            x: 0px; y: 188px;
-            text: "当前逻辑列 " + root.column + " · 位移 " + (root.offset / 1px);
+            x <- 0px; y <- 188px;
+            text <- "当前逻辑列 " + root.column + " · 位移 " + (root.offset / 1px);
         }
     }
 }
@@ -582,8 +582,8 @@ struct KeyedTableRecord {
 }
 
 export component KeyedTableDemo inherits Window {
-    title: "XRack · 表格业务键选区";
-    width: 720px; height: 320px;
+    title <- "XRack · 表格业务键选区";
+    width <- 720px; height <- 320px;
     in-out property <[KeyedTableRecord]> records: [
         KeyedTableRecord { id: 10, label: "规划", shown: true },
         KeyedTableRecord { id: 20, label: "草稿", shown: false },
@@ -593,14 +593,14 @@ export component KeyedTableDemo inherits Window {
     in-out property <string> query: "";
     in-out property <int> current: -1;
     in-out property <int> lookup-key: 20;
-    in-out property <SelectionTarget> mode: once SelectionTarget.rows;
+    in-out property <SelectionTarget> mode: SelectionTarget.rows;
     in-out property <bool> multiple: true;
-    out property <[int]> source-keys: source-table.selected-keys;
-    out property <[int]> target-keys: target-table.selected-keys;
+    out property <[int]> source-keys <- source-table.selected-keys;
+    out property <[int]> target-keys <- target-table.selected-keys;
     out property <[int]> saved: [];
-    out property <int> target-count: target-table.selection-count;
-    out property <int> found-row: target-table.view-index-for-key(root.lookup-key);
-    out property <length> target-offset: target-table.content-y;
+    out property <int> target-count <- target-table.selection-count;
+    out property <int> found-row <- target-table.view-index-for-key(root.lookup-key);
+    out property <length> target-offset <- target-table.content-y;
 
     callback choose([int]);
     choose(keys) => { source-table.select-keys(keys); }
@@ -628,43 +628,43 @@ export component KeyedTableDemo inherits Window {
     mark-column => { target-table.select-column(1); }
 
     VerticalLayout {
-        padding: 18px; spacing: 10px;
+        padding <- 18px; spacing <- 10px;
         HorizontalLayout {
-            spacing: 6px;
-            choose-keys := Button { text: "选中草稿和实现"; clicked => { root.choose([20, 30]); } }
-            transfer-keys := Button { text: "保存并同步"; clicked => { root.transfer(); } }
-            clear-keys := Button { text: "清空"; clicked => { root.clear(); } }
-            restore-keys := Button { text: "恢复"; clicked => { root.restore(); } }
-            sort-keys := Button { text: "按编号倒序"; clicked => { root.sort-by-id(); } }
-            scroll-key := Button { text: "滚到 40"; clicked => { root.scroll-to-key(40); } }
+            spacing <- 6px;
+            choose-keys := Button { text <- "选中草稿和实现"; clicked => { root.choose([20, 30]); } }
+            transfer-keys := Button { text <- "保存并同步"; clicked => { root.transfer(); } }
+            clear-keys := Button { text <- "清空"; clicked => { root.clear(); } }
+            restore-keys := Button { text <- "恢复"; clicked => { root.restore(); } }
+            sort-keys := Button { text <- "按编号倒序"; clicked => { root.sort-by-id(); } }
+            scroll-key := Button { text <- "滚到 40"; clicked => { root.scroll-to-key(40); } }
         }
-        key-filter := SearchField { text <=> root.query; placeholder-text: "筛选右侧表格"; }
+        key-filter := SearchField { text <-> root.query; placeholder-text <- "筛选右侧表格"; }
         HorizontalLayout {
-            spacing: 12px;
-            height: 132px; max-height: 132px;
+            spacing <- 12px;
+            height <- 132px; max-height <- 132px;
             source-table := TableView {
-                accessible-name: "自定义表格 · 隐藏草稿";
-                row-key-field: "id"; row-visible-field: "shown";
-                multi-select: true; row-height: 36px;
-                TableColumn { title: "业务键"; width: 90px; }
-                TableColumn { title: "任务"; width: 170px; }
+                accessible-name <- "自定义表格 · 隐藏草稿";
+                row-key-field <- "id"; row-visible-field <- "shown";
+                multi-select <- true; row-height <- 36px;
+                TableColumn { title <- "业务键"; width <- 90px; }
+                TableColumn { title <- "任务"; width <- 170px; }
                 for row in root.records : TableRow {
-                    TableCell { text: "" + row.id; }
-                    TableCell { text: row.label; }
+                    TableCell { text <- "" + row.id; }
+                    TableCell { text <- row.label; }
                 }
             }
             target-table := StandardTableView {
-                accessible-name: "可排序和筛选的标准表格";
-                model: root.records; row-key-field: "id"; row-height: 36px;
-                auto-sort: true; filter-field: "label"; filter-text: root.query;
-                multi-select: root.multiple; selection-target: root.mode;
-                current-row <=> root.current; follow-current: false;
-                TableColumn { title: "业务键"; field: "id"; width: 90px; sortable: true; }
-                TableColumn { title: "任务"; field: "label"; width: 170px; }
+                accessible-name <- "可排序和筛选的标准表格";
+                model <- root.records; row-key-field <- "id"; row-height <- 36px;
+                auto-sort <- true; filter-field <- "label"; filter-text <- root.query;
+                multi-select <- root.multiple; selection-target <- root.mode;
+                current-row <-> root.current; follow-current <- false;
+                TableColumn { title <- "业务键"; field <- "id"; width <- 90px; sortable <- true; }
+                TableColumn { title <- "任务"; field <- "label"; width <- 170px; }
             }
         }
         keyed-status := Label {
-            text: "左侧选中 " + Model.count(root.source-keys)
+            text <- "左侧选中 " + Model.count(root.source-keys)
                 + " · 右侧选中 " + root.target-count + " · 键 " + root.lookup-key
                 + " 的显示行 " + root.found-row;
         }
@@ -677,17 +677,17 @@ export struct HandleSampleRow {
 }
 
 export component SelectionHandlesDemo inherits Window {
-    title: "XRack · 表格选区手柄";
-    width: 632px;
-    height: 350px;
-    background: #202c3a;
+    title <- "XRack · 表格选区手柄";
+    width <- 632px;
+    height <- 350px;
+    background <- #202c3a;
 
     in-out property <bool> show-end: true;
     in-out property <bool> mirrored: false;
-    in-out property <SelectionGesture> gesture: once auto;
+    in-out property <SelectionGesture> gesture: auto;
     in-out property <int> hold-ms: 500;
-    out property <bool> selection-active: grid.selection-active || detail.selection-active;
-    out property <bool> selection-dragging: grid.selection-dragging || detail.selection-dragging;
+    out property <bool> selection-active <- grid.selection-active || detail.selection-active;
+    out property <bool> selection-dragging <- grid.selection-dragging || detail.selection-dragging;
     in-out property <[HandleSampleRow]> records: [
         HandleSampleRow { name: "交换机", quantity: 12 },
         HandleSampleRow { name: "工作站", quantity: 6 },
@@ -699,72 +699,72 @@ export component SelectionHandlesDemo inherits Window {
         HandleSampleRow { name: "光模块", quantity: 24 },
     ];
 
-    Text { x: 16px; y: 14px; text: "拖动表格选区，再移动橙色或青色手柄"; }
+    Text { x <- 16px; y <- 14px; text <- "拖动表格选区，再移动橙色或青色手柄"; }
     grid := StandardTableView {
-        x: 16px; y: 48px; width: 290px; height: 210px;
-        layout-direction: root.mirrored ? right-to-left : left-to-right;
-        model: root.records;
-        row-height: 36px;
-        header-height: 30px;
-        multi-select: true;
-        drag-select: true;
-        selection-gesture: root.gesture;
-        selection-hold-interval: root.hold-ms;
-        selection-target: cells;
-        frozen-columns: 1;
-        TableColumn { title: "设备"; field: "name"; width: 156px; }
-        TableColumn { title: "库存"; field: "quantity"; width: 96px; }
+        x <- 16px; y <- 48px; width <- 290px; height <- 210px;
+        layout-direction <- root.mirrored ? right-to-left : left-to-right;
+        model <- root.records;
+        row-height <- 36px;
+        header-height <- 30px;
+        multi-select <- true;
+        drag-select <- true;
+        selection-gesture <- root.gesture;
+        selection-hold-interval <- root.hold-ms;
+        selection-target <- cells;
+        frozen-columns <- 1;
+        TableColumn { title <- "设备"; field <- "name"; width <- 156px; }
+        TableColumn { title <- "库存"; field <- "quantity"; width <- 96px; }
         SelectionStartHandle {
-            width: 12px; height: 16px;
-            background: #f19a37;
-            border-radius: 3px;
+            width <- 12px; height <- 16px;
+            background <- #f19a37;
+            border-radius <- 3px;
         }
         SelectionEndHandle {
-            width: 17px; height: 14px;
-            visible: root.show-end;
-            Rectangle { width: 100%; height: 100%; background: #3de3c8; border-radius: 3px; }
+            width <- 17px; height <- 14px;
+            visible <- root.show-end;
+            Rectangle { width <- 100%; height <- 100%; background <- #3de3c8; border-radius <- 3px; }
         }
     }
     detail := TableView {
-        x: 326px; y: 48px; width: 290px; height: 210px;
-        layout-direction: root.mirrored ? right-to-left : left-to-right;
-        row-height: 36px;
-        header-height: 30px;
-        multi-select: true;
-        drag-select: true;
-        selection-gesture: root.gesture;
-        selection-hold-interval: root.hold-ms;
-        selection-target: cells;
-        TableColumn { title: "设备"; width: 156px; }
-        TableColumn { title: "库存"; width: 96px; }
-        SelectionStartHandle { width: 12px; height: 16px; background: #f19a37; }
+        x <- 326px; y <- 48px; width <- 290px; height <- 210px;
+        layout-direction <- root.mirrored ? right-to-left : left-to-right;
+        row-height <- 36px;
+        header-height <- 30px;
+        multi-select <- true;
+        drag-select <- true;
+        selection-gesture <- root.gesture;
+        selection-hold-interval <- root.hold-ms;
+        selection-target <- cells;
+        TableColumn { title <- "设备"; width <- 156px; }
+        TableColumn { title <- "库存"; width <- 96px; }
+        SelectionStartHandle { width <- 12px; height <- 16px; background <- #f19a37; }
         for record in root.records : TableRow {
-            TableCell { text: record.name; }
-            TableCell { text: "" + record.quantity; }
+            TableCell { text <- record.name; }
+            TableCell { text <- "" + record.quantity; }
         }
         SelectionEndHandle {
-            width: 17px; height: 14px; background: #3de3c8;
-            visible: root.show-end;
+            width <- 17px; height <- 14px; background <- #3de3c8;
+            visible <- root.show-end;
         }
     }
     end-handle := CheckBox {
-        x: 16px; y: 272px; width: 220px; text: "显示结束端手柄";
-        checked <=> root.show-end;
+        x <- 16px; y <- 272px; width <- 220px; text <- "显示结束端手柄";
+        checked <-> root.show-end;
     }
     mirror := CheckBox {
-        x: 326px; y: 272px; width: 220px; text: "从右到左";
-        checked <=> root.mirrored;
+        x <- 326px; y <- 272px; width <- 220px; text <- "从右到左";
+        checked <-> root.mirrored;
     }
     gesture-picker := ComboBox {
-        x: 369px; y: 8px; width: 242px; height: 34px;
-        model: ["自动", "直接拖动", "长按后拖动"];
-        current-index: root.gesture == SelectionGesture.drag ? 1 : (root.gesture == SelectionGesture.press-and-hold ? 2 : 0);
+        x <- 369px; y <- 8px; width <- 242px; height <- 34px;
+        model <- ["自动", "直接拖动", "长按后拖动"];
+        current-index <- root.gesture == SelectionGesture.drag ? 1 : (root.gesture == SelectionGesture.press-and-hold ? 2 : 0);
         selected(label) => {
             root.gesture = label == "直接拖动" ? SelectionGesture.drag : (label == "长按后拖动" ? SelectionGesture.press-and-hold : SelectionGesture.auto);
         }
     }
     gesture-state := Label {
-        x: 16px; y: 315px;
-        text: root.selection-dragging ? "正在框选" : (root.selection-active ? "选区已提交" : "尚未框选");
+        x <- 16px; y <- 315px;
+        text <- root.selection-dragging ? "正在框选" : (root.selection-active ? "选区已提交" : "尚未框选");
     }
 }

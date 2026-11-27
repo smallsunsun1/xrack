@@ -26,10 +26,10 @@ export component ConstantRecord inherits Window {
         title: "Default",
         metrics: Metrics { padding: 12px, count: 6 * 7 },
     };
-    property <Metrics> derived: Metrics {
+    property <Metrics> derived <- Metrics {
         count: root.preset.metrics.count * 2,
         padding: root.preset.metrics.padding,
     };
-    out property <int> answer: root.derived.count + 1;
-    out property <length> padding: root.derived.padding;
+    out property <int> answer <- root.derived.count + 1;
+    out property <length> padding <- root.derived.padding;
 }

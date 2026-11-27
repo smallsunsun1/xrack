@@ -195,7 +195,7 @@ fn exercise_loading<C: Component>(
         }
     }
     let _file = RemoveFile(path.clone());
-    std::fs::write(&path, r#"export component Panel inherits VerticalLayout { remote := Text { text: "File component"; } }"#).unwrap();
+    std::fs::write(&path, r#"export component Panel inherits VerticalLayout { remote := Text { text <- "File component"; } }"#).unwrap();
     driver.update(|ui| load_file(ui, path.to_string_lossy().into_owned()));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     while snapshot(driver.component()).1 == "loading" && std::time::Instant::now() < deadline {

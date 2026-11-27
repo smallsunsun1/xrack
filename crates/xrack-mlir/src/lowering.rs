@@ -686,9 +686,17 @@ impl Builder<'_> {
                     };
                     self.open(op, span, &attrs)?;
                 }
-                LoweredMember::Binding(b) => {
-                    self.consume("bind", &b.name, &b.value, &[], b.span)?
-                }
+                LoweredMember::Binding(b) => self.consume(
+                    "bind",
+                    &b.name,
+                    &b.value,
+                    if b.initial {
+                        &[("initial", "true")]
+                    } else {
+                        &[]
+                    },
+                    b.span,
+                )?,
                 LoweredMember::RadioGroupRef { group, span } => {
                     self.emit(
                         "radio_group_ref",
@@ -748,9 +756,17 @@ impl Builder<'_> {
                         &self.strings(&[("target", &target)]),
                     )?;
                 }
-                LoweredMember::InstanceLayout(b) => {
-                    self.consume("layout_bind", &b.name, &b.value, &[], b.span)?
-                }
+                LoweredMember::InstanceLayout(b) => self.consume(
+                    "layout_bind",
+                    &b.name,
+                    &b.value,
+                    if b.initial {
+                        &[("initial", "true")]
+                    } else {
+                        &[]
+                    },
+                    b.span,
+                )?,
                 LoweredMember::ControlLink(b) => {
                     self.consume("control_link", &b.name, &b.value, &[], b.span)?
                 }

@@ -5,14 +5,14 @@ struct ContactActor {
 }
 
 export component BodyContactsDemo inherits Window {
-    title: "XRack · 刚体接触报告";
-    width: 690px; height: 474px;
-    resizable: false; background: #172638;
+    title <- "XRack · 刚体接触报告";
+    width <- 690px; height <- 474px;
+    resizable <- false; background <- #172638;
 
-    property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, 0, 0), 0.016);
-    property <point3d> ball-start: Point3D.new(-2.7, 0.51, 0);
-    property <point3d> wall-center: Point3D.new(0.32, 0.7, 0);
-    property <vector3d> wall-size: Vector3D.new(0.24, 1.4, 1.7);
+    property <physicsworld3d> world <- Physics3D.new(Vector3D.new(0, 0, 0), 0.016);
+    property <point3d> ball-start <- Point3D.new(-2.7, 0.51, 0);
+    property <point3d> wall-center <- Point3D.new(0.32, 0.7, 0);
+    property <vector3d> wall-size <- Vector3D.new(0.24, 1.4, 1.7);
     property <physicscontact3d> no-contact;
     out property <int> ball: 0;
     out property <int> wall: 0;
@@ -22,14 +22,14 @@ export component BodyContactsDemo inherits Window {
     out property <bool> events-enabled: true;
     out property <int> entered: 0;
     out property <int> exited: 0;
-    out property <[int]> step-entered: Physics3D.contact-entered(root.world, root.ball);
-    out property <[int]> step-exited: Physics3D.contact-exited(root.world, root.ball);
-    out property <[int]> touching: Physics3D.contact-bodies(root.world, root.ball);
+    out property <[int]> step-entered <- Physics3D.contact-entered(root.world, root.ball);
+    out property <[int]> step-exited <- Physics3D.contact-exited(root.world, root.ball);
+    out property <[int]> touching <- Physics3D.contact-bodies(root.world, root.ball);
     in-out property <bool> running: false;
     out property <physicscontact3d> impact;
-    out property <float> strength: root.impact.normal-impulse;
-    out property <[physicscontact3d]> step-contacts: Physics3D.contacts(root.world, root.ball);
-    out property <point3d> position: root.ball > 0 ? Physics3D.position(root.world, root.ball) : root.ball-start;
+    out property <float> strength <- root.impact.normal-impulse;
+    out property <[physicscontact3d]> step-contacts <- Physics3D.contacts(root.world, root.ball);
+    out property <point3d> position <- root.ball > 0 ? Physics3D.position(root.world, root.ball) : root.ball-start;
 
     callback enable-reports(enabled: bool);
     enable-reports(enabled) => {
@@ -89,7 +89,7 @@ export component BodyContactsDemo inherits Window {
         root.collect(Physics3D.advance(root.world, elapsed, limit));
     }
     clock := Timer {
-        interval: 16; repeat: true; running: root.running;
+        interval <- 16; repeat <- true; running <- root.running;
         triggered => { root.advance(); }
     }
 
@@ -100,7 +100,7 @@ export component BodyContactsDemo inherits Window {
             yaw: 0, pitch: 0, roll: 0, color: tint, visible: visible,
         }
     }
-    property <[ContactActor]> actors: [
+    property <[ContactActor]> actors <- [
         root.actor("platform", "primitive:box", Point3D.new(-0.7, -0.12, 0), Vector3D.new(7.8, 0.24, 4), #395966, true),
         root.actor("lane", "primitive:box", Point3D.new(-1.4, 0.006, 0), Vector3D.new(3.3, 0.012, 0.035), #5c93a1, true),
         root.actor("wall", "primitive:box", root.wall-center, root.wall-size, #84acd1, true),
@@ -111,44 +111,44 @@ export component BodyContactsDemo inherits Window {
             Vector3D.new(0.64, 0.04, 0.04), #62efb4, root.impact.body > 0),
     ];
     SceneView3D {
-        width: 690px; height: 400px; model: root.actors;
-        camera-yaw: -22; camera-pitch: 30; camera-distance: 9.7;
-        scene-background: #233d50; ambient-intensity: 0.42; multisampling: true;
+        width <- 690px; height <- 400px; model <- root.actors;
+        camera-yaw <- -22; camera-pitch <- 30; camera-distance <- 9.7;
+        scene-background <- #233d50; ambient-intensity <- 0.42; multisampling <- true;
     }
     contact-status := Text {
-        x: 18px; y: 16px; color: root.reported > 0 ? #7befc4 : #e1edf4;
-        text: "报告 " + root.reported + "   ·   最大法向冲量 " + Math.round(root.strength * 100) / 100.0 + "   ·   步数 " + root.ticks;
+        x <- 18px; y <- 16px; color <- root.reported > 0 ? #7befc4 : #e1edf4;
+        text <- "报告 " + root.reported + "   ·   最大法向冲量 " + Math.round(root.strength * 100) / 100.0 + "   ·   步数 " + root.ticks;
     }
     report-toggle := CheckBox {
-        x: 530px; y: 7px; width: 140px; height: 32px;
-        text: "接触报告"; checked: root.reporting;
+        x <- 530px; y <- 7px; width <- 140px; height <- 32px;
+        text <- "接触报告"; checked <- root.reporting;
         toggled => { root.enable-reports(!root.reporting); }
     }
     events-status := Text {
-        x: 18px; y: 44px; color: #afc9db;
-        text: "接触 " + root.entered + "   ·   分离 " + root.exited
+        x <- 18px; y <- 44px; color <- #afc9db;
+        text <- "接触 " + root.entered + "   ·   分离 " + root.exited
             + "   ·   接触中 " + Model.count(root.touching);
     }
     events-toggle := CheckBox {
-        x: 530px; y: 35px; width: 140px; height: 32px;
-        text: "接触事件"; checked: root.events-enabled;
+        x <- 530px; y <- 35px; width <- 140px; height <- 32px;
+        text <- "接触事件"; checked <- root.events-enabled;
         toggled => { root.enable-events(!root.events-enabled); }
     }
     HorizontalLayout {
-        x: 14px; y: 412px; width: 662px; height: 44px; spacing: 10px;
+        x <- 14px; y <- 412px; width <- 662px; height <- 44px; spacing <- 10px;
         fire-button := Button {
-            width: 122px; text: "发射";
+            width <- 122px; text <- "发射";
             clicked => { root.launch(); root.running = true; }
         }
         run-button := Button {
-            width: 122px; text: root.running ? "暂停" : "运行";
+            width <- 122px; text <- root.running ? "暂停" : "运行";
             clicked => { root.running = !root.running; }
         }
-        step-button := Button { width: 112px; text: "单步"; clicked => { root.advance(); } }
+        step-button := Button { width <- 112px; text <- "单步"; clicked => { root.advance(); } }
         batch-button := Button {
-            width: 112px; text: "批量步进";
+            width <- 112px; text <- "批量步进";
             clicked => { root.launch(); root.advance-batch(0.64, 40); }
         }
-        reset-button := Button { width: 112px; text: "重置"; clicked => { root.reset(); } }
+        reset-button := Button { width <- 112px; text <- "重置"; clicked => { root.reset(); } }
     }
 }

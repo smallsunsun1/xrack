@@ -6,12 +6,12 @@ struct ToneActor {
 }
 
 export component ToneDemo inherits Window {
-    title: "XRack · 色调映射与颜色调整";
-    width: 480px;
-    height: 300px;
-    background: #141d29;
+    title <- "XRack · 色调映射与颜色调整";
+    width <- 480px;
+    height <- 300px;
+    background <- #141d29;
 
-    in-out property <SceneToneMap> curve: once SceneToneMap.reinhard;
+    in-out property <SceneToneMap> curve: SceneToneMap.reinhard;
     in-out property <float> brightness: 1;
     in-out property <float> contrast: 1;
     in-out property <float> saturation: 1;
@@ -32,52 +32,52 @@ export component ToneDemo inherits Window {
         id: "", mesh: "", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, camera-kind: "", camera-height: 8.2,
     };
-    property <[ToneActor]> models: [
+    property <[ToneActor]> models <- [
         ToneActor { id: "chart", mesh: @mesh-url("models/finish.gltf"), ..root.defaults },
         ToneActor { id: "eye", z: 8.6, camera-kind: "orthographic", ..root.defaults },
     ];
 
     hdr-view := SceneView3D {
-        width: 239px;
-        height: 248px;
-        camera: "eye";
-        model: root.models;
-        scene-background: #30435b;
-        scene-tone-map: root.curve;
-        scene-exposure: root.exposure;
-        scene-white-point: root.white-point;
-        scene-brightness: root.brightness;
-        scene-contrast: root.contrast;
-        scene-saturation: root.saturation;
-        bloom: root.glow;
-        bloom-threshold: 0.15;
+        width <- 239px;
+        height <- 248px;
+        camera <- "eye";
+        model <- root.models;
+        scene-background <- #30435b;
+        scene-tone-map <- root.curve;
+        scene-exposure <- root.exposure;
+        scene-white-point <- root.white-point;
+        scene-brightness <- root.brightness;
+        scene-contrast <- root.contrast;
+        scene-saturation <- root.saturation;
+        bloom <- root.glow;
+        bloom-threshold <- 0.15;
     }
     guide-view := SceneView3D {
-        x: 241px;
-        width: 239px;
-        height: 248px;
-        camera: "eye";
-        model: root.models;
-        scene-background: #30435b;
-        scene-brightness: root.brightness;
-        scene-contrast: root.contrast;
-        scene-saturation: root.saturation;
-        depth-of-field: root.guide-blur;
-        dof-focus-distance: 5;
+        x <- 241px;
+        width <- 239px;
+        height <- 248px;
+        camera <- "eye";
+        model <- root.models;
+        scene-background <- #30435b;
+        scene-brightness <- root.brightness;
+        scene-contrast <- root.contrast;
+        scene-saturation <- root.saturation;
+        depth-of-field <- root.guide-blur;
+        dof-focus-distance <- 5;
     }
 
-    Text { x: 12px; y: 220px; text: "HDR"; color: #b4c6db; }
-    Text { x: 253px; y: 220px; text: "LDR"; color: #b4c6db; }
+    Text { x <- 12px; y <- 220px; text <- "HDR"; color <- #b4c6db; }
+    Text { x <- 253px; y <- 220px; text <- "LDR"; color <- #b4c6db; }
 
     HorizontalLayout {
-        y: 248px;
-        width: 480px;
-        height: 52px;
-        padding: 12px;
-        spacing: 8px;
+        y <- 248px;
+        width <- 480px;
+        height <- 52px;
+        padding <- 12px;
+        spacing <- 8px;
         curve-toggle := Button {
-            width: 143px;
-            text: root.curve-title();
+            width <- 143px;
+            text <- root.curve-title();
             clicked => {
                 root.curve = root.curve == SceneToneMap.reinhard ? SceneToneMap.aces
                            : root.curve == SceneToneMap.aces ? SceneToneMap.filmic
@@ -86,11 +86,11 @@ export component ToneDemo inherits Window {
                            : root.curve == SceneToneMap.linear ? SceneToneMap.none : SceneToneMap.reinhard;
             }
         }
-        Label { width: 36px; text: "亮度"; }
-        brightness-slider := Slider { width: 52px; minimum: 0; maximum: 2; value <=> root.brightness; }
-        Label { width: 36px; text: "对比"; }
-        contrast-slider := Slider { width: 52px; minimum: 0; maximum: 2; value <=> root.contrast; }
-        Label { width: 36px; text: "饱和"; }
-        saturation-slider := Slider { width: 52px; minimum: 0; maximum: 2; value <=> root.saturation; }
+        Label { width <- 36px; text <- "亮度"; }
+        brightness-slider := Slider { width <- 52px; minimum <- 0; maximum <- 2; value <-> root.brightness; }
+        Label { width <- 36px; text <- "对比"; }
+        contrast-slider := Slider { width <- 52px; minimum <- 0; maximum <- 2; value <-> root.contrast; }
+        Label { width <- 36px; text <- "饱和"; }
+        saturation-slider := Slider { width <- 52px; minimum <- 0; maximum <- 2; value <-> root.saturation; }
     }
 }

@@ -25,7 +25,7 @@ fn module_package_can_move_with_its_sources_resources_and_aot_output()
         source.join("body.xr"),
         r#"
         export component Card inherits Rectangle {
-            Image { source: @image-url("icon.svg"); }
+            Image { source <- @image-url("icon.svg"); }
         }
     "#,
     )?;

@@ -88,8 +88,8 @@ fn live_base_item_mapping_uses_verified_texture_fields() {
             color: color, material: Surface,
         }
         export component Demo inherits Window {
-            in property <[Actor]> world: once [];
-            SceneView3D { model: root.world; }
+            in property <[Actor]> world: [];
+            SceneView3D { model <- root.world; }
         }
         "#,
         "live-material-map.xr",
@@ -121,9 +121,9 @@ fn fused_string_concatenation_is_valid_in_visual_bindings() {
     let module = raw(
         r#"
         export component Demo inherits Window {
-            in property <string> first: once "one";
-            in property <string> second: once "two";
-            Text { text: root.first + " / " + root.second; }
+            in property <string> first: "one";
+            in property <string> second: "two";
+            Text { text <- root.first + " / " + root.second; }
         }
         "#,
         "concat-element-binding.xr",
@@ -149,17 +149,17 @@ fn fused_string_concatenation_is_valid_in_visual_bindings() {
 fn static_integer_repeats_share_only_equal_passive_scenes() {
     let module = raw(
         r#"
-        component Badge inherits Text { text: "Delegate"; }
+        component Badge inherits Text { text <- "Delegate"; }
         export component App inherits Window {
-            in property <int> live: once 3;
-            for row in 4 : Text { text: "Fixed"; }
-            for row in 4 : Text { text: "Fixed"; }
-            for row in 5 : Text { text: "Fixed"; }
-            for row in 4 : Text { text: "Row " + row; }
-            for row in live : Text { text: "Dynamic count"; }
+            in property <int> live: 3;
+            for row in 4 : Text { text <- "Fixed"; }
+            for row in 4 : Text { text <- "Fixed"; }
+            for row in 5 : Text { text <- "Fixed"; }
+            for row in 4 : Text { text <- "Row " + row; }
+            for row in live : Text { text <- "Dynamic count"; }
             ListView { for row in 4 : Badge {} }
-            for row in 129 : Text { text: "Large"; }
-            ListView { for row in 4 : Text { text: "Virtualized"; } }
+            for row in 129 : Text { text <- "Large"; }
+            ListView { for row in 4 : Text { text <- "Virtualized"; } }
         }
         "#,
         "static-integer-repeats.xr",
@@ -203,19 +203,19 @@ fn reactive_gradients_and_translations_can_use_shared_component_caches() {
         r#"
         translations "catalog.toml";
         export component App inherits Window {
-            in property <color> accent: once #48a;
+            in property <color> accent: #48a;
             pure callback tint() -> color;
-            Rectangle { background: @linear-gradient(90deg, root.accent, #fff); }
-            Rectangle { background: @linear-gradient(90deg, root.accent, #fff); }
+            Rectangle { background <- @linear-gradient(90deg, root.accent, #fff); }
+            Rectangle { background <- @linear-gradient(90deg, root.accent, #fff); }
             for row in 5 : Rectangle {
-                background: @linear-gradient(90deg, root.accent, #fff);
-                Text { text: @tr("title"); }
+                background <- @linear-gradient(90deg, root.accent, #fff);
+                Text { text <- @tr("title"); }
             }
             for row in 5 : Rectangle {
-                background: @linear-gradient(90deg, root.accent, #fff);
-                Text { text: @tr("title"); }
+                background <- @linear-gradient(90deg, root.accent, #fff);
+                Text { text <- @tr("title"); }
             }
-            for row in 5 : Rectangle { background: @linear-gradient(90deg, root.tint(), #fff); }
+            for row in 5 : Rectangle { background <- @linear-gradient(90deg, root.tint(), #fff); }
         }
         "#,
         "reactive-visuals.xr",
@@ -260,20 +260,20 @@ fn unused_private_bindings_release_their_initializer_graph() {
     let unoptimized = raw(
         r#"
         export component App inherits Window {
-            in property <int> seed: once 10;
-            property <int> dead-input: root.seed + 1;
-            property <int> dead-middle: root.dead-input + root.dead-input;
-            property <string> dead-tip: "unused marker " + root.dead-middle;
-            property <int> dead-call: root.compute(root.dead-middle);
+            in property <int> seed: 10;
+            property <int> dead-input <- root.seed + 1;
+            property <int> dead-middle <- root.dead-input + root.dead-input;
+            property <string> dead-tip <- "unused marker " + root.dead-middle;
+            property <int> dead-call <- root.compute(root.dead-middle);
             property <[string]> dead-model: ["one", "two"];
-            property <int> live: root.seed * 2;
-            out property <int> result: root.live + 3;
+            property <int> live <- root.seed * 2;
+            out property <int> result <- root.live + 3;
             property <int> written;
             property <bool> linked;
             pure callback compute(int) -> int;
             callback change();
             change => { root.written = 2; }
-            CheckBox { checked <=> root.linked; }
+            CheckBox { checked <-> root.linked; }
         }
         "#,
         "unused-private-bindings.xr",
@@ -306,11 +306,11 @@ fn unused_private_bindings_release_their_initializer_graph() {
 fn state_merging_requires_adjacent_identical_overrides_and_no_transitions() {
     let optimized = raw(
         r#"
-        component Badge inherits Text { in property <string> caption; text: root.caption; }
+        component Badge inherits Text { in property <string> caption; text <- root.caption; }
         export component App inherits Window {
-            in property <int> mode: once 0;
-            panel := Rectangle { width: 20px; }
-            badge := Badge { caption: "base"; }
+            in property <int> mode: 0;
+            panel := Rectangle { width <- 20px; }
+            badge := Badge { caption <- "base"; }
             states [
                 first when root.mode == 1: { panel.width: 40px; badge.caption: "same"; }
                 second when root.mode == 2: { panel.width: 40px; badge.caption: "same";
@@ -320,8 +320,8 @@ fn state_merging_requires_adjacent_identical_overrides_and_no_transitions() {
             ]
         }
         component Timed inherits Window {
-            in property <int> mode: once 0;
-            panel := Rectangle { width: 20px; }
+            in property <int> mode: 0;
+            panel := Rectangle { width <- 20px; }
             states [
                 first when root.mode == 1: { panel.width: 40px;
                     out { animate panel.width { duration: 160ms; enabled: true; } } }
@@ -396,13 +396,13 @@ fn boolean_selects_lower_to_short_circuit_operators() {
         export component App inherits Window {
             in property <bool> condition;
             in property <bool> value;
-            out property <bool> left-true: root.condition ? true : root.value;
-            out property <bool> left-false: root.condition ? false : root.value;
-            out property <bool> right-true: root.condition ? root.value : true;
-            out property <bool> right-false: root.condition ? root.value : false;
-            out property <bool> inverse: root.condition ? false : true;
-            out property <bool> comparison: true != root.condition;
-            out property <bool> same: root.condition ? true : true;
+            out property <bool> left-true <- root.condition ? true : root.value;
+            out property <bool> left-false <- root.condition ? false : root.value;
+            out property <bool> right-true <- root.condition ? root.value : true;
+            out property <bool> right-false <- root.condition ? root.value : false;
+            out property <bool> inverse <- root.condition ? false : true;
+            out property <bool> comparison <- true != root.condition;
+            out property <bool> same <- root.condition ? true : true;
         }
         "#,
         "boolean-selects.xr",
@@ -440,15 +440,15 @@ fn static_resource_groups_are_shared_across_components() {
     let module = raw(
         r#"
         component First inherits Window {
-            out property <length> measured: observed.layout-width;
-            Label { text: "shared"; width: 80px; height: 24px; }
-            Rectangle { background: @radial-gradient(circle, #111, #eee); }
-            observed := Rectangle { width: 120px; height: 24px; }
+            out property <length> measured <- observed.layout-width;
+            Label { text <- "shared"; width <- 80px; height <- 24px; }
+            Rectangle { background <- @radial-gradient(circle, #111, #eee); }
+            observed := Rectangle { width <- 120px; height <- 24px; }
         }
         component Second inherits Window {
-            Label { text: "shared"; width: 80px; height: 24px; }
-            Rectangle { background: @radial-gradient(circle, #111, #eee); }
-            Label { text: "different"; width: 80px; height: 24px; }
+            Label { text <- "shared"; width <- 80px; height <- 24px; }
+            Rectangle { background <- @radial-gradient(circle, #111, #eee); }
+            Label { text <- "different"; width <- 80px; height <- 24px; }
         }
         "#,
         "shared-static-resources.xr",
@@ -497,11 +497,11 @@ fn fixed_image_source_plan_requires_a_stable_box_and_a_plain_image() {
         r#"
         component App inherits Window {
             in property <image> picture;
-            in property <length> live-width: once 100px;
-            fixed := Image { source: root.picture; width: 100px; height: 50px; }
-            intrinsic := Image { source: root.picture; width: 100px; }
-            changing := Image { source: root.picture; width: root.live-width; height: 50px; }
-            animated := AnimatedImage { source: root.picture; width: 100px; height: 50px; }
+            in property <length> live-width: 100px;
+            fixed := Image { source <- root.picture; width <- 100px; height <- 50px; }
+            intrinsic := Image { source <- root.picture; width <- 100px; }
+            changing := Image { source <- root.picture; width <- root.live-width; height <- 50px; }
+            animated := AnimatedImage { source <- root.picture; width <- 100px; height <- 50px; }
         }
         "#,
         "fixed-image-plans.xr",
@@ -538,15 +538,15 @@ fn builtin_literal_fields_fold_and_leave_public_values_reactive() {
         r#"
         component App inherits Window {
             property <Time> fixed: Time { hour: 30, minute: -2, second: 99 };
-            in-out property <Time> live: once Time { hour: 30, minute: -2, second: 99 };
+            in-out property <Time> live: Time { hour: 30, minute: -2, second: 99 };
             property <Date> today: Date { year: 2026, month: 11, day: 12 };
             property <Font> face: Font { family: "sans-serif", size: 18px, weight: 500, italic: false };
-            out property <int> hour: root.fixed.hour;
-            out property <int> minute: root.fixed.minute;
-            out property <int> second: root.fixed.second;
-            out property <int> active-hour: root.live.hour;
-            out property <int> day: root.today.day;
-            out property <length> size: root.face.size;
+            out property <int> hour <- root.fixed.hour;
+            out property <int> minute <- root.fixed.minute;
+            out property <int> second <- root.fixed.second;
+            out property <int> active-hour <- root.live.hour;
+            out property <int> day <- root.today.day;
+            out property <length> size <- root.face.size;
         }
         "#,
         "builtin-projections.xr",
@@ -581,23 +581,23 @@ fn window_layers_are_planned_only_when_the_stacking_band_is_known() {
     let optimized = raw(
         r#"
         export component FixedLayers inherits Window {
-            SceneView3D { render-mode: "overlay"; z: -100; }
+            SceneView3D { render-mode <- "overlay"; z <- -100; }
             Rectangle {}
-            SceneView3D { render-mode: "underlay"; z: 100; }
-            SceneView3D { render-mode: "underlay"; z: 20; }
+            SceneView3D { render-mode <- "underlay"; z <- 100; }
+            SceneView3D { render-mode <- "underlay"; z <- 20; }
         }
         export component ChangingLayer inherits Window {
-            in-out property <bool> front: once false;
-            SceneView3D { render-mode: root.front ? "overlay" : "underlay"; }
+            in-out property <bool> front: false;
+            SceneView3D { render-mode <- root.front ? "overlay" : "underlay"; }
             Rectangle {}
         }
         export component StableLayer inherits Window {
-            in-out property <bool> direct: once false;
-            in-out property <string> format: once "rgba8";
+            in-out property <bool> direct: false;
+            in-out property <string> format: "rgba8";
             SceneView3D {
-                render-mode: root.direct ? "inline" : "offscreen";
-                render-format: root.format;
-                render-overrides: root.direct ? "disable-internal-passes" : "none";
+                render-mode <- root.direct ? "inline" : "offscreen";
+                render-format <- root.format;
+                render-overrides <- root.direct ? "disable-internal-passes" : "none";
             }
             Rectangle {}
         }
@@ -648,18 +648,18 @@ fn empty_repeat_plan_keeps_virtual_templates_and_normalizes_known_paint_order() 
     let optimized = raw(
         r#"
         component App inherits Window {
-            in-out property <int> count: once 0;
-            for row in 0 : Text { text: "" + row; }
-            for item in [] : Label { text: item; }
-            for row in root.count : Text { text: "" + row; }
+            in-out property <int> count: 0;
+            for row in 0 : Text { text <- "" + row; }
+            for item in [] : Label { text <- item; }
+            for row in root.count : Text { text <- "" + row; }
             ListView { for row in 0 : Text {} }
             sorted := Rectangle {
-                Rectangle { z: 0; }
-                Rectangle { z: 1; }
+                Rectangle { z <- 0; }
+                Rectangle { z <- 1; }
             }
             unsorted := Rectangle {
-                Rectangle { z: 2; }
-                Rectangle { z: 1; }
+                Rectangle { z <- 2; }
+                Rectangle { z <- 1; }
             }
         }
         "#,
@@ -715,11 +715,11 @@ fn scalar_record_projections_share_slots_and_hoist_the_row_independent_prefix() 
         r#"
         struct Strings { prefix: string, suffix: string }
         component App inherits Window {
-            in-out property <Strings> style: once Strings { prefix: "x", suffix: "y" };
-            in property <[string]> items: once ["one", "two"];
-            Text { text: root.style.prefix + root.style.suffix; }
-            Text { text: root.style.prefix + root.style.suffix; }
-            for item in root.items : Text { text: root.style.prefix + item; }
+            in-out property <Strings> style: Strings { prefix: "x", suffix: "y" };
+            in property <[string]> items: ["one", "two"];
+            Text { text <- root.style.prefix + root.style.suffix; }
+            Text { text <- root.style.prefix + root.style.suffix; }
+            for item in root.items : Text { text <- root.style.prefix + item; }
         }
         "#,
         "record-cache-plans.xr",
@@ -750,18 +750,18 @@ fn private_alias_chains_forward_reads_writes_and_public_endpoints() {
     let optimized = raw(
         r#"
         component App inherits Window {
-            property <int> storage: once 7;
-            property <int> middle <=> root.storage;
-            property <int> tail <=> root.middle;
-            in-out property <int> exposed <=> root.tail;
-            out property <int> observed: root.tail;
+            property <int> storage: 7;
+            property <int> middle <-> root.storage;
+            property <int> tail <-> root.middle;
+            in-out property <int> exposed <-> root.tail;
+            out property <int> observed <- root.tail;
             callback step();
             step => { root.tail += 2; }
             property <int> fixed: 11;
-            out property <int> constant: root.fixed + 1;
+            out property <int> constant <- root.fixed + 1;
             entry := TextInput {}
-            property <string> control-alias <=> entry.text;
-            out property <string> edited: root.control-alias;
+            property <string> control-alias <-> entry.text;
+            out property <string> edited <- root.control-alias;
         }
         "#,
         "private-aliases.xr",
@@ -800,21 +800,21 @@ fn fixed_text_update_plan_requires_two_stable_absolute_dimensions() {
     let optimized = raw(
         r#"
         component App inherits Window {
-            in property <string> message: once "status";
-            in property <length> height-input: once 30px;
-            in property <bool> compact: once false;
+            in property <string> message: "status";
+            in property <length> height-input: 30px;
+            in property <bool> compact: false;
             states [ compact when root.compact: { stateful.height: 18px; } ]
 
-            fixed := Text { text: root.message; width: 120px; height: 24px; }
+            fixed := Text { text <- root.message; width <- 120px; height <- 24px; }
             grid := GridLayout {
-                label := Label { text: root.message; width: 120px; height: 24px; }
+                label := Label { text <- root.message; width <- 120px; height <- 24px; }
             }
-            intrinsic := Text { text: root.message; width: 120px; }
-            relative := Label { text: root.message; width: 50%; height: 24px; }
-            dynamic := Text { text: root.message; width: 120px; height: root.height-input; }
-            stateful := Text { text: root.message; width: 120px; height: 24px; }
+            intrinsic := Text { text <- root.message; width <- 120px; }
+            relative := Label { text <- root.message; width <- 50%; height <- 24px; }
+            dynamic := Text { text <- root.message; width <- 120px; height <- root.height-input; }
+            stateful := Text { text <- root.message; width <- 120px; height <- 24px; }
             animated := Text {
-                text: root.message; width: 120px; height: 24px;
+                text <- root.message; width <- 120px; height <- 24px;
                 animate width { duration: 120ms; }
             }
         }
@@ -854,19 +854,19 @@ fn record_projection_folding_keeps_writable_storage_and_other_field_evaluation()
         struct Pair { count: int, label: string }
         component App inherits Window {
             property <Pair> immutable: Pair { count: 7, label: "preset" };
-            property <Pair> writable: once Pair { count: 8, label: "old" };
-            in-out property <Pair> linked <=> root.writable;
-            property <Pair> assigned: once Pair { count: 6, label: "old" };
+            property <Pair> writable: Pair { count: 8, label: "old" };
+            in-out property <Pair> linked <-> root.writable;
+            property <Pair> assigned: Pair { count: 6, label: "old" };
             callback change();
             change => { root.assigned = Pair { count: 10, label: "new" }; }
-            property <Pair> dynamic: Pair { count: 9, label: root.label() };
+            property <Pair> dynamic <- Pair { count: 9, label: root.label() };
             pure callback label() -> string;
             label => { "dynamic" }
 
-            out property <int> fixed: root.immutable.count;
-            out property <int> updated: root.writable.count;
-            out property <int> assigned-count: root.assigned.count;
-            out property <int> evaluated: root.dynamic.count;
+            out property <int> fixed <- root.immutable.count;
+            out property <int> updated <- root.writable.count;
+            out property <int> assigned-count <- root.assigned.count;
+            out property <int> evaluated <- root.dynamic.count;
         }
         "#,
         "record-projections.xr",
@@ -905,10 +905,10 @@ fn optimized_scroll_targets_keep_viewport_identity_and_reject_foreign_ids() {
     let optimized = raw(
         r#"
         component App inherits Window {
-            canvas := ScrollView { content-height: 400px; }
+            canvas := ScrollView { content-height <- 400px; }
             panel := Rectangle {}
-            ScrollBar { target: canvas; }
-            ScrollIndicator { target: canvas; }
+            ScrollBar { target <- canvas; }
+            ScrollIndicator { target <- canvas; }
         }
         "#,
         "scroll-targets.xr",
@@ -938,8 +938,8 @@ fn table_sort_reads_remain_live_across_a_sort_command() {
                 root.after = table.current-sort-column;
             }
             table := TableView {
-                TableColumn { title: "Name"; }
-                for row in root.records : TableRow { Text { text: row; } }
+                TableColumn { title <- "Name"; }
+                for row in root.records : TableRow { Text { text <- row; } }
             }
         }
         "#,
@@ -1009,8 +1009,8 @@ fn tree_queries_keep_their_order_across_an_expansion_command() {
         struct Entry { id: int, parent: int }
         component App inherits Window {
             property <[Entry]> records;
-            out property <int> before: once -1;
-            out property <int> after: once -1;
+            out property <int> before: -1;
+            out property <int> after: -1;
             callback reveal();
             reveal => {
                 root.before = directory.row-for-key(2);
@@ -1019,7 +1019,7 @@ fn tree_queries_keep_their_order_across_an_expansion_command() {
             }
             directory := TreeView {
                 for row in root.records : TreeRow {
-                    key: row.id; parent-key: row.parent; Text { text: "row"; }
+                    key <- row.id; parent-key <- row.parent; Text { text <- "row"; }
                 }
             }
         }
@@ -1049,10 +1049,10 @@ fn tree_queries_keep_their_order_across_an_expansion_command() {
 fn scroll_range_reads_remain_live_across_writes() {
     let optimized = raw(
         r#"component Demo inherits Window {
-            in-out property <float> offset: once 0;
-            out property <float> before: once 0;
-            out property <float> after: once 0;
-            bar := ScrollBar { position <=> root.offset; size: 0.25; }
+            in-out property <float> offset: 0;
+            out property <float> before: 0;
+            out property <float> after: 0;
+            bar := ScrollBar { position <-> root.offset; size <- 0.25; }
             callback jump();
             jump() => {
                 root.before = bar.position;
@@ -1078,7 +1078,7 @@ fn scroll_range_reads_remain_live_across_writes() {
 fn cse_preserves_scroll_command_order_and_live_viewport_reads() {
     let optimized = raw(
         r#"export component Demo inherits Window {
-            out property <length> position: view.content-x + view.content-y;
+            out property <length> position <- view.content-x + view.content-y;
             view := ScrollView {}
             jump := Button { clicked() => {
                 view.scroll-to(8px, 12px);
@@ -1122,8 +1122,8 @@ fn table_positioning_effects_keep_order_and_independent_axis_arguments() {
     let optimized = raw(
         r#"component Demo inherits Window {
         table := TableView {
-            TableColumn { title: "Name"; }
-            for row in 10000 : TableRow { Text { text: "" + row; } }
+            TableColumn { title <- "Name"; }
+            for row in 10000 : TableRow { Text { text <- "" + row; } }
         }
         callback jump();
         jump() => {
@@ -1167,11 +1167,11 @@ fn table_positioning_effects_keep_order_and_independent_axis_arguments() {
 fn static_gradient_plans_exclude_live_colors() {
     let input = raw(
         r#"export component Demo inherits Window {
-            in-out property <color> tint: once #abc;
-            Rectangle { background: @linear-gradient(90deg, #000, #fff); }
-            Rectangle { background: @radial-gradient(circle, #000, #fff); }
-            Rectangle { background: @radial-gradient(circle, #000, root.tint); }
-            Rectangle { background: @linear-gradient(90deg, root.tint, #fff); }
+            in-out property <color> tint: #abc;
+            Rectangle { background <- @linear-gradient(90deg, #000, #fff); }
+            Rectangle { background <- @radial-gradient(circle, #000, #fff); }
+            Rectangle { background <- @radial-gradient(circle, #000, root.tint); }
+            Rectangle { background <- @linear-gradient(90deg, root.tint, #fff); }
         }"#,
         "gradient-plans.xr",
     );
@@ -1211,12 +1211,12 @@ fn unconditional_literal_states_become_bindings_and_unlock_scene_plans() {
         r#"
         component Badge inherits Rectangle {}
         export component App inherits Window {
-            in property <string> message: once "Ready";
-            in property <bool> live: once false;
+            in property <string> message: "Ready";
+            in property <bool> live: false;
             grid := GridLayout {
-                tile := Rectangle { col: 0; width: 20px; height: 20px; }
+                tile := Rectangle { col <- 0; width <- 20px; height <- 20px; }
             }
-            status := Text { text: root.message; width: 120px; }
+            status := Text { text <- root.message; width <- 120px; }
             badge := Badge {}
             states [
                 ignored when false: { tile.col: 3; }
@@ -1225,15 +1225,15 @@ fn unconditional_literal_states_become_bindings_and_unlock_scene_plans() {
             ]
         }
         component Timed inherits Window {
-            panel := Rectangle { width: 20px; }
+            panel := Rectangle { width <- 20px; }
             states [ settled when true: {
                 panel.width: 40px;
                 in { animate panel.width { duration: 160ms; } }
             } ]
         }
         component DynamicValue inherits Window {
-            in property <length> target-width: once 120px;
-            panel := Rectangle { width: 20px; }
+            in property <length> target-width: 120px;
+            panel := Rectangle { width <- 20px; }
             states [ settled when true: { panel.width: root.target-width; } ]
         }
         "#,
@@ -1281,8 +1281,8 @@ fn unconditional_literal_states_become_bindings_and_unlock_scene_plans() {
 fn state_overrides_keep_grid_placement_and_subtree_values_live() {
     let module = raw(
         r#"export component Demo inherits Window {
-            in property <bool> compact: once false;
-            grid := GridLayout { tile := Rectangle { col: 0; width: 16px; height: 16px; } }
+            in property <bool> compact: false;
+            grid := GridLayout { tile := Rectangle { col <- 0; width <- 16px; height <- 16px; } }
             states [ small when root.compact: { tile.col: 1; tile.width: 12px; } ]
         }"#,
         "state-plan.xr",
@@ -1314,7 +1314,7 @@ fn state_overrides_keep_grid_placement_and_subtree_values_live() {
 fn simplify_visuals_removes_disabled_timing_and_preserves_delayed_jumps() {
     let input = raw(
         r#"export component Demo inherits Window {
-            in property <bool> motion: once true;
+            in property <bool> motion: true;
             Rectangle {
                 animate width { duration: 200ms; enabled: false; }
                 animate height { duration: 200ms; enabled: true; }
@@ -1354,9 +1354,9 @@ fn simplify_visuals_removes_disabled_timing_and_preserves_delayed_jumps() {
 fn equivalent_visual_bindings_share_one_cache_across_sibling_elements() {
     let input = raw(
         r#"export component Demo inherits Window {
-            in-out property <int> count: once 0;
-            first := Text { text: "Count " + root.count; }
-            second := Text { text: "Count " + root.count; }
+            in-out property <int> count: 0;
+            first := Text { text <- "Count " + root.count; }
+            second := Text { text <- "Count " + root.count; }
         }"#,
         "shared-visuals.xr",
     );
@@ -1393,18 +1393,18 @@ fn equivalent_visual_bindings_share_one_cache_across_sibling_elements() {
 fn visual_cache_groups_are_separate_for_each_repeat_and_exclude_calls() {
     let module = raw(
         r#"export component Demo inherits Window {
-            in-out property <int> count: once 0;
+            in-out property <int> count: 0;
             pure callback format-count(int) -> string;
-            a := Text { text: "Count " + root.format-count(root.count); }
-            b := Text { text: "Count " + root.format-count(root.count); }
+            a := Text { text <- "Count " + root.format-count(root.count); }
+            b := Text { text <- "Count " + root.format-count(root.count); }
             for item in ["A", "B"] : VerticalLayout {
-                Text { text: "Row " + item; }
-                Text { text: "Row " + item; }
-                Text { text: "Detail " + item; }
+                Text { text <- "Row " + item; }
+                Text { text <- "Row " + item; }
+                Text { text <- "Detail " + item; }
             }
             for item in ["X", "Y"] : VerticalLayout {
-                Text { text: "Row " + item; }
-                Text { text: "Row " + item; }
+                Text { text <- "Row " + item; }
+                Text { text <- "Row " + item; }
             }
         }"#,
         "scoped-visuals.xr",
@@ -1456,14 +1456,14 @@ fn visual_cache_groups_are_separate_for_each_repeat_and_exclude_calls() {
 fn row_invariant_bindings_share_a_component_cache_across_repeats() {
     let input = raw(
         r#"export component Demo inherits Window {
-            in-out property <string> caption: once "shared";
+            in-out property <string> caption: "shared";
             for item in ["A", "B"] : VerticalLayout {
-                Text { text: "Caption " + root.caption; }
-                Text { text: "Row " + item; }
+                Text { text <- "Caption " + root.caption; }
+                Text { text <- "Row " + item; }
             }
             for item in ["X", "Y"] : VerticalLayout {
-                Text { text: "Caption " + root.caption; }
-                Text { text: "Row " + item; }
+                Text { text <- "Caption " + root.caption; }
+                Text { text <- "Row " + item; }
             }
         }"#,
         "repeat-invariants.xr",
@@ -1506,15 +1506,15 @@ fn row_invariant_bindings_share_a_component_cache_across_repeats() {
 fn scene_plans_share_constant_table_columns_without_freezing_live_bindings() {
     let module = raw(
         r#"export component Demo inherits Window {
-            in property <length> current-width: once 60px;
+            in property <length> current-width: 60px;
             TableView {
-                TableColumn { title: "Fixed"; width: 80px; }
-                TableColumn { title: "Live"; width: root.current-width; }
-                TableColumn { title: "Fixed"; width: 80px; }
+                TableColumn { title <- "Fixed"; width <- 80px; }
+                TableColumn { title <- "Live"; width <- root.current-width; }
+                TableColumn { title <- "Fixed"; width <- 80px; }
                 for label in ["sample"] : TableRow {
-                    TableCell { text: label; }
-                    TableCell { text: label; }
-                    TableCell { text: label; }
+                    TableCell { text <- label; }
+                    TableCell { text <- label; }
+                    TableCell { text <- label; }
                 }
             }
         }"#,
@@ -1550,12 +1550,12 @@ fn scene_plans_share_constant_table_columns_without_freezing_live_bindings() {
 fn scene_plans_mark_paint_static_subtrees_and_only_invariant_subexpressions() {
     let optimized = raw(
         r#"export component Demo inherits Window {
-            in-out property <string> caption: once "shared";
-            in-out property <color> tint: once #abc;
-            in-out property <length> size: once 40px;
-            swatch := Rectangle { background: root.tint; width: root.size; }
-            panel := VerticalLayout { Text { text: "static"; } }
-            for item in ["A", "B"] : Text { text: ("Caption " + root.caption) + item; }
+            in-out property <string> caption: "shared";
+            in-out property <color> tint: #abc;
+            in-out property <length> size: 40px;
+            swatch := Rectangle { background <- root.tint; width <- root.size; }
+            panel := VerticalLayout { Text { text <- "static"; } }
+            for item in ["A", "B"] : Text { text <- ("Caption " + root.caption) + item; }
         }"#,
         "scene-plans.xr",
     )
@@ -1607,15 +1607,15 @@ fn scene_plans_mark_paint_static_subtrees_and_only_invariant_subexpressions() {
 fn precompiles_constant_paths_and_plans_only_fixed_grids() {
     let module = raw(
         r#"export component Demo inherits Window {
-            in-out property <string> path-source: once "M0 0 L10 10";
-            in-out property <bool> show: once true;
-            fixed-path := Path { commands: "M0 0 " + "L10 10"; }
-            live-path := Path { commands: root.path-source; }
+            in-out property <string> path-source: "M0 0 L10 10";
+            in-out property <bool> show: true;
+            fixed-path := Path { commands <- "M0 0 " + "L10 10"; }
+            live-path := Path { commands <- root.path-source; }
             fixed-grid := GridLayout {
-                Rectangle { rowspan: 2; }
-                Row { Text { colspan: 2; text: "fixed"; } }
+                Rectangle { rowspan <- 2; }
+                Row { Text { colspan <- 2; text <- "fixed"; } }
             }
-            live-grid := GridLayout { Rectangle { visible: root.show; } }
+            live-grid := GridLayout { Rectangle { visible <- root.show; } }
         }"#,
         "fixed-geometry.xr",
     )
@@ -1648,8 +1648,8 @@ fn optimization_preserves_stack_reads_on_each_side_of_navigation() {
     let optimized = raw(
         r#"
         component App inherits Window {
-            out property <int> before: once 0;
-            out property <int> after: once 0;
+            out property <int> before: 0;
+            out property <int> after: 0;
             nav := StackView {
                 home := StackPage {}
                 detail := StackPage {}
@@ -1707,7 +1707,7 @@ fn folding_and_cse_change_the_native_values_used_by_rust_codegen() {
         out property <string> label: 1 + 2 * 3 == 7 && !false ? "selected" : "discarded";
         out property <int> first: 7;
         out property <int> second: 7;
-        out property <int> signed-remainder: -7 % 3;
+        out property <int> signed-remainder <- -7 % 3;
     }"#,
         "passes.xr",
     );
@@ -1762,11 +1762,11 @@ fn folding_and_cse_change_the_native_values_used_by_rust_codegen() {
 fn constant_conversions_and_string_expressions_reach_rust_as_literals() {
     let input = raw(
         r#"export component App inherits Window {
-            out property <length> width-value: (20px + 4px) / 2;
+            out property <length> width-value <- (20px + 4px) / 2;
             out property <float> ratio: 25%;
             out property <float> rounded: 9007199254740993;
             out property <float> negative-zero: -0.0;
-            out property <float> infinity: 1.0 / 0.0;
+            out property <float> infinity <- 1.0 / 0.0;
             out property <bool> comparison: 2.5px < 3px;
             out property <bool> escaped-equality: "\u0041" == "A";
             out property <string> caption: "版" + 2 + "\n" + true;
@@ -1809,19 +1809,19 @@ fn constant_conversions_and_string_expressions_reach_rust_as_literals() {
 fn identities_keep_live_reads_and_calls_and_prune_dead_operands() {
     let optimized = raw(
         r#"export component App inherits Window {
-            in-out property <int> count: once 2;
-            in-out property <bool> enabled: once true;
-            in-out property <string> caption: once "app";
+            in-out property <int> count: 2;
+            in-out property <bool> enabled: true;
+            in-out property <string> caption: "app";
             pure callback probe() -> bool;
             callback ping;
             callback run;
             run => { root.ping(); }
-            out property <int> identity: 0 + (count - 0) * 1 / 1;
-            out property <int> zero: count * 0;
-            out property <bool> condition: !!(enabled && true) || false;
-            out property <bool> must-call: root.probe() && false;
-            out property <bool> never-call: false && root.probe();
-            out property <string> same: "" + caption + "";
+            out property <int> identity <- 0 + (count - 0) * 1 / 1;
+            out property <int> zero <- count * 0;
+            out property <bool> condition <- !!(enabled && true) || false;
+            out property <bool> must-call <- root.probe() && false;
+            out property <bool> never-call <- false && root.probe();
+            out property <string> same <- "" + caption + "";
         }"#,
         "identities.xr",
     )
@@ -1859,10 +1859,10 @@ fn identities_keep_live_reads_and_calls_and_prune_dead_operands() {
 fn only_unconditional_visual_guards_are_removed() {
     let input = raw(
         r#"export component App inherits Window {
-            in property <bool> show: once true;
+            in property <bool> show: true;
             if 1 + 2 == 3 : always := Button { clicked() => {} }
-            if false : hidden := Text { text: "not-rendered-marker"; }
-            if root.show : dynamic := Text { text: "dynamic"; }
+            if false : hidden := Text { text <- "not-rendered-marker"; }
+            if root.show : dynamic := Text { text <- "dynamic"; }
         }"#,
         "visual-guards.xr",
     );
@@ -1906,7 +1906,7 @@ fn only_unconditional_visual_guards_are_removed() {
 fn optimization_preserves_dynamic_conditions_and_trapping_operations() {
     let input = raw(
         r#"export component App inherits Window {
-        out property <int> count: once 0;
+        out property <int> count: 0;
         callback condition() -> bool;
         condition => { root.count += 1; true }
         callback choose();
@@ -1915,10 +1915,10 @@ fn optimization_preserves_dynamic_conditions_and_trapping_operations() {
         out property <int> wrap-subtract: (0 - 9223372036854775807 - 1) - 1;
         out property <int> wrap-multiply: 4611686018427387904 * 2;
         out property <int> wrap-negate: -(0 - 9223372036854775807 - 1);
-        out property <int> div-zero: 12 / 0;
-        out property <int> rem-zero: 12 % 0;
-        out property <int> div-overflow: (0 - 9223372036854775807 - 1) / -1;
-        out property <int> rem-overflow: (0 - 9223372036854775807 - 1) % -1;
+        out property <int> div-zero <- 12 / 0;
+        out property <int> rem-zero <- 12 % 0;
+        out property <int> div-overflow <- (0 - 9223372036854775807 - 1) / -1;
+        out property <int> rem-overflow <- (0 - 9223372036854775807 - 1) % -1;
     }"#,
         "effects.xr",
     );
@@ -1958,7 +1958,7 @@ fn optimization_preserves_dynamic_conditions_and_trapping_operations() {
 fn operation_views_keep_block_order_and_distinguish_reads_across_writes() {
     let module = raw(
         r#"export component App inherits Window {
-        in-out property <int> count: once 1;
+        in-out property <int> count: 1;
         callback step();
         step() => { root.count += 1; root.count += 1; }
     }"#,
@@ -2015,9 +2015,9 @@ fn table_selection_reads_stay_live_across_a_selection_command() {
                 root.after = table.selection-count;
             }
             table := TableView {
-                selection-target: cells;
-                TableColumn { title: "Name"; }
-                for row in root.records : TableRow { Text { text: row; } }
+                selection-target <- cells;
+                TableColumn { title <- "Name"; }
+                for row in root.records : TableRow { Text { text <- row; } }
             }
         }"#,
         "table-selection-order.xr",
@@ -2050,7 +2050,7 @@ fn table_selection_reads_stay_live_across_a_selection_command() {
 fn table_history_reads_observe_replay_in_the_same_callback() {
     let optimized = raw(
         r#"component App inherits Window {
-            in-out property <[string]> records: once ["One"];
+            in-out property <[string]> records: ["One"];
             out property <bool> before;
             out property <bool> after;
             callback revert();
@@ -2060,9 +2060,9 @@ fn table_history_reads_observe_replay_in_the_same_callback() {
                 root.after = table.can-undo;
             }
             table := TableView {
-                undoable: true;
-                TableColumn { title: "Name"; }
-                for row in root.records : TableRow { TableCell { text <=> row; } }
+                undoable <- true;
+                TableColumn { title <- "Name"; }
+                for row in root.records : TableRow { TableCell { text <-> row; } }
             }
         }"#,
         "table-history-order.xr",
@@ -2175,38 +2175,38 @@ fn changing_viewport_capture_names_and_display_controls_only_invalidates_paint()
         struct Feed { name: string, color-source: string, depth-source: string }
         struct Sky { sky-top-color: color, sun-latitude: float }
         export component Demo inherits Window {
-            in property <string> feed: once "stage";
-            in property <float> amount: once 0;
-            in property <color> tint: once #000;
-            in property <bool> dither: once false;
-            in property <int> ghost-count: once 4;
-            in property <image> lens-mask: once @image-url("");
+            in property <string> feed: "stage";
+            in property <float> amount: 0;
+            in property <color> tint: #000;
+            in property <bool> dither: false;
+            in property <int> ghost-count: 4;
+            in property <image> lens-mask: @image-url("");
             SceneView3D {
-                scene-captures: [Feed {
+                scene-captures <- [Feed {
                     name: "forward", color-source: root.feed, depth-source: root.feed,
                 }];
-                scene-color-capture: root.feed;
-                scene-depth-capture: root.feed;
-                scene-vignette-strength: root.amount;
-                scene-vignette-radius: root.amount;
-                scene-vignette-color: root.tint;
-                scene-sharpness: root.amount;
-                scene-dithering: root.dither;
-                lens-flare: root.dither;
-                lens-flare-ghost-count: root.ghost-count;
-                lens-flare-distortion: root.amount;
-                lens-flare-starburst-map: root.lens-mask;
-                fxaa: root.dither;
-                fxaa-search-steps: root.ghost-count;
-                fxaa-strength: root.amount;
-                environment-sky: Sky { sky-top-color: root.tint, sun-latitude: root.amount };
-                skybox-sky: Sky { sky-top-color: root.tint, sun-latitude: root.amount };
-                skybox-source: root.feed;
-                skybox-yaw: root.amount;
-                skybox-blur: root.amount;
-                environment-pitch: root.amount;
-                environment-roll: root.amount;
-                environment-horizon: root.amount;
+                scene-color-capture <- root.feed;
+                scene-depth-capture <- root.feed;
+                scene-vignette-strength <- root.amount;
+                scene-vignette-radius <- root.amount;
+                scene-vignette-color <- root.tint;
+                scene-sharpness <- root.amount;
+                scene-dithering <- root.dither;
+                lens-flare <- root.dither;
+                lens-flare-ghost-count <- root.ghost-count;
+                lens-flare-distortion <- root.amount;
+                lens-flare-starburst-map <- root.lens-mask;
+                fxaa <- root.dither;
+                fxaa-search-steps <- root.ghost-count;
+                fxaa-strength <- root.amount;
+                environment-sky <- Sky { sky-top-color: root.tint, sun-latitude: root.amount };
+                skybox-sky <- Sky { sky-top-color: root.tint, sun-latitude: root.amount };
+                skybox-source <- root.feed;
+                skybox-yaw <- root.amount;
+                skybox-blur <- root.amount;
+                environment-pitch <- root.amount;
+                environment-roll <- root.amount;
+                environment-horizon <- root.amount;
             }
         }
         "#,

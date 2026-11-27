@@ -11,14 +11,14 @@ export component FogPlan inherits Window {
     in property <bool> enabled;
     in property <float> amount;
     SceneView3D {
-        width: 100px; height: 100px;
-        fog-depth-enabled: root.enabled;
-        fog-height-enabled: root.enabled;
-        fog-transmit-enabled: root.enabled;
-        fog-depth-curve: root.amount;
-        fog-height-start: 1 + root.amount;
-        fog-height-end: root.amount;
-        fog-height-curve: root.amount;
-        fog-transmit-curve: root.amount;
+        width <- 100px; height <- 100px;
+        fog-depth-enabled <- root.enabled;
+        fog-height-enabled <- root.enabled;
+        fog-transmit-enabled <- root.enabled;
+        fog-depth-curve <- root.amount;
+        fog-height-start <- 1 + root.amount;
+        fog-height-end <- root.amount;
+        fog-height-curve <- root.amount;
+        fog-transmit-curve <- root.amount;
     }
 }

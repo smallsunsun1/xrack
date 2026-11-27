@@ -503,7 +503,9 @@ fn verify_property_and_callback_dependencies(module: &Module) -> Result<(), Stri
                     |endpoint| endpoint,
                     |endpoint| {
                         bindings.edges.get(endpoint).and_then(|(binding, _)| {
-                            (binding.name() == "xr.bind").then_some(*binding)
+                            (binding.name() == "xr.bind"
+                                && binding.attribute("initial") != Some("true"))
+                            .then_some(*binding)
                         })
                     },
                 ) {
@@ -643,6 +645,7 @@ impl<'m> ComponentDependencies<'m> {
             let slot = self.effect_slot(component, "", reference, false)?;
             if let Some((binding, _)) = bindings.get(&slot)
                 && binding.name() == "xr.bind"
+                && binding.attribute("initial") != Some("true")
             {
                 return Err(at(
                     op,
@@ -1330,6 +1333,7 @@ impl VisualCacheGroup {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VisualCacheKey<Operand> {
     Operand(Operand),
+    Initializer(usize),
     Planned(VisualCacheGroup),
 }
 
@@ -1346,6 +1350,9 @@ impl<Operand> VisualCacheKey<Operand> {
 
 impl<'m> VisualCacheKey<ValueRef<'m>> {
     pub fn for_binding(binding: OperationRef<'m>, use_visual_plan: bool) -> Option<Self> {
+        if binding.attribute("initial") == Some("true") {
+            return Some(Self::Initializer(binding.identity()));
+        }
         if use_visual_plan && let Some(group) = VisualCacheGroup::for_binding(binding) {
             return Some(Self::Planned(group));
         }
@@ -1359,6 +1366,9 @@ pub fn visual_cache_operand(
     use_visual_plan: bool,
 ) -> Option<OperationRef<'_>> {
     let definition = binding.operand(0)?.defining_operation()?;
+    if binding.attribute("initial") == Some("true") {
+        return Some(definition);
+    }
     let static_gradient = use_visual_plan && GradientRef::static_group(definition).is_some();
     (!static_gradient
         && !matches!(

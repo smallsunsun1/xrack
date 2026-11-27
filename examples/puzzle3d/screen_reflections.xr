@@ -7,10 +7,10 @@ struct ReflectionActor {
 }
 
 export component ScreenReflectionsDemo inherits Window {
-    title: "XRack · 屏幕空间反射";
-    width: 600px; height: 394px;
-    resizable: false;
-    background: #141d29;
+    title <- "XRack · 屏幕空间反射";
+    width <- 600px; height <- 394px;
+    resizable <- false;
+    background <- #141d29;
 
     in-out property <bool> reflect-screen: true;
     in-out property <bool> show-source: true;
@@ -29,7 +29,7 @@ export component ScreenReflectionsDemo inherits Window {
         x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
     };
-    property <[ReflectionActor]> actors: [
+    property <[ReflectionActor]> actors <- [
         ReflectionActor {
             id: "floor", mesh: @mesh-url("models/ssr-mirror.gltf"),
             y: -0.5, pitch: -90, scale-x: 10, scale-y: 8,
@@ -55,36 +55,36 @@ export component ScreenReflectionsDemo inherits Window {
         },
     ];
     viewport := SceneView3D {
-        width: 600px; height: 340px;
-        model: root.actors;
-        scene-background: #182538;
-        light-yaw: -28; light-elevation: 55;
-        camera-yaw: 0; camera-pitch: 26; camera-distance: 10;
-        screen-space-reflections: root.reflect-screen;
-        ssr-thickness: 0.26;
-        ssr-steps: root.steps;
-        ssr-roughness-cutoff: root.cutoff;
-        ssr-scale: root.trace-scale;
-        environment: root.studio ? @environment-url("models/studio.hdr") : "";
-        environment-skybox: root.studio;
-        multisampling: root.msaa;
-        order-independent-transparency: root.weighted;
-        supersampling: root.aa-scale;
-        cache-rendering: true;
+        width <- 600px; height <- 340px;
+        model <- root.actors;
+        scene-background <- #182538;
+        light-yaw <- -28; light-elevation <- 55;
+        camera-yaw <- 0; camera-pitch <- 26; camera-distance <- 10;
+        screen-space-reflections <- root.reflect-screen;
+        ssr-thickness <- 0.26;
+        ssr-steps <- root.steps;
+        ssr-roughness-cutoff <- root.cutoff;
+        ssr-scale <- root.trace-scale;
+        environment <- root.studio ? @environment-url("models/studio.hdr") : "";
+        environment-skybox <- root.studio;
+        multisampling <- root.msaa;
+        order-independent-transparency <- root.weighted;
+        supersampling <- root.aa-scale;
+        cache-rendering <- true;
     }
     HorizontalLayout {
-        x: 12px; y: 346px; width: 576px; height: 36px;
-        spacing: 8px;
-        reflection-switch := CheckBox { width: 110px; text: "屏幕反射"; checked <=> root.reflect-screen; }
-        msaa-switch := CheckBox { width: 82px; text: "MSAA"; checked <=> root.msaa; }
-        source-switch := CheckBox { width: 66px; text: "物体"; checked <=> root.show-source; }
-        sky-switch := CheckBox { width: 82px; text: "环境"; checked <=> root.studio; }
+        x <- 12px; y <- 346px; width <- 576px; height <- 36px;
+        spacing <- 8px;
+        reflection-switch := CheckBox { width <- 110px; text <- "屏幕反射"; checked <-> root.reflect-screen; }
+        msaa-switch := CheckBox { width <- 82px; text <- "MSAA"; checked <-> root.msaa; }
+        source-switch := CheckBox { width <- 66px; text <- "物体"; checked <-> root.show-source; }
+        sky-switch := CheckBox { width <- 82px; text <- "环境"; checked <-> root.studio; }
         glass-switch := Button {
-            width: 68px;
-            text: root.glass-mode == 0 ? "玻璃" : root.glass-mode == 1 ? "透明"
+            width <- 68px;
+            text <- root.glass-mode == 0 ? "玻璃" : root.glass-mode == 1 ? "透明"
                 : root.glass-mode == 2 ? "透射" : "体积";
             clicked => { root.glass-mode = (root.glass-mode + 1) % 4; }
         }
-        position-slider := Slider { minimum: -3.4; maximum: 3.4; value <=> root.offset; }
+        position-slider := Slider { minimum <- -3.4; maximum <- 3.4; value <-> root.offset; }
     }
 }

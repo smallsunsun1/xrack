@@ -12,17 +12,17 @@ struct CutActor {
 }
 
 export component ObliqueCameraDemo inherits Window {
-    title: "XRack · Oblique depth clipping";
-    width: 432px; height: 310px; resizable: false;
-    background: #172335;
+    title <- "XRack · Oblique depth clipping";
+    width <- 432px; height <- 310px; resizable <- false;
+    background <- #172335;
     in-out property <bool> tilted: true;
     in-out property <bool> device-reversed: false;
     in-out property <bool> parallel: true;
     in-out property <bool> effects: true;
     in-out property <bool> culling: true;
     in-out property <bool> msaa: false;
-    property <point2d> viewport: Point2D.new(432px, 252px);
-    property <CutActor> base: CutActor {
+    property <point2d> viewport <- Point2D.new(432px, 252px);
+    property <CutActor> base <- CutActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 0.8, scale-y: 0.8, scale-z: 0.2,
         yaw: 0, pitch: 0, roll: 0, color: #fff,
@@ -30,7 +30,7 @@ export component ObliqueCameraDemo inherits Window {
         camera-clip-normal: Vector3D.new(0, 0, -1), camera-reverse-depth: root.device-reversed,
         material: ClippedMaterial { unlit: false, metalness: 0.12, roughness: 0.32 },
     };
-    property <scenemodel3d> scene: Scene3D.prepare([
+    property <scenemodel3d> scene <- Scene3D.prepare([
         CutActor { id: "eye", mesh: "", z: 8,
             camera-kind: root.parallel ? "orthographic" : "perspective",
             camera-clip-normal: Vector3D.new(root.tilted ? 0.5 : 0.0, 0, -1),
@@ -44,7 +44,7 @@ export component ObliqueCameraDemo inherits Window {
             material: ClippedMaterial { unlit: false, metalness: 0.7, roughness: 0.28 }, ..root.base },
     ]);
     property <[CutMist]> clear: [];
-    property <[CutMist]> mist: [
+    property <[CutMist]> mist <- [
         CutMist { position: Point3D.new(0, 0, -1.5), size: Vector3D.new(8, 5, 5),
             density: 0.085, color: #517e9c },
     ];
@@ -52,33 +52,33 @@ export component ObliqueCameraDemo inherits Window {
         let projected = Scene3D.project-camera(root.scene, "eye", root.viewport, point);
         Scene3D.pick-camera(root.scene, "eye", root.viewport, projected.point)
     }
-    out property <string> picked-near-left: root.pick-at(Point3D.new(-2, 0.9, 0));
-    out property <string> picked-near-right: root.pick-at(Point3D.new(2, 0.9, 0));
-    out property <string> picked-far-left: root.pick-at(Point3D.new(-2, -0.6, -3.8));
-    out property <string> picked-far-right: root.pick-at(Point3D.new(2, -0.6, -3.8));
+    out property <string> picked-near-left <- root.pick-at(Point3D.new(-2, 0.9, 0));
+    out property <string> picked-near-right <- root.pick-at(Point3D.new(2, 0.9, 0));
+    out property <string> picked-far-left <- root.pick-at(Point3D.new(-2, -0.6, -3.8));
+    out property <string> picked-far-right <- root.pick-at(Point3D.new(2, -0.6, -3.8));
 
     SceneView3D {
-        width: root.viewport.x; height: root.viewport.y;
-        model: root.scene; camera: "eye"; frustum-culling: root.culling;
-        scene-background: #203447; scene-tone-map: none;
-        ambient-intensity: 0.28;
-        multisampling: root.msaa;
-        ambient-occlusion: root.effects; ao-strength: 0.45;
-        screen-space-reflections: root.effects; ssr-scale: 0.5;
-        screen-space-global-illumination: root.effects; ssgi-scale: 0.5; ssgi-occlusion: 0;
-        depth-of-field: root.effects; dof-focus-distance: 8; dof-blur-radius: 5px;
-        fog-volumes: root.effects ? root.mist : root.clear;
+        width <- root.viewport.x; height <- root.viewport.y;
+        model <- root.scene; camera <- "eye"; frustum-culling <- root.culling;
+        scene-background <- #203447; scene-tone-map <- none;
+        ambient-intensity <- 0.28;
+        multisampling <- root.msaa;
+        ambient-occlusion <- root.effects; ao-strength <- 0.45;
+        screen-space-reflections <- root.effects; ssr-scale <- 0.5;
+        screen-space-global-illumination <- root.effects; ssgi-scale <- 0.5; ssgi-occlusion <- 0;
+        depth-of-field <- root.effects; dof-focus-distance <- 8; dof-blur-radius <- 5px;
+        fog-volumes <- root.effects ? root.mist : root.clear;
     }
     HorizontalLayout {
-        x: 12px; y: 263px; width: 408px; height: 34px; spacing: 8px;
+        x <- 12px; y <- 263px; width <- 408px; height <- 34px; spacing <- 8px;
         cut := Button {
-            text: root.tilted ? "斜裁剪" : "垂直裁剪";
+            text <- root.tilted ? "斜裁剪" : "垂直裁剪";
             clicked => { root.tilted = !root.tilted; }
         }
         lens := Button {
-            text: root.parallel ? "正交" : "透视";
+            text <- root.parallel ? "正交" : "透视";
             clicked => { root.parallel = !root.parallel; }
         }
-        effects-toggle := CheckBox { text: "特效"; checked <=> root.effects; }
+        effects-toggle := CheckBox { text <- "特效"; checked <-> root.effects; }
     }
 }

@@ -104,6 +104,7 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                 }
                 LoweredMember::Condition(value) => {
                     current_element(&mut elements).bindings.push(ir::Binding {
+                        initial: false,
                         name: "if".into(),
                         span: value.span,
                         value,
@@ -111,6 +112,7 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                 }
                 LoweredMember::Repeat { model, .. } => {
                     current_element(&mut elements).bindings.push(ir::Binding {
+                        initial: false,
                         name: "for".into(),
                         span: model.span,
                         value: model,

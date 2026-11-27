@@ -16,14 +16,14 @@ struct FilePass { shader: string, buffers: [TextureInput] }
 export component App inherits Window {
     in property <float> strength: 0.8;
     SceneView3D {
-        scene-effect: @shader-url("effects/hologram.wgsl");
-        scene-effect-strength: root.strength;
-        scene-effect-depth: true;
+        scene-effect <- @shader-url("effects/hologram.wgsl");
+        scene-effect-strength <- root.strength;
+        scene-effect-depth <- true;
     }
     SceneView3D {
-        scene-effect-history-revision: 2;
-        scene-effect-animate: true;
-        scene-effects: [
+        scene-effect-history-revision <- 2;
+        scene-effect-animate <- true;
+        scene-effects <- [
             Pass { shader: @shader-url("effects/blur.wgsl"), scale: 0.5, strength: root.strength,
                 output: "soft", buffers: [], history: true, output-format: "rg16f" },
             Pass { shader: @shader-url("effects/halo.wgsl"), scale: 1, strength: 1,
@@ -32,7 +32,7 @@ export component App inherits Window {
         ];
     }
     SceneView3D {
-        scene-effects: [
+        scene-effects <- [
             FilePass { shader: @shader-url("effects/texture_inputs.wgsl"),
                 buffers: [TextureInput {
                     texture: @texture-url("models/channel-swatch.png"), color-space: "linear", enabled: true

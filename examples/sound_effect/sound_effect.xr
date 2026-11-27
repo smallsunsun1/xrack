@@ -1,58 +1,58 @@
 export component SoundDemo inherits Window {
-    title: "XRack SoundEffect";
-    width: 400px;
-    height: 310px;
+    title <- "XRack SoundEffect";
+    width <- 400px;
+    height <- 310px;
 
     in property <string> sound-source: "click.wav";
     in-out property <bool> muted: false;
     in-out property <bool> repeat-effect: false;
     in property <int> loop-count: 1;
-    out property <bool> sound-ready: confirmation.ready;
-    out property <bool> sound-playing: confirmation.playing;
-    out property <string> sound-status: confirmation.status;
-    out property <string> sound-error: confirmation.error;
-    out property <int> loops-remaining: confirmation.loops-remaining;
+    out property <bool> sound-ready <- confirmation.ready;
+    out property <bool> sound-playing <- confirmation.playing;
+    out property <string> sound-status <- confirmation.status;
+    out property <string> sound-error <- confirmation.error;
+    out property <int> loops-remaining <- confirmation.loops-remaining;
 
     confirmation := SoundEffect {
-        source: root.sound-source;
-        volume: 0.35;
-        muted: root.muted;
-        loops: root.repeat-effect ? -1 : root.loop-count;
+        source <- root.sound-source;
+        volume <- 0.35;
+        muted <- root.muted;
+        loops <- root.repeat-effect ? -1 : root.loop-count;
     }
 
     keyboard := Shortcut {
-        sequence: "F2";
-        enabled: root.sound-error == "";
+        sequence <- "F2";
+        enabled <- root.sound-error == "";
         activated => { confirmation.play(); }
     }
 
     cancel-key := Shortcut {
-        sequence: "F3";
+        sequence <- "F3";
         activated => { confirmation.stop(); }
     }
 
     VerticalLayout {
-        padding: 24px;
-        spacing: 12px;
+        padding <- 24px;
+        spacing <- 12px;
         confirm := Button {
-            text: "播放确认音";
-            enabled: root.sound-error == "";
+            text <- "播放确认音";
+            enabled <- root.sound-error == "";
             clicked => { confirmation.play(); }
         }
         cancel := Button {
-            text: "停止音效（F3）";
+            text <- "停止音效（F3）";
             clicked => { confirmation.stop(); }
         }
         repeat-choice := CheckBox {
-            text: "循环播放";
-            checked <=> root.repeat-effect;
+            text <- "循环播放";
+            checked <-> root.repeat-effect;
         }
         silence := CheckBox {
-            text: "静音";
-            checked <=> root.muted;
+            text <- "静音";
+            checked <-> root.muted;
         }
         Label {
-            text: root.sound-error != "" ? root.sound-error
+            text <- root.sound-error != "" ? root.sound-error
                 : root.sound-playing ? "正在播放音效"
                 : root.sound-ready ? "点击按钮或按 F2" : "正在加载音效";
         }

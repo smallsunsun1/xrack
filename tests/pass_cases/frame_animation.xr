@@ -8,7 +8,7 @@
 // CHECK: "xr.physics_function"{{.*}}value = "advance"{{.*}} -> !xr.int
 
 export component App inherits Window {
-    property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.02);
+    property <physicsworld3d> world <- Physics3D.new(Vector3D.new(0, -9.81, 0), 0.02);
     out property <int> steps: 0;
     out property <float> seconds: 0;
     out property <int> frames: 0;
@@ -16,7 +16,7 @@ export component App inherits Window {
     callback restart-motion();
     restart-motion() => { motion.restart(); }
     motion := FrameAnimation {
-        running: true;
+        running <- true;
         triggered(delta, elapsed, frame) => {
             root.steps = Physics3D.advance(root.world, delta, 4);
             root.seconds = elapsed;

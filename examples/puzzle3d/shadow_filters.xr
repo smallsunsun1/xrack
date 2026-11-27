@@ -13,9 +13,9 @@ struct ShadowLamp {
 }
 
 export component ShadowFiltersDemo inherits Window {
-    width: 512px; height: 402px;
-    title: "XRack · 阴影过滤";
-    background: #141d29; resizable: false;
+    width <- 512px; height <- 402px;
+    title <- "XRack · 阴影过滤";
+    background <- #141d29; resizable <- false;
 
     in-out property <string> light-kind: "directional";
     in-out property <string> filter-mode: "pcf16";
@@ -35,7 +35,7 @@ export component ShadowFiltersDemo inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #a5b8ca,
         casts-shadow: false, receives-shadow: true,
     };
-    property <[ShadowObject]> objects: [
+    property <[ShadowObject]> objects <- [
         root.wall,
         ShadowObject {
             id: "occluder", x: -1, z: 1,
@@ -43,7 +43,7 @@ export component ShadowFiltersDemo inherits Window {
             color: #df9356, casts-shadow: true, receives-shadow: false, ..root.wall
         },
     ];
-    property <ShadowLamp> key-light: ShadowLamp {
+    property <ShadowLamp> key-light <- ShadowLamp {
         kind: root.light-kind, x: -3, y: 0, z: 3, yaw: -45, elevation: 0,
         intensity: root.light-kind == "directional" ? 2.6 : 60,
         color: root.fill-light ? #ff0000 : #fffafa, range: 10, inner-angle: 18, outer-angle: 35,
@@ -51,7 +51,7 @@ export component ShadowFiltersDemo inherits Window {
         shadow-world-radius: root.world-units ? root.world-radius : -1,
         shadow-strength: root.strength, shadow-bias: root.bias,
     };
-    property <[ShadowLamp]> lamps: [
+    property <[ShadowLamp]> lamps <- [
         root.key-light,
         ShadowLamp {
             kind: "directional", color: #00ff00, intensity: root.fill-light ? 2.6 : 0,
@@ -60,25 +60,25 @@ export component ShadowFiltersDemo inherits Window {
     ];
 
     SceneView3D {
-        width: 512px; height: 304px; model: root.objects;
-        lights: root.lamps; camera-yaw: 0; camera-pitch: 0; camera-distance: 8;
-        scene-background: #23334a; ambient-intensity: 0.15;
-        shadows: root.enabled; shadow-map-size: root.map-size;
-        shadow-cascades: root.cascades; shadow-distance: 20;
-        cache-rendering: true;
+        width <- 512px; height <- 304px; model <- root.objects;
+        lights <- root.lamps; camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 8;
+        scene-background <- #23334a; ambient-intensity <- 0.15;
+        shadows <- root.enabled; shadow-map-size <- root.map-size;
+        shadow-cascades <- root.cascades; shadow-distance <- 20;
+        cache-rendering <- true;
     }
     HorizontalLayout {
-        x: 12px; y: 313px; width: 488px; height: 37px; spacing: 10px;
+        x <- 12px; y <- 313px; width <- 488px; height <- 37px; spacing <- 10px;
         lamp-mode := Button {
-            width: 104px;
-            text: root.light-kind == "directional" ? "方向光" : root.light-kind == "spot" ? "聚光灯" : "点光源";
+            width <- 104px;
+            text <- root.light-kind == "directional" ? "方向光" : root.light-kind == "spot" ? "聚光灯" : "点光源";
             clicked => {
                 root.light-kind = root.light-kind == "directional" ? "spot"
                     : root.light-kind == "spot" ? "point" : "directional";
             }
         }
         filter-button := Button {
-            width: 104px; text: root.filter-mode;
+            width <- 104px; text <- root.filter-mode;
             clicked => {
                 root.filter-mode = root.filter-mode == "hard" ? "bilinear"
                     : root.filter-mode == "bilinear" ? "pcf4"
@@ -88,20 +88,20 @@ export component ShadowFiltersDemo inherits Window {
                     : root.filter-mode == "pcf32" ? "pcf64" : "hard";
             }
         }
-        Text { text: "半径"; color: #e2eaf4; }
-        if !root.world-units : Slider { minimum: 0; maximum: 16; value <=> root.radius; }
-        if root.world-units : Slider { minimum: 0; maximum: 1.5; value <=> root.world-radius; }
+        Text { text <- "半径"; color <- #e2eaf4; }
+        if !root.world-units : Slider { minimum <- 0; maximum <- 16; value <-> root.radius; }
+        if root.world-units : Slider { minimum <- 0; maximum <- 1.5; value <-> root.world-radius; }
     }
     HorizontalLayout {
-        x: 12px; y: 355px; width: 488px; height: 35px; spacing: 10px;
-        Text { text: "阴影强度"; color: #e2eaf4; }
-        Slider { minimum: 0; maximum: 1; value <=> root.strength; }
+        x <- 12px; y <- 355px; width <- 488px; height <- 35px; spacing <- 10px;
+        Text { text <- "阴影强度"; color <- #e2eaf4; }
+        Slider { minimum <- 0; maximum <- 1; value <-> root.strength; }
         world-toggle := CheckBox {
-            width: 114px; text: "世界单位"; checked: root.world-units;
+            width <- 114px; text <- "世界单位"; checked <- root.world-units;
             toggled => { root.world-units = !root.world-units; }
         }
         resolution-button := Button {
-            width: 95px; text: root.map-size == 128 ? "128 px" : "512 px";
+            width <- 95px; text <- root.map-size == 128 ? "128 px" : "512 px";
             clicked => { root.map-size = root.map-size == 128 ? 512 : 128; }
         }
     }

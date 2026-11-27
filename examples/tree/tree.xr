@@ -27,9 +27,9 @@ export struct VisibilityBranch {
 }
 
 export component VisibilityTreeDemo inherits Window {
-    title: "XRack · 按记录隐藏树分支";
-    width: 540px; height: 312px;
-    background: #182331;
+    title <- "XRack · 按记录隐藏树分支";
+    width <- 540px; height <- 312px;
+    background <- #182331;
     in-out property <[VisibilityBranch]> records: [
         VisibilityBranch { key: 1, parent: -1, label: "工作区", visibility: BranchVisibility { shown: true } },
         VisibilityBranch { key: 2, parent: 1, label: "内部资料", visibility: BranchVisibility { shown: true } },
@@ -42,8 +42,8 @@ export component VisibilityTreeDemo inherits Window {
     in property <int> branch-root: -1;
     in property <int> inspected-source: 2;
     in property <int> inspected-view: 1;
-    out property <int> visible-index: branches.view-index-for-source(root.inspected-source);
-    out property <int> source-index: branches.source-index-for-view(root.inspected-view);
+    out property <int> visible-index <- branches.view-index-for-source(root.inspected-source);
+    out property <int> source-index <- branches.source-index-for-view(root.inspected-view);
     callback select-source(int);
     select-source(source) => { branches.select-source-index(source); }
     callback toggle-branch();
@@ -53,44 +53,44 @@ export component VisibilityTreeDemo inherits Window {
     initialize => { branches.expand-to(3); }
 
     HorizontalLayout {
-        x: 12px; y: 8px; width: 516px; height: 32px;
-        spacing: 8px;
-        toggle := Button { text: "切换内部资料"; clicked => { root.toggle-branch(); } }
-        SearchField { placeholder-text: "搜索分支"; text <=> root.query; }
+        x <- 12px; y <- 8px; width <- 516px; height <- 32px;
+        spacing <- 8px;
+        toggle := Button { text <- "切换内部资料"; clicked => { root.toggle-branch(); } }
+        SearchField { placeholder-text <- "搜索分支"; text <-> root.query; }
     }
     branches := TreeView {
-        x: 12px; y: 50px; width: 516px; height: 250px;
-        row-height: 28px;
-        root-key: root.branch-root;
-        row-visible-field: "visibility.shown";
-        filter-field: "label";
-        filter-text: root.query;
-        preserve-scroll-anchor: true;
-        multi-select: true;
-        current-key <=> root.current;
+        x <- 12px; y <- 50px; width <- 516px; height <- 250px;
+        row-height <- 28px;
+        root-key <- root.branch-root;
+        row-visible-field <- "visibility.shown";
+        filter-field <- "label";
+        filter-text <- root.query;
+        preserve-scroll-anchor <- true;
+        multi-select <- true;
+        current-key <-> root.current;
         for entry in root.records : TreeRow {
-            key: entry.key;
-            parent-key: entry.parent;
-            TreeCell { text <=> entry.label; }
+            key <- entry.key;
+            parent-key <- entry.parent;
+            TreeCell { text <-> entry.label; }
         }
     }
 }
 
 export component DelegateTreeDemo inherits Window {
-    width: 360px; height: 250px;
+    width <- 360px; height <- 250px;
     in-out property <[SizedBranch]> records: [
         SizedBranch { key: 2, parent: 1, label: "子记录", height: 38px },
         SizedBranch { key: 1, parent: -1, label: "目录", height: 38px },
     ];
     out property <int> committed-index: -1;
     branches := TreeView {
-        row-height: 38px;
+        row-height <- 38px;
         for branch[index] in root.records : TreeRow {
-            key: branch.key;
-            parent-key: branch.parent;
+            key <- branch.key;
+            parent-key <- branch.parent;
             HorizontalLayout {
                 BranchEditor {
-                    value <=> branch.label;
+                    value <-> branch.label;
                     submitted => { root.committed-index = index; }
                 }
             }
@@ -99,34 +99,34 @@ export component DelegateTreeDemo inherits Window {
 }
 
 component BranchEditor inherits HorizontalLayout {
-    in-out property <string> value <=> input.text;
-    callback submitted <=> input.accepted;
-    input := LineEdit { accessible-name: "分支名称"; horizontal-stretch: 1; }
+    in-out property <string> value <-> input.text;
+    callback submitted <-> input.accepted;
+    input := LineEdit { accessible-name <- "分支名称"; horizontal-stretch <- 1; }
 }
 
 export component SizedTreeDemo inherits Window {
-    title: "XRack · 不同行高的树";
-    width: 320px; height: 240px;
+    title <- "XRack · 不同行高的树";
+    width <- 320px; height <- 240px;
     in-out property <[SizedBranch]> records: [
         SizedBranch { key: 1, parent: -1, label: "目录", height: 32px },
         SizedBranch { key: 2, parent: 1, label: "详情", height: 76px },
         SizedBranch { key: 3, parent: -1, label: "下一条", height: 44px },
     ];
     branches := TreeView {
-        row-height-field: "height";
+        row-height-field <- "height";
         for branch in root.records : TreeRow {
-            key: branch.key;
-            parent-key: branch.parent;
-            Text { text: branch.label; }
+            key <- branch.key;
+            parent-key <- branch.parent;
+            Text { text <- branch.label; }
         }
     }
 }
 
 export component TreeDemo inherits Window {
-    title: "XRack · 目录树";
-    width: 600px;
-    height: 370px;
-    background: #182331;
+    title <- "XRack · 目录树";
+    width <- 600px;
+    height <- 370px;
+    background <- #182331;
 
     in-out property <[TreeRecord]> records: [
         TreeRecord { id: 1, parent-id: -1, label: "项目", detail: "目录", active: true, quota: 10, load: 0.5 },
@@ -145,45 +145,45 @@ export component TreeDemo inherits Window {
     callback sort-requested();
 
     VerticalLayout {
-        padding: 14px;
-        spacing: 8px;
-        Text { text: "目录树 · F2 重命名，Tab 编辑当前行"; font-size: 20px; }
+        padding <- 14px;
+        spacing <- 8px;
+        Text { text <- "目录树 · F2 重命名，Tab 编辑当前行"; font-size <- 20px; }
         directory := TreeView {
-            preserve-scroll-anchor: root.preserve-viewport;
-            current-key <=> root.current;
-            multi-select: root.multiple;
-            row-height: 34px;
-            indentation: 18px;
+            preserve-scroll-anchor <- root.preserve-viewport;
+            current-key <-> root.current;
+            multi-select <- root.multiple;
+            row-height <- 34px;
+            indentation <- 18px;
             expanded(key) => { root.expansions += 1; }
             collapsed(key) => { root.collapses += 1; }
             selection-changed(count) => { root.selected-count = count; }
             for record[index] in root.records : TreeRow {
-                key: record.id;
-                parent-key: record.parent-id;
+                key <- record.id;
+                parent-key <- record.parent-id;
                 HorizontalLayout {
-                    spacing: 8px;
-                    padding-right: 12px;
-                    cross-axis-alignment: center;
-                    TreeCell { text <=> record.label; horizontal-stretch: 1; height: 30px; }
+                    spacing <- 8px;
+                    padding-right <- 12px;
+                    cross-axis-alignment <- center;
+                    TreeCell { text <-> record.label; horizontal-stretch <- 1; height <- 30px; }
                     if record.detail != "" : TreeCell {
-                        text: record.detail; width: 66px; height: 30px; color: #acc0db;
+                        text <- record.detail; width <- 66px; height <- 30px; color <- #acc0db;
                     }
-                    CheckBox { checked <=> record.active; width: 28px; height: 30px; }
-                    SpinBox { value <=> record.quota; editable: true; minimum: 0; maximum: 99; width: 94px; height: 30px; }
-                    Slider { value <=> record.load; enabled: record.active; minimum: 0; maximum: 1; step: 0.05; width: 88px; height: 28px; }
+                    CheckBox { checked <-> record.active; width <- 28px; height <- 30px; }
+                    SpinBox { value <-> record.quota; editable <- true; minimum <- 0; maximum <- 99; width <- 94px; height <- 30px; }
+                    Slider { value <-> record.load; enabled <- record.active; minimum <- 0; maximum <- 1; step <- 0.05; width <- 88px; height <- 28px; }
                 }
             }
         }
-        sort := Button { text: "按名称重排模型"; clicked() => { root.sort-requested(); } }
-        Text { text: "已选 " + root.selected-count + " 项 · 当前节点 " + root.current; color: #b8caff; }
+        sort := Button { text <- "按名称重排模型"; clicked() => { root.sort-requested(); } }
+        Text { text <- "已选 " + root.selected-count + " 项 · 当前节点 " + root.current; color <- #b8caff; }
     }
 }
 
 
 export component DirectionalTreeDemo inherits Window {
-    title: "XRack · اتجاه الشجرة";
-    width: 380px; height: 220px;
-    background: #182331;
+    title <- "XRack · اتجاه الشجرة";
+    width <- 380px; height <- 220px;
+    background <- #182331;
     in-out property <bool> rtl: true;
     in-out property <int> current: -1;
     in-out property <[SizedBranch]> branches: [
@@ -196,37 +196,37 @@ export component DirectionalTreeDemo inherits Window {
     ];
 
     flip := Button {
-        x: 12px; y: 10px; width: 160px; height: 30px;
-        text: root.rtl ? "RTL → LTR" : "LTR → RTL";
+        x <- 12px; y <- 10px; width <- 160px; height <- 30px;
+        text <- root.rtl ? "RTL → LTR" : "LTR → RTL";
         clicked => { root.rtl = !root.rtl; }
     }
     Rectangle {
-        x: 12px; y: 52px; width: 356px; height: 106px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        x <- 12px; y <- 52px; width <- 356px; height <- 106px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         directory := TreeView {
-            width: 356px; height: 106px;
-            current-key <=> root.current;
-            row-height: 30px;
-            indentation: 20px;
-            preserve-scroll-anchor: true;
-            multi-select: true;
+            width <- 356px; height <- 106px;
+            current-key <-> root.current;
+            row-height <- 30px;
+            indentation <- 20px;
+            preserve-scroll-anchor <- true;
+            multi-select <- true;
             for branch in root.branches : TreeRow {
-                key: branch.key;
-                parent-key: branch.parent;
-                TreeCell { text <=> branch.label; }
+                key <- branch.key;
+                parent-key <- branch.parent;
+                TreeCell { text <-> branch.label; }
             }
         }
     }
     status := Text {
-        x: 12px; y: 178px;
-        text: "当前键 " + root.current;
+        x <- 12px; y <- 178px;
+        text <- "当前键 " + root.current;
     }
 }
 
 export component TreeDisclosureDemo inherits Window {
-    title: "XRack · 自定义树形展开指示器";
-    width: 360px; height: 214px;
-    background: #182331;
+    title <- "XRack · 自定义树形展开指示器";
+    width <- 360px; height <- 214px;
+    background <- #182331;
     in-out property <bool> rtl: true;
     in-out property <string> query: "";
     in-out property <int> current: -1;
@@ -241,48 +241,48 @@ export component TreeDisclosureDemo inherits Window {
     ];
 
     flip := Button {
-        x: 12px; y: 10px; width: 140px; height: 30px;
-        text: root.rtl ? "RTL → LTR" : "LTR → RTL";
+        x <- 12px; y <- 10px; width <- 140px; height <- 30px;
+        text <- root.rtl ? "RTL → LTR" : "LTR → RTL";
         clicked => { root.rtl = !root.rtl; }
     }
     SearchField {
-        x: 164px; y: 10px; width: 184px; height: 30px;
-        placeholder-text: "搜索分支";
-        text <=> root.query;
+        x <- 164px; y <- 10px; width <- 184px; height <- 30px;
+        placeholder-text <- "搜索分支";
+        text <-> root.query;
     }
     Rectangle {
-        x: 12px; y: 52px; width: 336px; height: 116px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        x <- 12px; y <- 52px; width <- 336px; height <- 116px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         directory := TreeView {
-            width: 336px; height: 116px;
-            row-height: 30px;
-            indentation: 20px;
-            filter-field: "label";
-            filter-text: root.query;
-            current-key <=> root.current;
+            width <- 336px; height <- 116px;
+            row-height <- 30px;
+            indentation <- 20px;
+            filter-field <- "label";
+            filter-text <- root.query;
+            current-key <-> root.current;
             for branch in root.branches : TreeRow {
-                key: branch.key;
-                parent-key: branch.parent;
+                key <- branch.key;
+                parent-key <- branch.parent;
                 TreeDisclosure {
-                    background: directory.is-expanded(branch.key) ? #007d66 : #b15d1e;
-                    border-radius: 3px;
+                    background <- directory.is-expanded(branch.key) ? #007d66 : #b15d1e;
+                    border-radius <- 3px;
                     Text {
-                        width: 22px; height: 30px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        text: directory.is-expanded(branch.key) ? "−" : "+";
+                        width <- 22px; height <- 30px;
+                        horizontal-alignment <- center;
+                        vertical-alignment <- center;
+                        text <- directory.is-expanded(branch.key) ? "−" : "+";
                     }
                 }
-                TreeCell { text <=> branch.label; }
+                TreeCell { text <-> branch.label; }
             }
         }
     }
 }
 
 export component TreeCommandsDemo inherits Window {
-    title: "XRack · 树目录导航";
-    width: 610px; height: 440px;
-    background: #162034;
+    title <- "XRack · 树目录导航";
+    width <- 610px; height <- 440px;
+    background <- #162034;
     in-out property <[SizedBranch]> records: [
         SizedBranch { key: 1, parent: -1, label: "项目", height: 34px },
         SizedBranch { key: 10, parent: 1, label: "src", height: 34px },
@@ -300,9 +300,9 @@ export component TreeCommandsDemo inherits Window {
     out property <int> expansions: 0;
     out property <int> collapses: 0;
     out property <int> last-event-key: -1;
-    out property <int> selected-count: directory.selection-count;
-    out property <bool> has-selection: directory.has-selection;
-    out property <bool> target-selected: directory.is-key-selected(root.target);
+    out property <int> selected-count <- directory.selection-count;
+    out property <bool> has-selection <- directory.has-selection;
+    out property <bool> target-selected <- directory.is-key-selected(root.target);
     out property <int> selection-events: 0;
     callback reveal(int);
     reveal(key) => {
@@ -326,60 +326,60 @@ export component TreeCommandsDemo inherits Window {
     row-selected(row) => { directory.is-row-selected(row) }
 
     VerticalLayout {
-        padding: 18px; spacing: 10px;
-        Text { text: "按业务键定位目录"; font-size: 23px; }
+        padding <- 18px; spacing <- 10px;
+        Text { text <- "按业务键定位目录"; font-size <- 23px; }
         HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             target-key := SpinBox {
-                value <=> root.target; minimum: 0; maximum: 1000000;
-                width: 128px; editable: true; accessible-name: "目标节点键";
+                value <-> root.target; minimum <- 0; maximum <- 1000000;
+                width <- 128px; editable <- true; accessible-name <- "目标节点键";
             }
-            reveal-node := Button { text: "定位节点"; clicked => { root.reveal(root.target); } }
-            expand-all := Button { text: "全部展开"; clicked => { directory.expand-recursively(); } }
-            collapse-all := Button { text: "全部折叠"; clicked => { directory.collapse-recursively(); } }
+            reveal-node := Button { text <- "定位节点"; clicked => { root.reveal(root.target); } }
+            expand-all := Button { text <- "全部展开"; clicked => { directory.expand-recursively(); } }
+            collapse-all := Button { text <- "全部折叠"; clicked => { directory.collapse-recursively(); } }
         }
         directory := TreeView {
-            row-height-field: "height";
-            current-key <=> root.current;
-            multi-select: root.multiple;
-            filter-field: "label";
-            filter-text: root.query;
+            row-height-field <- "height";
+            current-key <-> root.current;
+            multi-select <- root.multiple;
+            filter-field <- "label";
+            filter-text <- root.query;
             expanded(key) => { root.expansions += 1; root.last-event-key = key; }
             collapsed(key) => { root.collapses += 1; root.last-event-key = key; }
             selection-changed(count) => { root.selection-events += 1; }
             for item in root.records : TreeRow {
-                key: item.key;
-                parent-key: item.parent;
-                TreeCell { text <=> item.label; height: 32px; }
+                key <- item.key;
+                parent-key <- item.parent;
+                TreeCell { text <-> item.label; height <- 32px; }
             }
         }
         HorizontalLayout {
-            spacing: 8px;
-            query-filter := SearchField { text <=> root.query; placeholder-text: "筛选目录"; }
+            spacing <- 8px;
+            query-filter := SearchField { text <-> root.query; placeholder-text <- "筛选目录"; }
             select-target := Button {
-                text: "选中目标";
+                text <- "选中目标";
                 clicked => { root.reveal(root.target); root.select-node(root.target); }
             }
-            select-displayed-button := Button { text: "全选显示行"; clicked => { root.select-displayed(); } }
+            select-displayed-button := Button { text <- "全选显示行"; clicked => { root.select-displayed(); } }
             clear-selected := Button {
-                text: "清空选区"; enabled: root.has-selection;
+                text <- "清空选区"; enabled <- root.has-selection;
                 clicked => { root.clear-selection(); }
             }
         }
         node-status := Text {
-            text: "节点 " + root.target + " · 深度 " + directory.depth(root.target)
+            text <- "节点 " + root.target + " · 深度 " + directory.depth(root.target)
                 + " · 显示行 " + directory.row-for-key(root.target)
                 + " · 已选 " + root.selected-count + (root.target-selected ? "（含目标）" : "");
-            color: #acc0db;
+            color <- #acc0db;
         }
     }
 }
 
 
 export component TreeBatchSelectionDemo inherits Window {
-    title: "XRack · 保存和恢复树选区";
-    width: 640px; height: 420px;
-    background: #162034;
+    title <- "XRack · 保存和恢复树选区";
+    width <- 640px; height <- 420px;
+    background <- #162034;
     in-out property <[SizedBranch]> records: [
         SizedBranch { key: 1, parent: -1, label: "项目", height: 34px },
         SizedBranch { key: 2, parent: 1, label: "src", height: 34px },
@@ -392,11 +392,11 @@ export component TreeBatchSelectionDemo inherits Window {
     in-out property <string> query: "";
     in-out property <int> branch: -1;
     in-out property <[int]> saved-keys: [];
-    out property <[int]> selected-keys: directory.selected-keys;
-    out property <int> first-key: Model.at(root.selected-keys, 0, -1);
+    out property <[int]> selected-keys <- directory.selected-keys;
+    out property <int> first-key <- Model.at(root.selected-keys, 0, -1);
     out property <int> changes: 0;
     out property <int> last-replacement-count: 0;
-    out property <bool> same-selection: root.saved-keys == root.selected-keys;
+    out property <bool> same-selection <- root.saved-keys == root.selected-keys;
     pure callback echo-keys([int]) -> [int];
     echo-keys(keys) => { keys }
     callback replace([int]);
@@ -410,51 +410,51 @@ export component TreeBatchSelectionDemo inherits Window {
     restore => { root.replace(root.saved-keys); }
 
     VerticalLayout {
-        padding: 18px; spacing: 10px;
+        padding <- 18px; spacing <- 10px;
         HorizontalLayout {
-            spacing: 6px;
-            batch-filter := SearchField { text <=> root.query; placeholder-text: "筛选目录"; }
+            spacing <- 6px;
+            batch-filter := SearchField { text <-> root.query; placeholder-text <- "筛选目录"; }
             example-keys := Button {
-                text: "选项目和文件";
+                text <- "选项目和文件";
                 clicked => { root.replace([1, 3]); }
             }
             save-keys := Button {
-                text: "保存"; clicked => { root.save(); }
+                text <- "保存"; clicked => { root.save(); }
             }
             clear-keys := Button {
-                text: "清空"; clicked => { root.replace([]); }
+                text <- "清空"; clicked => { root.replace([]); }
             }
             restore-keys := Button {
-                text: "恢复"; enabled: !Model.is-empty(root.saved-keys);
+                text <- "恢复"; enabled <- !Model.is-empty(root.saved-keys);
                 clicked => { root.restore(); }
             }
         }
         directory := TreeView {
-            row-height-field: "height"; multi-select: root.multiple;
-            current-key <=> root.current; root-key: root.branch;
-            filter-field: "label"; filter-text: root.query;
+            row-height-field <- "height"; multi-select <- root.multiple;
+            current-key <-> root.current; root-key <- root.branch;
+            filter-field <- "label"; filter-text <- root.query;
             selection-changed(count) => { root.changes += 1; }
             for item in root.records : TreeRow {
-                key: item.key; parent-key: item.parent;
-                TreeCell { text: item.label; height: 32px; }
+                key <- item.key; parent-key <- item.parent;
+                TreeCell { text <- item.label; height <- 32px; }
             }
         }
         batch-status := Label {
-            text: "已选 " + Model.count(root.selected-keys) + " · 已保存 "
+            text <- "已选 " + Model.count(root.selected-keys) + " · 已保存 "
                 + Model.count(root.saved-keys) + (root.same-selection ? " · 与保存一致" : "");
         }
         HorizontalLayout {
-            spacing: 8px;
-            Label { text: "保存的业务键"; }
-            for key in root.saved-keys : Label { text: "" + key; }
+            spacing <- 8px;
+            Label { text <- "保存的业务键"; }
+            for key in root.saved-keys : Label { text <- "" + key; }
         }
     }
 }
 
 export component TreeBranchesDemo inherits Window {
-    title: "XRack · 分支浏览";
-    width: 760px; height: 430px;
-    background: #162034;
+    title <- "XRack · 分支浏览";
+    width <- 760px; height <- 430px;
+    background <- #162034;
     in-out property <[SizedBranch]> records: [
         SizedBranch { key: 1, parent: -1, label: "项目", height: 34px },
         SizedBranch { key: 10, parent: 1, label: "src", height: 34px },
@@ -472,53 +472,53 @@ export component TreeBranchesDemo inherits Window {
     initialize => { overview.expand-recursively(); }
 
     VerticalLayout {
-        padding: 18px; spacing: 10px;
-        Text { text: "同一份模型 · 不同的浏览分支"; font-size: 23px; }
+        padding <- 18px; spacing <- 10px;
+        Text { text <- "同一份模型 · 不同的浏览分支"; font-size <- 23px; }
         HorizontalLayout {
-            spacing: 8px;
-            all-branches := Button { text: "全部目录"; clicked => { root.folder = -1; root.current = -1; } }
-            source-branch := Button { text: "源码分支"; clicked => { root.folder = 10; root.current = -1; } }
-            docs-branch := Button { text: "文档分支"; clicked => { root.folder = 2; root.current = -1; } }
+            spacing <- 8px;
+            all-branches := Button { text <- "全部目录"; clicked => { root.folder = -1; root.current = -1; } }
+            source-branch := Button { text <- "源码分支"; clicked => { root.folder = 10; root.current = -1; } }
+            docs-branch := Button { text <- "文档分支"; clicked => { root.folder = 2; root.current = -1; } }
             branch-filter := SearchField {
-                width: 200px;
-                text <=> root.query;
-                placeholder-text: "搜索右侧分支";
-                accessible-name: "搜索右侧分支";
+                width <- 200px;
+                text <-> root.query;
+                placeholder-text <- "搜索右侧分支";
+                accessible-name <- "搜索右侧分支";
             }
         }
         HorizontalLayout {
-            spacing: 14px;
+            spacing <- 14px;
             VerticalLayout {
-                horizontal-stretch: 1; spacing: 6px;
-                Text { text: "选择左侧节点，在右侧查看它的内容"; color: #acc0db; }
+                horizontal-stretch <- 1; spacing <- 6px;
+                Text { text <- "选择左侧节点，在右侧查看它的内容"; color <- #acc0db; }
                 overview := TreeView {
-                    row-height-field: "height";
-                    current-key <=> root.folder;
+                    row-height-field <- "height";
+                    current-key <-> root.folder;
                     changed(key) => { root.current = -1; }
                     for item in root.records : TreeRow {
-                        key: item.key; parent-key: item.parent;
-                        TreeCell { text <=> item.label; height: 32px; }
+                        key <- item.key; parent-key <- item.parent;
+                        TreeCell { text <-> item.label; height <- 32px; }
                     }
                 }
             }
             VerticalLayout {
-                horizontal-stretch: 1; spacing: 6px;
-                Text { text: root.folder == -1 ? "完整目录" : "分支 " + root.folder; color: #acc0db; }
+                horizontal-stretch <- 1; spacing <- 6px;
+                Text { text <- root.folder == -1 ? "完整目录" : "分支 " + root.folder; color <- #acc0db; }
                 branch := TreeView {
-                    root-key: root.folder;
-                    filter-field: "label";
-                    filter-text: root.query;
-                    row-height-field: "height";
-                    current-key <=> root.current;
-                    multi-select: true;
-                    preserve-scroll-anchor: true;
+                    root-key <- root.folder;
+                    filter-field <- "label";
+                    filter-text <- root.query;
+                    row-height-field <- "height";
+                    current-key <-> root.current;
+                    multi-select <- true;
+                    preserve-scroll-anchor <- true;
                     for item in root.records : TreeRow {
-                        key: item.key; parent-key: item.parent;
-                        TreeCell { text <=> item.label; height: 32px; }
+                        key <- item.key; parent-key <- item.parent;
+                        TreeCell { text <-> item.label; height <- 32px; }
                     }
                 }
             }
         }
-        Text { text: "两侧都可编辑记录，改动会同步显示"; color: #acc0db; }
+        Text { text <- "两侧都可编辑记录，改动会同步显示"; color <- #acc0db; }
     }
 }

@@ -3117,7 +3117,7 @@ fn inherit<'a>(
                             format!("cannot override inherited property `{}`", binding.name),
                         );
                     }
-                    if property.visibility == "in-out" {
+                    if property.visibility == "in-out" && !binding.initial {
                         return fail(
                             binding.span,
                             format!(
@@ -3136,7 +3136,11 @@ fn inherit<'a>(
                         });
                     }
                     property.value = Some(binding.value.clone());
-                    property.mode = ast::PropertyMode::Formula;
+                    property.mode = if binding.initial {
+                        ast::PropertyMode::Once
+                    } else {
+                        ast::PropertyMode::Formula
+                    };
                     continue;
                 }
                 result.members.retain(|member| !matches!(member, Member::Binding(existing) if existing.name == binding.name));
@@ -4648,7 +4652,8 @@ impl<'a> Scope<'a> {
             && (loader_read_only
                 || p.mode == ast::PropertyMode::Formula
                 || (scope.instance
-                    && named_binding(scope.members, name).is_some_and(|binding| !binding.two_way))
+                    && named_binding(scope.members, name)
+                        .is_some_and(|binding| !binding.two_way && !binding.initial))
                 || (external && p.visibility == "out")
                 || (!external && p.visibility == "in"))
         {
@@ -6966,7 +6971,7 @@ fn alias_initializer(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Resul
     let value = if let Some(ty) =
         control_alias_type(&element.kind, name).filter(|_| !element.instance && !tristate)
     {
-        if named_binding(element.members, name).is_some_and(|b| !b.two_way) {
+        if named_binding(element.members, name).is_some_and(|b| !b.two_way && !b.initial) {
             return fail(*span, format!("property `{reference}` is read-only"));
         }
         ir::Expr {
@@ -6999,7 +7004,7 @@ fn property(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Result<ir::Pro
         return fail(
             p.span,
             format!(
-                "in-out property `{}` has a read-only formula; use `out ... : expression` for a formula or `in-out ... : once expression` for writable storage",
+                "in-out property `{}` has a read-only formula; use `out ... <- expression` for a formula or `in-out ... : expression` for writable storage",
                 p.name
             ),
         );
@@ -7454,7 +7459,81 @@ fn component<'a>(c: &'a ast::Component, scope: Scope<'a>) -> Result<Vec<LoweredM
         None,
         &mut lowered,
     )?;
+    capture_static_initializers(&mut lowered);
     Ok(lowered)
+}
+
+// Capture visual initializer values in the existing construction-time
+// property storage. Repeated visual bindings have a separate row cache.
+fn capture_static_initializers(members: &mut Vec<LoweredMember<'_>>) {
+    let mut names: BTreeSet<_> = members
+        .iter()
+        .filter_map(|member| match member {
+            LoweredMember::Property(property) => Some(rust_name(&property.name)),
+            LoweredMember::Callback(callback) => Some(rust_name(&callback.name)),
+            _ => None,
+        })
+        .collect();
+    let mut next = 0;
+    let mut scopes = vec![(false, false)];
+    let mut captures = Vec::new();
+    for member in members.iter_mut() {
+        let &(instance, repeated) = binding_scope(&scopes);
+        let binding = match member {
+            LoweredMember::BeginElement { kind, instance, .. } => {
+                scopes.push((
+                    *instance,
+                    repeated || visual_template_inputs(kind).is_some(),
+                ));
+                continue;
+            }
+            LoweredMember::EndElement => {
+                scopes.pop();
+                continue;
+            }
+            LoweredMember::Repeat { .. } => {
+                if let Some(scope) = scopes.last_mut() {
+                    scope.1 = true;
+                }
+                continue;
+            }
+            LoweredMember::Binding(binding) if !instance => binding,
+            LoweredMember::InstanceLayout(binding) => binding,
+            _ => continue,
+        };
+        if !binding.initial || repeated || binding.value.op == "literal" {
+            continue;
+        }
+        let name = loop {
+            let candidate = format!("xrack-initial-value-{next}");
+            next += 1;
+            if names.insert(rust_name(&candidate)) {
+                break candidate;
+            }
+        };
+        let ty = binding.value.ty.clone();
+        let initializer = std::mem::replace(
+            &mut binding.value,
+            ir::Expr::read(
+                ir::PropertyRef {
+                    owner: "root".into(),
+                    name: name.clone(),
+                },
+                ty.clone(),
+                binding.span,
+            ),
+        );
+        captures.push(LoweredMember::Property(ir::Property {
+            mode: ast::PropertyMode::Once,
+            name,
+            ty,
+            visibility: "private".into(),
+            init: initializer,
+            alias: false,
+            span: binding.span,
+        }));
+    }
+    members.splice(0..0, captures);
 }
 
 fn element<'a>(
@@ -7581,6 +7660,7 @@ fn element<'a>(
     }
     if let Some(initial) = scope.action_groups.initial.get(owner) {
         lowered.push(LoweredMember::Binding(ir::Binding {
+            initial: false,
             name: "current-value".into(),
             value: ir::Expr::literal(Type::String, string_literal_spelling(initial), span),
             span,
@@ -8265,6 +8345,7 @@ fn element<'a>(
                     }
                     let value = expression_as(&b.value, scope, owner, Type::String)?;
                     lowered.push(LoweredMember::Binding(ir::Binding {
+                        initial: b.initial,
                         name: b.name.clone(),
                         value,
                         span: b.span,
@@ -8498,6 +8579,7 @@ fn element<'a>(
                             );
                         }
                         lowered.push(LoweredMember::InstanceLink(ir::Binding {
+                            initial: b.initial,
                             name: b.name.clone(),
                             value,
                             span: b.span,
@@ -8550,6 +8632,7 @@ fn element<'a>(
                             );
                         }
                         lowered.push(LoweredMember::RowLink(ir::Binding {
+                            initial: b.initial,
                             name: b.name.clone(),
                             value,
                             span: b.span,
@@ -8623,6 +8706,7 @@ fn element<'a>(
                             return fail(b.span, "an aggregate CheckBox uses the group's three-state value without tristate");
                         }
                         lowered.push(LoweredMember::ControlLink(ir::Binding {
+                            initial: b.initial,
                             name: b.name.clone(),
                             value,
                             span: b.span,
@@ -8670,6 +8754,7 @@ fn element<'a>(
                         );
                     }
                     lowered.push(LoweredMember::ControlLink(ir::Binding {
+                        initial: b.initial,
                         name: b.name.clone(),
                         value: ir::Expr::read(target, ty, b.value.span),
                         span: b.span,
@@ -8680,6 +8765,7 @@ fn element<'a>(
                     && let Some(combo) = &combo
                 {
                     lowered.push(LoweredMember::Binding(ir::Binding {
+                        initial: b.initial,
                         name: b.name.clone(),
                         value: combo.model.clone(),
                         span: b.span,
@@ -9057,6 +9143,7 @@ fn element<'a>(
                         validate_scene_model(&value, scope)?;
                     }
                     lowered.push(LoweredMember::Binding(ir::Binding {
+                        initial: b.initial,
                         name: b.name.clone(),
                         value,
                         span: b.span,
@@ -9101,6 +9188,7 @@ fn element<'a>(
                         scope.property(owner, reference, true, b.value.span)?;
                     }
                     lowered.push(LoweredMember::Binding(ir::Binding {
+                        initial: b.initial,
                         name: b.name.clone(),
                         value,
                         span: b.span,
@@ -9137,6 +9225,7 @@ fn element<'a>(
                         }
                     }
                     lowered.push(LoweredMember::Binding(ir::Binding {
+                        initial: b.initial,
                         name: b.name.clone(),
                         value,
                         span: b.span,
@@ -9206,6 +9295,7 @@ fn element<'a>(
                     return fail(b.span, "`auto` is only valid for cross-axis-self-alignment");
                 }
                 let binding = ir::Binding {
+                    initial: b.initial,
                     name: b.name.clone(),
                     value,
                     span: b.span,
@@ -9681,6 +9771,7 @@ fn lower_states(
                     case,
                     instance_input,
                     binding: ir::Binding {
+                        initial: false,
                         name: name.into(),
                         value,
                         span: change.span,
@@ -10448,7 +10539,7 @@ fn validate_template(
                         || !child.members.iter().any(|member| matches!(member, Member::Binding(binding) if binding.two_way && row_editor_type(&child.ty, &binding.name).is_some()))
                     {
                         let row = if tree { "tree" } else { "table" };
-                        return fail(child.span, format!("{} {row} cells require an anonymous editor with `{property} <=> row.field`", child.ty));
+                        return fail(child.span, format!("{} {row} cells require an anonymous editor with `{property} <-> row.field`", child.ty));
                     }
                 } else {
                     validate_template(
@@ -13610,7 +13701,7 @@ fn collect_bindings(
             // Keep alias edges in the instance. The caller replaces the
             // initializer at the storage endpoint reached by those edges.
             destination = instance_storage(destination, &format!("{prefix}{owner}/"), links);
-            if matches!(m, LoweredMember::Binding(_)) {
+            if matches!(m, LoweredMember::Binding(binding) if !binding.initial) {
                 checks.ownership.inputs.insert(destination.clone(), span);
             }
         }

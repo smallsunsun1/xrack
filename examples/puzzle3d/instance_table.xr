@@ -10,9 +10,9 @@ struct InstanceActor {
 }
 
 export component InstanceTableDemo inherits Window {
-    title: "XRack · Authored instance table";
-    width: 640px; height: 424px;
-    background: #1a2638;
+    title <- "XRack · Authored instance table";
+    width <- 640px; height <- 424px;
+    background <- #1a2638;
 
     in-out property <float> shift: 0;
     in-out property <bool> distance-lod: false;
@@ -32,7 +32,7 @@ export component InstanceTableDemo inherits Window {
         camera-kind: "", camera-height: 4, lod-of: "", lod-max-size: 0px,
         animation: "", animation-time: 0, material: SharedMaterial { base-color: #fff, roughness: 0.8 },
     };
-    property <[InstanceActor]> world: [
+    property <[InstanceActor]> world <- [
         InstanceActor { id: "eye", z: root.eye-distance, camera-kind: "orthographic", camera-height: root.far ? 32 : 4, ..root.base },
         InstanceActor { id: "stage", y: root.shift, ..root.base },
         InstanceActor {
@@ -49,32 +49,32 @@ export component InstanceTableDemo inherits Window {
         InstanceActor { id: "cycle-a", instance-of: "cycle-b", ..root.base },
         InstanceActor { id: "cycle-b", instance-of: "cycle-a", ..root.base },
     ];
-    out property <hit3d> left-hit: Scene3D.hit-camera(
+    out property <hit3d> left-hit <- Scene3D.hit-camera(
         root.world, "eye", Point2D.new(640px, 320px), Point2D.new(216px, 160px));
-    out property <hit3d> right-hit: Scene3D.hit-camera(
+    out property <hit3d> right-hit <- Scene3D.hit-camera(
         root.world, "eye", Point2D.new(640px, 320px), Point2D.new(424px, 160px));
-    out property <[int]> selected-rows: Scene3D.pick-in-rect-camera(root.world, "eye",
+    out property <[int]> selected-rows <- Scene3D.pick-in-rect-camera(root.world, "eye",
         Point2D.new(640px, 320px), Point2D.new(0px, 0px), Point2D.new(640px, 320px));
-    out property <string> center-hit: Scene3D.pick-camera(
+    out property <string> center-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(640px, 320px), Point2D.new(320px, 160px));
     SceneView3D {
-        width: 640px; height: 320px; model: root.world; camera: "eye";
-        scene-background: #263b54; frustum-culling: root.culling;
+        width <- 640px; height <- 320px; model <- root.world; camera <- "eye";
+        scene-background <- #263b54; frustum-culling <- root.culling;
     }
     move-button := Button {
-        x: 12px; y: 332px; width: 142px; text: "Move group";
+        x <- 12px; y <- 332px; width <- 142px; text <- "Move group";
         clicked => { root.shift = root.shift == 0.0 ? 1.0 : 0.0; }
     }
-    far-toggle := CheckBox { x: 172px; y: 332px; width: 155px; text: "Far view"; checked <=> root.far; }
-    imported-toggle := CheckBox { x: 312px; y: 332px; width: 155px; text: "Imported"; checked <=> root.imported; }
+    far-toggle := CheckBox { x <- 172px; y <- 332px; width <- 155px; text <- "Far view"; checked <-> root.far; }
+    imported-toggle := CheckBox { x <- 312px; y <- 332px; width <- 155px; text <- "Imported"; checked <-> root.imported; }
     phase-button := Button {
-        x: 489px; y: 332px; width: 135px; text: "Play pose";
+        x <- 489px; y <- 332px; width <- 135px; text <- "Play pose";
         clicked => { root.phase = root.phase == 0.0 ? 1.0 : 0.0; }
     }
     lod-toggle := CheckBox {
-        x: 12px; y: 380px; width: 184px; text: "Distance LOD"; checked <=> root.distance-lod;
+        x <- 12px; y <- 380px; width <- 184px; text <- "Distance LOD"; checked <-> root.distance-lod;
     }
     distance-slider := Slider {
-        x: 204px; y: 380px; width: 408px; minimum: 6; maximum: 14; value <=> root.eye-distance;
+        x <- 204px; y <- 380px; width <- 408px; minimum <- 6; maximum <- 14; value <-> root.eye-distance;
     }
 }

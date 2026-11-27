@@ -8,8 +8,8 @@
 // CHECK-NOT: "xr.point3d_field"
 
 export component WorldPoint inherits Window {
-    out property <point3d> world: Point3D.new(1.5, -2, 7.25);
-    out property <float> depth: root.constant-depth();
+    out property <point3d> world <- Point3D.new(1.5, -2, 7.25);
+    out property <float> depth <- root.constant-depth();
     pure function constant-depth() -> float {
         let position = Point3D.new(1.5, -2, 7.25);
         position.z

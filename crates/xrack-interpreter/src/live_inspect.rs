@@ -833,8 +833,8 @@ mod tests {
 
     const UI: &str = r#"
         export component Search inherits Window {
-            in-out property <[string]> results: once [];
-            property <int> untouched: root.read_private();
+            in-out property <[string]> results: [];
+            property <int> untouched <- root.read_private();
             pure callback read_private() -> int;
             callback search(query: string);
             go := Button {
@@ -945,10 +945,10 @@ mod tests {
                         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0,
                         roll: 0, color: #ffffff,
                     };
-                    property <[Actor]> actors: [
+                    property <[Actor]> actors <- [
                         root.near, Actor { id: "far", z: -2, ..root.near }
                     ];
-                    out property <[hit3d]> hits: Scene3D.ray-hit-all(
+                    out property <[hit3d]> hits <- Scene3D.ray-hit-all(
                         root.actors, Point3D.new(0, 0, 8), Vector3D.new(0, 0, -1), 20);
                 }
                 "##,

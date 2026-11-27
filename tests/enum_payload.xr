@@ -12,7 +12,7 @@ export enum WorkToggle { Off, On }
 export component EnumPayloadDemo inherits Window {
     in-out property <Job> job;
     in-out property <WorkToggle> mode: WorkToggle::On;
-    out property <string> summary: root.describe(root.job);
+    out property <string> summary <- root.describe(root.job);
     out property <int> samples: 0;
     out property <int> failures: 0;
 
@@ -56,14 +56,14 @@ export component EnumPayloadDemo inherits Window {
     echo(value) => { value }
 
     match root.job: {
-        Pending(text) => waiting := Text { text: text; },
+        Pending(text) => waiting := Text { text <- text; },
         Ready(details, count) => ready := Button {
-            text: details.title + " " + count;
+            text <- details.title + " " + count;
             clicked => { root.samples += count; }
         },
         Failed { retriable, message } => error-label := Text {
-            text: message + " " + retriable;
+            text <- message + " " + retriable;
         },
-        Done => done := Text { text: "done"; },
+        Done => done := Text { text <- "done"; },
     }
 }

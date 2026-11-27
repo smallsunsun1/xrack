@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use xrack_interpreter::{Instance, Program};
-use xrack_runtime::{Component, Value};
+use xrack_runtime::{Component, Node, Value};
 
 #[test]
 fn strict_properties_keep_their_sources_in_both_backends() {
@@ -46,6 +46,19 @@ fn strict_properties_keep_their_sources_in_both_backends() {
     generated.set_document_title("B".into());
     // The draft did not need to be read before the source changed.
     titles(&actual, &generated, "B", "A", "A");
+    assert_eq!(actual.get("snapshot-title"), Ok("A".to_owned().into()));
+    assert_eq!(generated.get_snapshot_title(), "A");
+    for scene in [actual.render_shared(), generated.render_shared()] {
+        assert_eq!(scene.find("snapshot-text").unwrap().text("text"), Some("A"));
+    }
+    actual
+        .invoke("edit-snapshot", &["X".to_owned().into()])
+        .unwrap();
+    generated.invoke_edit_snapshot("X".into());
+    assert_eq!(actual.get("snapshot-title"), Ok("X".to_owned().into()));
+    assert_eq!(generated.get_snapshot_title(), "X");
+    assert_eq!(actual.get("document-title"), Ok("B".to_owned().into()));
+    assert_eq!(generated.get_document_title(), "B");
     assert!(actual.set("display-title", "X".to_owned().into()).is_err());
     assert!(actual.reset("document-title").is_err());
 
@@ -111,5 +124,23 @@ fn strict_properties_keep_their_sources_in_both_backends() {
     }
     assert_eq!(actual.get("offset"), Ok(Length(-50.0).into()));
     assert_eq!(generated.get_offset(), Length(-50.0));
+
+    edit(&mut actual, &[7]);
+    edit(&mut generated, &[7]);
+    actual.set("document-title", "C".to_owned().into()).unwrap();
+    generated.set_document_title("C".into());
+    for scene in [actual.render_shared(), generated.render_shared()] {
+        let text = scene.find("snapshot-text").unwrap().text("text").unwrap();
+        assert!(text.contains('A') && text.contains('!'));
+        fn labels<'a>(node: &'a Node, result: &mut Vec<&'a str>) {
+            result.extend(node.text("text"));
+            for child in &node.children {
+                labels(child, result);
+            }
+        }
+        let mut rows = Vec::new();
+        labels(scene.find("snapshot-rows").unwrap(), &mut rows);
+        assert_eq!(rows, ["B0", "B1"]);
+    }
     assert_eq!(actual.take_error(), None);
 }

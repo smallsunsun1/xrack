@@ -20,9 +20,9 @@ struct FieldCamera {
 }
 
 export component ParticleAffectorsDemo inherits Window {
-    title: "XRack · 粒子影响器";
-    width: 670px; height: 462px;
-    background: #182333;
+    title <- "XRack · 粒子影响器";
+    width <- 670px; height <- 462px;
+    background <- #182333;
 
     in-out property <string> field-kind: "attractor";
     in-out property <bool> enabled-fields: true;
@@ -40,7 +40,7 @@ export component ParticleAffectorsDemo inherits Window {
     in-out property <int> visible-layers: 3;
     in-out property <int> population: 480;
 
-    property <Field3D> main-field: Field3D {
+    property <Field3D> main-field <- Field3D {
         affector-kind: root.field-kind, position: Point3D.new(0.65, 0.70, 0),
         direction: root.field-kind == "point-rotator" ? Vector3D.new(0,0,1) : Vector3D.new(0,-1,0),
         position-variation: Vector3D.new(root.variation, root.variation, 0),
@@ -50,22 +50,22 @@ export component ParticleAffectorsDemo inherits Window {
         strength: root.strength, angular-speed: 75,
         seed: 17, layers: root.layers, enabled: root.enabled-fields,
     };
-    property <Field3D> extra-field: Field3D {
+    property <Field3D> extra-field <- Field3D {
         affector-kind: "gravity", direction: Vector3D.new(0,-1,0),
         strength: 3.0, enabled: root.enabled-fields && root.secondary,
         start-age: 0, ..root.main-field
     };
-    property <[Field3D]> fields: root.reverse-order
+    property <[Field3D]> fields <- root.reverse-order
         ? [root.extra-field, root.main-field]
         : [root.main-field, root.extra-field];
 
-    property <FieldEmitter> emitter: FieldEmitter {
+    property <FieldEmitter> emitter <- FieldEmitter {
         position: Point3D.new(-2.2, 0.7, 0), color: #53dfffff, size: 0.06, lifetime: 4,
         bursts: [ParticleBurst { time: 0, count: root.population }], fade-out: 0, seed: 36, layers: 1,
         emitter-shape: "box", emitter-extents: Vector3D.new(0.5, 0.34, 0.03),
         velocity: Vector3D.new(1.4, 0, 0),
     };
-    property <[FieldEmitter]> emitters: [
+    property <[FieldEmitter]> emitters <- [
         FieldEmitter { ..root.emitter },
         FieldEmitter {
             position: Point3D.new(-2.2, -1.3, 0), color: #ff9c45ff, layers: 2, ..root.emitter
@@ -79,32 +79,32 @@ export component ParticleAffectorsDemo inherits Window {
         },
     ];
     SceneView3D {
-        width: 670px; height: 352px;
-        camera: "eye"; model: root.model;
-        layer-mask: root.visible-layers;
-        particle-emitters: root.emitters; particle-affectors: root.fields; particle-time: root.time;
-        scene-background: #101925; cache-rendering: true; order-independent-transparency: true;
+        width <- 670px; height <- 352px;
+        camera <- "eye"; model <- root.model;
+        layer-mask <- root.visible-layers;
+        particle-emitters <- root.emitters; particle-affectors <- root.fields; particle-time <- root.time;
+        scene-background <- #101925; cache-rendering <- true; order-independent-transparency <- true;
     }
     Rectangle {
-        x: 366px; y: 128px; width: 14px; height: 14px; border-radius: 7px;
-        border-width: 1px; border-color: #7f96ac; background: #00000000;
+        x <- 366px; y <- 128px; width <- 14px; height <- 14px; border-radius <- 7px;
+        border-width <- 1px; border-color <- #7f96ac; background <- #00000000;
     }
-    Label { x: 385px; y: 118px; width: 110px; height: 30px; text: "影响器位置"; color: #9eb7c9; }
+    Label { x <- 385px; y <- 118px; width <- 110px; height <- 30px; text <- "影响器位置"; color <- #9eb7c9; }
     mode-toggle := Button {
-        x: 15px; y: 367px; width: 104px; height: 36px;
-        text: root.field-kind == "attractor" ? "吸引" : root.field-kind == "repeller" ? "排斥" :
+        x <- 15px; y <- 367px; width <- 104px; height <- 36px;
+        text <- root.field-kind == "attractor" ? "吸引" : root.field-kind == "repeller" ? "排斥" :
             root.field-kind == "gravity" ? "重力" : "绕点旋转";
         clicked => {
             root.field-kind = root.field-kind == "attractor" ? "repeller" : root.field-kind == "repeller" ? "gravity" :
                 root.field-kind == "gravity" ? "point-rotator" : "attractor";
         }
     }
-    enable-toggle := CheckBox { x: 132px; y: 367px; width: 91px; height: 36px; text: "启用"; checked <=> root.enabled-fields; }
-    hide-toggle := CheckBox { x: 227px; y: 367px; width: 103px; height: 36px; text: "到达隐藏"; checked <=> root.hide; }
-    gravity-toggle := CheckBox { x: 341px; y: 367px; width: 126px; height: 36px; text: "叠加重力"; checked <=> root.secondary; }
-    order-toggle := CheckBox { x: 483px; y: 367px; width: 111px; height: 36px; text: "交换顺序"; checked <=> root.reverse-order; }
-    Label { x: 15px; y: 415px; width: 55px; height: 36px; text: "时间"; }
-    time-slider := Slider { x: 72px; y: 417px; width: 580px; height: 34px; minimum: 0; maximum: 2; value <=> root.time; }
+    enable-toggle := CheckBox { x <- 132px; y <- 367px; width <- 91px; height <- 36px; text <- "启用"; checked <-> root.enabled-fields; }
+    hide-toggle := CheckBox { x <- 227px; y <- 367px; width <- 103px; height <- 36px; text <- "到达隐藏"; checked <-> root.hide; }
+    gravity-toggle := CheckBox { x <- 341px; y <- 367px; width <- 126px; height <- 36px; text <- "叠加重力"; checked <-> root.secondary; }
+    order-toggle := CheckBox { x <- 483px; y <- 367px; width <- 111px; height <- 36px; text <- "交换顺序"; checked <-> root.reverse-order; }
+    Label { x <- 15px; y <- 415px; width <- 55px; height <- 36px; text <- "时间"; }
+    time-slider := Slider { x <- 72px; y <- 417px; width <- 580px; height <- 34px; minimum <- 0; maximum <- 2; value <-> root.time; }
 }
 
 struct WaveField {
@@ -123,8 +123,8 @@ struct WaveEmitter {
 }
 
 export component ParticleWavesDemo inherits Window {
-    title: "XRack · 粒子游动与缩放";
-    width: 624px; height: 406px; background: #182333;
+    title <- "XRack · 粒子游动与缩放";
+    width <- 624px; height <- 406px; background <- #182333;
 
     in-out property <float> time: 0.5;
     in-out property <bool> wander: true;
@@ -146,8 +146,8 @@ export component ParticleWavesDemo inherits Window {
         color: #fff, camera-kind: "orthographic", camera-height: 6,
     };
     view := SceneView3D {
-        width: 624px; height: 300px;
-        model: [
+        width <- 624px; height <- 300px;
+        model <- [
             root.eye,
             FieldCamera { id: "anchor", z: 0, scale-x: 2, roll: 90, camera-kind: "", ..root.eye },
             FieldCamera {
@@ -156,10 +156,10 @@ export component ParticleWavesDemo inherits Window {
                 color: #33445b, camera-kind: "", ..root.eye
             },
         ];
-        camera: "eye"; scene-background: #101925;
-        shadows: root.model-particles; shadow-map-size: 128;
-        particle-time: root.time;
-        particle-emitters: [
+        camera <- "eye"; scene-background <- #101925;
+        shadows <- root.model-particles; shadow-map-size <- 128;
+        particle-time <- root.time;
+        particle-emitters <- [
             WaveEmitter {
                 position: Point3D.new(0, 0, 0.4), color: #ff46d9, size: 0.32, lifetime: 2,
                 fade-out: 0, seed: 46, particle-group: "sparks",
@@ -170,7 +170,7 @@ export component ParticleWavesDemo inherits Window {
                 particle-casts-shadow: root.model-particles,
             },
         ];
-        particle-affectors: [
+        particle-affectors <- [
             WaveField {
                 affector-kind: "wander", enabled: root.wander,
                 particle-group: "sparks", parent: root.attached ? "anchor" : "",
@@ -188,14 +188,14 @@ export component ParticleWavesDemo inherits Window {
             },
         ];
     }
-    Label { x: 18px; y: 306px; width: 58px; height: 34px; text: "时间"; }
+    Label { x <- 18px; y <- 306px; width <- 58px; height <- 34px; text <- "时间"; }
     time-slider := Slider {
-        x: 78px; y: 306px; width: 526px; height: 34px;
-        minimum: 0; maximum: 1.99; value <=> root.time;
+        x <- 78px; y <- 306px; width <- 526px; height <- 34px;
+        minimum <- 0; maximum <- 1.99; value <-> root.time;
     }
-    wander-toggle := CheckBox { x: 18px; y: 357px; width: 106px; text: "游动"; checked <=> root.wander; }
-    pulse-toggle := CheckBox { x: 130px; y: 357px; width: 100px; text: "缩放"; checked <=> root.pulse; }
-    attachment-toggle := CheckBox { x: 236px; y: 357px; width: 100px; text: "挂点"; checked <=> root.attached; }
-    trail-toggle := CheckBox { x: 342px; y: 357px; width: 100px; text: "拖尾"; checked <=> root.trail; }
-    mesh-toggle := CheckBox { x: 448px; y: 357px; width: 110px; text: "模型"; checked <=> root.model-particles; }
+    wander-toggle := CheckBox { x <- 18px; y <- 357px; width <- 106px; text <- "游动"; checked <-> root.wander; }
+    pulse-toggle := CheckBox { x <- 130px; y <- 357px; width <- 100px; text <- "缩放"; checked <-> root.pulse; }
+    attachment-toggle := CheckBox { x <- 236px; y <- 357px; width <- 100px; text <- "挂点"; checked <-> root.attached; }
+    trail-toggle := CheckBox { x <- 342px; y <- 357px; width <- 100px; text <- "拖尾"; checked <-> root.trail; }
+    mesh-toggle := CheckBox { x <- 448px; y <- 357px; width <- 110px; text <- "模型"; checked <-> root.model-particles; }
 }

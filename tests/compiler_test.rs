@@ -17,16 +17,16 @@ fn repeat_button_properties_are_typed_and_restricted_to_push_buttons() {
         let source = format!(
             r#"
             component App inherits Window {{
-                {kind} {{ auto-repeat: true; auto-repeat-delay: 200; auto-repeat-interval: 75; }}
+                {kind} {{ auto-repeat <- true; auto-repeat-delay <- 200; auto-repeat-interval <- 75; }}
             }}
         "#
         );
         let compiled = compile(&source, "button-repeat.xr").unwrap();
         assert!(compiled.mlir.contains("name = \"auto-repeat-interval\""));
         for (from, to) in [
-            ("auto-repeat: true", "auto-repeat: 1"),
-            ("auto-repeat-delay: 200", "auto-repeat-delay: 2px"),
-            ("auto-repeat-interval: 75", "auto-repeat-interval: false"),
+            ("auto-repeat <- true", "auto-repeat: 1"),
+            ("auto-repeat-delay <- 200", "auto-repeat-delay: 2px"),
+            ("auto-repeat-interval <- 75", "auto-repeat-interval: false"),
         ] {
             assert!(compile(&source.replace(from, to), "button-repeat.xr").is_err());
         }
@@ -44,9 +44,9 @@ fn push_button_press_and_hold_is_a_typed_zero_argument_event() {
         let source = format!(
             r#"
             component App inherits Window {{
-                in-out property <int> holds: once 0;
+                in-out property <int> holds: 0;
                 target := {kind} {{
-                    press-and-hold-interval: 550;
+                    press-and-hold-interval <- 550;
                     press-and-hold => {{ root.holds += 1; }}
                 }}
             }}
@@ -58,7 +58,7 @@ fn push_button_press_and_hold_is_a_typed_zero_argument_event() {
         assert!(compiled.rust.to_string().contains("press_and_hold_handler"));
         for (from, to) in [
             (
-                "press-and-hold-interval: 550",
+                "press-and-hold-interval <- 550",
                 "press-and-hold-interval: 550px",
             ),
             ("press-and-hold =>", "press-and-hold(key) =>"),
@@ -80,7 +80,7 @@ fn push_buttons_accept_zero_argument_double_click_handlers() {
             r#"
             component App inherits Window {{
                 command := Action {{}}
-                target := {kind} {{ action: command; double-clicked => {{}} }}
+                target := {kind} {{ action <- command; double-clicked => {{}} }}
             }}
         "#
         );
@@ -105,7 +105,7 @@ fn push_buttons_accept_zero_argument_double_click_handlers() {
 fn push_button_pressed_is_a_typed_read_only_state_property() {
     let source = r#"
         component App inherits Window {
-            out property <bool> down: button.pressed;
+            out property <bool> down <- button.pressed;
             button := Button {}
         }
     "#;
@@ -128,8 +128,8 @@ fn push_button_pressed_is_a_typed_read_only_state_property() {
 fn checked_reads_verify_owners_and_reject_binding_cycles() {
     let source = r#"
         export component App inherits Window {
-            out property <bool> selected: target.checked;
-            target := Button { checked: true; }
+            out property <bool> selected <- target.checked;
+            target := Button { checked <- true; }
         }
     "#;
     let compiled = compile(source, "checked.xr").unwrap();
@@ -142,7 +142,7 @@ fn checked_reads_verify_owners_and_reject_binding_cycles() {
         )
         .is_err()
     );
-    let assignment = source.replace("checked: true;", "clicked => { target.checked = false; }");
+    let assignment = source.replace("checked <- true;", "clicked => { target.checked = false; }");
     assert!(
         compile(&assignment, "checked.xr")
             .err()
@@ -157,12 +157,12 @@ fn checked_reads_verify_owners_and_reject_binding_cycles() {
         "group := ButtonGroup { current-index: target.checked ? 0 : -1; } target := Button { group: group; }",
         "group := ButtonGroup { current-value: \"x\"; } target := Button { group: group; text: target.checked ? \"x\" : \"\"; }",
     ] {
-        let invalid = source.replace("target := Button { checked: true; }", declarations);
+        let invalid = source.replace("target := Button { checked <- true; }", declarations);
         let error = compile(&invalid, "checked.xr").err().unwrap().to_string();
         assert!(error.contains("cyclic"), "{error}");
     }
     let stable_value = source.replace(
-        "target := Button { checked: true; }",
+        "target := Button { checked <- true; }",
         "group := ButtonGroup { current-value: \"x\"; } target := Button { group: group; value: \"x\"; text: target.checked ? \"Selected\" : \"Idle\"; }",
     );
     compile(&stable_value, "checked.xr").unwrap();
@@ -172,9 +172,9 @@ fn checked_reads_verify_owners_and_reject_binding_cycles() {
 fn range_position_read_types_directions_and_cycle_checks_match_the_control() {
     let source = r#"
         export component App inherits Window {
-            out property <float> rate: knob.position + slider.visual-position + pair.lower-position + pair.upper-visual-position;
+            out property <float> rate <- knob.position + slider.visual-position + pair.lower-position + pair.upper-visual-position;
             knob := Dial {}
-            slider := Slider { value: 10; }
+            slider := Slider { value <- 10; }
             pair := RangeSlider {}
         }
     "#;
@@ -189,8 +189,8 @@ fn range_position_read_types_directions_and_cycle_checks_match_the_control() {
     let error = mlir::Module::parse(&invalid).err().unwrap();
     assert!(error.contains("supported range position"), "{error}");
     let cycle = source.replace(
-        "value: 10;",
-        "value: 10; layout-direction: self.visual-position < 0.5 ? LayoutDirection.left-to-right : LayoutDirection.right-to-left;",
+        "value <- 10;",
+        "value <- 10; layout-direction <- self.visual-position < 0.5 ? LayoutDirection.left-to-right : LayoutDirection.right-to-left;",
     );
     let error = compile(&cycle, "range-position.xr")
         .err()
@@ -198,17 +198,18 @@ fn range_position_read_types_directions_and_cycle_checks_match_the_control() {
         .to_string();
     assert!(error.contains("cyclic"), "{error}");
     let state_cycle = source.replace(
-        "slider := Slider { value: 10; }",
-        "Rectangle { states [ mirror when slider.visual-position < 0.5: { layout-direction: LayoutDirection.right-to-left; } ] slider := Slider { value: 10; } }",
+        "slider := Slider { value <- 10; }",
+        "Rectangle { states [ mirror when slider.visual-position < 0.5: { layout-direction: LayoutDirection.right-to-left; } ] slider := Slider { value <- 10; } }",
     );
     let error = compile(&state_cycle, "range-position.xr")
         .err()
         .unwrap()
         .to_string();
     assert!(error.contains("cyclic"), "{error}");
-    let depends_on_position = source.replace("value: 10;", "value: 10; step: self.position + 1;");
+    let depends_on_position =
+        source.replace("value <- 10;", "value <- 10; step <- self.position + 1;");
     compile(&depends_on_position, "range-position.xr").unwrap();
-    let delayed = depends_on_position.replace("value: 10;", "value: 10; live: false;");
+    let delayed = depends_on_position.replace("value <- 10;", "value <- 10; live: false;");
     let error = compile(&delayed, "range-position.xr")
         .err()
         .unwrap()
@@ -220,9 +221,9 @@ fn range_position_read_types_directions_and_cycle_checks_match_the_control() {
 fn numeric_control_values_are_typed_reads_and_preserve_writable_aliases() {
     let source = r#"
         export component App inherits Window {
-            in-out property <float> slider-alias <=> slider.value;
-            out property <float> meter: slider.value + dial.value + range.lower-value + range.upper-value + decimal.value;
-            out property <int> count: integer.value;
+            in-out property <float> slider-alias <-> slider.value;
+            out property <float> meter <- slider.value + dial.value + range.lower-value + range.upper-value + decimal.value;
+            out property <int> count <- integer.value;
             slider := Slider {}
             dial := Dial {}
             range := RangeSlider {}
@@ -242,7 +243,7 @@ fn numeric_control_values_are_typed_reads_and_preserve_writable_aliases() {
     let error = mlir::Module::parse(&invalid).err().unwrap();
     assert!(error.contains("numeric control value"), "{error}");
     let cycle = source
-        .replace("in-out property <float> slider-alias <=> slider.value;", "")
+        .replace("in-out property <float> slider-alias <-> slider.value;", "")
         .replace(
             "slider := Slider {}",
             "slider := Slider { value: self.value + 1; }",
@@ -258,11 +259,11 @@ fn numeric_control_values_are_typed_reads_and_preserve_writable_aliases() {
 fn navigation_active_reads_verify_the_parent_and_reject_eligibility_cycles() {
     let source = r#"
         export component App inherits Window {
-            out property <bool> state: option.checked && page.active && slide.active;
+            out property <bool> state <- option.checked && page.active && slide.active;
             bar := TabBar {
-                option := TabButton { text: self.checked ? "Selected" : "Overview"; }
+                option := TabButton { text <- self.checked ? "Selected" : "Overview"; }
             }
-            tabs := TabWidget { page := Tab { title: "Page"; } }
+            tabs := TabWidget { page := Tab { title <- "Page"; } }
             view := SwipeView { slide := SwipePage {} }
         }
     "#;
@@ -278,7 +279,7 @@ fn navigation_active_reads_verify_the_parent_and_reject_eligibility_cycles() {
     let error = mlir::Module::parse(&invalid).err().unwrap();
     assert!(error.contains("owning selection control"), "{error}");
     let cycle = source.replace(
-        "text: self.checked ?",
+        "text <- self.checked ?",
         "enabled: !self.checked; text: self.checked ?",
     );
     let error = compile(&cycle, "navigation-active.xr")
@@ -292,13 +293,13 @@ fn navigation_active_reads_verify_the_parent_and_reject_eligibility_cycles() {
 fn radio_checked_reads_verify_the_selection_owner_and_reject_cycles() {
     let source = r#"
         export component App inherits Window {
-            out property <bool> picked: item.checked && distributed.checked;
+            out property <bool> picked <- item.checked && distributed.checked;
             options := RadioGroup {
-                current-value: "a";
-                item := RadioButton { value: "a"; text: self.checked ? "yes" : "no"; }
+                current-value <- "a";
+                item := RadioButton { value <- "a"; text <- self.checked ? "yes" : "no"; }
             }
-            external := ButtonGroup { current-value: "a"; }
-            distributed := RadioButton { value: "a"; group: external; }
+            external := ButtonGroup { current-value <- "a"; }
+            distributed := RadioButton { value <- "a"; group <- external; }
         }
     "#;
     let compiled = compile(source, "radio-checked.xr").unwrap();
@@ -310,7 +311,7 @@ fn radio_checked_reads_verify_the_selection_owner_and_reject_cycles() {
     assert_ne!(invalid, compiled.mlir);
     let error = mlir::Module::parse(&invalid).err().unwrap();
     assert!(error.contains("owning selection control"), "{error}");
-    let cycle = source.replace("value: \"a\"; text:", "text:");
+    let cycle = source.replace("value <- \"a\"; text <- ", "text <- ");
     let error = compile(&cycle, "radio-checked.xr")
         .err()
         .unwrap()
@@ -322,10 +323,10 @@ fn radio_checked_reads_verify_the_selection_owner_and_reject_cycles() {
 fn toggle_state_reads_validate_types_and_cannot_feed_their_own_storage() {
     let source = r#"
         export component App inherits Window {
-            out property <CheckState> state: choice.check-state;
-            out property <bool> checked: choice.checked && network.checked;
-            choice := CheckBox { check-state: CheckState.partially-checked; }
-            network := Switch { checked: true; }
+            out property <CheckState> state <- choice.check-state;
+            out property <bool> checked <- choice.checked && network.checked;
+            choice := CheckBox { check-state <- CheckState.partially-checked; }
+            network := Switch { checked <- true; }
         }
     "#;
     let compiled = compile(source, "toggle-state.xr").unwrap();
@@ -335,7 +336,7 @@ fn toggle_state_reads_validate_types_and_cannot_feed_their_own_storage() {
         .replace("value = \"check-state\"", "value = \"checked\"");
     assert!(mlir::Module::parse(&invalid).is_err());
     let cycle = source.replace(
-        "check-state: CheckState.partially-checked",
+        "check-state <- CheckState.partially-checked",
         "check-state: self.checked ? CheckState.checked : CheckState.unchecked",
     );
     let error = compile(&cycle, "toggle-state.xr")
@@ -352,9 +353,9 @@ fn repeated_button_checked_is_verified_after_the_row_is_bound() {
     let source = r#"
         export component App inherits Window {
             for i in 3: Button {
-                checkable: true;
-                checked: i == 1;
-                text: self.checked ? "on" : "off";
+                checkable <- true;
+                checked <- i == 1;
+                text <- self.checked ? "on" : "off";
             }
         }
     "#;
@@ -383,11 +384,11 @@ fn repeated_button_toggle_uses_its_row_and_verifies_the_effect_target() {
     let source = r#"
         export component App inherits Window {
             for i in 2: Button {
-                checkable: false;
+                checkable <- false;
                 clicked => { self.toggle(); }
             }
             for j in 2: RoundButton {
-                checkable: false;
+                checkable <- false;
                 clicked => { self.toggle(); }
             }
         }
@@ -479,13 +480,13 @@ fn programmatic_button_click_is_a_verified_effect() {
 fn button_appearance_bindings_have_paint_effects_and_accept_visual_states() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> prominent: once true;
+            in property <bool> prominent: true;
             pick := Button {
-                primary: root.prominent;
-                flat: false;
+                primary <- root.prominent;
+                flat <- false;
                 states [ quiet when !root.prominent: { flat: true; } ]
             }
-            Dialog { DialogButton { primary: root.prominent; flat: true; } }
+            Dialog { DialogButton { primary <- root.prominent; flat <- true; } }
         }
     "#;
     let compiled = compile(source, "button-appearance.xr").unwrap();
@@ -498,14 +499,14 @@ fn button_appearance_bindings_have_paint_effects_and_accept_visual_states() {
     assert!(compiled.mlir.contains("\"xr.state_set\""));
     assert!(
         compile(
-            &source.replace("primary: root.prominent", "primary: 12"),
+            &source.replace("primary <- root.prominent", "primary: 12"),
             "button-appearance.xr"
         )
         .is_err()
     );
     assert!(
         compile(
-            "component App inherits Window { Rectangle { flat: true; } }",
+            "component App inherits Window { Rectangle { flat <- true; } }",
             "button-appearance.xr"
         )
         .is_err()
@@ -516,11 +517,11 @@ fn button_appearance_bindings_have_paint_effects_and_accept_visual_states() {
 fn button_display_and_replaceable_content_are_verified() {
     let source = r#"
         export component App inherits Window {
-            in property <ButtonDisplay> mode: once ButtonDisplay.text-under-icon;
-            Button { display: root.mode; colorize-icon: true; spacing: 3px; }
-            ToolButton { ButtonContent { Text { text: "Tool"; } } }
-            RoundButton { ButtonContent { Text { text: "Round"; } } }
-            DelayButton { ButtonContent { Text { text: "Delay"; } } }
+            in property <ButtonDisplay> mode: ButtonDisplay.text-under-icon;
+            Button { display <- root.mode; colorize-icon <- true; spacing <- 3px; }
+            ToolButton { ButtonContent { Text { text <- "Tool"; } } }
+            RoundButton { ButtonContent { Text { text <- "Round"; } } }
+            DelayButton { ButtonContent { Text { text <- "Delay"; } } }
         }
     "#;
     let compilation = compile(source, "button-display.xr").unwrap();
@@ -528,7 +529,7 @@ fn button_display_and_replaceable_content_are_verified() {
     assert!(compilation.mlir.contains("text-under-icon"));
     assert!(
         compile(
-            &source.replace("display: root.mode", "display: true"),
+            &source.replace("display <- root.mode", "display: true"),
             "button-display.xr"
         )
         .is_err()
@@ -539,13 +540,13 @@ fn button_display_and_replaceable_content_are_verified() {
 fn push_button_groups_validate_membership_and_state_ownership() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> checked: once false;
-            modes := ButtonGroup { current-value: "list"; }
-            flags := ButtonGroup { exclusive: false; }
+            in-out property <bool> checked: false;
+            modes := ButtonGroup { current-value <- "list"; }
+            flags := ButtonGroup { exclusive <- false; }
             command := Action {}
-            ToolButton { group: modes; value: "list"; }
-            RoundButton { group: modes; value: "grid"; checkable: true; }
-            Button { group: flags; checked <=> root.checked; }
+            ToolButton { group <- modes; value <- "list"; }
+            RoundButton { group <- modes; value <- "grid"; checkable <- true; }
+            Button { group <- flags; checked <-> root.checked; }
         }
     "#;
     let compiled = compile(source, "button-groups.xr").unwrap();
@@ -553,16 +554,16 @@ fn push_button_groups_validate_membership_and_state_ownership() {
     assert!(compiled.mlir.contains("\"xr.check_group_ref\""));
     for (from, to) in [
         (
-            "group: modes; value: \"list\";",
+            "group <- modes; value <- \"list\";",
             "group: modes; checked: true;",
         ),
         (
-            "group: flags; checked <=> root.checked;",
-            "group: modes; checked <=> root.checked;",
+            "group <- flags; checked <-> root.checked;",
+            "group: modes; checked <-> root.checked;",
         ),
-        ("checkable: true;", "checkable: false;"),
+        ("checkable <- true;", "checkable: false;"),
         (
-            "group: modes; value: \"list\";",
+            "group <- modes; value <- \"list\";",
             "group: modes; action: command;",
         ),
     ] {
@@ -576,22 +577,22 @@ fn checkable_buttons_accept_boolean_bindings_and_zero_argument_toggle() {
         let source = format!(
             r#"
             export component App inherits Window {{
-                in-out property <bool> pinned: once false;
-                pin := {kind} {{ checkable: true; checked <=> root.pinned; toggled => {{}} }}
+                in-out property <bool> pinned: false;
+                pin := {kind} {{ checkable <- true; checked <-> root.pinned; toggled => {{}} }}
             }}
         "#
         );
         let compiled = compile(&source, "checkable-button.xr").unwrap();
         assert!(compiled.mlir.contains("name = \"checked\""));
         for (from, to) in [
-            ("checkable: true", "checkable: 1"),
+            ("checkable <- true", "checkable: 1"),
             ("toggled =>", "toggled(value) =>"),
         ] {
             assert!(compile(&source.replace(from, to), "checkable-button.xr").is_err());
         }
         let linked = source
             .replace("pin :=", "command := Action {} pin :=")
-            .replace("checkable: true", "action: command");
+            .replace("checkable <- true", "action: command");
         assert!(compile(&linked, "checkable-button.xr").is_err());
     }
 }
@@ -602,7 +603,7 @@ fn push_button_lifecycle_handlers_use_zero_arguments_and_coexist_with_action() {
         component App inherits Window {
             command := Action {}
             button := ToolButton {
-                action: command;
+                action <- command;
                 pressed => {}
                 released => {}
                 canceled => {}
@@ -627,10 +628,10 @@ fn push_button_lifecycle_handlers_use_zero_arguments_and_coexist_with_action() {
 fn scroll_controls_require_a_local_viewport_reference() {
     let source = r#"
         component App inherits Window {
-            canvas := ScrollView { content-height: 400px; }
+            canvas := ScrollView { content-height <- 400px; }
             panel := Rectangle {}
-            ScrollBar { target: canvas; orientation: vertical; policy: always-on; }
-            ScrollIndicator { target: canvas; }
+            ScrollBar { target <- canvas; orientation <- vertical; policy <- always-on; }
+            ScrollIndicator { target <- canvas; }
         }
     "#;
     let compiled = compile(source, "scroll-controls.xr").unwrap();
@@ -638,13 +639,13 @@ fn scroll_controls_require_a_local_viewport_reference() {
     assert!(compiled.rust.to_string().contains("scroll_target"));
     for (replacement, expected) in [
         ("target: panel;", "target requires the id of a viewport"),
-        ("target <=> canvas;", "target requires the id of a viewport"),
+        ("target <-> canvas;", "target requires the id of a viewport"),
         (
             "target: canvas; position: 0.5;",
             "attached scroll controls derive their range from the viewport",
         ),
     ] {
-        let invalid = source.replacen("target: canvas;", replacement, 1);
+        let invalid = source.replacen("target <- canvas;", replacement, 1);
         let error = compile(&invalid, "scroll-controls.xr")
             .err()
             .expect("invalid scroll control compiled");
@@ -656,15 +657,15 @@ fn scroll_controls_require_a_local_viewport_reference() {
 fn system_tray_icon_is_a_windowless_root_with_typed_native_menu_inputs() {
     let source = r#"export component Tray inherits SystemTrayIcon {
         in property <image> artwork;
-        icon: root.artwork;
-        tooltip: "XRack tray";
-        icon-template: true;
-        visible: true;
+        icon <- root.artwork;
+        tooltip <- "XRack tray";
+        icon-template <- true;
+        visible <- true;
         clicked() => { }
-        open := Action { text: "Open"; }
+        open := Action { text <- "Open"; }
         Menu {
-            MenuItem { action: open; }
-            Menu { title: "Details"; MenuItem { text: "Status"; enabled: false; } }
+            MenuItem { action <- open; }
+            Menu { title <- "Details"; MenuItem { text <- "Status"; enabled <- false; } }
         }
     }"#;
     let output = compile(source, "system-tray.xr").unwrap();
@@ -676,7 +677,7 @@ fn system_tray_icon_is_a_windowless_root_with_typed_native_menu_inputs() {
     )
     .unwrap();
     for (from, to, expected) in [
-        ("icon-template: true", "icon-template: 1", "type mismatch"),
+        ("icon-template <- true", "icon-template: 1", "type mismatch"),
         ("Menu {\n", "Menu {} Menu {\n", "at most one Menu"),
         ("Menu {\n", "if true : Menu {\n", "optional static Menu"),
         ("Menu {\n", "Rectangle {} Menu {\n", "optional static Menu"),
@@ -698,14 +699,14 @@ fn system_tray_icon_is_a_windowless_root_with_typed_native_menu_inputs() {
 #[test]
 fn flickable_bounds_modes_lower_as_typed_options_and_effects() {
     let source = r#"component App inherits Window {
-        out property <length> overshoot: canvas.horizontal-overshoot;
-        out property <bool> returning: canvas.rebounding;
+        out property <length> overshoot <- canvas.horizontal-overshoot;
+        out property <bool> returning <- canvas.rebounding;
         callback reset();
         reset() => { canvas.return-to-bounds(); }
         canvas := Flickable {
-            bounds-behavior: FlickBoundsBehavior.drag-and-overshoot-bounds;
-            bounds-movement: FlickBoundsMovement.stop-at-bounds;
-            rebound-duration: 210;
+            bounds-behavior <- FlickBoundsBehavior.drag-and-overshoot-bounds;
+            bounds-movement <- FlickBoundsMovement.stop-at-bounds;
+            rebound-duration <- 210;
         }
     }"#;
     let compiled = compile(source, "elastic-bounds.xr").unwrap();
@@ -714,12 +715,12 @@ fn flickable_bounds_modes_lower_as_typed_options_and_effects() {
     assert!(compiled.mlir.contains("\"xr.return_to_bounds\""));
     for (from, to, expected) in [
         (
-            "rebound-duration: 210",
+            "rebound-duration <- 210",
             "rebound-duration: 210px",
             "type mismatch",
         ),
         (
-            "rebound-duration: 210",
+            "rebound-duration <- 210",
             "horizontal-overshoot: 5px",
             "read-only",
         ),
@@ -739,19 +740,19 @@ fn flickable_bounds_modes_lower_as_typed_options_and_effects() {
 #[test]
 fn flickable_lowers_motion_metrics_and_scoped_inertia_cancellation() {
     let source = r#"component App inherits Window {
-        out property <bool> active: canvas.moving;
-        out property <length> position: canvas.content-x;
+        out property <bool> active <- canvas.moving;
+        out property <length> position <- canvas.content-x;
         callback stop();
         stop() => { canvas.cancel-flick(); }
         canvas := Flickable {
-            clip: false;
-            interactive: true;
-            flick-direction: FlickDirection.horizontal;
-            content-width: 200%;
+            clip <- false;
+            interactive <- true;
+            flick-direction <- FlickDirection.horizontal;
+            content-width <- 200%;
             flicked() => { }
-            Rectangle { width: 100%; height: 40px; }
+            Rectangle { width <- 100%; height <- 40px; }
         }
-        ScrollBar { target: canvas; orientation: horizontal; }
+        ScrollBar { target <- canvas; orientation <- horizontal; }
     }"#;
     let compiled = compile(source, "flickable.xr").unwrap();
     assert!(compiled.mlir.contains("\"xr.flick_motion_read\""));
@@ -759,11 +760,11 @@ fn flickable_lowers_motion_metrics_and_scoped_inertia_cancellation() {
     assert!(compiled.rust.to_string().contains("for_flickable"));
     for (from, to, expected) in [
         (
-            "flick-direction: FlickDirection.horizontal",
+            "flick-direction <- FlickDirection.horizontal",
             "flick-direction: true",
             "type mismatch",
         ),
-        ("interactive: true", "moving: true", "read-only"),
+        ("interactive <- true", "moving: true", "read-only"),
         (
             "canvas.cancel-flick()",
             "canvas.cancel-flick(1)",
@@ -796,12 +797,12 @@ fn flickable_lowers_motion_metrics_and_scoped_inertia_cancellation() {
 #[test]
 fn swipe_gestures_lower_typed_metrics_and_cancel_effects() {
     let source = r#"component App inherits Window {
-        out property <length> distance: swipe.current-x - swipe.pressed-x;
-        out property <bool> active: swipe.swiping;
+        out property <length> distance <- swipe.current-x - swipe.pressed-x;
+        out property <bool> active <- swipe.swiping;
         callback stop();
         stop() => { swipe.cancel(); }
         swipe := SwipeGestureHandler {
-            handle-swipe-left: true;
+            handle-swipe-left <- true;
             moved() => { }
             swiped() => { }
             cancelled() => { }
@@ -813,11 +814,11 @@ fn swipe_gestures_lower_typed_metrics_and_cancel_effects() {
     assert!(compiled.rust.to_string().contains("SwipeHandle"));
     for (from, to, expected) in [
         (
-            "handle-swipe-left: true",
+            "handle-swipe-left <- true",
             "handle-swipe-left: 3",
             "type mismatch",
         ),
-        ("handle-swipe-left: true", "current-x: 20px", "read-only"),
+        ("handle-swipe-left <- true", "current-x: 20px", "read-only"),
         ("swipe.cancel()", "swipe.cancel(1)", "takes no arguments"),
         (
             "moved() => { }",
@@ -846,21 +847,21 @@ fn swipe_gestures_lower_typed_metrics_and_cancel_effects() {
 #[test]
 fn scale_rotate_handlers_expose_typed_read_only_metrics_and_lifecycle() {
     let source = r#"component App inherits Window {
-        out property <float> factor: gesture.scale;
-        out property <float> angle: gesture.rotation;
-        out property <length> centroid: gesture.center-x;
-        out property <bool> recognizing: gesture.active;
+        out property <float> factor <- gesture.scale;
+        out property <float> angle <- gesture.rotation;
+        out property <length> centroid <- gesture.center-x;
+        out property <bool> recognizing <- gesture.active;
         gesture := ScaleRotateGestureHandler {
-            width: 200px;
+            width <- 200px;
             updated() => { }
-            Rectangle { width: 100%; height: 100%; }
+            Rectangle { width <- 100%; height <- 100%; }
         }
     }"#;
     let compiled = compile(source, "scale-rotate.xr").unwrap();
     assert!(compiled.mlir.contains("\"xr.scale_rotate_read\""));
     assert!(compiled.rust.to_string().contains("ScaleRotateHandle"));
     for (from, to, expected) in [
-        ("width: 200px", "scale: 2.0", "read-only"),
+        ("width <- 200px", "scale: 2.0", "read-only"),
         (
             "updated() => { }",
             "updated() => { gesture.rotation = 20.0; }",
@@ -887,10 +888,10 @@ fn scale_rotate_handlers_expose_typed_read_only_metrics_and_lifecycle() {
 fn scroll_snap_modes_are_typed_on_both_scroll_bar_modes() {
     let source = r#"
         component App inherits Window {
-            in property <ScrollSnapMode> mode: once ScrollSnapMode.on-release;
-            view := ScrollView { content-height: 400px; }
-            ScrollBar { target: view; snap-mode: root.mode; step-size: 0.3; }
-            ScrollBar { size: 0.25; snap-mode: always; step-size: 0.25; }
+            in property <ScrollSnapMode> mode: ScrollSnapMode.on-release;
+            view := ScrollView { content-height <- 400px; }
+            ScrollBar { target <- view; snap-mode <- root.mode; step-size <- 0.3; }
+            ScrollBar { size <- 0.25; snap-mode <- always; step-size <- 0.25; }
         }
     "#;
     let output = compile(source, "scroll-snap.xr").unwrap();
@@ -902,9 +903,9 @@ fn scroll_snap_modes_are_typed_on_both_scroll_bar_modes() {
             .contains("ScrollSnapMode :: OnRelease")
     );
     for (from, to, expected) in [
-        ("snap-mode: always", "snap-mode: 1", "type mismatch"),
+        ("snap-mode <- always", "snap-mode: 1", "type mismatch"),
         (
-            "ScrollBar { size: 0.25",
+            "ScrollBar { size <- 0.25",
             "ScrollIndicator { size: 0.25",
             "snap-mode",
         ),
@@ -928,12 +929,12 @@ fn scroll_snap_modes_are_typed_on_both_scroll_bar_modes() {
 fn attached_scroll_metrics_are_read_only_and_follow_layout_phases() {
     let source = r#"
         component App inherits Window {
-            out property <float> extent: bar.size;
-            canvas := ScrollView { content-height: 400px; }
-            bar := ScrollBar { target: canvas; }
-            ScrollIndicator { position: bar.position; size: bar.size; }
+            out property <float> extent <- bar.size;
+            canvas := ScrollView { content-height <- 400px; }
+            bar := ScrollBar { target <- canvas; }
+            ScrollIndicator { position <- bar.position; size <- bar.size; }
             open := Button {
-                details := PopupWindow { width: bar.size * 100px; height: 40px; }
+                details := PopupWindow { width <- bar.size * 100px; height <- 40px; }
             }
         }
     "#;
@@ -942,12 +943,12 @@ fn attached_scroll_metrics_are_read_only_and_follow_layout_phases() {
     assert!(compiled.rust.to_string().contains("scroll_size"));
     for (from, to, expected) in [
         (
-            "content-height: 400px",
+            "content-height <- 400px",
             "content-height: root.extent * 400px",
             "layout feedback",
         ),
         (
-            "bar := ScrollBar { target: canvas; }",
+            "bar := ScrollBar { target <- canvas; }",
             "bar := ScrollBar { target: canvas; orientation: bar.position > 0.5 ? Orientation.horizontal : Orientation.vertical; }",
             "cyclic property binding",
         ),
@@ -981,10 +982,10 @@ fn attached_scroll_metrics_are_read_only_and_follow_layout_phases() {
 fn standalone_scroll_controls_support_observable_normalized_ranges() {
     let source = r#"
         component App inherits Window {
-            in-out property <float> offset: once 0;
-            out property <float> position: bar.position;
-            bar := ScrollBar { position <=> root.offset; size: 0.25; }
-            indicator := ScrollIndicator { position: bar.position; size: bar.size; }
+            in-out property <float> offset: 0;
+            out property <float> position <- bar.position;
+            bar := ScrollBar { position <-> root.offset; size <- 0.25; }
+            indicator := ScrollIndicator { position <- bar.position; size <- bar.size; }
         }
     "#;
     let compiled = compile(source, "standalone-scroll.xr").unwrap();
@@ -992,19 +993,19 @@ fn standalone_scroll_controls_support_observable_normalized_ranges() {
     assert!(compiled.mlir.contains("\"xr.control_link\""));
     assert!(compiled.rust.to_string().contains("ScrollBarRange"));
     compile(
-        "component CustomBar inherits ScrollBar { out property <float> effective: self.position; size: 0.25; }",
+        "component CustomBar inherits ScrollBar { out property <float> effective <- self.position; size <- 0.25; }",
         "custom-scroll-bar.xr",
     )
     .unwrap();
     for (from, to, expected) in [
         (
-            "size: 0.25",
+            "size <- 0.25",
             "size: root.position",
             "cyclic property binding",
         ),
         (
-            "position: bar.position; size: bar.size;",
-            "position <=> root.offset;",
+            "position <- bar.position; size <- bar.size;",
+            "position <-> root.offset;",
             "two-way binding requires an editable control property",
         ),
     ] {
@@ -1019,12 +1020,12 @@ fn standalone_scroll_controls_support_observable_normalized_ranges() {
 fn non_exclusive_button_groups_verify_members_reads_and_effects() {
     let source = r#"
         component App inherits Window {
-            in property <bool> choice-mode: once false;
-            out property <CheckState> status: checks.check-state;
-            checks := ButtonGroup { exclusive: false; }
-            master := CheckBox { check-state <=> checks.check-state; }
-            CheckBox { group: checks; text: "Option"; }
-            Switch { group: checks; text: "Switch"; }
+            in property <bool> choice-mode: false;
+            out property <CheckState> status <- checks.check-state;
+            checks := ButtonGroup { exclusive <- false; }
+            master := CheckBox { check-state <-> checks.check-state; }
+            CheckBox { group <- checks; text <- "Option"; }
+            Switch { group <- checks; text <- "Switch"; }
             callback clear();
             clear() => { checks.set-check-state(CheckState.unchecked); }
         }
@@ -1036,22 +1037,22 @@ fn non_exclusive_button_groups_verify_members_reads_and_effects() {
     assert!(compiled.rust.to_string().contains("summarize_checks"));
     for (from, to, expected) in [
         (
-            "exclusive: false",
+            "exclusive <- false",
             "exclusive: root.choice-mode",
             "requires a literal bool",
         ),
         (
-            "Switch { group: checks",
+            "Switch { group <- checks",
             "RadioButton { group: checks",
             "requires an exclusive ButtonGroup",
         ),
         (
-            "exclusive: false;",
+            "exclusive <- false;",
             "exclusive: false; current-index: 0;",
             "require an exclusive ButtonGroup",
         ),
         (
-            "group: checks; text: \"Option\"",
+            "group <- checks; text <- \"Option\"",
             "group: checks; check-state: CheckState.checked; text: \"Option\"",
             "require writable check-state",
         ),
@@ -1061,7 +1062,7 @@ fn non_exclusive_button_groups_verify_members_reads_and_effects() {
             "cyclic property binding",
         ),
         (
-            "group: checks; text: \"Option\"",
+            "group <- checks; text <- \"Option\"",
             "group: checks; checked: checks.check-state == CheckState.checked",
             "cyclic property binding",
         ),
@@ -1105,10 +1106,10 @@ fn non_exclusive_button_groups_verify_members_reads_and_effects() {
 fn native_check_groups_reject_cycles_between_aggregate_checkboxes() {
     let source = r#"
         component App inherits Window {
-            outer := ButtonGroup { exclusive: false; }
-            inner := ButtonGroup { exclusive: false; }
-            CheckBox { group: outer; check-state <=> inner.check-state; }
-            CheckBox { group: inner; }
+            outer := ButtonGroup { exclusive <- false; }
+            inner := ButtonGroup { exclusive <- false; }
+            CheckBox { group <- outer; check-state <-> inner.check-state; }
+            CheckBox { group <- inner; }
         }
     "#;
     assert!(compile(source, "nested-check-groups.xr").is_ok());
@@ -1132,13 +1133,13 @@ fn native_check_groups_reject_cycles_between_aggregate_checkboxes() {
 fn button_group_membership_is_a_verified_reference_with_typed_selection() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> mode: once "quick";
-            in property <bool> show-detail: once true;
-            modes := ButtonGroup { current-value <=> root.mode; selected(value) => { } }
+            in-out property <string> mode: "quick";
+            in property <bool> show-detail: true;
+            modes := ButtonGroup { current-value <-> root.mode; selected(value) => { } }
             HorizontalLayout {
-                RadioButton { group: modes; value: "quick"; text: "Quick"; }
+                RadioButton { group <- modes; value <- "quick"; text <- "Quick"; }
                 VerticalLayout {
-                    if root.show-detail : RadioButton { group: modes; value: "detail"; text: "Detailed"; }
+                    if root.show-detail : RadioButton { group <- modes; value <- "detail"; text <- "Detailed"; }
                 }
             }
         }
@@ -1147,12 +1148,12 @@ fn button_group_membership_is_a_verified_reference_with_typed_selection() {
     assert_eq!(compiled.mlir.matches("\"xr.radio_group_ref\"").count(), 2);
     assert!(compiled.rust.to_string().contains("bind_button_group"));
     for (from, to, expected) in [
-        ("group: modes", "group: missing", "id of a ButtonGroup"),
-        ("group: modes", "group: \"modes\"", "id of a ButtonGroup"),
-        ("value: \"quick\"", "value: 1", "type mismatch"),
+        ("group <- modes", "group: missing", "id of a ButtonGroup"),
+        ("group <- modes", "group: \"modes\"", "id of a ButtonGroup"),
+        ("value <- \"quick\"", "value: 1", "type mismatch"),
         (
-            "current-value <=> root.mode;",
-            "current-value <=> root.mode; current-index: 0;",
+            "current-value <-> root.mode;",
+            "current-value <-> root.mode; current-index: 0;",
             "either current-index or current-value",
         ),
     ] {
@@ -1174,7 +1175,7 @@ fn button_group_membership_is_a_verified_reference_with_typed_selection() {
             .unwrap()
             .contains("at the component root")
     );
-    let double_group = "component App inherits Window { modes := ButtonGroup {} RadioGroup { RadioButton { group: modes; } } }";
+    let double_group = "component App inherits Window { modes := ButtonGroup {} RadioGroup { RadioButton { group <- modes; } } }";
     assert!(
         compile(double_group, "button-group.xr")
             .err()
@@ -1187,8 +1188,8 @@ fn button_group_membership_is_a_verified_reference_with_typed_selection() {
 fn native_window_status_and_commands_have_verified_types_and_scope() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> fullscreen-request: once true;
-            out property <bool> actual-fullscreen: root.full-screen;
+            in property <bool> fullscreen-request: true;
+            out property <bool> actual-fullscreen <- root.full-screen;
             callback update();
             update() => { root.maximize(); root.set-full-screen(root.fullscreen-request); }
             restore-button := Button { clicked => { root.restore(); } }
@@ -1249,10 +1250,10 @@ fn native_window_status_and_commands_have_verified_types_and_scope() {
 #[test]
 fn frameless_window_properties_are_typed_in_source_and_mlir() {
     let source = r#"component App inherits Window {
-        no-frame: true;
-        resizable: false;
-        resize-border-width: 8px;
-        WindowMoveArea { enabled: true; Text { text: "Header"; } }
+        no-frame <- true;
+        resizable <- false;
+        resize-border-width <- 8px;
+        WindowMoveArea { enabled <- true; Text { text <- "Header"; } }
     }"#;
     let compiled = compile(source, "frameless.xr").unwrap();
     assert!(compiled.mlir.contains("kind = \"WindowMoveArea\""));
@@ -1263,9 +1264,9 @@ fn frameless_window_properties_are_typed_in_source_and_mlir() {
             .contains("incorrect window chrome property or type")
     );
     for (from, to) in [
-        ("no-frame: true", "no-frame: 1"),
-        ("resize-border-width: 8px", "resize-border-width: 8%"),
-        ("enabled: true", "enabled: 1"),
+        ("no-frame <- true", "no-frame: 1"),
+        ("resize-border-width <- 8px", "resize-border-width: 8%"),
+        ("enabled <- true", "enabled: 1"),
     ] {
         let error = compile(&source.replace(from, to), "frameless.xr")
             .err()
@@ -1276,7 +1277,7 @@ fn frameless_window_properties_are_typed_in_source_and_mlir() {
 
 #[test]
 fn context_menu_opt_out_requires_a_typed_editor_property() {
-    let source = "component App inherits Window { LineEdit { context-menu-enabled: false; } }";
+    let source = "component App inherits Window { LineEdit { context-menu-enabled <- false; } }";
     let compiled = compile(source, "editor-menu.xr").unwrap();
     assert!(compiled.mlir.contains("name = \"context-menu-enabled\""));
     assert!(
@@ -1298,7 +1299,7 @@ fn compiler_errors_retain_source_diagnostics() {
     let Err(CompilerError::Diagnostics {
         filename,
         diagnostics,
-    }) = xrack_compiler::compile("component App inherits Window { width: true; }", "bad.xr")
+    }) = xrack_compiler::compile("component App inherits Window { width <- true; }", "bad.xr")
     else {
         panic!("expected a compiler diagnostic");
     };
@@ -1310,9 +1311,9 @@ fn compiler_errors_retain_source_diagnostics() {
 #[test]
 fn viewport_metrics_and_scroll_commands_are_typed_and_verified() {
     let source = r#"export component Demo inherits Window {
-        out property <length> offset: view.content-y;
+        out property <length> offset <- view.content-y;
         view := ScrollView {}
-        list := ListView { for item in 100 : Text { text: "Row " + item; } }
+        list := ListView { for item in 100 : Text { text <- "Row " + item; } }
         jump := Button { clicked() => {
             view.scroll-to(24px, 48px);
             list.position-view-at-index(40, ScrollAlignment.center);
@@ -1370,7 +1371,7 @@ fn viewport_metrics_and_scroll_commands_are_typed_and_verified() {
             .contains("scroll commands are not allowed in a pure callback")
     );
     let repeated = r#"component Demo inherits Window {
-        for item in 3 : ScrollView { content-width: self.visible-width; }
+        for item in 3 : ScrollView { content-width <- self.visible-width; }
     }"#;
     assert!(
         compile(repeated, "scroll.xr")
@@ -1443,9 +1444,9 @@ fn source_scroll_commands_capture_row_keys_and_require_virtual_view_owners() {
 fn source_index_queries_are_typed_and_reject_projection_cycles() {
     let source = r#"
         component App inherits Window {
-            in property <int> source: once 3;
-            out property <int> shown: list.view-index-for-source(root.source);
-            out property <int> original: table.source-index-for-view(root.shown);
+            in property <int> source: 3;
+            out property <int> shown <- list.view-index-for-source(root.source);
+            out property <int> original <- table.source-index-for-view(root.shown);
             list := ListView { for item in 5 : Text {} }
             table := TableView {
                 TableColumn {}
@@ -1500,17 +1501,17 @@ fn list_visibility_projects_record_models_for_lists_and_grids() {
         component App inherits Window {
             in property <[Entry]> entries;
             ListView {
-                row-visible-field: "flags.shown";
-                for entry in root.entries : Text { text: entry.label; }
+                row-visible-field <- "flags.shown";
+                for entry in root.entries : Text { text <- entry.label; }
             }
             GridView {
-                row-visible-field: "flags.shown";
-                for entry in root.entries : Text { text: entry.label; }
+                row-visible-field <- "flags.shown";
+                for entry in root.entries : Text { text <- entry.label; }
             }
             StandardListView {
-                row-visible-field: "flags.shown";
-                text-role: "label";
-                model: root.entries;
+                row-visible-field <- "flags.shown";
+                text-role <- "label";
+                model <- root.entries;
             }
         }
     "#;
@@ -1534,13 +1535,13 @@ fn tree_visibility_projects_a_constant_boolean_path_alongside_text_filtering() {
         struct Entry { key: int, parent: int, label: string, flags: Flags }
         component App inherits TreeView {
             in property <[Entry]> entries;
-            row-visible-field: "flags.shown";
-            filter-field: "label";
-            filter-text: "entry";
+            row-visible-field <- "flags.shown";
+            filter-field <- "label";
+            filter-text <- "entry";
             for entry in root.entries : TreeRow {
-                key: entry.key;
-                parent-key: entry.parent;
-                Text { text: entry.label; }
+                key <- entry.key;
+                parent-key <- entry.parent;
+                Text { text <- entry.label; }
             }
         }
     "#;
@@ -1565,14 +1566,14 @@ fn row_visibility_fields_are_constant_boolean_paths_in_both_table_kinds() {
         export component App inherits Window {
             in property <[Entry]> entries;
             StandardTableView {
-                row-visible-field: "flags.shown";
-                model: root.entries;
-                TableColumn { field: "title"; }
+                row-visible-field <- "flags.shown";
+                model <- root.entries;
+                TableColumn { field <- "title"; }
             }
             TableView {
-                row-visible-field: "flags.shown";
+                row-visible-field <- "flags.shown";
                 TableColumn {}
-                for entry in root.entries : TableRow { Text { text: entry.title; } }
+                for entry in root.entries : TableRow { Text { text <- entry.title; } }
             }
         }
     "#;
@@ -1611,9 +1612,9 @@ fn row_visibility_fields_are_constant_boolean_paths_in_both_table_kinds() {
 fn table_column_visibility_is_a_typed_binding() {
     let source = r#"
         component ColumnDemo inherits TableView {
-            in property <bool> show-detail: once true;
-            TableColumn { width: 120px; visible: root.show-detail; }
-            for item in 4 : TableRow { Text { text: "" + item; } }
+            in property <bool> show-detail: true;
+            TableColumn { width <- 120px; visible <- root.show-detail; }
+            for item in 4 : TableRow { Text { text <- "" + item; } }
         }
     "#;
     assert!(compile(source, "column-visibility.xr").is_ok());
@@ -1624,7 +1625,7 @@ fn table_column_visibility_is_a_typed_binding() {
         )
         .is_err()
     );
-    let source = source.replace(" visible: root.show-detail;", "");
+    let source = source.replace(" visible <- root.show-detail;", "");
     let raw = lower(&source, "column-visibility.xr");
     let invalid = raw.replace("name = \"width\"", "name = \"visible\"");
     assert!(
@@ -1639,8 +1640,8 @@ fn table_cell_positioning_has_typed_axes_and_a_table_owner() {
     let source = r#"struct Entry { label: string }
     export component Demo inherits Window {
         table := StandardTableView {
-            model: [Entry { label: "item" }];
-            TableColumn { field: "label"; }
+            model <- [Entry { label: "item" }];
+            TableColumn { field <- "label"; }
         }
         view := ScrollView {}
         callback jump();
@@ -1712,17 +1713,17 @@ fn custom_clipboard_parsers_require_a_pure_typed_projection_to_a_row_link() {
     let source = r#"
         struct Parsed { accepted: bool, value: string }
         component Demo inherits Window {
-            in-out property <[string]> names: once ["one"];
+            in-out property <[string]> names: ["one"];
             pure callback decode(string) -> Parsed;
             decode(raw) => { Parsed { accepted: raw != "", value: raw } }
             TableView {
-                pasteable: true;
-                TableColumn { title: "Name"; }
+                pasteable <- true;
+                TableColumn { title <- "Name"; }
                 for row[index] in root.names : TableRow {
                     HorizontalLayout {
                         Editor {
-                            value <=> row;
-                            clipboard-target: "value";
+                            value <-> row;
+                            clipboard-target <- "value";
                             clipboard-paste(raw) => { root.decode(raw) }
                         }
                     }
@@ -1736,7 +1737,7 @@ fn custom_clipboard_parsers_require_a_pure_typed_projection_to_a_row_link() {
     assert!(compiled.mlir.contains("target = \"value\""));
     for (from, to, expected) in [
         (
-            "value <=> row",
+            "value <-> row",
             "value: row",
             "must name an in-out property linked",
         ),
@@ -1748,7 +1749,7 @@ fn custom_clipboard_parsers_require_a_pure_typed_projection_to_a_row_link() {
         ("root.decode(raw)", "raw", "must return a record"),
         ("pure callback decode", "callback decode", "impure callback"),
         (
-            "clipboard-target: \"value\";",
+            "clipboard-target <- \"value\";",
             "",
             "requires clipboard-target",
         ),
@@ -1771,15 +1772,15 @@ fn custom_clipboard_parsers_require_a_pure_typed_projection_to_a_row_link() {
 #[test]
 fn row_component_delegates_share_typed_repeat_context_and_validate_clipboard_text() {
     let source = r#"component Demo inherits Window {
-        in-out property <[string]> names: once ["one"];
-        out property <int> committed: once -1;
+        in-out property <[string]> names: ["one"];
+        out property <int> committed: -1;
         TableView {
-            copyable: true;
-            TableColumn { title: "Name"; }
+            copyable <- true;
+            TableColumn { title <- "Name"; }
             for row[index] in root.names : TableRow {
                 Editor {
-                    value <=> row;
-                    clipboard-text: row;
+                    value <-> row;
+                    clipboard-text <- row;
                     submitted => { root.committed = index; }
                 }
             }
@@ -1794,7 +1795,7 @@ fn row_component_delegates_share_typed_repeat_context_and_validate_clipboard_tex
     assert!(compiled.mlir.contains("name = \"clipboard-text\""));
     assert!(compiled.rust.to_string().contains("ComponentRepeater"));
     assert!(
-        analyze(&source.replace("clipboard-text: row", "clipboard-text: index"))
+        analyze(&source.replace("clipboard-text <- row", "clipboard-text: index"))
             .unwrap_err()
             .contains("type mismatch")
     );
@@ -1821,26 +1822,26 @@ fn row_component_delegates_share_typed_repeat_context_and_validate_clipboard_tex
 #[test]
 fn table_copy_projections_are_typed_and_scoped_to_direct_cells() {
     let source = r#"component Demo inherits Window {
-        outside := Text { text: "Other"; }
+        outside := Text { text <- "Other"; }
         TableView {
-            copyable: true;
-            TableColumn { title: "Label"; }
+            copyable <- true;
+            TableColumn { title <- "Label"; }
             for row in 3 : TableRow {
-                Rectangle { clipboard-text: "Row " + row; Text { text: "Shown"; } }
+                Rectangle { clipboard-text <- "Row " + row; Text { text <- "Shown"; } }
             }
         }
     }"#;
     let compiled = compile(source, "table-copy.xr").unwrap();
     assert!(compiled.mlir.contains("name = \"clipboard-text\""));
     assert!(compiled.rust.to_string().contains("copy_table_text"));
-    let invalid = source.replace("clipboard-text: \"Row \" + row", "clipboard-text: row");
+    let invalid = source.replace("clipboard-text <- \"Row \" + row", "clipboard-text: row");
     assert!(
         compile(&invalid, "table-copy.xr")
             .err()
             .unwrap()
             .contains("type mismatch")
     );
-    let invalid = source.replace("text: \"Other\"", "clipboard-text: \"Other\"");
+    let invalid = source.replace("text <- \"Other\"", "clipboard-text: \"Other\"");
     assert!(
         compile(&invalid, "table-copy.xr")
             .err()
@@ -1859,13 +1860,13 @@ fn table_copy_projections_are_typed_and_scoped_to_direct_cells() {
 #[test]
 fn table_paste_compiles_writable_row_links_and_checks_the_flag_type() {
     let source = r#"component Demo inherits Window {
-        in-out property <[string]> names: once ["One", "Two"];
+        in-out property <[string]> names: ["One", "Two"];
         TableView {
-            row-height: 32px;
-            pasteable: true;
-            TableColumn { title: "Name"; }
+            row-height <- 32px;
+            pasteable <- true;
+            TableColumn { title <- "Name"; }
             for name in root.names : TableRow {
-                TableCell { text <=> name; }
+                TableCell { text <-> name; }
             }
         }
     }"#;
@@ -1875,7 +1876,7 @@ fn table_paste_compiles_writable_row_links_and_checks_the_flag_type() {
     let rust = compiled.rust.to_string();
     assert!(rust.contains("TableEditHistory"));
     assert!(rust.contains("replay_table_paste_at"));
-    let edit_only = source.replace("pasteable: true", "undoable: true");
+    let edit_only = source.replace("pasteable <- true", "undoable: true");
     let rust = compile(&edit_only, "table-history.xr")
         .unwrap()
         .rust
@@ -1892,7 +1893,7 @@ fn table_paste_compiles_writable_row_links_and_checks_the_flag_type() {
         .unwrap()
         .contains("type mismatch")
     );
-    let invalid = source.replace("pasteable: true", "pasteable: 1");
+    let invalid = source.replace("pasteable <- true", "pasteable: 1");
     assert!(
         compile(&invalid, "table-paste.xr")
             .err()
@@ -1918,13 +1919,13 @@ fn table_paste_compiles_writable_row_links_and_checks_the_flag_type() {
 fn round_button_and_tool_separator_validate_geometry_and_actions() {
     let source = r#"
         component Ring inherits RoundButton {
-            radius: 6px;
+            radius <- 6px;
             clicked() => {}
         }
         component Demo inherits Window {
-            command := Action { text: "Grid"; }
-            RoundButton { radius: 4px; action: command; icon-only: true; }
-            ToolSeparator { orientation: horizontal; stroke-width: 2px; }
+            command := Action { text <- "Grid"; }
+            RoundButton { radius <- 4px; action <- command; icon-only <- true; }
+            ToolSeparator { orientation <- horizontal; stroke-width <- 2px; }
         }
     "#;
     let compiled = compile(source, "round-tools.xr").unwrap();
@@ -1932,8 +1933,8 @@ fn round_button_and_tool_separator_validate_geometry_and_actions() {
     assert!(compiled.mlir.contains("kind = \"ToolSeparator\""));
     assert!(compiled.mlir.contains("xr.action_ref"));
     for (from, to, expected) in [
-        ("radius: 4px", "radius: false", "type mismatch"),
-        ("stroke-width: 2px;", "Button {}", "cannot contain child"),
+        ("radius <- 4px", "radius: false", "type mismatch"),
+        ("stroke-width <- 2px;", "Button {}", "cannot contain child"),
     ] {
         let error = analyze(&source.replace(from, to)).unwrap_err();
         assert!(error.contains(expected), "{error}");
@@ -1950,13 +1951,13 @@ fn round_button_and_tool_separator_validate_geometry_and_actions() {
 fn application_window_supports_native_commands_and_validates_its_bands() {
     let source = r#"
         component Notes inherits ApplicationWindow {
-            PageFooter { height: 20px; }
+            PageFooter { height <- 20px; }
         }
         component Demo inherits ApplicationWindow {
-            padding-left: 16px;
-            out property <length> content: root.available-width;
+            padding-left <- 16px;
+            out property <length> content <- root.available-width;
             close-requested() => { true }
-            MenuBar { Menu { title: "File"; } }
+            MenuBar { Menu { title <- "File"; } }
             PageHeader { zoom := Button { clicked() => { root.maximize(); } } }
             secondary := SecondaryWindow { Notes {} }
         }
@@ -1971,7 +1972,11 @@ fn application_window_supports_native_commands_and_validates_its_bands() {
             .contains("application_window = true")
     );
     for (from, to, expected) in [
-        ("padding-left: 16px", "padding-left: false", "type mismatch"),
+        (
+            "padding-left <- 16px",
+            "padding-left: false",
+            "type mismatch",
+        ),
         (
             "PageHeader { zoom",
             "PageHeader {} PageHeader { zoom",
@@ -1983,12 +1988,12 @@ fn application_window_supports_native_commands_and_validates_its_bands() {
             "only one MenuBar",
         ),
         (
-            "PageFooter { height: 20px; }",
+            "PageFooter { height <- 20px; }",
             "ApplicationWindow {}",
             "requires a component root",
         ),
         (
-            "padding-left: 16px",
+            "padding-left <- 16px",
             "padding-left: root.available-width",
             "layout feedback",
         ),
@@ -2002,20 +2007,20 @@ fn application_window_supports_native_commands_and_validates_its_bands() {
 fn pane_and_frame_validate_padding_available_size_and_layout_feedback() {
     let source = r#"
         component Demo inherits Window {
-            out property <length> inner: frame.available-width;
+            out property <length> inner <- frame.available-width;
             pane := Pane {
-                content-width: 120px; padding-left: 8px;
-                frame := ControlFrame { padding: 4px; clip: true; border-radius: 5px; }
+                content-width <- 120px; padding-left <- 8px;
+                frame := ControlFrame { padding <- 4px; clip <- true; border-radius <- 5px; }
             }
         }
     "#;
     let compiled = compile(source, "pane.xr").unwrap();
     assert!(compiled.mlir.contains("value = \"available-width\""));
     for (from, to, expected) in [
-        ("padding-left: 8px", "padding-left: true", "type mismatch"),
-        ("padding-left: 8px", "available-width: 8px", "read-only"),
+        ("padding-left <- 8px", "padding-left: true", "type mismatch"),
+        ("padding-left <- 8px", "available-width: 8px", "read-only"),
         (
-            "padding: 4px",
+            "padding <- 4px",
             "padding: self.available-width",
             "layout feedback",
         ),
@@ -2034,14 +2039,14 @@ fn pane_and_frame_validate_padding_available_size_and_layout_feedback() {
 #[test]
 fn layout_geometry_reads_are_typed_and_only_flow_into_later_layout_phases() {
     let source = r#"component Demo inherits Window {
-        out property <length> measured: panel.layout-width;
-        out property <bool> ready: panel.layout-ready;
+        out property <length> measured <- panel.layout-width;
+        out property <bool> ready <- panel.layout-ready;
         pure callback metric() -> length;
         metric => { root.measured }
-        panel := Rectangle { width: 120px; height: 40px; }
-        label := Text { width: 280px; height: 20px; text: "width " + (root.metric() / 1px); }
+        panel := Rectangle { width <- 120px; height <- 40px; }
+        label := Text { width <- 280px; height <- 20px; text <- "width " + (root.metric() / 1px); }
         button := Button {
-            details := PopupWindow { width: panel.layout-width; height: 36px; }
+            details := PopupWindow { width <- panel.layout-width; height <- 36px; }
         }
     }"#;
     let compiled = compile(source, "geometry.xr").unwrap();
@@ -2053,27 +2058,30 @@ fn layout_geometry_reads_are_typed_and_only_flow_into_later_layout_phases() {
             .contains("GeometryMetric :: LayoutWidth")
     );
     for (from, to) in [
-        ("width: 120px", "width: root.metric()"),
-        ("width: 280px; height: 20px;", ""),
-        ("width: panel.layout-width;", "width: details.layout-width;"),
+        ("width <- 120px", "width: root.metric()"),
+        ("width <- 280px; height <- 20px;", ""),
+        (
+            "width <- panel.layout-width;",
+            "width: details.layout-width;",
+        ),
     ] {
         let error = analyze(&source.replace(from, to)).unwrap_err();
         assert!(error.contains("layout feedback"), "{error}");
     }
     let cross_component = r#"component App inherits Window {
-        panel := Rectangle { width: 120px; }
-        peer := Peer { size: panel.layout-width; }
+        panel := Rectangle { width <- 120px; }
+        peer := Peer { size <- panel.layout-width; }
     }
     component Peer inherits Rectangle {
         in property <length> size;
-        width: root.size;
+        width <- root.size;
     }"#;
     assert!(
         analyze(cross_component)
             .unwrap_err()
             .contains("layout feedback")
     );
-    let read_only = source.replace("width: 120px;", "layout-width: 120px;");
+    let read_only = source.replace("width <- 120px;", "layout-width: 120px;");
     assert!(analyze(&read_only).unwrap_err().contains("read-only"));
     let raw = lower(source, "geometry.xr");
     let malformed = raw.replace(
@@ -2105,8 +2113,8 @@ fn editor_commands_keep_order_and_verify_operands_and_purity() {
             entry.set-selection-offsets(anchor, caret);
             entry.paste();
         }
-        entry := TextArea { text: "任务"; }
-        other := Button { text: "编辑"; }
+        entry := TextArea { text <- "任务"; }
+        other := Button { text <- "编辑"; }
     }"#;
     let compiled = compile(source, "editor-commands.xr").unwrap();
     let focus = compiled.mlir.find("\"xr.focus_command\"").unwrap();
@@ -2168,20 +2176,20 @@ fn projected_row_heights_require_constant_length_fields_in_source_and_mlir() {
         property <[Metric]> rows;
         property <string> field-name: "height";
         StandardTableView {
-            model: root.rows;
-            row-height-field: "height";
-            TableColumn { field: "label"; }
+            model <- root.rows;
+            row-height-field <- "height";
+            TableColumn { field <- "label"; }
         }
-        StandardListView { model: root.rows; text-role: "label"; row-height-field: "height"; }
-        ListView { row-height-field: "height"; for item in root.rows : Text { text: item.label; } }
+        StandardListView { model <- root.rows; text-role <- "label"; row-height-field <- "height"; }
+        ListView { row-height-field <- "height"; for item in root.rows : Text { text <- item.label; } }
         TableView {
-            row-height-field: "height";
-            TableColumn { title: "Name"; }
-            for item in root.rows : TableRow { Text { text: item.label; } }
+            row-height-field <- "height";
+            TableColumn { title <- "Name"; }
+            for item in root.rows : TableRow { Text { text <- item.label; } }
         }
         TreeView {
-            row-height-field: "height";
-            for item in root.rows : TreeRow { key: item.id; parent-key: item.parent; Text { text: item.label; } }
+            row-height-field <- "height";
+            for item in root.rows : TreeRow { key <- item.id; parent-key <- item.parent; Text { text <- item.label; } }
         }
     }"#;
     let compiled = compile(source, "height-field.xr").unwrap();
@@ -2192,16 +2200,16 @@ fn projected_row_heights_require_constant_length_fields_in_source_and_mlir() {
     assert!(compiled.rust.to_string().contains("RowHeightProjection"));
     for (from, to, diagnostic) in [
         (
-            "row-height-field: \"height\"",
+            "row-height-field <- \"height\"",
             "row-height-field: \"label\"",
             "length field",
         ),
         (
-            "row-height-field: \"height\"",
+            "row-height-field <- \"height\"",
             "row-height-field: root.field-name",
             "constant string",
         ),
-        ("model: root.rows", "model: [\"text\"]", "record model"),
+        ("model <- root.rows", "model: [\"text\"]", "record model"),
     ] {
         let invalid = source.replace(from, to);
         assert!(
@@ -2235,9 +2243,9 @@ fn table_row_heights_lower_to_a_typed_layout_effect() {
     let source = r#"component Demo inherits Window {
         other := Rectangle {}
         table := TableView {
-            resizable-rows: true;
-            TableColumn { title: "Name"; }
-            for entry in 3 : TableRow { Text { text: "Row " + entry; } }
+            resizable-rows <- true;
+            TableColumn { title <- "Name"; }
+            for entry in 3 : TableRow { Text { text <- "Row " + entry; } }
         }
         resize := Button { clicked() => { table.set-row-height(1, 64px); } }
     }"#;
@@ -2266,15 +2274,15 @@ fn frozen_columns_are_typed_on_tables_only() {
     component Demo inherits Window {
         property <[Entry]> rows;
         StandardTableView {
-            model: root.rows;
-            enabled: true;
-            frozen-columns: 1;
-            TableColumn { field: "label"; }
+            model <- root.rows;
+            enabled <- true;
+            frozen-columns <- 1;
+            TableColumn { field <- "label"; }
         }
     }"#;
     let compiled = compile(source, "frozen-columns.xr").unwrap();
     assert!(compiled.mlir.contains("name = \"frozen-columns\""));
-    let invalid = source.replace(": 1", ": true");
+    let invalid = source.replace(" <- 1", " <- true");
     assert!(
         compile(&invalid, "frozen-columns.xr")
             .err()
@@ -2290,7 +2298,7 @@ fn frozen_columns_are_typed_on_tables_only() {
     );
     assert!(
         compile(
-            "component Demo inherits Window { ScrollView { frozen-columns: 1; } }",
+            "component Demo inherits Window { ScrollView { frozen-columns <- 1; } }",
             "frozen-columns.xr"
         )
         .err()
@@ -2304,11 +2312,11 @@ fn moving_table_columns_is_a_typed_effect_and_event() {
     let source = r#"component Demo inherits Window {
         outside := Rectangle {}
         table := TableView {
-            movable-columns: true;
-            drag-select: true;
+            movable-columns <- true;
+            drag-select <- true;
             column-moved(column, visual) => {}
-            TableColumn { title: "A"; }
-            TableColumn { title: "B"; }
+            TableColumn { title <- "A"; }
+            TableColumn { title <- "B"; }
             for value in 3 : TableRow { Text {} Text {} }
         }
         move := Button { clicked() => { table.move-column(0, 1); } }
@@ -2319,11 +2327,11 @@ fn moving_table_columns_is_a_typed_effect_and_event() {
     assert!(compiled.mlir.contains("name = \"drag-select\""));
     for (from, to, error) in [
         (
-            "movable-columns: true",
+            "movable-columns <- true",
             "movable-columns: 2",
             "type mismatch",
         ),
-        ("drag-select: true", "drag-select: 2", "type mismatch"),
+        ("drag-select <- true", "drag-select: 2", "type mismatch"),
         (
             "column-moved(column, visual)",
             "column-moved(column)",
@@ -2350,7 +2358,7 @@ fn moving_table_columns_is_a_typed_effect_and_event() {
 
 #[test]
 fn scroll_anchoring_is_a_boolean_for_virtual_views() {
-    let source = "component Demo inherits Window { ListView { preserve-scroll-anchor: true; for row in 3 : Rectangle {} } }";
+    let source = "component Demo inherits Window { ListView { preserve-scroll-anchor <- true; for row in 3 : Rectangle {} } }";
     let compiled = compile(source, "anchor.xr").unwrap();
     assert!(compiled.mlir.contains("name = \"preserve-scroll-anchor\""));
     assert!(compiled.rust.to_string().contains("ListRowLocator"));
@@ -2362,7 +2370,7 @@ fn scroll_anchoring_is_a_boolean_for_virtual_views() {
             .contains("type mismatch")
     );
     let raw = lower(
-        "component Demo inherits Window { StandardListView { preserve-scroll-anchor: true; } }",
+        "component Demo inherits Window { StandardListView { preserve-scroll-anchor <- true; } }",
         "anchor.xr",
     );
     let invalid = raw.replace("kind = \"StandardListView\"", "kind = \"ScrollView\"");
@@ -2371,7 +2379,7 @@ fn scroll_anchoring_is_a_boolean_for_virtual_views() {
             .unwrap_err()
             .contains("scroll anchoring requires a boolean on a virtual view")
     );
-    let wrong = "component Demo inherits Window { ScrollView { preserve-scroll-anchor: true; } }";
+    let wrong = "component Demo inherits Window { ScrollView { preserve-scroll-anchor <- true; } }";
     assert!(
         compile(wrong, "anchor.xr")
             .err()
@@ -2382,7 +2390,8 @@ fn scroll_anchoring_is_a_boolean_for_virtual_views() {
 
 #[test]
 fn mouse_drag_pan_is_a_boolean_viewport_binding() {
-    let source = "component Demo inherits Window { ScrollView { mouse-drag-pan-enabled: true; } }";
+    let source =
+        "component Demo inherits Window { ScrollView { mouse-drag-pan-enabled <- true; } }";
     let compiled = compile(source, "mouse-pan.xr").unwrap();
     assert!(compiled.mlir.contains("name = \"mouse-drag-pan-enabled\""));
     let wrong_type = source.replace("true", "12px");
@@ -2404,9 +2413,9 @@ fn mouse_drag_pan_is_a_boolean_viewport_binding() {
 #[test]
 fn viewport_offset_bindings_require_writable_lengths_and_reject_feedback_cycles() {
     let source = r#"export component Demo inherits Window {
-        in-out property <length> shared: once -24px;
-        first := ScrollView { content-y <=> root.shared; }
-        second := ScrollView { content-y: root.shared; }
+        in-out property <length> shared: -24px;
+        first := ScrollView { content-y <-> root.shared; }
+        second := ScrollView { content-y <- root.shared; }
     }"#;
     let compiled = compile(source, "offset-link.xr").unwrap();
     assert!(compiled.mlir.contains("\"xr.control_link\""));
@@ -2414,18 +2423,18 @@ fn viewport_offset_bindings_require_writable_lengths_and_reject_feedback_cycles(
     for (from, to, diagnostic) in [
         ("in-out property", "in property", "read-only"),
         (
-            "<length> shared: once -24px",
-            "<int> shared: once -24",
+            "<length> shared: -24px",
+            "<int> shared: -24",
             "writable length",
         ),
         (
-            "content-y <=> root.shared;",
-            "content-x <=> root.shared; content-y <=> root.shared;",
+            "content-y <-> root.shared;",
+            "content-x <-> root.shared; content-y <-> root.shared;",
             "distinct writable",
         ),
         ("-24px", "first.content-y", "cyclic property binding"),
         (
-            "content-y: root.shared;",
+            "content-y <- root.shared;",
             "content-y: self.content-y;",
             "cyclic property binding",
         ),
@@ -2450,7 +2459,7 @@ fn viewport_offset_bindings_require_writable_lengths_and_reject_feedback_cycles(
 #[test]
 fn scrolled_is_a_zero_argument_viewport_event_in_source_and_mlir() {
     let source = r#"export component Demo inherits ScrollView {
-        out property <length> last: once 0px;
+        out property <length> last: 0px;
         scrolled() => { root.last = self.content-y; }
     }"#;
     let compiled = compile(source, "scrolled.xr").unwrap();
@@ -2488,11 +2497,11 @@ fn scrolled_is_a_zero_argument_viewport_event_in_source_and_mlir() {
 #[test]
 fn focus_reads_are_read_only_and_events_have_typed_reasons() {
     let source = r#"export component App inherits Window {
-        out property <bool> observing: pane.focus-within;
+        out property <bool> observing <- pane.focus-within;
         pane := FocusScope {
-            background: self.focus-within ? #fff : #000;
+            background <- self.focus-within ? #fff : #000;
             focus-within-changed(active, reason) => {}
-            field := LineEdit { background: self.has-focus ? #123 : #456; }
+            field := LineEdit { background <- self.has-focus ? #123 : #456; }
         }
     }"#;
     let compiled = compile(source, "focus-state.xr").unwrap();
@@ -2500,7 +2509,7 @@ fn focus_reads_are_read_only_and_events_have_typed_reasons() {
     assert!(compiled.mlir.contains("FocusReason"));
     assert!(compiled.rust.to_string().contains("FocusHandler :: Within"));
     let bad = source.replace(
-        "background: self.focus-within ? #fff : #000;",
+        "background <- self.focus-within ? #fff : #000;",
         "focus-within: false;",
     );
     assert!(
@@ -2564,11 +2573,11 @@ fn focus_scope_keys_have_typed_fields_and_a_verified_result() {
 fn wheel_enabled_requires_a_boolean_on_a_numeric_control() {
     let source = r#"
         component Demo inherits Window {
-            Slider { wheel-enabled: true; }
-            RangeSlider { wheel-enabled: true; }
-            Dial { wheel-enabled: true; }
-            SpinBox { wheel-enabled: true; }
-            DoubleSpinBox { wheel-enabled: true; }
+            Slider { wheel-enabled <- true; }
+            RangeSlider { wheel-enabled <- true; }
+            Dial { wheel-enabled <- true; }
+            SpinBox { wheel-enabled <- true; }
+            DoubleSpinBox { wheel-enabled <- true; }
         }
     "#;
     assert!(compile(source, "control-wheel.xr").is_ok());
@@ -2593,7 +2602,7 @@ fn wheel_handler_checks_payload_fields_result_and_orientation() {
             out property <length> moved;
             out property <bool> primary;
             wheel-area := WheelHandler {
-                orientation: vertical;
+                orientation <- vertical;
                 wheel(event) => {
                     root.moved = event.delta-y;
                     root.primary = event.modifiers.primary;
@@ -2614,7 +2623,7 @@ fn wheel_handler_checks_payload_fields_result_and_orientation() {
             "type mismatch",
         ),
         (
-            "orientation: vertical",
+            "orientation <- vertical",
             "orientation: false",
             "type mismatch",
         ),
@@ -2643,13 +2652,13 @@ fn wheel_handler_checks_payload_fields_result_and_orientation() {
 fn touch_points_repeat_with_typed_fields_and_a_read_only_source() {
     let source = r#"
         component Demo inherits Window {
-            out property <[TouchPoint]> points: area.touch-points;
+            out property <[TouchPoint]> points <- area.touch-points;
             area := TouchArea {
-                multi-touch: true;
+                multi-touch <- true;
                 for point in root.points : Rectangle {
-                    x: point.x;
-                    y: point.start-y;
-                    visible: point.inside;
+                    x <- point.x;
+                    y <- point.start-y;
+                    visible <- point.inside;
                 }
             }
         }
@@ -2659,7 +2668,7 @@ fn touch_points_repeat_with_typed_fields_and_a_read_only_source() {
     assert!(compiled.mlir.contains("xr.touch_point_field"));
     for (from, to, expected) in [
         ("point.start-y", "point.missing", "has no field"),
-        ("multi-touch: true;", "touch-points: [];", "read-only"),
+        ("multi-touch <- true;", "touch-points: [];", "read-only"),
     ] {
         let error = compile(&source.replace(from, to), "touch-points.xr")
             .err()
@@ -2679,9 +2688,9 @@ fn touch_area_multitouch_fields_are_verified() {
     let source = r#"
         component Demo inherits Window {
             out property <int> id;
-            out property <int> count: area.active-touch-count;
+            out property <int> count <- area.active-touch-count;
             area := TouchArea {
-                multi-touch: true;
+                multi-touch <- true;
                 pointer-event(event) => { root.id = event.touch-finger-id; }
             }
         }
@@ -2690,7 +2699,7 @@ fn touch_area_multitouch_fields_are_verified() {
     assert!(compiled.mlir.contains("value = \"touch-finger-id\""));
     assert!(compiled.mlir.contains("value = \"active-touch-count\""));
     let error = compile(
-        &source.replace("multi-touch: true", "multi-touch: 1"),
+        &source.replace("multi-touch <- true", "multi-touch: 1"),
         "multi-touch.xr",
     )
     .err()
@@ -2708,9 +2717,9 @@ fn touch_area_multitouch_fields_are_verified() {
 fn touch_area_accepted_buttons_is_a_typed_set() {
     let source = r#"
         component Demo inherits Window {
-            in property <bool> right-only: once true;
-            out property <PointerButtons> buttons: root.right-only ? [secondary] : [];
-            area := TouchArea { accepted-buttons: root.buttons; }
+            in property <bool> right-only: true;
+            out property <PointerButtons> buttons <- root.right-only ? [secondary] : [];
+            area := TouchArea { accepted-buttons <- root.buttons; }
         }
     "#;
     let compiled = compile(source, "touch-buttons.xr").unwrap();
@@ -2739,7 +2748,7 @@ fn touch_area_press_and_hold_verifies_interval_and_callback() {
         component Demo inherits Window {
             out property <length> start-x;
             area := TouchArea {
-                press-and-hold-interval: 650;
+                press-and-hold-interval <- 650;
                 press-and-hold() => { root.start-x = self.pressed-x; }
             }
         }
@@ -2820,9 +2829,9 @@ fn touch_area_scroll_event_uses_the_wheel_payload_and_result() {
 fn touch_area_reads_are_typed_read_only_and_independent_of_handlers() {
     let source = r#"
         component Demo inherits Window {
-            out property <bool> held: area.pressed && area.contains-press;
-            out property <bool> hovered: area.has-hover;
-            out property <length> position: area.mouse-x + area.pressed-y;
+            out property <bool> held <- area.pressed && area.contains-press;
+            out property <bool> hovered <- area.has-hover;
+            out property <length> position <- area.mouse-x + area.pressed-y;
             area := TouchArea {}
         }
     "#;
@@ -2897,11 +2906,11 @@ fn pointer_event_checks_payload_and_handler_type() {
 fn hover_handler_verifies_read_only_metrics_and_passive_events() {
     let source = r#"
         component Demo inherits Window {
-            out property <bool> inside: area.hovered;
-            out property <length> position: area.hover-x;
-            out property <int> entries: once 0;
+            out property <bool> inside <- area.hovered;
+            out property <length> position <- area.hover-x;
+            out property <int> entries: 0;
             area := HoverHandler {
-                blocking: true;
+                blocking <- true;
                 entered() => { root.entries += 1; }
             }
         }
@@ -2910,8 +2919,8 @@ fn hover_handler_verifies_read_only_metrics_and_passive_events() {
     assert!(output.mlir.contains("xr.hover_read"));
     assert!(output.rust.to_string().contains("HoverHandle"));
     for (from, to, expected) in [
-        ("blocking: true", "blocking: 1", "type mismatch"),
-        ("blocking: true", "hovered: true", "read-only"),
+        ("blocking <- true", "blocking: 1", "type mismatch"),
+        ("blocking <- true", "hovered: true", "read-only"),
         ("entered()", "entered(event)", "takes no parameters"),
     ] {
         let error = compile(&source.replace(from, to), "hover.xr")
@@ -2938,15 +2947,15 @@ fn hover_handler_verifies_read_only_metrics_and_passive_events() {
 fn cursor_shape_requires_a_typed_value_on_a_pointer_handler() {
     let source = r#"
         component Demo inherits Window {
-            in property <CursorShape> shape: once CursorShape.crosshair;
-            area := HoverHandler { cursor-shape: root.shape; }
-            touch := TouchArea { cursor-shape: grab; }
+            in property <CursorShape> shape: CursorShape.crosshair;
+            area := HoverHandler { cursor-shape <- root.shape; }
+            touch := TouchArea { cursor-shape <- grab; }
         }
     "#;
     let output = compile(source, "cursor.xr").unwrap();
     assert!(output.mlir.contains("!xr.cursorshape"));
     assert!(output.rust.to_string().contains("CursorShape :: Crosshair"));
-    let invalid = source.replace("cursor-shape: grab", "cursor-shape: true");
+    let invalid = source.replace("cursor-shape <- grab", "cursor-shape: true");
     assert!(
         compile(&invalid, "cursor.xr")
             .err()
@@ -2976,8 +2985,8 @@ fn focus_scope_commands_and_initial_targets_are_checked_in_both_stages() {
     let source = r#"export component App inherits Window {
         outside := Button {}
         pane := FocusScope {
-            initial-focus: query;
-            focus-on-click: false;
+            initial-focus <- query;
+            focus-on-click <- false;
             query := LineEdit {}
         }
         jump := Button { clicked() => { pane.focus(); } }
@@ -2998,7 +3007,7 @@ fn focus_scope_commands_and_initial_targets_are_checked_in_both_stages() {
             .unwrap_err()
             .contains("requires a descendant")
     );
-    let invalid = source.replace("focus-on-click: false", "focus-on-click: 5");
+    let invalid = source.replace("focus-on-click <- false", "focus-on-click: 5");
     assert!(
         compile(&invalid, "focus.xr")
             .err()
@@ -3027,8 +3036,8 @@ fn focus_scope_commands_and_initial_targets_are_checked_in_both_stages() {
 #[test]
 fn states_use_scoped_selectors_and_reject_invalid_property_changes() {
     let source = r#"export component App inherits Window {
-        in property <bool> open: once false;
-        panel := Rectangle { width: 48px; visible: true; }
+        in property <bool> open: false;
+        panel := Rectangle { width <- 48px; visible <- true; }
         states [ expanded when root.open: {
             panel.width: 96px;
             panel.visible: false;
@@ -3060,12 +3069,12 @@ fn states_use_scoped_selectors_and_reject_invalid_property_changes() {
             "animatable property",
         ),
         (
-            source.replace("width: 48px;", ""),
+            source.replace("width <- 48px;", ""),
             "requires a base binding",
         ),
         (
             source.replace(
-                "width: 48px;",
+                "width <- 48px;",
                 "width: 48px; animate width { duration: 10ms; }",
             ),
             "already has a property animation",
@@ -3076,7 +3085,7 @@ fn states_use_scoped_selectors_and_reject_invalid_property_changes() {
     }
     let two_way = r#"component App inherits Window {
         in-out property <string> value;
-        editor := LineEdit { text <=> root.value; }
+        editor := LineEdit { text <-> root.value; }
         states [ alert when true: { editor.text: "alert"; } ]
     }"#;
     assert!(
@@ -3091,15 +3100,15 @@ fn states_use_scoped_selectors_and_reject_invalid_property_changes() {
 fn instance_states_verify_public_inputs_layout_and_composition_dependencies() {
     let source = r#"
         component Badge inherits Rectangle {
-            in-out property <string> caption: once "Ready";
-            out property <string> reported: root.caption;
-            in property <int> count: once 0;
-            Label { text: root.caption; }
+            in-out property <string> caption: "Ready";
+            out property <string> reported <- root.caption;
+            in property <int> count: 0;
+            Label { text <- root.caption; }
         }
         export component App inherits Window {
             in-out property <string> caption;
             in property <bool> warning;
-            badge := Badge { caption: root.caption; width: 100px; }
+            badge := Badge { caption <- root.caption; width <- 100px; }
             states [ attention when root.warning: {
                 badge.caption: "Warning";
                 badge.width: 160px;
@@ -3122,8 +3131,8 @@ fn instance_states_verify_public_inputs_layout_and_composition_dependencies() {
         ),
         (
             source.replace(
-                "caption: root.caption; width",
-                "caption <=> root.caption; width",
+                "caption <- root.caption; width",
+                "caption <-> root.caption; width",
             ),
             "cannot override two-way",
         ),
@@ -3162,12 +3171,12 @@ fn a_two_way_input_cannot_be_routed_to_an_instance_state_through_an_alias() {
     let source = r#"
         component Badge inherits Rectangle { in-out property <string> caption; }
         component Frame inherits Rectangle {
-            in-out property <string> caption <=> badge.caption;
+            in-out property <string> caption <-> badge.caption;
             badge := Badge { states [ active when true: { caption: "Warning"; } ] }
         }
         component App inherits Window {
             in-out property <string> caption;
-            Frame { caption <=> root.caption; }
+            Frame { caption <-> root.caption; }
         }
     "#;
     let error = compile(source, "instance-state-link.xr").err().unwrap();
@@ -3180,9 +3189,9 @@ fn a_two_way_input_cannot_be_routed_to_an_instance_state_through_an_alias() {
 #[test]
 fn grouped_animation_has_typed_timing_and_an_enabled_operand() {
     let source = r#"export component App inherits Window {
-        in property <bool> motion: once true;
+        in property <bool> motion: true;
         Rectangle {
-            x: 20px; width: 120px;
+            x <- 20px; width <- 120px;
             animate x, width { duration: 400ms; delay: 120ms; easing: cubic-bezier(0.2, -0.3, 0.8, 1.2); enabled: root.motion; }
         }
     }"#;
@@ -3234,13 +3243,13 @@ fn grouped_animation_has_typed_timing_and_an_enabled_operand() {
 #[test]
 fn drag_areas_verify_action_types_and_generate_typed_event_routes() {
     let source = r#"export component App inherits Window {
-        out property <DragAction> result: once none;
+        out property <DragAction> result: none;
         source := DragArea {
-            data: "ticket"; drag-key: "tasks"; allow-move: true;
+            data <- "ticket"; drag-key <- "tasks"; allow-move <- true;
             drag-finished(action) => { root.result = action; }
         }
         target := DropArea {
-            drop-action: move;
+            drop-action <- move;
             dropped(data, action) => { root.result = action; }
         }
     }"#;
@@ -3252,7 +3261,7 @@ fn drag_areas_verify_action_types_and_generate_typed_event_routes() {
             .to_string()
             .contains(r#"("dropped" , :: xrack_runtime :: DragArguments :: Data"#)
     );
-    let invalid = source.replace("drop-action: move", "drop-action: true");
+    let invalid = source.replace("drop-action <- move", "drop-action: true");
     assert!(
         compile(&invalid, "drag.xr")
             .err()
@@ -3277,16 +3286,16 @@ fn drag_areas_verify_action_types_and_generate_typed_event_routes() {
 #[test]
 fn accessible_heading_level_requires_an_integer_on_plain_text() {
     let source = r#"export component App inherits Window {
-        in property <int> heading-level: once 2;
-        Text { text: "Maintenance"; accessible-heading-level: root.heading-level; }
-        Label { text: "Overview"; accessible-heading-level: 1; }
+        in property <int> heading-level: 2;
+        Text { text <- "Maintenance"; accessible-heading-level <- root.heading-level; }
+        Label { text <- "Overview"; accessible-heading-level <- 1; }
     }"#;
     let compiled = compile(source, "headings.xr").unwrap();
     assert!(compiled.mlir.contains("accessible-heading-level"));
     for invalid in [
         source.replace("Text {", "Button {"),
         source.replace(
-            "accessible-heading-level: 1",
+            "accessible-heading-level <- 1",
             "accessible-heading-level: true",
         ),
     ] {
@@ -3306,12 +3315,12 @@ fn accessible_live_requires_a_supported_priority_on_plain_text() {
     let source = r#"export component App inherits Window {
         in property <AccessibleLive> priority;
         Text {
-            text: "Connection lost";
-            accessible-live: root.priority == AccessibleLive.off ? assertive : root.priority;
+            text <- "Connection lost";
+            accessible-live <- root.priority == AccessibleLive.off ? assertive : root.priority;
         }
         Label {
-            text: "Upload complete";
-            accessible-live: polite;
+            text <- "Upload complete";
+            accessible-live <- polite;
         }
     }"#;
     let compilation = compile(source, "live-region.xr").unwrap();
@@ -3329,7 +3338,7 @@ fn accessible_live_requires_a_supported_priority_on_plain_text() {
             .unwrap_err()
             .contains("accessible-live")
     );
-    let invalid = source.replace("accessible-live: polite", "accessible-live: urgent");
+    let invalid = source.replace("accessible-live <- polite", "accessible-live: urgent");
     assert!(compile(&invalid, "live-region.xr").is_err());
     let invalid = source.replace("Label", "Button");
     assert!(compile(&invalid, "live-region.xr").is_err());
@@ -3339,11 +3348,11 @@ fn accessible_live_requires_a_supported_priority_on_plain_text() {
 fn pull_to_refresh_has_boolean_properties_and_a_zero_argument_handler() {
     let source = r#"
         export component App inherits Window {
-            out property <int> requests: once 0;
+            out property <int> requests: 0;
             feed := ScrollView {
-                content-height: 320px;
-                pull-to-refresh: true;
-                refreshing: root.requests > 0;
+                content-height <- 320px;
+                pull-to-refresh <- true;
+                refreshing <- root.requests > 0;
                 refresh-requested() => { root.requests += 1; }
             }
         }
@@ -3352,7 +3361,7 @@ fn pull_to_refresh_has_boolean_properties_and_a_zero_argument_handler() {
     for name in ["pull-to-refresh", "refreshing", "refresh-requested"] {
         assert!(compiled.mlir.contains(name), "{name}");
     }
-    let invalid = source.replace("pull-to-refresh: true", "pull-to-refresh: 1");
+    let invalid = source.replace("pull-to-refresh <- true", "pull-to-refresh: 1");
     assert!(compile(&invalid, "refresh.xr").is_err());
     let invalid = source.replace("refresh-requested()", "refresh-requested(reason)");
     assert!(compile(&invalid, "refresh.xr").is_err());
@@ -3372,7 +3381,7 @@ fn pull_to_refresh_has_boolean_properties_and_a_zero_argument_handler() {
 #[test]
 fn dismiss_keyboard_on_drag_requires_a_boolean_on_a_viewport() {
     let source = r#"export component App inherits Window {
-        ScrollView { width: 200px; dismiss-keyboard-on-drag: true; }
+        ScrollView { width <- 200px; dismiss-keyboard-on-drag <- true; }
     }"#;
     let compiled = compile(source, "keyboard-drag.xr").unwrap();
     assert!(compiled.mlir.contains("dismiss-keyboard-on-drag"));
@@ -3395,9 +3404,9 @@ fn dismiss_keyboard_on_drag_requires_a_boolean_on_a_viewport() {
 fn drag_auto_scroll_requires_a_boolean_on_a_list_view() {
     let source = r#"export component App inherits Window {
         ListView {
-            row-height: 54px;
-            drag-auto-scroll: true;
-            for label in ["Pump"] : Text { text: label; }
+            row-height <- 54px;
+            drag-auto-scroll <- true;
+            for label in ["Pump"] : Text { text <- label; }
         }
     }"#;
     assert!(
@@ -3406,7 +3415,7 @@ fn drag_auto_scroll_requires_a_boolean_on_a_list_view() {
             .mlir
             .contains("drag-auto-scroll")
     );
-    assert!(compile(&source.replace(": true", ": 1"), "drag-scroll.xr").is_err());
+    assert!(compile(&source.replace(" <- true", ": 1"), "drag-scroll.xr").is_err());
     let raw = lower(source, "drag-scroll.xr");
     let invalid = raw.replace("name = \"row-height\"", "name = \"drag-auto-scroll\"");
     assert!(
@@ -3419,7 +3428,7 @@ fn drag_auto_scroll_requires_a_boolean_on_a_list_view() {
 #[test]
 fn touch_drag_delay_requires_integer_milliseconds_on_a_drag_area() {
     let source = r#"export component App inherits Window {
-        DragArea { width: 100px; allow-move: true; touch-drag-delay: 420; }
+        DragArea { width <- 100px; allow-move <- true; touch-drag-delay <- 420; }
     }"#;
     assert!(
         compile(source, "touch-drag.xr")
@@ -3429,7 +3438,7 @@ fn touch_drag_delay_requires_integer_milliseconds_on_a_drag_area() {
     );
     for invalid in [
         source.replace("DragArea", "DropArea"),
-        source.replace(": 420", ": 420px"),
+        source.replace(" <- 420", ": 420px"),
     ] {
         assert!(compile(&invalid, "touch-drag.xr").is_err());
     }
@@ -3445,11 +3454,11 @@ fn touch_drag_delay_requires_integer_milliseconds_on_a_drag_area() {
 #[test]
 fn native_file_drop_uses_typed_success_and_failure_events() {
     let source = r#"export component App inherits Window {
-        out property <[string]> selection: once [];
-        out property <string> message: once "";
+        out property <[string]> selection: [];
+        out property <string> message: "";
         inbox := DropArea {
-            accept-files: true;
-            file-extensions: ["png", "jpg"];
+            accept-files <- true;
+            file-extensions <- ["png", "jpg"];
             files-dropped(paths) => { root.selection = paths; }
             files-failed(reason) => { root.message = reason; }
         }
@@ -3475,7 +3484,7 @@ fn native_file_drop_uses_typed_success_and_failure_events() {
         trigger := Button { files-failed(reason) => {} }
     }"#;
     assert!(compile(wrong_parent, "files.xr").is_err());
-    let invalid = source.replace("accept-files: true", "accept-files: 1");
+    let invalid = source.replace("accept-files <- true", "accept-files: 1");
     assert!(
         compile(&invalid, "files.xr")
             .err()
@@ -3507,13 +3516,13 @@ fn native_file_drop_uses_typed_success_and_failure_events() {
 fn window_and_control_fonts_keep_typed_bindings_through_mlir() {
     let source = r#"
         export component App inherits Window {
-            in property <string> family: once "monospace";
-            default-font-family: root.family;
-            default-font-size: 19px;
-            default-font-weight: 400;
-            default-font-italic: true;
-            Label { text: "sample"; font-weight: 700; font-italic: false; }
-            LineEdit { font-family: "Arial"; }
+            in property <string> family: "monospace";
+            default-font-family <- root.family;
+            default-font-size <- 19px;
+            default-font-weight <- 400;
+            default-font-italic <- true;
+            Label { text <- "sample"; font-weight <- 700; font-italic <- false; }
+            LineEdit { font-family <- "Arial"; }
         }
     "#;
     let output = compile(source, "fonts.xr").unwrap();
@@ -3528,7 +3537,7 @@ fn window_and_control_fonts_keep_typed_bindings_through_mlir() {
     ] {
         assert!(output.mlir.contains(&format!("name = \"{property}\"")));
     }
-    let wrong = source.replace("font-weight: 700", "font-weight: true");
+    let wrong = source.replace("font-weight <- 700", "font-weight: true");
     assert!(
         compile(&wrong, "fonts.xr")
             .err()
@@ -3574,14 +3583,14 @@ fn translation_catalogs_validate_imported_calls_and_track_build_inputs() {
     fs::write(&chinese, "count = 共 { $count } 条\n").unwrap();
     fs::write(
         &child,
-        r#"export component Child inherits Text { text: @tr("count", count: 3); }"#,
+        r#"export component Child inherits Text { text <- @tr("count", count: 3); }"#,
     )
     .unwrap();
     let entry = directory.join("app.xr");
     let filename = entry.to_str().unwrap();
     let source = r#"translations "i18n/catalog.toml";
         import { Child } from "child.xr";
-        export component App inherits Window { title: @tr("title"); Child {} }"#;
+        export component App inherits Window { title <- @tr("title"); Child {} }"#;
     let assets = [catalog.clone(), english.clone(), chinese.clone()];
     let (rust, inputs) = compile_with_inputs(source, filename, None, Some(&assets)).unwrap();
     assert!(rust.to_string().contains("共 { $count } 条"));
@@ -3645,7 +3654,7 @@ fn font_imports_are_verified_in_the_declaring_module_and_embedded_once() {
     fs::create_dir_all(font.parent().unwrap()).unwrap();
     fs::write(
         &dependency,
-        "import \"demo.ttc\";\nexport component FontLabel inherits Label { text: \"XRACK\"; }\n",
+        "import \"demo.ttc\";\nexport component FontLabel inherits Label { text <- \"XRACK\"; }\n",
     )
     .unwrap();
     let font_data = include_bytes!("../examples/layout/fonts/demo.ttc");
@@ -3707,16 +3716,16 @@ fn standard_table_checks_column_fields_in_source_and_mlir() {
         export struct Part { device-name: string, header-label: string, count: int, time: Time, color: color }
         export component App inherits Window {
             in property <[Part]> parts;
-            in property <string> field-name: once "device-name";
-            in-out property <int> current: once -1;
+            in property <string> field-name: "device-name";
+            in-out property <int> current: -1;
             view := StandardTableView {
-                model: root.parts;
-                current-row <=> root.current;
-                row-header-width: 72px;
-                row-header-field: "header-label";
-                TableColumn { title: "Device"; field: "device-name"; }
-                TableColumn { title: "Count"; field: "count"; }
-                TableColumn { title: "Time"; field: "time"; }
+                model <- root.parts;
+                current-row <-> root.current;
+                row-header-width <- 72px;
+                row-header-field <- "header-label";
+                TableColumn { title <- "Device"; field <- "device-name"; }
+                TableColumn { title <- "Count"; field <- "count"; }
+                TableColumn { title <- "Time"; field <- "time"; }
             }
         }
     "#;
@@ -3739,8 +3748,8 @@ fn standard_table_checks_column_fields_in_source_and_mlir() {
             ("row-header-field", "header-label"),
         ] {
             let invalid = source.replace(
-                &format!("{role}: \"{name}\""),
-                &format!("{role}: {replacement}"),
+                &format!("{role} <- \"{name}\""),
+                &format!("{role} <- {replacement}"),
             );
             assert!(
                 compile(&invalid, "standard-table.xr")
@@ -3774,18 +3783,18 @@ fn table_row_header_text_can_read_the_repeated_item() {
         component App inherits Window {
             property <[string]> rows: ["First"];
             TableView {
-                row-header-width: 64px;
-                TableColumn { title: "Value"; }
+                row-header-width <- 64px;
+                TableColumn { title <- "Value"; }
                 for item in root.rows : TableRow {
-                    row-header-text: item;
-                    TableCell { text: item; }
+                    row-header-text <- item;
+                    TableCell { text <- item; }
                 }
             }
         }
     "#;
     let compiled = compile(source, "row-header.xr").unwrap();
     assert!(compiled.mlir.contains("name = \"row-header-text\""));
-    let invalid = source.replace("row-header-text: item", "row-header-text: 4");
+    let invalid = source.replace("row-header-text <- item", "row-header-text: 4");
     assert!(compile(&invalid, "row-header.xr").is_err());
 }
 
@@ -3793,15 +3802,15 @@ fn table_row_header_text_can_read_the_repeated_item() {
 fn move_row_lowers_to_a_verified_table_command() {
     let source = r#"
         component App inherits Window {
-            property <int> destination: once -1;
+            property <int> destination: -1;
             callback move-one();
             move-one() => { table.move-row(0, 1); }
             table := TableView {
-                row-header-width: 48px;
-                movable-rows: true;
+                row-header-width <- 48px;
+                movable-rows <- true;
                 row-moved(model-row, from, to) => { root.destination = to; }
-                TableColumn { title: "Name"; }
-                for item in ["A", "B"] : TableRow { TableCell { text: item; } }
+                TableColumn { title <- "Name"; }
+                for item in ["A", "B"] : TableRow { TableCell { text <- item; } }
             }
         }
     "#;
@@ -3820,8 +3829,8 @@ fn nested_record_fields_are_typed_and_layouts_must_be_acyclic() {
         struct Entry { details: Details }
         struct Details { label: string, units: int }
         component App inherits Window {
-            in property <[Entry]> rows: once [Entry { details: Details { label: "one", units: 1 } }];
-            StandardListView { model: root.rows; text-role: "details.label"; }
+            in property <[Entry]> rows: [Entry { details: Details { label: "one", units: 1 } }];
+            StandardListView { model <- root.rows; text-role <- "details.label"; }
         }
     "#;
     let compiled = compile(source, "nested.xr").unwrap();
@@ -3872,13 +3881,13 @@ fn nested_record_fields_are_typed_and_layouts_must_be_acyclic() {
 fn popup_window_checks_placement_open_links_and_commands() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> shown: once false;
+            in-out property <bool> shown: false;
             trigger := Button {
                 clicked() => { popover.show(); }
                 popover := PopupWindow {
-                    open <=> root.shown;
-                    placement: below;
-                    anchor-gap: 8px;
+                    open <-> root.shown;
+                    placement <- below;
+                    anchor-gap <- 8px;
                     close-button := Button { clicked() => { popover.close(); } }
                 }
             }
@@ -3913,14 +3922,14 @@ fn text_and_label_layout_options_are_typed_in_mlir() {
     let source = r#"
         export component App inherits Window {
             Label {
-                text: "A👩‍💻B";
-                horizontal-alignment: end;
-                vertical-alignment: bottom;
-                overflow: elide;
-                wrap: char-wrap;
-                max-lines: 2;
+                text <- "A👩‍💻B";
+                horizontal-alignment <- end;
+                vertical-alignment <- bottom;
+                overflow <- elide;
+                wrap <- char-wrap;
+                max-lines <- 2;
             }
-            Text { wrap: no-wrap; overflow: clip; }
+            Text { wrap <- no-wrap; overflow <- clip; }
         }
     "#;
     let output = compile(source, "label.xr").unwrap();
@@ -3942,7 +3951,7 @@ fn text_and_label_layout_options_are_typed_in_mlir() {
             .unwrap_err()
             .contains("incorrect text layout property type")
     );
-    let wrong = source.replace("max-lines: 2", "max-lines: true");
+    let wrong = source.replace("max-lines <- 2", "max-lines: true");
     assert!(
         compile(&wrong, "label.xr")
             .err()
@@ -3955,13 +3964,13 @@ fn text_and_label_layout_options_are_typed_in_mlir() {
 fn flexbox_layout_keeps_typed_direction_wrap_and_line_alignment() {
     let source = r#"
         export component App inherits Window {
-            in property <FlexboxLayoutDirection> direction: once row-reverse;
+            in property <FlexboxLayoutDirection> direction: row-reverse;
             FlexboxLayout {
-                flex-direction: root.direction;
-                flex-wrap: wrap-reverse;
-                cross-axis-line-alignment: space-evenly;
-                spacing-horizontal: 8px;
-                Button { preferred-width: 100px; }
+                flex-direction <- root.direction;
+                flex-wrap <- wrap-reverse;
+                cross-axis-line-alignment <- space-evenly;
+                spacing-horizontal <- 8px;
+                Button { preferred-width <- 100px; }
             }
         }
     "#;
@@ -3986,11 +3995,11 @@ fn flexbox_layout_keeps_typed_direction_wrap_and_line_alignment() {
 fn timer_validates_nonvisual_properties_and_effectful_commands() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> active: once false;
-            out property <int> hits: once 0;
+            in-out property <bool> active: false;
+            out property <int> hits: 0;
             timer := Timer {
-                running <=> root.active;
-                interval: 80;
+                running <-> root.active;
+                interval <- 80;
                 triggered() => { root.hits += 1; self.stop(); }
             }
             start := Button { clicked() => { timer.restart(); } }
@@ -4025,7 +4034,7 @@ fn timer_validates_nonvisual_properties_and_effectful_commands() {
     );
     let invalid = raw.replace("kind = \"Timer\"", "kind = \"Rectangle\"");
     assert!(mlir::process(&invalid).is_err());
-    let invalid = source.replace("interval: 80;", "width: 80px;");
+    let invalid = source.replace("interval <- 80;", "width: 80px;");
     assert!(
         compile(&invalid, "timer.xr")
             .err()
@@ -4045,11 +4054,11 @@ fn timer_validates_nonvisual_properties_and_effectful_commands() {
 fn swipe_delegate_checks_slots_and_the_typed_side() {
     let source = r#"
         export component App inherits Window {
-            in-out property <SwipeSide> side: once closed;
+            in-out property <SwipeSide> side: closed;
             row := SwipeDelegate {
-                open-side <=> root.side;
-                SwipeContent { Text { text: "Item"; } }
-                SwipeRight { Button { text: "Archive"; } }
+                open-side <-> root.side;
+                SwipeContent { Text { text <- "Item"; } }
+                SwipeRight { Button { text <- "Archive"; } }
                 changed(side) => { root.side = side; }
             }
         }
@@ -4063,7 +4072,7 @@ fn swipe_delegate_checks_slots_and_the_typed_side() {
             .unwrap_err()
             .contains("duplicate SwipeContent slot")
     );
-    let invalid = source.replace("SwipeRight { Button { text: \"Archive\"; } }", "");
+    let invalid = source.replace("SwipeRight { Button { text <- \"Archive\"; } }", "");
     assert!(
         compile(&invalid, "swipe-delegate.xr")
             .err()
@@ -4076,16 +4085,16 @@ fn swipe_delegate_checks_slots_and_the_typed_side() {
 fn standard_buttons_use_a_verified_enum_and_button_box() {
     let source = r#"
         export component App inherits Window {
-            in property <StandardButtonKind> primary-kind: once save-all;
-            out property <int> applies: once 0;
+            in property <StandardButtonKind> primary-kind: save-all;
+            out property <int> applies: 0;
             dialog := Dialog {
-                open: true;
+                open <- true;
                 applied() => { root.applies += 1; }
                 discarded() => { root.applies = 0; }
                 DialogButtonBox {
-                    StandardButton { kind: root.primary-kind; primary: true; }
-                    StandardButton { kind: discard; }
-                    DialogButton { role: reject; }
+                    StandardButton { kind <- root.primary-kind; primary <- true; }
+                    StandardButton { kind <- discard; }
+                    DialogButton { role <- reject; }
                 }
             }
         }
@@ -4114,7 +4123,7 @@ fn standard_buttons_use_a_verified_enum_and_button_box() {
     );
     assert!(
         compile(
-            &source.replace("StandardButton { kind: discard; }", "Text {}"),
+            &source.replace("StandardButton { kind <- discard; }", "Text {}"),
             "buttons.xr"
         )
         .err()
@@ -4127,13 +4136,13 @@ fn standard_buttons_use_a_verified_enum_and_button_box() {
 fn date_picker_popup_verifies_date_binding_and_modal_events() {
     let source = r#"
         export component App inherits Window {
-            in-out property <Date> selected: once Date { year: 2024, month: 2, day: 29 };
-            in-out property <bool> picker-open: once true;
-            out property <int> day: once 0;
+            in-out property <Date> selected: Date { year: 2024, month: 2, day: 29 };
+            in-out property <bool> picker-open: true;
+            out property <int> day: 0;
             picker := DatePickerPopup {
-                open <=> root.picker-open;
-                date <=> root.selected;
-                minimum-date: Date { year: 2024, month: 2, day: 5 };
+                open <-> root.picker-open;
+                date <-> root.selected;
+                minimum-date <- Date { year: 2024, month: 2, day: 5 };
                 accepted(chosen) => { root.day = chosen.day; }
                 canceled() => { root.day = 0; }
             }
@@ -4168,13 +4177,13 @@ fn date_picker_popup_verifies_date_binding_and_modal_events() {
 fn time_picker_verifies_types_events_and_time_fields_in_mlir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <Time> chosen: once Time { hour: 12, minute: 32 };
-            in-out property <bool> shown: once false;
-            out property <int> seconds: once root.chosen.second;
-            inline := TimePicker { time <=> root.chosen; changed(value) => { root.seconds = value.second; } }
+            in-out property <Time> chosen: Time { hour: 12, minute: 32 };
+            in-out property <bool> shown: false;
+            out property <int> seconds: root.chosen.second;
+            inline := TimePicker { time <-> root.chosen; changed(value) => { root.seconds = value.second; } }
             popup := TimePickerPopup {
-                open <=> root.shown;
-                time <=> root.chosen;
+                open <-> root.shown;
+                time <-> root.chosen;
                 accepted(value) => { root.seconds = value.second; }
                 canceled => { root.seconds = 0; }
             }
@@ -4223,8 +4232,8 @@ fn combo_enabled_role_requires_a_constant_nested_boolean_field() {
         struct OptionRow { title: string, access: Access }
         component App inherits Window {
             in property <[OptionRow]> options;
-            in property <string> role: once "access.allowed";
-            ComboBox { model: root.options; text-role: "title"; enabled-role: "access.allowed"; }
+            in property <string> role: "access.allowed";
+            ComboBox { model <- root.options; text-role <- "title"; enabled-role <- "access.allowed"; }
         }
     "#;
     let compiled = compile(source, "enabled-role.xr").unwrap();
@@ -4236,17 +4245,17 @@ fn combo_enabled_role_requires_a_constant_nested_boolean_field() {
     );
     for (from, to, expected) in [
         (
-            "enabled-role: \"access.allowed\"",
+            "enabled-role <- \"access.allowed\"",
             "enabled-role: \"title\"",
             "requires a bool field",
         ),
         (
-            "enabled-role: \"access.allowed\"",
+            "enabled-role <- \"access.allowed\"",
             "enabled-role: root.role",
             "requires a constant string",
         ),
         (
-            "model: root.options",
+            "model <- root.options",
             "model: [\"One\"]",
             "roles require a record model",
         ),
@@ -4269,13 +4278,13 @@ fn combo_roles_and_business_value_types_are_verified() {
     let source = r#"
         struct OptionRow { title: string, key: int }
         export component App inherits Window {
-            in-out property <[OptionRow]> rows: once [OptionRow { title: "One", key: 1 }];
-            in-out property <int> selection: once 1;
+            in-out property <[OptionRow]> rows: [OptionRow { title: "One", key: 1 }];
+            in-out property <int> selection: 1;
             choice := ComboBox {
-                model: root.rows;
-                text-role: "title";
-                value-role: "key";
-                current-value <=> root.selection;
+                model <- root.rows;
+                text-role <- "title";
+                value-role <- "key";
+                current-value <-> root.selection;
                 value-selected(value) => { root.selection = value; }
             }
         }
@@ -4292,14 +4301,14 @@ fn combo_roles_and_business_value_types_are_verified() {
     );
     assert!(
         compile(
-            &source.replace("text-role: \"title\"", "text-role: \"key\""),
+            &source.replace("text-role <- \"title\"", "text-role: \"key\""),
             "combo_roles.xr"
         )
         .is_err()
     );
     assert!(
         compile(
-            &source.replace("value-role: \"key\"", "value-role: \"unknown\""),
+            &source.replace("value-role <- \"key\"", "value-role: \"unknown\""),
             "combo_roles.xr"
         )
         .is_err()
@@ -4309,15 +4318,15 @@ fn combo_roles_and_business_value_types_are_verified() {
 #[test]
 fn tab_widget_repeats_pages_and_exposes_a_read_only_count() {
     let source = r#"
-        component Editor inherits Rectangle { in property <string> title; Text { text: root.title; } }
+        component Editor inherits Rectangle { in property <string> title; Text { text <- root.title; } }
         export component App inherits Window {
-            in-out property <int> selected: once 1;
-            out property <int> total: tabs.count;
+            in-out property <int> selected: 1;
+            out property <int> total <- tabs.count;
             tabs := TabWidget {
-                current-index <=> root.selected;
+                current-index <-> root.selected;
                 for title in ["one", "two"] : Tab {
-                    title: title;
-                    Editor { title: title; }
+                    title <- title;
+                    Editor { title <- title; }
                 }
             }
         }
@@ -4330,7 +4339,7 @@ fn tab_widget_repeats_pages_and_exposes_a_read_only_count() {
             .to_string()
             .contains("append_navigation_pages")
     );
-    let invalid = source.replace("current-index <=> root.selected;", "count: 3;");
+    let invalid = source.replace("current-index <-> root.selected;", "count: 3;");
     assert!(
         compile(&invalid, "model_tabs.xr")
             .err()
@@ -4339,7 +4348,7 @@ fn tab_widget_repeats_pages_and_exposes_a_read_only_count() {
             .contains("read-only")
     );
     let mixed = source.replace(
-        "current-index <=> root.selected;",
+        "current-index <-> root.selected;",
         "current-index: 0; Tab {}",
     );
     assert!(
@@ -4351,7 +4360,7 @@ fn tab_widget_repeats_pages_and_exposes_a_read_only_count() {
     );
     let cyclic = source
         .replace(r#"["one", "two"]"#, "root.total")
-        .replace("title: title;", r#"title: "Tab " + title;"#);
+        .replace("title <- title;", r#"title: "Tab " + title;"#);
     assert!(
         compile(&cyclic, "model_tabs.xr")
             .err()
@@ -4365,17 +4374,17 @@ fn tab_widget_repeats_pages_and_exposes_a_read_only_count() {
 fn table_selection_gestures_and_live_state_are_typed_and_read_only() {
     let source = r#"
         export component App inherits Window {
-            in-out property <SelectionGesture> gesture: once press-and-hold;
+            in-out property <SelectionGesture> gesture: press-and-hold;
             property <[string]> rows: ["one", "two"];
-            out property <bool> active: grid.selection-active;
-            out property <bool> dragging: grid.selection-dragging;
+            out property <bool> active <- grid.selection-active;
+            out property <bool> dragging <- grid.selection-dragging;
             grid := TableView {
-                selection-gesture: root.gesture;
-                selection-hold-interval: 360;
-                drag-select: true;
-                multi-select: true;
-                TableColumn { title: "Label"; }
-                for row in root.rows : TableRow { TableCell { text: row; } }
+                selection-gesture <- root.gesture;
+                selection-hold-interval <- 360;
+                drag-select <- true;
+                multi-select <- true;
+                TableColumn { title <- "Label"; }
+                for row in root.rows : TableRow { TableCell { text <- row; } }
             }
         }
     "#;
@@ -4384,16 +4393,20 @@ fn table_selection_gestures_and_live_state_are_typed_and_read_only() {
     assert!(compiled.rust.to_string().contains("dragging"));
     for (before, after, message) in [
         (
-            "selection-gesture: root.gesture;",
+            "selection-gesture <- root.gesture;",
             "selection-gesture: true;",
             "expected selectiongesture",
         ),
         (
-            "selection-hold-interval: 360;",
+            "selection-hold-interval <- 360;",
             "selection-hold-interval: 360px;",
             "expected int",
         ),
-        ("drag-select: true;", "selection-active: true;", "read-only"),
+        (
+            "drag-select <- true;",
+            "selection-active: true;",
+            "read-only",
+        ),
     ] {
         let error = compile(&source.replace(before, after), "selection_gesture.xr")
             .err()
@@ -4409,12 +4422,12 @@ fn selection_handle_parts_are_static_unique_and_positioned_by_the_table() {
         export component App inherits Window {
             property <[string]> labels: ["one", "two"];
             TableView {
-                drag-select: true;
-                multi-select: true;
-                TableColumn { title: "Label"; }
-                for row in root.labels : TableRow { TableCell { text: row; } }
-                SelectionStartHandle { width: 12px; background: #ee9922; }
-                SelectionEndHandle { height: 14px; }
+                drag-select <- true;
+                multi-select <- true;
+                TableColumn { title <- "Label"; }
+                for row in root.labels : TableRow { TableCell { text <- row; } }
+                SelectionStartHandle { width <- 12px; background <- #ee9922; }
+                SelectionEndHandle { height <- 14px; }
             }
         }
     "#;
@@ -4434,7 +4447,7 @@ fn selection_handle_parts_are_static_unique_and_positioned_by_the_table() {
             .to_string()
             .contains("at most one")
     );
-    let misplaced = source.replace("width: 12px;", "x: 12px;");
+    let misplaced = source.replace("width <- 12px;", "x: 12px;");
     assert!(
         compile(&misplaced, "selection_handles.xr")
             .err()
@@ -4455,8 +4468,8 @@ fn selection_handle_parts_are_static_unique_and_positioned_by_the_table() {
 fn model_edits_verify_the_property_row_type_and_callback_effects() {
     let source = r#"
         export component App inherits Window {
-            in-out property <[int]> rows: once [1, 2];
-            property <[int]> alias <=> root.rows;
+            in-out property <[int]> rows: [1, 2];
+            property <[int]> alias <-> root.rows;
             callback change();
             change() => { Model.append(root.alias, 3); }
         }
@@ -4491,7 +4504,7 @@ fn model_edits_verify_the_property_row_type_and_callback_effects() {
 
     let direct = source
         .replace("root.alias, 3", "root.rows, 3")
-        .replace("property <[int]> alias <=> root.rows;", "");
+        .replace("property <[int]> alias <-> root.rows;", "");
     let raw = lower(&direct, "model_edit.xr");
     let bad_method = raw.replace(r#"method = "append""#, r#"method = "insert""#);
     assert!(
@@ -4507,12 +4520,12 @@ fn model_edits_verify_the_property_row_type_and_callback_effects() {
 fn navigation_move_commands_verify_owners_writability_and_effects() {
     let source = r#"
         export component App inherits Window {
-            in-out property <[string]> labels: once ["a", "b"];
+            in-out property <[string]> labels: ["a", "b"];
             callback move(int, int);
             move(from, to) => { tabs.move-item(from, to); }
             tabs := TabWidget {
-                reorderable: true;
-                for label in root.labels : Tab { title: label; }
+                reorderable <- true;
+                for label in root.labels : Tab { title <- label; }
             }
         }
     "#;
@@ -4562,14 +4575,14 @@ fn navigation_move_commands_verify_owners_writability_and_effects() {
 fn stack_layout_supports_regular_children_and_checks_keyed_templates() {
     let source = r#"
         export component App inherits Window {
-            in-out property <int> index: once 0;
-            out property <int> selected: layers.active-index;
-            out property <int> items: layers.count;
+            in-out property <int> index: 0;
+            out property <int> selected <- layers.active-index;
+            out property <int> items <- layers.count;
             layers := StackLayout {
-                current-index <=> root.index;
-                padding: 5px;
-                Text { text: "First"; }
-                second := StackItem { Text { text: "Second"; } }
+                current-index <-> root.index;
+                padding <- 5px;
+                Text { text <- "First"; }
+                second := StackItem { Text { text <- "Second"; } }
             }
         }
     "#;
@@ -4577,7 +4590,7 @@ fn stack_layout_supports_regular_children_and_checks_keyed_templates() {
     assert!(compiled.mlir.contains("xr.navigation_index"));
     assert!(compiled.mlir.contains("xr.navigation_count"));
     let keyed = source.replace(
-        "current-index <=> root.index;",
+        "current-index <-> root.index;",
         r#"current-value: "second";"#,
     );
     assert!(
@@ -4587,7 +4600,7 @@ fn stack_layout_supports_regular_children_and_checks_keyed_templates() {
             .to_string()
             .contains("requires StackItem children")
     );
-    let readonly = source.replace("padding: 5px;", "active-index: 1;");
+    let readonly = source.replace("padding <- 5px;", "active-index: 1;");
     assert!(
         compile(&readonly, "stack_layout.xr")
             .err()
@@ -4595,7 +4608,7 @@ fn stack_layout_supports_regular_children_and_checks_keyed_templates() {
             .to_string()
             .contains("read-only")
     );
-    let cycle = "export component App inherits Window { layers := StackLayout { current-index: layers.active-index; } }";
+    let cycle = "export component App inherits Window { layers := StackLayout { current-index <- layers.active-index; } }";
     assert!(
         compile(cycle, "stack_layout.xr")
             .err()
@@ -4603,7 +4616,7 @@ fn stack_layout_supports_regular_children_and_checks_keyed_templates() {
             .to_string()
             .contains("cyc")
     );
-    let inline = "export component App inherits Window { ListView { for index in 2 : Rectangle { StackLayout { current-index: index; Rectangle {} } } } }";
+    let inline = "export component App inherits Window { ListView { for index in 2 : Rectangle { StackLayout { current-index <- index; Rectangle {} } } } }";
     assert!(
         compile(inline, "stack_layout.xr")
             .err()
@@ -4617,10 +4630,10 @@ fn stack_layout_supports_regular_children_and_checks_keyed_templates() {
 fn close_tab_properties_and_event_payload_have_verified_types() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> last: once "";
+            in-out property <string> last: "";
             tabs := TabBar {
-                tabs-closable: true;
-                TabButton { text: "Notes"; value: "notes"; closable: true; }
+                tabs-closable <- true;
+                TabButton { text <- "Notes"; value <- "notes"; closable <- true; }
                 tab-close-requested(index, value) => { root.last = value + index; }
             }
         }
@@ -4633,8 +4646,12 @@ fn close_tab_properties_and_event_payload_have_verified_types() {
             .contains("ControlAction :: CloseTab")
     );
     for (old, new, message) in [
-        ("tabs-closable: true;", "tabs-closable: 1;", "expected bool"),
-        ("closable: true; }", "closable: 0; }", "expected bool"),
+        (
+            "tabs-closable <- true;",
+            "tabs-closable: 1;",
+            "expected bool",
+        ),
+        ("closable <- true; }", "closable: 0; }", "expected bool"),
         (
             "tab-close-requested(index, value)",
             "tab-close-requested(index)",
@@ -4659,11 +4676,11 @@ fn close_tab_properties_and_event_payload_have_verified_types() {
 fn reorderable_tabs_require_a_writable_list_and_typed_move_event() {
     let source = r#"
         export component App inherits Window {
-            in-out property <[string]> entries: once ["a", "b"];
-            out property <int> last-move: once 0;
+            in-out property <[string]> entries: ["a", "b"];
+            out property <int> last-move: 0;
             tabs := TabBar {
-                reorderable: true;
-                for entry in root.entries : TabButton { text: entry; }
+                reorderable <- true;
+                for entry in root.entries : TabButton { text <- entry; }
                 tab-moved(from, to) => { root.last-move = from * 10 + to; }
             }
         }
@@ -4682,7 +4699,7 @@ fn reorderable_tabs_require_a_writable_list_and_typed_move_event() {
             r#"["a", "b"] :"#,
             "writable list property",
         ),
-        ("reorderable: true;", "reorderable: 4;", "bool"),
+        ("reorderable <- true;", "reorderable: 4;", "bool"),
         (
             "tab-moved(from, to)",
             "tab-moved(from)",
@@ -4706,26 +4723,26 @@ fn reorderable_tabs_require_a_writable_list_and_typed_move_event() {
 fn navigation_value_checks_keys_conflicts_and_derived_index_reads() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> selection: once "draft";
-            out property <int> index: bar.current-index;
+            in-out property <string> selection: "draft";
+            out property <int> index <- bar.current-index;
             bar := TabBar {
-                current-value <=> root.selection;
-                TabButton { text: "Draft"; value: "draft"; }
+                current-value <-> root.selection;
+                TabButton { text <- "Draft"; value <- "draft"; }
             }
         }
     "#;
     let compiled = compile(source, "value_tabs.xr").unwrap();
     assert!(compiled.mlir.contains("xr.navigation_index"));
     for (before, after, message) in [
-        (r#"value: "draft";"#, "", "requires value"),
+        (r#"value <- "draft";"#, "", "requires value"),
         (
-            "current-value <=> root.selection;",
-            "current-value <=> root.selection; current-index: 0;",
+            "current-value <-> root.selection;",
+            "current-value <-> root.selection; current-index: 0;",
             "either current-index or current-value",
         ),
-        (r#"value: "draft";"#, "value: 42;", "string"),
+        (r#"value <- "draft";"#, "value: 42;", "string"),
         (
-            r#"value: "draft";"#,
+            r#"value <- "draft";"#,
             r#"value: "doc" + bar.current-index;"#,
             "cycl",
         ),
@@ -4750,14 +4767,14 @@ fn path_view_compiles_svg_commands_and_typed_position() {
     let source = r#"
         export component App inherits Window {
             PathView {
-                path: "M 0 0.5 Q 0.5 0 1 0.5";
-                count: 20;
-                item-width: 42px;
-                item-height: 34px;
-                orientation: horizontal;
+                path <- "M 0 0.5 Q 0.5 0 1 0.5";
+                count <- 20;
+                item-width <- 42px;
+                item-height <- 34px;
+                orientation <- horizontal;
                 PathViewOption {
-                    opacity: option-progress;
-                    Text { text: "Item " + (option-data + 1); }
+                    opacity <- option-progress;
+                    Text { text <- "Item " + (option-data + 1); }
                 }
             }
         }
@@ -4786,15 +4803,15 @@ fn path_view_compiles_svg_commands_and_typed_position() {
 fn tumbler_flick_properties_are_float_and_read_only_motion() {
     let source = r#"
         export component App inherits Window {
-            out property <bool> moving: wheel.moving;
-            out property <bool> dragging: wheel.dragging;
-            out property <bool> flicking: wheel.flicking;
-            wheel := Tumbler { count: 60; flick-deceleration: 1600; }
+            out property <bool> moving <- wheel.moving;
+            out property <bool> dragging <- wheel.dragging;
+            out property <bool> flicking <- wheel.flicking;
+            wheel := Tumbler { count <- 60; flick-deceleration <- 1600; }
         }
     "#;
     let compiled = compile(source, "tumbler_motion.xr").unwrap();
     assert!(compiled.mlir.contains("xr.flick_motion_read"));
-    let conflict = source.replace("count: 60;", "count: 60; moving: true;");
+    let conflict = source.replace("count <- 60;", "count: 60; moving: true;");
     let error = compile(&conflict, "tumbler_motion.xr")
         .err()
         .unwrap()
@@ -4814,10 +4831,10 @@ fn tumbler_option_templates_are_typed_and_confined_to_wheels() {
     let source = r#"
         export component App inherits Window {
             Tumbler {
-                count: 80;
+                count <- 80;
                 TumblerOption {
-                    opacity: Math.abs(option-displacement);
-                    Text { text: option-data % 12 + " o'clock"; }
+                    opacity <- Math.abs(option-displacement);
+                    Text { text <- option-data % 12 + " o'clock"; }
                 }
             }
         }
@@ -4852,7 +4869,7 @@ fn tumbler_option_templates_are_typed_and_confined_to_wheels() {
             "requires a static child of Tumbler",
         ),
         (
-            "Text { text: option-data % 12 + \" o'clock\"; }",
+            "Text { text <- option-data % 12 + \" o'clock\"; }",
             "Button {}",
             "accepts visual elements",
         ),
@@ -4865,7 +4882,7 @@ fn tumbler_option_templates_are_typed_and_confined_to_wheels() {
     }
 
     let strings = source
-        .replace("count: 80;", r#"model: ["A", "B"];"#)
+        .replace("count <- 80;", r#"model: ["A", "B"];"#)
         .replace("option-data % 12", "option-data");
     compile(&strings, "tumbler_option.xr").unwrap();
 }
@@ -4875,14 +4892,14 @@ fn tumbler_record_roles_and_selection_type_are_checked() {
     let source = r#"
         struct OptionRow { title: string, key: int }
         export component App inherits Window {
-            in-out property <[OptionRow]> rows: once [OptionRow { title: "One", key: 1 }];
-            in-out property <int> selection: once 1;
-            out property <string> label: choice.current-text;
+            in-out property <[OptionRow]> rows: [OptionRow { title: "One", key: 1 }];
+            in-out property <int> selection: 1;
+            out property <string> label <- choice.current-text;
             choice := Tumbler {
-                model: root.rows;
-                text-role: "title";
-                value-role: "key";
-                current-value <=> root.selection;
+                model <- root.rows;
+                text-role <- "title";
+                value-role <- "key";
+                current-value <-> root.selection;
                 value-selected(value) => { root.selection = value; }
             }
         }
@@ -4891,7 +4908,7 @@ fn tumbler_record_roles_and_selection_type_are_checked() {
     assert!(compiled.mlir.contains("xr.combo_state_read"));
     assert!(compiled.rust.to_string().contains("populate_tumbler"));
     let indexed = source.replace(
-        "current-value <=> root.selection;",
+        "current-value <-> root.selection;",
         "current-index: self.count - 1;",
     );
     compile(&indexed, "tumbler_roles.xr").unwrap();
@@ -4904,22 +4921,22 @@ fn tumbler_record_roles_and_selection_type_are_checked() {
     );
     for (original, replacement, message) in [
         (
-            r#"text-role: "title";"#,
+            r#"text-role <- "title";"#,
             r#"text-role: "key";"#,
             "requires a string field",
         ),
         (
-            "current-value <=> root.selection;",
+            "current-value <-> root.selection;",
             r#"current-value: "wrong";"#,
             "int",
         ),
         (
-            "current-value <=> root.selection;",
-            "current-value <=> root.selection; current-index: 0;",
+            "current-value <-> root.selection;",
+            "current-value <-> root.selection; current-index: 0;",
             "either current-index or current-value",
         ),
         (
-            r#"text-role: "title";"#,
+            r#"text-role <- "title";"#,
             r#"text-role: "title"; current-text: "wrong";"#,
             "read-only",
         ),
@@ -4931,7 +4948,7 @@ fn tumbler_record_roles_and_selection_type_are_checked() {
         assert!(error.contains(message), "{error}");
     }
     let invalid = r#"export component App inherits Window {
-        Tumbler { count: 3; current-value: "two"; }
+        Tumbler { count <- 3; current-value <- "two"; }
     }"#;
     assert!(compile(invalid, "tumbler_roles.xr").is_err());
 }
@@ -4940,9 +4957,9 @@ fn tumbler_record_roles_and_selection_type_are_checked() {
 fn combo_popup_commands_and_state_are_checked_in_source_and_mlir() {
     let source = r#"
         export component App inherits Window {
-            out property <bool> showing: choice.popup-open;
-            out property <int> active-option: choice.highlighted-index;
-            choice := ComboBox { model: ["Alpha"]; }
+            out property <bool> showing <- choice.popup-open;
+            out property <int> active-option <- choice.highlighted-index;
+            choice := ComboBox { model <- ["Alpha"]; }
             trigger := Button { clicked => { choice.open-popup(); choice.close-popup(); } }
         }
     "#;
@@ -4957,7 +4974,7 @@ fn combo_popup_commands_and_state_are_checked_in_source_and_mlir() {
             "takes no arguments",
         ),
         (
-            "model: [\"Alpha\"];",
+            "model <- [\"Alpha\"];",
             "model: [\"Alpha\"]; highlighted-index: 0;",
             "read-only",
         ),
@@ -4991,7 +5008,7 @@ fn combo_popup_checks_its_dimensions_and_rejects_nested_elements() {
     let source = r#"
         export component App inherits Window {
             ComboBox {
-                ComboPopup { width: 208px; row-height: 32px; scroll-indicator: true; }
+                ComboPopup { width <- 208px; row-height <- 32px; scroll-indicator <- true; }
             }
         }
     "#;
@@ -4999,7 +5016,7 @@ fn combo_popup_checks_its_dimensions_and_rejects_nested_elements() {
     assert!(compiled.mlir.contains("kind = \"ComboPopup\""));
     assert!(
         compile(
-            &source.replace("width: 208px", "width: 125%; max-height: 60%"),
+            &source.replace("width <- 208px", "width: 125%; max-height: 60%"),
             "combo_popup.xr"
         )
         .is_ok()
@@ -5020,7 +5037,11 @@ fn combo_popup_checks_its_dimensions_and_rejects_nested_elements() {
             "ComboPopup { Rectangle {} ",
             "only one-way property bindings",
         ),
-        ("row-height: 32px", "row-height: \"32px\"", "type mismatch"),
+        (
+            "row-height <- 32px",
+            "row-height: \"32px\"",
+            "type mismatch",
+        ),
     ] {
         let error = compile(&source.replace(from, to), "combo_popup.xr")
             .err()
@@ -5042,8 +5063,8 @@ fn combo_content_is_a_single_static_child() {
     let source = r#"
         export component App inherits Window {
             choice := ComboBox {
-                model: ["Alpha", "Beta"];
-                ComboContent { Label { text: choice.current-text; } }
+                model <- ["Alpha", "Beta"];
+                ComboContent { Label { text <- choice.current-text; } }
             }
         }
     "#;
@@ -5089,16 +5110,16 @@ fn combo_option_data_preserves_the_model_item_type() {
         export component App inherits Window {
             in property <[Entry]> choices;
             ComboBox {
-                model: root.choices;
-                text-role: "title";
+                model <- root.choices;
+                text-role <- "title";
                 ComboOption {
-                    background: option-data.detail.online ? #ffffff : #000000;
-                    Label { text: option-data.title; }
+                    background <- option-data.detail.online ? #ffffff : #000000;
+                    Label { text <- option-data.title; }
                 }
             }
             ComboBox {
-                model: ["Alpha", "Beta"];
-                ComboOption { Label { text: option-data; } }
+                model <- ["Alpha", "Beta"];
+                ComboOption { Label { text <- option-data; } }
             }
         }
     "#;
@@ -5115,8 +5136,8 @@ fn combo_option_data_preserves_the_model_item_type() {
     assert!(
         compile(
             &source.replace(
-                "Label { text: option-data; }",
-                "Label { text: option-data.title; }"
+                "Label { text <- option-data; }",
+                "Label { text <- option-data.title; }"
             ),
             "combo_data.xr"
         )
@@ -5137,10 +5158,10 @@ fn combo_option_templates_are_visual_and_use_typed_row_inputs() {
     let source = r#"
         export component App inherits Window {
             ComboBox {
-                model: ["Alpha", "Beta"];
+                model <- ["Alpha", "Beta"];
                 ComboOption {
-                    background: option-highlighted ? #ffffff : #000000;
-                    Label { text: (option-index + 1) + " " + option-text; }
+                    background <- option-highlighted ? #ffffff : #000000;
+                    Label { text <- (option-index + 1) + " " + option-text; }
                 }
             }
         }
@@ -5191,8 +5212,8 @@ fn combo_indicator_is_a_single_static_child_of_a_combo_box() {
         export component App inherits Window {
             ComboBox {
                 ComboIndicator {
-                    width: 44px; height: 24px;
-                    Rectangle { background: #437599; }
+                    width <- 44px; height <- 24px;
+                    Rectangle { background <- #437599; }
                 }
             }
         }
@@ -5227,14 +5248,14 @@ fn combo_state_read_types_and_dependencies_are_verified() {
     let source = r#"
         struct OptionRow { title: string, code: int }
         export component App inherits Window {
-            in property <[OptionRow]> options: once [OptionRow { title: "First", code: 42 }];
-            out property <int> picked: choice.current-value;
-            out property <string> label: choice.current-text;
-            out property <int> size: choice.count;
+            in property <[OptionRow]> options: [OptionRow { title: "First", code: 42 }];
+            out property <int> picked <- choice.current-value;
+            out property <string> label <- choice.current-text;
+            out property <int> size <- choice.count;
             choice := ComboBox {
-                model: root.options;
-                text-role: "title";
-                value-role: "code";
+                model <- root.options;
+                text-role <- "title";
+                value-role <- "code";
             }
         }
     "#;
@@ -5252,7 +5273,7 @@ fn combo_state_read_types_and_dependencies_are_verified() {
 
     for condition in ["self.count > 0", "self.current-value > 0"] {
         let cycle = source.replace(
-            "model: root.options",
+            "model <- root.options",
             &format!("model: {condition} ? root.options : root.options"),
         );
         let error = compile(&cycle, "combo_cycle.xr").err().unwrap();
@@ -5263,11 +5284,11 @@ fn combo_state_read_types_and_dependencies_are_verified() {
 #[test]
 fn secondary_windows_require_a_window_component_and_typed_visibility() {
     let source = r#"
-        component Content inherits Window { title: "Inspector"; }
+        component Content inherits Window { title <- "Inspector"; }
         component Panel inherits Rectangle {}
         export component App inherits Window {
-            in-out property <bool> inspecting: once false;
-            inspector := SecondaryWindow { visible <=> root.inspecting; Content {} }
+            in-out property <bool> inspecting: false;
+            inspector := SecondaryWindow { visible <-> root.inspecting; Content {} }
             open := Button { clicked => { inspector.show(); } }
         }
     "#;
@@ -5343,12 +5364,12 @@ fn window_close_commands_and_guard_results_are_verified() {
 fn file_dialog_open_and_result_signatures_are_verified() {
     let source = r#"
         export component App inherits Window {
-            out property <[string]> paths: once [];
+            out property <[string]> paths: [];
             callback choose;
             choose => { picker.open(); }
             picker := FileDialog {
-                mode: open-files;
-                name-filters: ["Text files (*.txt)"];
+                mode <- open-files;
+                name-filters <- ["Text files (*.txt)"];
                 accepted(files) => { root.paths = files; }
             }
         }
@@ -5384,13 +5405,13 @@ fn file_dialog_open_and_result_signatures_are_verified() {
 fn native_dialog_result_properties_are_typed_and_read_only() {
     let source = r#"
         component App inherits Window {
-            out property <[string]> folders: picker.selected-files;
-            out property <string> first: picker.selected-file;
-            out property <bool> pending: picker.pending || prompt.pending;
+            out property <[string]> folders <- picker.selected-files;
+            out property <string> first <- picker.selected-file;
+            out property <bool> pending <- picker.pending || prompt.pending;
             callback choose;
             choose => { picker.open(); }
-            picker := FileDialog { mode: select-folders; }
-            prompt := MessageDialog { text: "Done"; }
+            picker := FileDialog { mode <- select-folders; }
+            prompt := MessageDialog { text <- "Done"; }
         }
     "#;
     let compiled = compile(source, "file-state.xr").unwrap();
@@ -5422,9 +5443,9 @@ fn message_dialog_has_typed_buttons_levels_and_results() {
             callback ask;
             ask => { prompt.open(); }
             prompt := MessageDialog {
-                level: warning;
-                buttons: MessageButtons.yes-no-cancel;
-                text: "Replace settings?";
+                level <- warning;
+                buttons <- MessageButtons.yes-no-cancel;
+                text <- "Replace settings?";
                 finished(answer) => { root.button = answer; }
             }
         }
@@ -5454,10 +5475,10 @@ fn message_dialog_has_typed_buttons_levels_and_results() {
 fn shortcut_bindings_and_action_links_are_checked_in_mlir() {
     let source = r#"
         export component App inherits Window {
-            out property <int> hits: once 0;
-            save := Action { shortcut: "Primary+S"; activated => { root.hits += 1; } }
-            Shortcut { action: save; sequences: ["Primary+K, Primary+S", "F9"]; }
-            Shortcut { sequence: "F6"; activated-ambiguously => { root.hits += 2; } }
+            out property <int> hits: 0;
+            save := Action { shortcut <- "Primary+S"; activated => { root.hits += 1; } }
+            Shortcut { action <- save; sequences <- ["Primary+K, Primary+S", "F9"]; }
+            Shortcut { sequence <- "F6"; activated-ambiguously => { root.hits += 2; } }
         }
     "#;
     let output = compile(source, "shortcuts.xr").unwrap();
@@ -5476,8 +5497,10 @@ fn shortcut_bindings_and_action_links_are_checked_in_mlir() {
             .unwrap_err()
             .contains("Shortcut requires an activation handler")
     );
-    let ambiguous_source =
-        source.replace("sequence: \"F6\"", "sequence: \"F6\"; sequences: [\"F7\"]");
+    let ambiguous_source = source.replace(
+        "sequence <- \"F6\"",
+        "sequence: \"F6\"; sequences: [\"F7\"]",
+    );
     assert!(compile(&ambiguous_source, "shortcuts.xr").is_err());
 }
 
@@ -5485,10 +5508,10 @@ fn shortcut_bindings_and_action_links_are_checked_in_mlir() {
 fn window_palette_is_typed_in_xr_and_mlir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <ColorScheme> scheme: once ColorScheme.light;
-            color-scheme: root.scheme;
-            accent-color: #c36728;
-            Button { text: "Preview"; }
+            in-out property <ColorScheme> scheme: ColorScheme.light;
+            color-scheme <- root.scheme;
+            accent-color <- #c36728;
+            Button { text <- "Preview"; }
         }
     "#;
     let output = compile(source, "theme.xr").unwrap();
@@ -5504,7 +5527,7 @@ fn window_palette_is_typed_in_xr_and_mlir() {
     let bad_variant = raw.replace("value = \"light\"", "value = \"sepia\"");
     assert!(mlir::process(&bad_variant).is_err());
     let bad_owner = source.replace(
-        "Button { text: \"Preview\"; }",
+        "Button { text <- \"Preview\"; }",
         "Button { color-scheme: dark; }",
     );
     assert!(compile(&bad_owner, "theme.xr").is_err());
@@ -5514,14 +5537,14 @@ fn window_palette_is_typed_in_xr_and_mlir() {
 fn color_popup_verifies_control_links_and_callback_types() {
     let source = r#"
         export component App inherits Window {
-            in-out property <color> selected: once #124380a0;
-            in-out property <bool> shown: once false;
+            in-out property <color> selected: #124380a0;
+            in-out property <bool> shown: false;
             out property <color> accepted-color;
             picker := ColorPickerPopup {
-                open <=> root.shown;
-                color <=> root.selected;
-                show-alpha: true;
-                show-color-plane: true;
+                open <-> root.shown;
+                color <-> root.selected;
+                show-alpha <- true;
+                show-color-plane <- true;
                 accepted(value) => { root.accepted-color = value; }
             }
         }
@@ -5533,7 +5556,7 @@ fn color_popup_verifies_control_links_and_callback_types() {
     assert!(rust.contains("ColorPopupState"));
     assert!(rust.contains("edit_hex"));
     assert!(rust.contains("adjust_plane"));
-    let invalid_plane = source.replace("show-color-plane: true", "show-color-plane: 1");
+    let invalid_plane = source.replace("show-color-plane <- true", "show-color-plane: 1");
     assert!(
         compile(&invalid_plane, "color.xr")
             .err()
@@ -5552,7 +5575,7 @@ fn color_popup_verifies_control_links_and_callback_types() {
             .unwrap_err()
             .contains("invalid picker event or signature")
     );
-    let bad_source = source.replace("color <=> root.selected", "color <=> root.shown");
+    let bad_source = source.replace("color <-> root.selected", "color <-> root.shown");
     assert!(compile(&bad_source, "color.xr").is_err());
 }
 
@@ -5560,17 +5583,17 @@ fn color_popup_verifies_control_links_and_callback_types() {
 fn font_picker_verifies_construction_fields_links_and_callbacks() {
     let source = r#"
         export component App inherits Window {
-            in-out property <Font> selected: once Font {
+            in-out property <Font> selected: Font {
                 family: "serif", size: 18.5px, weight: 550, italic: false
             };
-            out property <string> family: root.selected.family;
+            out property <string> family <- root.selected.family;
             out property <Font> accepted-font;
-            default-font: root.selected;
-            Text { font: root.selected; font-weight: 700; }
+            default-font <- root.selected;
+            Text { font <- root.selected; font-weight <- 700; }
             picker := FontPickerPopup {
-                open: true;
-                font <=> root.selected;
-                preview-text: root.family;
+                open <- true;
+                font <-> root.selected;
+                preview-text <- root.family;
                 accepted(value) => { root.accepted-font = value; }
             }
         }
@@ -5613,8 +5636,8 @@ fn font_picker_verifies_construction_fields_links_and_callbacks() {
         (", italic: false", "", "missing record field"),
         (".family", ".unknown", "Font has no field"),
         (
-            "font <=> root.selected",
-            "font <=> root.family",
+            "font <-> root.selected",
+            "font <-> root.family",
             "read-only",
         ),
     ] {
@@ -5631,11 +5654,11 @@ fn grid_view_checks_geometry_and_repeated_template_in_source_and_mlir() {
     let source = r#"
         component Tile inherits Rectangle { in property <int> index; }
         export component App inherits Window {
-            in-out property <int> chosen: once -1;
+            in-out property <int> chosen: -1;
             grid := GridView {
-                cell-width: 100px; cell-height: 84px; spacing: 10px;
-                current-index <=> root.chosen;
-                for item in 1000 : Tile { index: item; }
+                cell-width <- 100px; cell-height <- 84px; spacing <- 10px;
+                current-index <-> root.chosen;
+                for item in 1000 : Tile { index <- item; }
                 changed(index) => { root.chosen = index; }
             }
         }
@@ -5657,7 +5680,7 @@ fn grid_view_checks_geometry_and_repeated_template_in_source_and_mlir() {
             .unwrap_err()
             .contains("incorrect GridView property type")
     );
-    let malformed = source.replace("for item in 1000 : Tile { index: item; }", "Rectangle {}");
+    let malformed = source.replace("for item in 1000 : Tile { index <- item; }", "Rectangle {}");
     assert!(
         compile(&malformed, "grid.xr")
             .err()
@@ -5671,10 +5694,10 @@ fn page_slots_have_a_unique_direct_parent_in_source_and_mlir() {
     let source = r#"
         export component App inherits Window {
             Page {
-                title: "Settings";
-                PageFooter { height: 40px; }
+                title <- "Settings";
+                PageFooter { height <- 40px; }
                 Rectangle {}
-                PageHeader { height: 36px; }
+                PageHeader { height <- 36px; }
             }
         }
     "#;
@@ -5711,12 +5734,12 @@ fn standard_list_uses_a_verified_record_text_field() {
     let source = r#"
         export struct Entry { label: string, rank: int }
         export component App inherits Window {
-            in property <[Entry]> records: once [Entry { label: "one", rank: 1 }];
-            in-out property <int> selected: once -1;
+            in property <[Entry]> records: [Entry { label: "one", rank: 1 }];
+            in-out property <int> selected: -1;
             list := StandardListView {
-                model: root.records;
-                text-role: "label";
-                current-index <=> root.selected;
+                model <- root.records;
+                text-role <- "label";
+                current-index <-> root.selected;
                 changed(index) => { root.selected = index; }
             }
         }
@@ -5726,7 +5749,7 @@ fn standard_list_uses_a_verified_record_text_field() {
     assert!(result.rust.to_string().contains("standard_list_rows"));
     assert!(
         compile(
-            &source.replace("text-role: \"label\"", "text-role: \"rank\""),
+            &source.replace("text-role <- \"label\"", "text-role: \"rank\""),
             "standard-list.xr"
         )
         .err()
@@ -5740,7 +5763,7 @@ fn standard_list_uses_a_verified_record_text_field() {
             .contains("string field named text")
     );
     assert!(compile(
-        "export component App inherits Window { StandardListView { model: [\"one\", \"two\"]; } }",
+        "export component App inherits Window { StandardListView { model <- [\"one\", \"two\"]; } }",
         "strings.xr"
     ).is_ok());
 }
@@ -5749,18 +5772,18 @@ fn standard_list_uses_a_verified_record_text_field() {
 fn progress_range_positions_are_typed_read_only_and_acyclic() {
     let source = r#"
         export component App inherits Window {
-            out property <float> fraction: meter.position;
-            out property <float> visual: meter.visual-position;
-            meter := ProgressIndicator { minimum: 100; maximum: 900; progress: 380; }
+            out property <float> fraction <- meter.position;
+            out property <float> visual <- meter.visual-position;
+            meter := ProgressIndicator { minimum <- 100; maximum <- 900; progress <- 380; }
         }
     "#;
     let compiled = compile(source, "progress_range.xr").unwrap();
     assert!(compiled.mlir.contains("xr.range_position_read"));
     assert!(compiled.rust.to_string().contains("ProgressRange"));
     for (from, to, expected) in [
-        ("minimum: 100", "minimum: true", "type mismatch"),
-        ("minimum: 100", "position: 0.5", "read-only"),
-        ("progress: 380", "progress: root.fraction", "cyclic"),
+        ("minimum <- 100", "minimum: true", "type mismatch"),
+        ("minimum <- 100", "position: 0.5", "read-only"),
+        ("progress <- 380", "progress: root.fraction", "cyclic"),
     ] {
         let error = compile(&source.replace(from, to), "progress_range.xr")
             .err()
@@ -5782,9 +5805,9 @@ fn progress_artwork_parts_are_unique_static_children_of_the_indicator() {
     let source = r#"
         export component App inherits Window {
             ProgressIndicator {
-                progress: 40%;
-                ProgressTrack { background: #273b55; }
-                ProgressFill { Rectangle { background: #53af9b; } }
+                progress <- 40%;
+                ProgressTrack { background <- #273b55; }
+                ProgressFill { Rectangle { background <- #53af9b; } }
             }
         }
     "#;
@@ -5822,7 +5845,7 @@ fn progress_artwork_parts_are_unique_static_children_of_the_indicator() {
             .contains("requires a static child of ProgressIndicator")
     );
     let feedback = source
-        .replace("progress: 40%", "progress: fill-art.layout-width / 100px")
+        .replace("progress <- 40%", "progress: fill-art.layout-width / 100px")
         .replace("ProgressFill {", "fill-art := ProgressFill {");
     assert!(
         compile(&feedback, "progress_parts.xr")
@@ -5836,9 +5859,9 @@ fn progress_artwork_parts_are_unique_static_children_of_the_indicator() {
 fn spinner_and_busy_indicator_verify_progress_and_motion_types() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> loading: once true;
-            BusyIndicator { running: root.loading; stroke-width: 3px; animated: false; }
-            Spinner { progress: 65%; track-color: #384761; }
+            in property <bool> loading: true;
+            BusyIndicator { running <- root.loading; stroke-width <- 3px; animated <- false; }
+            Spinner { progress <- 65%; track-color <- #384761; }
         }
     "#;
     let result = compile(source, "indicators.xr").unwrap();
@@ -5852,7 +5875,7 @@ fn spinner_and_busy_indicator_verify_progress_and_motion_types() {
     );
     assert!(
         compile(
-            &source.replace("running: root.loading", "progress: 0.5"),
+            &source.replace("running <- root.loading", "progress: 0.5"),
             "indicators.xr"
         )
         .err()
@@ -5865,12 +5888,12 @@ fn spinner_and_busy_indicator_verify_progress_and_motion_types() {
 fn expander_uses_a_boolean_link_and_expansion_event() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> active: once false;
+            in-out property <bool> active: false;
             details := Expander {
-                title: "Details";
-                expanded <=> root.active;
+                title <- "Details";
+                expanded <-> root.active;
                 expanded-changed(value) => { root.active = value; }
-                Button { text: "Nested action"; }
+                Button { text <- "Nested action"; }
             }
         }
     "#;
@@ -5880,8 +5903,8 @@ fn expander_uses_a_boolean_link_and_expansion_event() {
     assert!(
         compile(
             &source.replace(
-                "in-out property <bool> active: once false",
-                "in-out property <int> active: once 1"
+                "in-out property <bool> active: false",
+                "in-out property <int> active: 1"
             ),
             "expander.xr"
         )
@@ -5899,14 +5922,14 @@ fn expander_uses_a_boolean_link_and_expansion_event() {
 fn group_box_checks_its_header_and_checked_binding_in_mlir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> enabled-group: once true;
+            in-out property <bool> enabled-group: true;
             settings := GroupBox {
-                title: "Settings";
-                checkable: true;
-                checked <=> root.enabled-group;
-                content-padding: 12px;
+                title <- "Settings";
+                checkable <- true;
+                checked <-> root.enabled-group;
+                content-padding <- 12px;
                 toggled(active) => { root.enabled-group = active; }
-                LineEdit { placeholder-text: "Address"; }
+                LineEdit { placeholder-text <- "Address"; }
             }
         }
     "#;
@@ -5931,11 +5954,11 @@ fn group_box_checks_its_header_and_checked_binding_in_mlir() {
 fn check_state_bindings_and_callbacks_use_the_typed_mlir_enum() {
     let source = r#"
         export component App inherits Window {
-            in-out property <CheckState> selection: once CheckState.partially-checked;
+            in-out property <CheckState> selection: CheckState.partially-checked;
             out property <CheckState> last;
             item := CheckBox {
-                check-state <=> root.selection;
-                tristate: true;
+                check-state <-> root.selection;
+                tristate <- true;
                 check-state-changed(state) => { root.last = state; }
             }
         }
@@ -5949,7 +5972,7 @@ fn check_state_bindings_and_callbacks_use_the_typed_mlir_enum() {
             .to_string()
             .contains("CheckState :: PartiallyChecked")
     );
-    let conflict = source.replace("tristate: true;", "checked: false;");
+    let conflict = source.replace("tristate <- true;", "checked: false;");
     assert!(
         compile(&conflict, "checked.xr")
             .err()
@@ -5969,11 +5992,11 @@ fn check_state_bindings_and_callbacks_use_the_typed_mlir_enum() {
 fn delay_button_verifies_delay_checked_link_and_activation_handler() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> confirmed: once false;
+            in-out property <bool> confirmed: false;
             confirm := DelayButton {
-                delay: 250;
-                checked <=> root.confirmed;
-                progress-color: #366483;
+                delay <- 250;
+                checked <-> root.confirmed;
+                progress-color <- #366483;
                 activated() => {}
             }
         }
@@ -6004,11 +6027,11 @@ fn delay_button_verifies_delay_checked_link_and_activation_handler() {
 fn tumbler_verifies_the_model_source_and_index_link() {
     let source = r#"
         export component App inherits Window {
-            in-out property <int> selected: once 0;
+            in-out property <int> selected: 0;
             wheel := Tumbler {
-                model: ["one", "two"];
-                current-index <=> root.selected;
-                visible-item-count: 5;
+                model <- ["one", "two"];
+                current-index <-> root.selected;
+                visible-item-count <- 5;
                 changed(index) => { root.selected = index; }
             }
         }
@@ -6016,7 +6039,7 @@ fn tumbler_verifies_the_model_source_and_index_link() {
     let compilation = compile(source, "wheel.xr").unwrap();
     assert!(compilation.mlir.contains("xr.control_link"));
     assert!(compilation.rust.to_string().contains("TumblerItems :: new"));
-    let invalid = source.replace("visible-item-count: 5", "count: 5");
+    let invalid = source.replace("visible-item-count <- 5", "count: 5");
     assert!(
         compile(&invalid, "wheel.xr")
             .err()
@@ -6036,12 +6059,12 @@ fn password_mode_and_reveal_are_typed_in_mlir() {
     let source = r#"
         export component App inherits Window {
             in-out property <string> secret;
-            in property <InputType> mode: once InputType.password;
-            in property <bool> reveal: once false;
+            in property <InputType> mode: InputType.password;
+            in property <bool> reveal: false;
             LineEdit {
-                input-type: root.mode;
-                password-visible: root.reveal;
-                text <=> root.secret;
+                input-type <- root.mode;
+                password-visible <- root.reveal;
+                text <-> root.secret;
             }
         }
     "#;
@@ -6071,13 +6094,13 @@ fn password_mode_and_reveal_are_typed_in_mlir() {
 fn text_editor_constraints_are_verified_in_semantics_and_mlir() {
     let source = r#"
         export component App inherits Window {
-            LineEdit { input-type: number; maximum-length: 4; }
-            TextInput { input-type: decimal; decimal-separator: ","; }
-            LineEdit { input-type: search; }
-            LineEdit { input-type: email; }
-            TextInput { input-type: InputType.url; }
-            ComboBox { editable: true; input-type: tel; }
-            TextArea { maximum-length: 20; }
+            LineEdit { input-type <- number; maximum-length <- 4; }
+            TextInput { input-type <- decimal; decimal-separator <- ","; }
+            LineEdit { input-type <- search; }
+            LineEdit { input-type <- email; }
+            TextInput { input-type <- InputType.url; }
+            ComboBox { editable <- true; input-type <- tel; }
+            TextArea { maximum-length <- 20; }
         }
     "#;
     let compilation = compile(source, "constraints.xr").unwrap();
@@ -6085,7 +6108,7 @@ fn text_editor_constraints_are_verified_in_semantics_and_mlir() {
     for mode in ["Number", "Decimal", "Search", "Email", "Url", "Tel"] {
         assert!(rust.contains(&format!("InputType :: {mode}")));
     }
-    let wrong_type = source.replace("maximum-length: 4", "maximum-length: true");
+    let wrong_type = source.replace("maximum-length <- 4", "maximum-length: true");
     assert!(compile(&wrong_type, "constraints.xr").is_err());
     assert!(
         compile(
@@ -6118,9 +6141,9 @@ fn text_editor_constraints_are_verified_in_semantics_and_mlir() {
 fn keyboard_assistance_is_typed_and_verified_in_mlir() {
     let source = r#"
         export component App inherits Window {
-            in property <KeyboardCapitalization> capitalization: once KeyboardCapitalization.words;
-            LineEdit { keyboard-capitalization: root.capitalization; auto-correct: false; }
-            TextArea { keyboard-capitalization: characters; spell-check: true; }
+            in property <KeyboardCapitalization> capitalization: KeyboardCapitalization.words;
+            LineEdit { keyboard-capitalization <- root.capitalization; auto-correct <- false; }
+            TextArea { keyboard-capitalization <- characters; spell-check <- true; }
         }
     "#;
     let compilation = compile(source, "keyboard.xr").unwrap();
@@ -6143,9 +6166,9 @@ fn keyboard_assistance_is_typed_and_verified_in_mlir() {
 fn keyboard_navigation_is_a_boolean_for_text_editors() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> navigate: once true;
-            TextArea { keyboard-navigation: root.navigate; }
-            LineEdit { return-key: next; keyboard-navigation: false; }
+            in property <bool> navigate: true;
+            TextArea { keyboard-navigation <- root.navigate; }
+            LineEdit { return-key <- next; keyboard-navigation <- false; }
         }
     "#;
     let compilation = compile(source, "keyboard-navigation.xr").unwrap();
@@ -6178,10 +6201,10 @@ fn keyboard_navigation_is_a_boolean_for_text_editors() {
 fn return_key_hints_are_typed_and_limited_to_single_line_editors() {
     let source = r#"
         export component App inherits Window {
-            in property <ReturnKey> action: once ReturnKey.next;
-            LineEdit { return-key: root.action; }
-            TextInput { return-key: done; }
-            ComboBox { editable: true; return-key: auto; }
+            in property <ReturnKey> action: ReturnKey.next;
+            LineEdit { return-key <- root.action; }
+            TextInput { return-key <- done; }
+            ComboBox { editable <- true; return-key <- auto; }
         }
     "#;
     let compilation = compile(source, "return-key.xr").unwrap();
@@ -6205,13 +6228,13 @@ fn return_key_hints_are_typed_and_limited_to_single_line_editors() {
 fn input_purpose_has_a_typed_binding_and_a_verified_mlir_enum() {
     let source = r#"
         export component App inherits Window {
-            in property <InputPurpose> account-purpose: once InputPurpose.username;
+            in property <InputPurpose> account-purpose: InputPurpose.username;
             in property <InputPurpose> fallback;
-            LineEdit { input-type: email; input-purpose: root.account-purpose; }
-            TextInput { input-type: password; input-purpose: current-password; }
-            LineEdit { input-type: password; input-purpose: new-password; }
-            ComboBox { editable: true; input-purpose: one-time-code; }
-            LineEdit { input-purpose: root.fallback; }
+            LineEdit { input-type <- email; input-purpose <- root.account-purpose; }
+            TextInput { input-type <- password; input-purpose <- current-password; }
+            LineEdit { input-type <- password; input-purpose <- new-password; }
+            ComboBox { editable <- true; input-purpose <- one-time-code; }
+            LineEdit { input-purpose <- root.fallback; }
         }
     "#;
     let compilation = compile(source, "input-purpose.xr").unwrap();
@@ -6231,17 +6254,17 @@ fn input_purpose_has_a_typed_binding_and_a_verified_mlir_enum() {
             "{mode}"
         );
     }
-    let invalid_property = source.replace("ComboBox { editable: true;", "TextArea {");
+    let invalid_property = source.replace("ComboBox { editable <- true;", "TextArea {");
     assert!(compile(&invalid_property, "input-purpose.xr").is_err());
     let wrong_type = source.replace(
-        "input-purpose: one-time-code",
+        "input-purpose <- one-time-code",
         "input-purpose: ReturnKey.done",
     );
     assert!(compile(&wrong_type, "input-purpose.xr").is_err());
     let raw = lower(source, "input-purpose.xr");
     assert!(mlir::process(&raw.replace("\"username\"", "\"nickname\"")).is_err());
     let single_field = lower(
-        "export component App inherits Window { LineEdit { input-purpose: username; } }",
+        "export component App inherits Window { LineEdit { input-purpose <- username; } }",
         "input-purpose.xr",
     );
     assert!(
@@ -6260,10 +6283,10 @@ fn search_field_checks_live_query_and_candidate_model_types() {
             in property <string> result-query;
             out property <string> requested;
             search := SearchField {
-                text <=> root.query;
-                live: true;
-                suggestions: root.matches;
-                suggestions-for: root.result-query;
+                text <-> root.query;
+                live <- true;
+                suggestions <- root.matches;
+                suggestions-for <- root.result-query;
                 search-triggered(query) => { root.requested = query; }
             }
         }
@@ -6278,7 +6301,7 @@ fn search_field_checks_live_query_and_candidate_model_types() {
             .contains("incorrect SearchField property type")
     );
     assert!(
-        compile(&source.replace("live: true", "live: 1"), "search.xr")
+        compile(&source.replace("live <- true", "live: 1"), "search.xr")
             .err()
             .unwrap()
             .contains("type mismatch")
@@ -6289,12 +6312,12 @@ fn search_field_checks_live_query_and_candidate_model_types() {
 fn decimal_spin_box_uses_float_links_and_typed_precision() {
     let source = r#"
         export component App inherits Window {
-            in-out property <float> amount: once 0.5;
-            out property <float> last: once 0.0;
+            in-out property <float> amount: 0.5;
+            out property <float> last: 0.0;
             amount-field := DoubleSpinBox {
-                value <=> root.amount;
-                decimals: 2;
-                step-size: 0.05;
+                value <-> root.amount;
+                decimals <- 2;
+                step-size <- 0.05;
                 edited(value) => { root.last = value; }
             }
         }
@@ -6313,7 +6336,7 @@ fn decimal_spin_box_uses_float_links_and_typed_precision() {
             .unwrap_err()
             .contains("incorrect DoubleSpinBox property type")
     );
-    let wrong = source.replace("<float> amount: once 0.5", "<int> amount: once 1");
+    let wrong = source.replace("<float> amount: 0.5", "<int> amount: 1");
     assert!(
         compile(&wrong, "decimal-spin.xr")
             .err()
@@ -6335,8 +6358,8 @@ fn day_cell_templates_verify_typed_context_and_visual_content() {
         component App inherits Window {
             MonthGrid {
                 DayCell {
-                    accessible-description: cell-today ? "Today" : "";
-                    Text { text: "" + cell-date.day + " / " + cell-week; }
+                    accessible-description <- cell-today ? "Today" : "";
+                    Text { text <- "" + cell-date.day + " / " + cell-week; }
                 }
             }
         }
@@ -6382,14 +6405,14 @@ fn day_cell_templates_verify_typed_context_and_visual_content() {
 fn calendar_parts_verify_typed_months_weekday_labels_and_activation() {
     let source = r#"
         component App inherits Window {
-            in-out property <Date> selected: once Date { year: 2021, month: 1, day: 1 };
-            in-out property <Date> month: once root.selected;
-            DayOfWeekRow { week-start: 7; weekday-labels: ["M", "T", "W", "T", "F", "S", "S"]; }
-            WeekNumberColumn { display-month: root.month; week-start: 7; }
+            in-out property <Date> selected: Date { year: 2021, month: 1, day: 1 };
+            in-out property <Date> month: root.selected;
+            DayOfWeekRow { week-start <- 7; weekday-labels <- ["M", "T", "W", "T", "F", "S", "S"]; }
+            WeekNumberColumn { display-month <- root.month; week-start <- 7; }
             grid := MonthGrid {
-                date <=> root.selected;
-                display-month <=> root.month;
-                today: root.selected;
+                date <-> root.selected;
+                display-month <-> root.month;
+                today <- root.selected;
                 activated(date) => { root.selected = date; }
             }
         }
@@ -6399,10 +6422,10 @@ fn calendar_parts_verify_typed_months_weekday_labels_and_activation() {
         assert!(compiled.mlir.contains(&format!("kind = \"{kind}\"")));
     }
     for invalid in [
-        source.replace("today: root.selected", "today: 7"),
+        source.replace("today <- root.selected", "today: 7"),
         source.replace(
-            "display-month <=> root.month",
-            "display-month <=> root.selected",
+            "display-month <-> root.month",
+            "display-month <-> root.selected",
         ),
         source.replace("activated(date)", "activated()"),
     ] {
@@ -6421,12 +6444,12 @@ fn calendar_parts_verify_typed_months_weekday_labels_and_activation() {
 fn calendar_lowers_date_values_and_rejects_invalid_schema_and_aliases() {
     let source = r#"
         export component App inherits Window {
-            in-out property <Date> selection: once Date { year: 2024, month: 2, day: 29 };
-            in-out property <Date> month: once Date { year: 2024, month: 2, day: 1 };
-            out property <int> picked: once 0;
+            in-out property <Date> selection: Date { year: 2024, month: 2, day: 29 };
+            in-out property <Date> month: Date { year: 2024, month: 2, day: 1 };
+            out property <int> picked: 0;
             picker := Calendar {
-                date <=> root.selection;
-                display-month <=> root.month;
+                date <-> root.selection;
+                display-month <-> root.month;
                 changed(value) => { root.picked = value.day; }
             }
         }
@@ -6452,8 +6475,8 @@ fn calendar_lowers_date_values_and_rejects_invalid_schema_and_aliases() {
     assert!(
         compile(
             &source.replace(
-                "display-month <=> root.month",
-                "display-month <=> root.selection"
+                "display-month <-> root.month",
+                "display-month <-> root.selection"
             ),
             "calendar.xr"
         )
@@ -6468,11 +6491,11 @@ fn flow_layout_spacing_and_orientation_are_typed() {
     let source = r#"
         component App inherits Window {
             FlowLayout {
-                orientation: vertical;
-                horizontal-spacing: 12px;
-                alignment: space-evenly;
-                cross-axis-alignment: center;
-                Text { text: "Item"; }
+                orientation <- vertical;
+                horizontal-spacing <- 12px;
+                alignment <- space-evenly;
+                cross-axis-alignment <- center;
+                Text { text <- "Item"; }
             }
         }
     "#;
@@ -6498,11 +6521,11 @@ fn toolbar_accepts_typed_icons_and_action_references() {
     let source = r#"
         component App inherits Window {
             property <image> marker;
-            grid := Action { icon: root.marker; text: "Grid"; }
+            grid := Action { icon <- root.marker; text <- "Grid"; }
             ToolBar {
-                orientation: vertical;
-                wrap: true;
-                grid-button := ToolButton { action: grid; icon-only: true; icon-size: 20px; }
+                orientation <- vertical;
+                wrap <- true;
+                grid-button := ToolButton { action <- grid; icon-only <- true; icon-size <- 20px; }
             }
         }
     "#;
@@ -6514,7 +6537,7 @@ fn toolbar_accepts_typed_icons_and_action_references() {
             .unwrap_err()
             .contains("icon requires an image")
     );
-    let invalid_wrap = source.replace("wrap: true", "wrap: 10px");
+    let invalid_wrap = source.replace("wrap <- true", "wrap: 10px");
     assert!(
         compile(&invalid_wrap, "toolbar.xr")
             .err()
@@ -6530,10 +6553,10 @@ fn editable_combo_box_validates_text_types_and_keeps_links_independent() {
             in-out property <string> draft;
             in-out property <string> chosen;
             choices := ComboBox {
-                editable: true;
-                auto-complete: true;
-                edit-text <=> root.draft;
-                current-value <=> root.chosen;
+                editable <- true;
+                auto-complete <- true;
+                edit-text <-> root.draft;
+                current-value <-> root.chosen;
                 accepted(text) => {}
                 edited(text) => {}
             }
@@ -6541,8 +6564,8 @@ fn editable_combo_box_validates_text_types_and_keeps_links_independent() {
     "#;
     assert!(compile(source, "combo.xr").is_ok());
     let alias = source.replace(
-        "current-value <=> root.chosen",
-        "current-value <=> root.draft",
+        "current-value <-> root.chosen",
+        "current-value <-> root.draft",
     );
     assert!(
         compile(&alias, "combo.xr")
@@ -6564,7 +6587,7 @@ fn editable_combo_box_validates_text_types_and_keeps_links_independent() {
             .unwrap_err()
             .contains("incorrect editable ComboBox property type")
     );
-    let invalid_completion = source.replace("auto-complete: true", "auto-complete: 1");
+    let invalid_completion = source.replace("auto-complete <- true", "auto-complete: 1");
     assert!(
         compile(&invalid_completion, "combo.xr")
             .err()
@@ -6580,11 +6603,11 @@ fn lower(source: &str, filename: &str) -> String {
 #[test]
 fn parses_comments_unicode_and_operator_precedence() {
     let source = r#"/* banner */ export component App inherits Window {
-        in-out property <int> count: once 1 + 2 * 3;
+        in-out property <int> count: 1 + 2 * 3;
         property <string> name: "你好\n\"XRack\"";
         property <color> color: #abc;
-        title: name;
-        Text { text: count > 2 && true ? "yes" : "no"; color: root.color; }
+        title <- name;
+        Text { text <- count > 2 && true ? "yes" : "no"; color <- root.color; }
     }"#;
     let model = analyze(source).unwrap();
     let e = &model.components[0].properties[0].init;
@@ -6680,15 +6703,15 @@ fn rejects_invalid_ui_programs_before_codegen() {
             "must be a direct cell of TableRow",
         ),
         (
-            "TableView { TableColumn {} for item in [\"one\"] : TableRow { TableCell { text <=> item; } } }",
+            "TableView { TableColumn {} for item in [\"one\"] : TableRow { TableCell { text <-> item; } } }",
             "requires the repeated item of a writable [string] property",
         ),
         (
-            "in property <[string]> rows; TableView { TableColumn {} for item in rows : TableRow { TableCell { text <=> item; } } }",
+            "in property <[string]> rows; TableView { TableColumn {} for item in rows : TableRow { TableCell { text <-> item; } } }",
             "requires the repeated item of a writable [string] property",
         ),
         (
-            "property <[string]> rows; TableView { TableColumn {} for item[index] in rows : TableRow { TableCell { text <=> index; } } }",
+            "property <[string]> rows; TableView { TableColumn {} for item[index] in rows : TableRow { TableCell { text <-> index; } } }",
             "requires the repeated item of a writable [string] property",
         ),
         (
@@ -6721,7 +6744,7 @@ fn rejects_invalid_ui_programs_before_codegen() {
 #[test]
 fn native_mlir_checks_menu_shortcut_binding_type() {
     let raw = lower(
-        "export component App inherits Window { MenuBar { Menu { MenuItem { checked: true; } } } }",
+        "export component App inherits Window { MenuBar { Menu { MenuItem { checked <- true; } } } }",
         "shortcut.xr",
     );
     let invalid = raw.replace("name = \"checked\"", "name = \"shortcut\"");
@@ -6740,9 +6763,9 @@ fn item_delegate_traits_and_writable_fields_are_verified() {
             in-out property <[Setting]> settings;
             ListView {
                 for setting in root.settings : CheckDelegate {
-                    text: setting.label;
-                    checked <=> setting.checked;
-                    highlighted: true;
+                    text <- setting.label;
+                    checked <-> setting.checked;
+                    highlighted <- true;
                 }
             }
         }
@@ -6750,14 +6773,14 @@ fn item_delegate_traits_and_writable_fields_are_verified() {
     let compiled = compile(source, "item-delegate.xr").unwrap();
     assert!(compiled.mlir.contains("delegate = \"CheckDelegate\""));
     assert!(compiled.mlir.contains("xr.row_link"));
-    let no_link = source.replace("checked <=> setting.checked", "checked: setting.checked");
+    let no_link = source.replace("checked <-> setting.checked", "checked: setting.checked");
     assert!(
         compile(&no_link, "item-delegate.xr")
             .err()
             .unwrap()
             .contains("two-way binding to a writable row field")
     );
-    let bad_highlight = source.replace("highlighted: true", "highlighted: \"true\"");
+    let bad_highlight = source.replace("highlighted <- true", "highlighted: \"true\"");
     assert!(compile(&bad_highlight, "item-delegate.xr").is_err());
     let raw = lower(source, "item-delegate.xr");
     let invalid = raw.replace(
@@ -6777,12 +6800,12 @@ fn action_groups_verify_membership_values_and_exclusive_state() {
         component App inherits Window {
             out property <string> last;
             modes := ActionGroup {
-                normal := Action { checked: true; }
+                normal := Action { checked <- true; }
                 activated(value) => { root.last = value + modes.current-value; }
             }
-            compact := Action { group: modes; value: "dense"; }
-            Button { action: normal; }
-            Button { action: compact; }
+            compact := Action { group <- modes; value <- "dense"; }
+            Button { action <- normal; }
+            Button { action <- compact; }
         }
     "#;
     let output = compile(source, "action-group.xr").unwrap();
@@ -6791,24 +6814,24 @@ fn action_groups_verify_membership_values_and_exclusive_state() {
     assert!(output.mlir.contains("name = \"current-value\""));
     for (invalid, diagnostic) in [
         (
-            source.replace("value: \"dense\"", "value: \"normal\""),
+            source.replace("value <- \"dense\"", "value: \"normal\""),
             "duplicate ActionGroup value",
         ),
         (
-            source.replace("group: modes", "group: compact"),
+            source.replace("group <- modes", "group: compact"),
             "requires the id of an ActionGroup",
         ),
         (
-            source.replace("checked: true;", "group: modes;"),
+            source.replace("checked <- true;", "group <- modes;"),
             "already belongs",
         ),
         (
-            source.replace("value: \"dense\";", "checked: true;"),
+            source.replace("value <- \"dense\";", "checked <- true;"),
             "single initial selection",
         ),
         (
             source.replace(
-                "checked: true;",
+                "checked <- true;",
                 "checked: modes.current-value == \"normal\";",
             ),
             "requires a literal",
@@ -6849,8 +6872,8 @@ fn action_groups_verify_membership_values_and_exclusive_state() {
 fn action_references_are_validated_before_and_after_lowering() {
     let source = r#"
         export component App inherits Window {
-            toggle := Action { text: "切换"; checkable: true; }
-            button := Button { action: toggle; enabled: true; }
+            toggle := Action { text <- "切换"; checkable <- true; }
+            button := Button { action <- toggle; enabled <- true; }
         }
     "#;
     let raw = lower(source, "action.xr");
@@ -6864,11 +6887,11 @@ fn action_references_are_validated_before_and_after_lowering() {
     );
     for (bad, diagnostic) in [
         (
-            source.replace("action: toggle", "action: button"),
+            source.replace("action <- toggle", "action: button"),
             "requires the id of an Action",
         ),
         (
-            source.replace("enabled: true;", "clicked() => {}"),
+            source.replace("enabled <- true;", "clicked() => {}"),
             "activation handler belongs",
         ),
         (
@@ -6889,10 +6912,10 @@ fn action_references_are_validated_before_and_after_lowering() {
 fn table_column_and_cell_structure_is_verified_in_mlir() {
     let source = r#"component App inherits Window {
         TableView {
-            row-height: 32px;
-            selection-target: cells;
-            TableColumn { title: "A"; resizable: false; }
-            for row in 3 : TableRow { Text { text: "Row " + row; } }
+            row-height <- 32px;
+            selection-target <- cells;
+            TableColumn { title <- "A"; resizable <- false; }
+            for row in 3 : TableRow { Text { text <- "Row " + row; } }
         }
     }"#;
     let lowered = lower(source, "table.xr");
@@ -6920,10 +6943,10 @@ fn table_column_and_cell_structure_is_verified_in_mlir() {
 #[test]
 fn table_edit_links_a_writable_model_to_the_repeat_item() {
     let source = r#"component App inherits Window {
-        in-out property <[string]> rows: once ["one"];
+        in-out property <[string]> rows: ["one"];
         TableView {
-            TableColumn { title: "A"; }
-            for entry[index] in root.rows : TableRow { TableCell { text <=> entry; } }
+            TableColumn { title <- "A"; }
+            for entry[index] in root.rows : TableRow { TableCell { text <-> entry; } }
         }
     }"#;
     let mlir = lower(source, "table-edit.xr");
@@ -6945,13 +6968,13 @@ fn record_fields_are_typed_through_mlir_and_rust_generation() {
         export struct Entry { name: string, count: int }
         export component App inherits Window {
             property <Entry> active: Entry { count: 2, name: "alpha" };
-            in-out property <[Entry]> entries: once [Entry { name: "beta", count: 3 }];
+            in-out property <[Entry]> entries: [Entry { name: "beta", count: 3 }];
             pure callback label(Entry) -> string;
             label(value) => { value.name + value.count }
-            title: root.label(root.active);
+            title <- root.label(root.active);
             TableView {
-                TableColumn { title: "名称"; }
-                for entry in root.entries : TableRow { TableCell { text <=> entry.name; } }
+                TableColumn { title <- "名称"; }
+                for entry in root.entries : TableRow { TableCell { text <-> entry.name; } }
             }
         }
     "#;
@@ -6966,7 +6989,7 @@ fn record_fields_are_typed_through_mlir_and_rust_generation() {
             .unwrap_err()
             .contains("unknown record field")
     );
-    let invalid = source.replace("text <=> entry.name", "text <=> entry.count");
+    let invalid = source.replace("text <-> entry.name", "text <-> entry.count");
     assert!(
         compile(&invalid, "record.xr")
             .err()
@@ -6992,7 +7015,7 @@ fn record_updates_check_the_base_and_all_explicit_fields() {
         struct Entry { name: string, count: int }
         struct Other { name: string, count: int }
         export component App inherits Window {
-            property <Entry> active: once Entry { name: "old", count: 2 };
+            property <Entry> active: Entry { name: "old", count: 2 };
             property <Other> other: Other { name: "other", count: 3 };
             callback edit();
             edit => { root.active = Entry { name: "new", ..root.active }; }
@@ -7034,7 +7057,7 @@ fn record_updates_check_the_base_and_all_explicit_fields() {
 fn callback_control_flow_checks_nested_statements_and_loop_bindings() {
     let source = r#"
         export component App inherits Window {
-            out property <int> total: once 0;
+            out property <int> total: 0;
             callback run(bool);
             run(enabled) => {
                 if enabled {
@@ -7093,13 +7116,13 @@ fn table_editors_verify_typed_record_links() {
         export component App inherits Window {
             in-out property <[RowData]> items;
             TableView {
-                TableColumn { title: "数量"; }
-                TableColumn { title: "可用"; }
-                TableColumn { title: "负载"; }
+                TableColumn { title <- "数量"; }
+                TableColumn { title <- "可用"; }
+                TableColumn { title <- "负载"; }
                 for row in root.items : TableRow {
-                    SpinBox { value <=> row.units; }
-                    CheckBox { checked <=> row.available; }
-                    Slider { value <=> row.load; }
+                    SpinBox { value <-> row.units; }
+                    CheckBox { checked <-> row.available; }
+                    Slider { value <-> row.load; }
                 }
             }
         }
@@ -7115,14 +7138,14 @@ fn table_editors_verify_typed_record_links() {
             .unwrap_err()
             .contains("matching field of a table model")
     );
-    let wrong_type = source.replace("value <=> row.units", "value <=> row.available");
+    let wrong_type = source.replace("value <-> row.units", "value <-> row.available");
     assert!(
         compile(&wrong_type, "editors.xr")
             .err()
             .unwrap()
             .contains("type mismatch")
     );
-    let int_slider = source.replace("value <=> row.load", "value <=> row.units");
+    let int_slider = source.replace("value <-> row.load", "value <-> row.units");
     assert!(
         compile(&int_slider, "editors.xr")
             .err()
@@ -7136,7 +7159,7 @@ fn table_editors_verify_typed_record_links() {
             .unwrap()
             .contains("writable record list")
     );
-    let unlinked = source.replace("value <=> row.units", "value: row.units");
+    let unlinked = source.replace("value <-> row.units", "value: row.units");
     assert!(
         compile(&unlinked, "editors.xr")
             .err()
@@ -7148,12 +7171,12 @@ fn table_editors_verify_typed_record_links() {
 #[test]
 fn split_view_requires_static_panes_and_typed_handle_properties() {
     let source = r#"export component App inherits SplitView {
-        orientation: vertical;
-        handle-size: 10px;
-        handle-hit-size: 24px;
-        out property <bool> dragging: self.resizing;
-        Rectangle { min-height: 35px; }
-        Rectangle { preferred-height: 60px; }
+        orientation <- vertical;
+        handle-size <- 10px;
+        handle-hit-size <- 24px;
+        out property <bool> dragging <- self.resizing;
+        Rectangle { min-height <- 35px; }
+        Rectangle { preferred-height <- 60px; }
         resized() => { }
     }"#;
     let lowered = lower(source, "split.xr");
@@ -7172,7 +7195,7 @@ fn split_view_requires_static_panes_and_typed_handle_properties() {
             .unwrap_err()
             .contains("SplitView resizing is read-only")
     );
-    let invalid = source.replace("handle-hit-size: 24px", "resizing: true");
+    let invalid = source.replace("handle-hit-size <- 24px", "resizing: true");
     assert!(
         analyze(&invalid)
             .unwrap_err()
@@ -7195,8 +7218,8 @@ fn split_handle_template_parameters_are_typed_and_scoped() {
     let source = r#"
         export component App inherits SplitView {
             SplitHandle {
-                background: handle-hovered ? #ff0000 : #0000ff;
-                if handle-pressed: Rectangle { visible: handle-index == 0; }
+                background <- handle-hovered ? #ff0000 : #0000ff;
+                if handle-pressed: Rectangle { visible <- handle-index == 0; }
             }
             Rectangle {}
             Rectangle {}
@@ -7254,7 +7277,7 @@ fn split_fill_is_a_typed_direct_pane_reference() {
         component Demo inherits Window {
             outside := Rectangle {}
             view := SplitView {
-                fill-pane: editor;
+                fill-pane <- editor;
                 sidebar := Rectangle { inner := Rectangle {} }
                 editor := Editor {}
             }
@@ -7273,8 +7296,9 @@ fn split_fill_is_a_typed_direct_pane_reference() {
         "{rust}"
     );
     for target in ["outside", "inner", "missing"] {
-        let error = analyze(&source.replace("fill-pane: editor", &format!("fill-pane: {target}")))
-            .unwrap_err();
+        let error =
+            analyze(&source.replace("fill-pane <- editor", &format!("fill-pane: {target}")))
+                .unwrap_err();
         assert!(
             error.contains("fill-pane requires a named direct pane"),
             "{error}"
@@ -7292,7 +7316,7 @@ fn split_fill_is_a_typed_direct_pane_reference() {
 fn split_state_uses_typed_reads_and_validates_restore_effects() {
     let source = r#"
         export component App inherits Window {
-            out property <string> layout: split.save-state();
+            out property <string> layout <- split.save-state();
             in property <string> saved;
             callback restore();
             restore => { split.restore-state(root.saved); }
@@ -7337,8 +7361,8 @@ fn split_state_uses_typed_reads_and_validates_restore_effects() {
 #[test]
 fn tooltip_requires_one_attachment_and_exclusive_content() {
     let source = r#"component App inherits Window {
-        Button { text: "Save"; Tooltip { text: "Saves the document"; delay: 20; timeout: 100; } }
-        Rectangle { Tooltip { VerticalLayout { Text { text: "Details"; } } } }
+        Button { text <- "Save"; Tooltip { text <- "Saves the document"; delay <- 20; timeout <- 100; } }
+        Rectangle { Tooltip { VerticalLayout { Text { text <- "Details"; } } } }
     }"#;
     let ir = lower(source, "tooltip.xr");
     assert!(mlir::process(&ir).is_ok());
@@ -7359,7 +7383,7 @@ fn tooltip_requires_one_attachment_and_exclusive_content() {
             "at most one Tooltip",
         ),
         (
-            "component A inherits Window { Rectangle { Tooltip { text: \"A\"; Text {} } } }",
+            "component A inherits Window { Rectangle { Tooltip { text <- \"A\"; Text {} } } }",
             "Tooltip requires text or a single content child",
         ),
         (
@@ -7384,13 +7408,13 @@ fn tooltip_requires_one_attachment_and_exclusive_content() {
 fn programmatic_list_selection_compiles_with_typed_queries_and_read_only_state() {
     let source = r#"
         component App inherits Window {
-            out property <int> count: list.selection-count;
-            out property <bool> found: list.is-row-selected(1);
+            out property <int> count <- list.selection-count;
+            out property <bool> found <- list.is-row-selected(1);
             callback choose();
             choose => { list.select-row(1); list.toggle-row(0); list.select-all(); list.clear-selection(); }
             list := StandardListView {
-                model: ["one", "two"];
-                multi-select: true;
+                model <- ["one", "two"];
+                multi-select <- true;
             }
         }
     "#;
@@ -7398,7 +7422,7 @@ fn programmatic_list_selection_compiles_with_typed_queries_and_read_only_state()
     assert!(compiled.mlir.contains("\"xr.list_row_selected\""));
     assert!(compiled.mlir.contains("\"xr.table_selection_command\""));
     assert!(compiled.mlir.contains("method = \"toggle-row\""));
-    let readonly = source.replace("multi-select: true", "selection-count: 2");
+    let readonly = source.replace("multi-select <- true", "selection-count: 2");
     assert!(compile(&readonly, "list-selection-api.xr").is_err());
     let bad_query = source.replace("is-row-selected(1)", "is-row-selected(true)");
     assert!(compile(&bad_query, "list-selection-api.xr").is_err());
@@ -7412,8 +7436,8 @@ fn tree_selection_compiles_with_typed_queries_and_effects() {
         struct Branch { id: int, parent: int }
         component App inherits Window {
             in property <[Branch]> branches;
-            out property <int> count: tree.selection-count;
-            out property <bool> found: tree.is-key-selected(5) && tree.is-row-selected(0);
+            out property <int> count <- tree.selection-count;
+            out property <bool> found <- tree.is-key-selected(5) && tree.is-row-selected(0);
             callback choose();
             choose => {
                 tree.select-key(5);
@@ -7423,8 +7447,8 @@ fn tree_selection_compiles_with_typed_queries_and_effects() {
                 tree.clear-selection();
             }
             tree := TreeView {
-                multi-select: true;
-                for row in root.branches : TreeRow { key: row.id; parent-key: row.parent; }
+                multi-select <- true;
+                for row in root.branches : TreeRow { key <- row.id; parent-key <- row.parent; }
             }
         }
     "#;
@@ -7438,11 +7462,11 @@ fn tree_selection_compiles_with_typed_queries_and_effects() {
         assert!(compiled.mlir.contains(op), "missing {op}");
     }
     for (from, to) in [
-        ("multi-select: true", "selection-count: 2"),
+        ("multi-select <- true", "selection-count: 2"),
         ("is-key-selected(5)", "is-key-selected(true)"),
         ("tree.select-key(5)", "tree.select-column(5)"),
         ("callback choose();", "pure callback choose();"),
-        ("multi-select: true", "multi-select: tree.has-selection"),
+        ("multi-select <- true", "multi-select: tree.has-selection"),
     ] {
         assert!(
             compile(&source.replace(from, to), "tree-selection.xr").is_err(),
@@ -7462,15 +7486,15 @@ fn tree_batch_selection_uses_a_typed_integer_model() {
         struct Branch { id: int, parent: int }
         export component App inherits Window {
             in property <[Branch]> branches;
-            in property <[int]> keys: once [9, 3];
-            out property <int> first: Model.at(tree.selected-keys, 0, -1);
+            in property <[int]> keys: [9, 3];
+            out property <int> first <- Model.at(tree.selected-keys, 0, -1);
             callback choose();
             choose => { tree.select-keys(root.keys); }
             tree := TreeView {
-                multi-select: true;
-                for row in root.branches : TreeRow { key: row.id; parent-key: row.parent; }
+                multi-select <- true;
+                for row in root.branches : TreeRow { key <- row.id; parent-key <- row.parent; }
             }
-            for key in root.keys : Text { text: "" + key; }
+            for key in root.keys : Text { text <- "" + key; }
         }
     "#;
     let compiled = compile(source, "tree-key-batch.xr").unwrap();
@@ -7483,7 +7507,7 @@ fn tree_batch_selection_uses_a_typed_integer_model() {
         assert!(compiled.mlir.contains(op), "missing {op}");
     }
     for (from, to) in [
-        ("multi-select: true", "selected-keys: [9, 3]"),
+        ("multi-select <- true", "selected-keys: [9, 3]"),
         (
             "Model.at(tree.selected-keys, 0, -1)",
             "Model.at(tree.selected-keys, 0, false)",
@@ -7607,7 +7631,7 @@ fn live_integer_list_bindings_emit_explicit_runtime_values() {
     let document = parse(
         r#"
         export component App inherits Window {
-            in-out property <[int]> numbers: once [1, 2];
+            in-out property <[int]> numbers: [1, 2];
             pure callback echo([int]) -> [int];
             echo(keys) => { keys }
         }
@@ -7632,7 +7656,7 @@ fn virtual_lists_accept_typed_multi_selection_bindings_and_events() {
         let source = format!(
             r#"
             component App inherits Window {{
-                out property <int> selected: once 0;
+                out property <int> selected: 0;
                 view := {kind} {{
                     {rows}
                     multi-select: true;
@@ -7657,9 +7681,9 @@ fn list_typeahead_roles_validate_against_record_fields() {
             property <[Entry]> rows;
             property <string> field: "alias";
             GridView {
-                typeahead-field: "alias";
-                typeahead-enabled: true;
-                for row in root.rows : Text { text: row.alias; }
+                typeahead-field <- "alias";
+                typeahead-enabled <- true;
+                for row in root.rows : Text { text <- row.alias; }
             }
         }
     "#;
@@ -7670,14 +7694,14 @@ fn list_typeahead_roles_validate_against_record_fields() {
         ("root.field", "constant string"),
     ] {
         let input = source.replace(
-            "typeahead-field: \"alias\"",
+            "typeahead-field <- \"alias\"",
             &format!("typeahead-field: {invalid}"),
         );
         let error = compile(&input, "typeahead.xr").err().unwrap();
         assert!(error.contains(expected), "{error}");
     }
     let raw = lower(
-        &source.replace("typeahead-field: \"alias\"", "row-key-field: \"id\""),
+        &source.replace("typeahead-field <- \"alias\"", "row-key-field: \"id\""),
         "typeahead.xr",
     );
     let broken = raw.replace("name = \"row-key-field\"", "name = \"typeahead-field\"");
@@ -7697,15 +7721,15 @@ fn list_sections_require_a_constant_string_record_field() {
             property <[Entry]> records;
             property <string> dynamic: "group";
             StandardListView {
-                model: root.records;
-                text-role: "title";
-                section-field: "group";
-                section-height: 26px;
-                sticky-section-headers: true;
+                model <- root.records;
+                text-role <- "title";
+                section-field <- "group";
+                section-height <- 26px;
+                sticky-section-headers <- true;
             }
             ListView {
-                section-field: "group";
-                for row in root.records : Text { text: row.title; }
+                section-field <- "group";
+                for row in root.records : Text { text <- row.title; }
             }
         }
     "#;
@@ -7716,11 +7740,11 @@ fn list_sections_require_a_constant_string_record_field() {
         ("section-field: \"missing\"", "string field"),
         ("section-field: root.dynamic", "constant string"),
     ] {
-        let broken = source.replace("section-field: \"group\"", bad);
+        let broken = source.replace("section-field <- \"group\"", bad);
         let error = compile(&broken, "section-list.xr").err().unwrap();
         assert!(error.contains(expected), "{error}");
     }
-    let key_only = source.replace("section-field: \"group\"", "row-key-field: \"id\"");
+    let key_only = source.replace("section-field <- \"group\"", "row-key-field: \"id\"");
     let raw = lower(&key_only, "section-list.xr");
     let invalid = raw.replace("name = \"row-key-field\"", "name = \"section-field\"");
     assert_ne!(raw, invalid);
@@ -7793,9 +7817,9 @@ fn tree_view_roles_require_int_fields_from_a_record_model() {
             property <[Entry]> records;
             TreeView {
                 for row in root.records : TreeRow {
-                    key: row.id;
-                    parent-key: row.parent;
-                    Text { text: row.label; }
+                    key <- row.id;
+                    parent-key <- row.parent;
+                    Text { text <- row.label; }
                 }
             }
         }
@@ -7803,14 +7827,14 @@ fn tree_view_roles_require_int_fields_from_a_record_model() {
     let ir = lower(source, "tree.xr");
     assert!(mlir::process(&ir).is_ok());
     assert!(compile(source, "tree.xr").is_ok());
-    let wrong_type = source.replace("key: row.id", "key: row.label");
+    let wrong_type = source.replace("key <- row.id", "key: row.label");
     assert!(
         compile(&wrong_type, "tree.xr")
             .err()
             .unwrap()
             .contains("type mismatch")
     );
-    let invalid_role = source.replace("parent-key: row.parent", "parent-key: 0");
+    let invalid_role = source.replace("parent-key <- row.parent", "parent-key: 0");
     assert!(
         compile(&invalid_role, "tree.xr")
             .err()
@@ -7887,9 +7911,9 @@ fn tree_commands_and_queries_keep_typed_operands_and_owner_validation() {
         struct Entry { id: int, parent: int }
         component App inherits Window {
             property <[Entry]> records;
-            out property <bool> open: directory.is-expanded(1);
-            out property <int> depth: directory.depth(3);
-            out property <int> position: directory.row-for-key(3);
+            out property <bool> open <- directory.is-expanded(1);
+            out property <int> depth <- directory.depth(3);
+            out property <int> position <- directory.row-for-key(3);
             callback reveal();
             reveal => {
                 directory.expand-to(3);
@@ -7898,7 +7922,7 @@ fn tree_commands_and_queries_keep_typed_operands_and_owner_validation() {
                 directory.toggle-expanded(1);
             }
             directory := TreeView {
-                for row in root.records : TreeRow { key: row.id; parent-key: row.parent; Text { text: "row"; } }
+                for row in root.records : TreeRow { key <- row.id; parent-key <- row.parent; Text { text <- "row"; } }
             }
         }
     "#;
@@ -7963,20 +7987,20 @@ fn tree_root_keys_are_typed_and_cannot_form_query_initialization_cycles() {
         struct Entry { id: int, parent: int }
         component App inherits Window {
             property <[Entry]> records;
-            in property <int> branch: once 1;
+            in property <int> branch: 1;
             directory := TreeView {
-                root-key: root.branch;
-                for row in root.records : TreeRow { key: row.id; parent-key: row.parent; Text { text: "row"; } }
+                root-key <- root.branch;
+                for row in root.records : TreeRow { key <- row.id; parent-key <- row.parent; Text { text <- "row"; } }
             }
         }
     "#;
     assert!(compile(source, "tree-root.xr").is_ok());
     for (value, expected) in [("true", "type mismatch"), ("directory.depth(1)", "cyclic")] {
-        let invalid = source.replace("root-key: root.branch", &format!("root-key: {value}"));
+        let invalid = source.replace("root-key <- root.branch", &format!("root-key: {value}"));
         let error = compile(&invalid, "tree-root.xr").err().unwrap();
         assert!(error.contains(expected), "{error}");
     }
-    let labels = source.replace("root-key: root.branch", "indentation: 18px");
+    let labels = source.replace("root-key <- root.branch", "indentation: 18px");
     let invalid =
         lower(&labels, "tree-root.xr").replace("name = \"indentation\"", "name = \"root-key\"");
     assert!(
@@ -7995,9 +8019,9 @@ fn tree_filters_require_a_typed_record_field() {
             property <[Entry]> records;
             in property <string> query;
             directory := TreeView {
-                filter-field: "details.label";
-                filter-text: root.query;
-                for row in root.records : TreeRow { key: row.id; parent-key: row.parent; Text { text: row.details.label; } }
+                filter-field <- "details.label";
+                filter-text <- root.query;
+                for row in root.records : TreeRow { key <- row.id; parent-key <- row.parent; Text { text <- row.details.label; } }
             }
         }
     "#;
@@ -8005,12 +8029,16 @@ fn tree_filters_require_a_typed_record_field() {
     assert!(output.rust.to_string().contains("project_model"));
     for (from, to, expected) in [
         (
-            r#"filter-field: "details.label";"#,
+            r#"filter-field <- "details.label";"#,
             "",
             "filter-text requires filter-field",
         ),
         (r#""details.label""#, r#""id""#, "requires a string field"),
-        ("filter-text: root.query", "filter-text: 1", "type mismatch"),
+        (
+            "filter-text <- root.query",
+            "filter-text: 1",
+            "type mismatch",
+        ),
     ] {
         let error = compile(&source.replace(from, to), "tree-filter.xr")
             .err()
@@ -8033,17 +8061,17 @@ fn tree_cells_lower_to_verified_writable_record_links() {
         component App inherits Window {
             in-out property <[Entry]> records;
             tree := TreeView {
-                multi-select: true;
+                multi-select <- true;
                 selection-changed(count) => {}
                 for row in root.records : TreeRow {
-                    key: row.id;
-                    parent-key: row.parent;
+                    key <- row.id;
+                    parent-key <- row.parent;
                     HorizontalLayout {
-                        TreeCell { text <=> row.label; }
-                        SpinBox { value <=> row.quota; }
-                        CheckBox { checked <=> row.active; }
+                        TreeCell { text <-> row.label; }
+                        SpinBox { value <-> row.quota; }
+                        CheckBox { checked <-> row.active; }
                         if row.active : HorizontalLayout {
-                            Slider { value <=> row.load; }
+                            Slider { value <-> row.load; }
                         }
                     }
                 }
@@ -8072,14 +8100,14 @@ fn tree_cells_lower_to_verified_writable_record_links() {
             .unwrap()
             .contains("writable record list")
     );
-    let invalid_field = source.replace("text <=> row.label", "text <=> row.id");
+    let invalid_field = source.replace("text <-> row.label", "text <-> row.id");
     assert!(
         compile(&invalid_field, "tree-edit.xr")
             .err()
             .unwrap()
             .contains("TreeCell editor expects string, found int")
     );
-    let unlinked = source.replace("value <=> row.quota", "value: row.quota");
+    let unlinked = source.replace("value <-> row.quota", "value: row.quota");
     assert!(
         compile(&unlinked, "tree-edit.xr")
             .err()
@@ -8102,12 +8130,12 @@ fn tree_cells_lower_to_verified_writable_record_links() {
 fn range_slider_verifies_both_links_and_pair_events() {
     let source = r#"
         export component App inherits Window {
-            in-out property <float> lo: once 15;
-            in-out property <float> hi: once 85;
+            in-out property <float> lo: 15;
+            in-out property <float> hi: 85;
             range := RangeSlider {
-                lower-value <=> root.lo;
-                upper-value <=> root.hi;
-                orientation: vertical;
+                lower-value <-> root.lo;
+                upper-value <-> root.hi;
+                orientation <- vertical;
                 changed(first, second) => {}
                 released(first, second) => {}
             }
@@ -8117,7 +8145,7 @@ fn range_slider_verifies_both_links_and_pair_events() {
     let module = mlir::process(&ir).unwrap();
     assert_eq!(module.to_mlir().matches("xr.control_link").count(), 2);
     assert!(compile(source, "interval.xr").is_ok());
-    let alias = source.replace("upper-value <=> root.hi", "upper-value <=> root.lo");
+    let alias = source.replace("upper-value <-> root.hi", "upper-value <-> root.lo");
     assert!(
         compile(&alias, "interval.xr")
             .err()
@@ -8150,14 +8178,14 @@ fn range_slider_verifies_both_links_and_pair_events() {
 fn dial_keeps_its_typed_input_mode_through_mlir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <float> value: once 20;
-            in-out property <DialInputMode> mode: once DialInputMode.vertical;
+            in-out property <float> value: 20;
+            in-out property <DialInputMode> mode: DialInputMode.vertical;
             knob := Dial {
-                value <=> root.value;
-                input-mode: root.mode;
-                start-angle: -120;
-                end-angle: 100;
-                wrap: true;
+                value <-> root.value;
+                input-mode <- root.mode;
+                start-angle <- -120;
+                end-angle <- 100;
+                wrap <- true;
                 changed(next) => {}
                 released(last) => {}
             }
@@ -8171,7 +8199,7 @@ fn dial_keeps_its_typed_input_mode_through_mlir() {
     let invalid_mode = raw.replace("value = \"vertical\"", "value = \"diagonal\"");
     assert_ne!(invalid_mode, raw);
     assert!(mlir::process(&invalid_mode).is_err());
-    let invalid_binding = source.replace("input-mode: root.mode", "input-mode: 42");
+    let invalid_binding = source.replace("input-mode <- root.mode", "input-mode: 42");
     assert!(
         compile(&invalid_binding, "dial.xr")
             .err()
@@ -8184,13 +8212,13 @@ fn dial_keeps_its_typed_input_mode_through_mlir() {
 fn scroll_bar_policy_is_typed_and_requires_a_supported_axis() {
     let source = r#"
         export component App inherits Window {
-            in-out property <ScrollBarPolicy> policy: once ScrollBarPolicy.always-on;
+            in-out property <ScrollBarPolicy> policy: ScrollBarPolicy.always-on;
             ScrollView {
-                vertical-scroll-bar-policy: root.policy;
-                horizontal-scroll-bar-policy: as-needed;
-                content-width: 150%;
-                content-height: 500px;
-                Rectangle { height: 500px; }
+                vertical-scroll-bar-policy <- root.policy;
+                horizontal-scroll-bar-policy <- as-needed;
+                content-width <- 150%;
+                content-height <- 500px;
+                Rectangle { height <- 500px; }
             }
         }
     "#;
@@ -8211,7 +8239,7 @@ fn scroll_bar_policy_is_typed_and_requires_a_supported_axis() {
     let invalid_policy = raw.replace("value = \"always-on\"", "value = \"temporary\"");
     assert_ne!(invalid_policy, raw);
     assert!(mlir::process(&invalid_policy).is_err());
-    let invalid_extent = source.replace("content-height: 500px", "content-height: true");
+    let invalid_extent = source.replace("content-height <- 500px", "content-height: true");
     assert!(
         compile(&invalid_extent, "scroll-bar.xr")
             .err()
@@ -8224,12 +8252,12 @@ fn scroll_bar_policy_is_typed_and_requires_a_supported_axis() {
 fn drawer_checks_the_edge_and_its_open_link_in_mlir() {
     let source = r#"
         component App inherits Window {
-            in-out property <bool> showing: once false;
-            in property <DrawerEdge> side: once DrawerEdge.right;
+            in-out property <bool> showing: false;
+            in property <DrawerEdge> side: DrawerEdge.right;
             drawer := Drawer {
-                open <=> root.showing;
-                edge: root.side;
-                drag-margin: 16px;
+                open <-> root.showing;
+                edge <- root.side;
+                drag-margin <- 16px;
                 opened() => {}
                 closed() => {}
             }
@@ -8249,7 +8277,7 @@ fn drawer_checks_the_edge_and_its_open_link_in_mlir() {
             .unwrap_err()
             .contains("requires opened() or closed()")
     );
-    let invalid_margin = source.replace("drag-margin: 16px", "drag-margin: true");
+    let invalid_margin = source.replace("drag-margin <- 16px", "drag-margin: true");
     assert!(
         compile(&invalid_margin, "drawer.xr")
             .err()
@@ -8262,14 +8290,14 @@ fn drawer_checks_the_edge_and_its_open_link_in_mlir() {
 fn swipe_view_verifies_static_pages_and_its_index_link() {
     let source = r#"
         component App inherits Window {
-            in-out property <int> page: once 0;
+            in-out property <int> page: 0;
             views := SwipeView {
-                current-index <=> root.page;
-                orientation: vertical;
-                interactive: true;
+                current-index <-> root.page;
+                orientation <- vertical;
+                interactive <- true;
                 changed(index) => {}
-                SwipePage { Text { text: "first"; } }
-                SwipePage { visible: false; Text { text: "second"; } }
+                SwipePage { Text { text <- "first"; } }
+                SwipePage { visible <- false; Text { text <- "second"; } }
             }
         }
     "#;
@@ -8307,14 +8335,14 @@ fn swipe_view_accepts_one_repeated_page_with_component_content() {
     let source = r#"
         component Editor inherits Rectangle {
             in property <string> title;
-            Label { text: root.title; }
+            Label { text <- root.title; }
         }
         export component App inherits Window {
             view := SwipeView {
-                current-value: "two";
+                current-value <- "two";
                 for title in ["one", "two"] : SwipePage {
-                    value: title;
-                    Editor { title: title; }
+                    value <- title;
+                    Editor { title <- title; }
                 }
             }
         }
@@ -8328,7 +8356,7 @@ fn swipe_view_accepts_one_repeated_page_with_component_content() {
             .contains("append_navigation_pages")
     );
     let invalid = source.replace(
-        "Editor { title: title; }",
+        "Editor { title <- title; }",
         "editor := Editor { title: title; }",
     );
     assert!(compile(&invalid, "model_pages.xr").is_err());
@@ -8338,16 +8366,16 @@ fn swipe_view_accepts_one_repeated_page_with_component_content() {
 fn page_indicator_verifies_count_style_and_index_binding() {
     let source = r#"
         component App inherits Window {
-            in-out property <int> page: once 0;
+            in-out property <int> page: 0;
             indicator := PageIndicator {
-                count: 8;
-                current-index <=> root.page;
-                orientation: vertical;
-                dot-size: 10px;
-                spacing: 4px;
-                color: #abc;
-                current-color: #345;
-                interactive: true;
+                count <- 8;
+                current-index <-> root.page;
+                orientation <- vertical;
+                dot-size <- 10px;
+                spacing <- 4px;
+                color <- #abc;
+                current-color <- #345;
+                interactive <- true;
                 changed(index) => {}
             }
         }
@@ -8366,7 +8394,7 @@ fn page_indicator_verifies_count_style_and_index_binding() {
             .unwrap_err()
             .contains("incorrect PageIndicator property type")
     );
-    let invalid_child = source.replace("count: 8;", "count: 8; Rectangle {}");
+    let invalid_child = source.replace("count <- 8;", "count: 8; Rectangle {}");
     assert!(
         compile(&invalid_child, "indicator.xr")
             .err()
@@ -8380,19 +8408,19 @@ fn swipe_transition_duration_is_verified_in_source_and_mlir() {
     let source = r#"
         export component App inherits Window {
             pages := SwipeView {
-                interactive: true;
-                transition-duration: 180;
+                interactive <- true;
+                transition-duration <- 180;
                 SwipePage { Rectangle {} }
                 SwipePage { Rectangle {} }
             }
         }
     "#;
     assert!(compile(source, "swipe-transition.xr").is_ok());
-    let invalid = source.replace("transition-duration: 180", "transition-duration: true");
+    let invalid = source.replace("transition-duration <- 180", "transition-duration: true");
     let error = compile(&invalid, "swipe-transition.xr").err().unwrap();
     assert!(error.contains("type mismatch"), "{error}");
     let raw = lower(
-        &source.replace("transition-duration: 180;", ""),
+        &source.replace("transition-duration <- 180;", ""),
         "swipe-transition.xr",
     );
     let invalid = raw.replace("name = \"interactive\"", "name = \"transition-duration\"");
@@ -8411,8 +8439,8 @@ fn stack_navigation_uses_verified_effects_and_named_routes() {
                 clicked() => { nav.push("detail"); }
             }
             nav := StackView {
-                initial-page: "home";
-                transition-duration: 180;
+                initial-page <- "home";
+                transition-duration <- 180;
                 changed(page, depth) => {}
                 home := StackPage {}
                 detail := StackPage {}
@@ -8427,7 +8455,7 @@ fn stack_navigation_uses_verified_effects_and_named_routes() {
             .contains("xr.navigate")
     );
     assert!(compile(source, "stack.xr").is_ok());
-    let bad_duration = source.replace("transition-duration: 180", "transition-duration: true");
+    let bad_duration = source.replace("transition-duration <- 180", "transition-duration: true");
     assert!(
         compile(&bad_duration, "stack.xr")
             .err()
@@ -8476,15 +8504,15 @@ fn stack_navigation_uses_verified_effects_and_named_routes() {
 fn stack_state_reads_are_typed_and_detect_initialization_cycles() {
     let source = r#"
         component App inherits Window {
-            out property <int> level: nav.depth;
+            out property <int> level <- nav.depth;
             pure callback route() -> string;
             route() => { nav.current-page }
             nav := StackView {
-                initial-page: "home";
+                initial-page <- "home";
                 home := StackPage {}
                 next := StackPage {}
             }
-            back := Button { enabled: nav.can-go-back; }
+            back := Button { enabled <- nav.can-go-back; }
         }
     "#;
     let raw = lower(source, "stack-read.xr");
@@ -8503,7 +8531,7 @@ fn stack_state_reads_are_typed_and_detect_initialization_cycles() {
             .unwrap_err()
             .contains("typed StackView state property")
     );
-    let write = source.replace("initial-page: \"home\";", "depth: 1;");
+    let write = source.replace("initial-page <- \"home\";", "depth: 1;");
     assert!(
         compile(&write, "stack-read.xr")
             .err()
@@ -8516,7 +8544,7 @@ fn stack_state_reads_are_typed_and_detect_initialization_cycles() {
         "nav.depth > 0 ? \"home\" : \"next\"",
     ] {
         let cycle = source.replace(
-            "initial-page: \"home\"",
+            "initial-page <- \"home\"",
             &format!("initial-page: {initializer}"),
         );
         assert!(
@@ -8528,13 +8556,13 @@ fn stack_state_reads_are_typed_and_detect_initialization_cycles() {
     }
     let cross_component = r#"
         component Child inherits StackView {
-            in property <string> seed: once "home";
-            out property <int> level: root.depth;
-            initial-page: root.seed;
+            in property <string> seed: "home";
+            out property <int> level <- root.depth;
+            initial-page <- root.seed;
             home := StackPage {}
         }
         component App inherits Window {
-            child := Child { seed: child.level > 0 ? "home" : "home"; }
+            child := Child { seed <- child.level > 0 ? "home" : "home"; }
         }
     "#;
     assert!(
@@ -8549,11 +8577,11 @@ fn stack_state_reads_are_typed_and_detect_initialization_cycles() {
 fn stack_page_lifecycle_and_guards_are_verified_in_both_compilers() {
     let source = r#"
         component App inherits Window {
-            out property <int> detail-index: detail.stack-index;
-            out property <bool> detail-active: detail.active;
-            in-out property <bool> dirty: once false;
+            out property <int> detail-index <- detail.stack-index;
+            out property <bool> detail-active <- detail.active;
+            in-out property <bool> dirty: false;
             nav := StackView {
-                initial-page: "home";
+                initial-page <- "home";
                 home := StackPage {}
                 detail := StackPage {
                     leave-requested(destination, removing) => { !removing || !root.dirty }
@@ -8585,7 +8613,7 @@ fn stack_page_lifecycle_and_guards_are_verified_in_both_compilers() {
             "read-only",
         ),
         (
-            "initial-page: \"home\"",
+            "initial-page <- \"home\"",
             "initial-page: home.active ? \"home\" : \"detail\"",
             "cyclic",
         ),
@@ -8670,10 +8698,10 @@ fn exported_record_types_and_literals_resolve_through_import_aliases() {
     .unwrap();
     let source = r#"import { Data as Row, Details as Info } from "types.xr";
         export component App inherits Window {
-            in property <[Row]> rows: once [Row { details: Info { label: "one" } }];
+            in property <[Row]> rows: [Row { details: Info { label: "one" } }];
             property <Info> info: Info { label: "two" };
-            out property <Info> copy: Info { ..Info { ..root.info } };
-            VerticalLayout { for item in root.rows : Text { text: item.details.label; } }
+            out property <Info> copy <- Info { ..Info { ..root.info } };
+            VerticalLayout { for item in root.rows : Text { text <- item.details.label; } }
         }
     "#;
     let filename = directory.join("app.xr");
@@ -8738,10 +8766,10 @@ fn selection_groups_enforce_child_structure() {
 fn radio_group_has_focus_lowers_to_descendant_focus_and_allows_focus_commands() {
     let source = r#"
         export component App inherits Window {
-            out property <bool> selecting: options.has-focus;
+            out property <bool> selecting <- options.has-focus;
             FocusScope {
-                initial-focus: options;
-                options := RadioGroup { title: "Options"; RadioButton { text: "One"; } }
+                initial-focus <- options;
+                options := RadioGroup { title <- "Options"; RadioButton { text <- "One"; } }
                 enter := Button { clicked => { options.focus(); } }
                 leave := Button { clicked => { options.clear-focus(); } }
             }
@@ -8753,7 +8781,7 @@ fn radio_group_has_focus_lowers_to_descendant_focus_and_allows_focus_commands() 
     assert!(compiled.mlir.contains("\"xr.focus_target\""));
     assert!(compiled.mlir.contains("action = \"clear\""));
 
-    let invalid_binding = source.replace("title: \"Options\";", "has-focus: true;");
+    let invalid_binding = source.replace("title <- \"Options\";", "has-focus: true;");
     assert!(compile(&invalid_binding, "radio-focus.xr").is_err());
 }
 
@@ -8761,12 +8789,12 @@ fn radio_group_has_focus_lowers_to_descendant_focus_and_allows_focus_commands() 
 fn radio_groups_accept_mixed_options_without_relaxing_tab_rules() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> optional: once false;
+            in property <bool> optional: false;
             RadioGroup {
-                RadioButton { text: "Fixed"; }
-                if root.optional: RadioButton { text: "Extra"; }
-                for label in ["A","B"]: RadioButton { text: label; }
-                for number in 2: RadioButton { text: "Entry " + number; }
+                RadioButton { text <- "Fixed"; }
+                if root.optional: RadioButton { text <- "Extra"; }
+                for label in ["A","B"]: RadioButton { text <- label; }
+                for number in 2: RadioButton { text <- "Entry " + number; }
             }
         }
     "#;
@@ -8802,18 +8830,18 @@ fn virtual_views_can_be_instantiated_inside_component_delegates() {
         struct Entry { id: int, parent: int }
         component AlbumRow inherits Rectangle {
             in property <[Entry]> records;
-            ListView { height: 60px; for item in 1000 : Text { text: "Row " + item; } }
-            GridView { height: 60px; for tile in 1000 : Rectangle {} }
-            StandardListView { height: 60px; model: ["A", "B"]; }
+            ListView { height <- 60px; for item in 1000 : Text { text <- "Row " + item; } }
+            GridView { height <- 60px; for tile in 1000 : Rectangle {} }
+            StandardListView { height <- 60px; model <- ["A", "B"]; }
             TableView {
                 TableColumn {}
-                for entry in root.records : TableRow { Text { text: "Entry " + entry.id; } }
+                for entry in root.records : TableRow { Text { text <- "Entry " + entry.id; } }
             }
             TreeView {
                 for entry in root.records : TreeRow {
-                    key: entry.id;
-                    parent-key: entry.parent;
-                    Text { text: "Entry " + entry.id; }
+                    key <- entry.id;
+                    parent-key <- entry.parent;
+                    Text { text <- "Entry " + entry.id; }
                 }
             }
         }
@@ -8833,10 +8861,10 @@ fn virtual_views_can_be_instantiated_inside_component_delegates() {
 #[test]
 fn dialog_open_and_button_role_are_typed() {
     let source = r#"export component Confirm inherits Dialog {
-        in-out property <bool> showing: once false;
-        open <=> root.showing;
+        in-out property <bool> showing: false;
+        open <-> root.showing;
         accepted() => { }
-        DialogButton { role: DialogRole.accept; }
+        DialogButton { role <- DialogRole.accept; }
     }"#;
     let result = compile(source, "dialog.xr").unwrap();
     assert!(result.mlir.contains("!xr.dialogrole"));
@@ -8862,8 +8890,8 @@ fn dialog_open_and_button_role_are_typed() {
 fn multiline_edit_has_a_typed_wrap_and_edit_callback() {
     let source = r#"export component Editor inherits TextArea {
         in-out property <string> value;
-        wrap: TextWrap.char-wrap;
-        text <=> root.value;
+        wrap <- TextWrap.char-wrap;
+        text <-> root.value;
         edited(text) => { root.value = text; }
     }"#;
     let result = compile(source, "editor.xr").unwrap();
@@ -8886,10 +8914,10 @@ fn multiline_edit_has_a_typed_wrap_and_edit_callback() {
 #[test]
 fn numeric_and_choice_controls_validate_bindings_and_events() {
     let source = r#"export component Demo inherits Window {
-        in-out property <int> quantity: once 2;
-        in-out property <int> selection-index: once 0;
-        spin := SpinBox { value <=> root.quantity; edited(value) => { root.quantity = value; } }
-        picker := ComboBox { model: ["alpha"]; current-index <=> root.selection-index; selected(value) => {} }
+        in-out property <int> quantity: 2;
+        in-out property <int> selection-index: 0;
+        spin := SpinBox { value <-> root.quantity; edited(value) => { root.quantity = value; } }
+        picker := ComboBox { model <- ["alpha"]; current-index <-> root.selection-index; selected(value) => {} }
     }"#;
     let compilation = compile(source, "selection.xr").unwrap();
     assert!(compilation.mlir.contains("!xr.stringlist"));
@@ -8902,8 +8930,8 @@ fn numeric_and_choice_controls_validate_bindings_and_events() {
             .contains("expects one int parameter")
     );
     let bad = source.replace(
-        "current-index <=> root.selection-index;",
-        "current-index <=> root.selection-index; current-value: \"alpha\";",
+        "current-index <-> root.selection-index;",
+        "current-index <-> root.selection-index; current-value: \"alpha\";",
     );
     assert!(
         compile(&bad, "selection.xr")
@@ -8916,13 +8944,13 @@ fn numeric_and_choice_controls_validate_bindings_and_events() {
 #[test]
 fn slider_callbacks_and_progress_ratios_have_typed_mlir() {
     let source = r#"export component Demo inherits Window {
-        in-out property <float> level: once 12;
+        in-out property <float> level: 12;
         adjustment := Slider {
-            orientation: Orientation.vertical;
-            value <=> root.level;
+            orientation <- Orientation.vertical;
+            value <-> root.level;
             changed(value) => { root.level = value; }
         }
-        ProgressIndicator { progress: 65%; }
+        ProgressIndicator { progress <- 65%; }
     }"#;
     let compilation = compile(source, "controls.xr").unwrap();
     assert!(compilation.mlir.contains("!xr.orientation"));
@@ -8985,7 +9013,7 @@ fn callback_calls_enforce_signatures_and_purity() {
         pure callback number(int) -> int;
         pure callback text(string) -> string;
         callback read-number(int) -> int;
-        out property <int> result: number(3);
+        out property <int> result <- number(3);
     }"#;
     let compilation = compile(source, "calls.xr").unwrap();
     assert!(compilation.mlir.contains("\"xr.call\""));
@@ -9008,13 +9036,13 @@ fn callback_calls_enforce_signatures_and_purity() {
     }
 
     let cross_instance_cycle = r#"component Child inherits Rectangle {
-        in property <int> input: once 0;
+        in property <int> input: 0;
         pure callback value() -> int;
         value => { input }
     }
     export component Demo inherits Window {
-        property <int> result: child.value();
-        child := Child { input: root.result; }
+        property <int> result <- child.value();
+        child := Child { input <- root.result; }
     }"#;
     let error = compile(cross_instance_cycle, "calls.xr").err().unwrap();
     assert!(
@@ -9027,13 +9055,13 @@ fn callback_calls_enforce_signatures_and_purity() {
 fn component_instances_resolve_and_verify_typed_property_references() {
     let source = r#"
         export component App inherits Window {
-            out property <int> result: child.result;
-            child := Child { input: 3; max-width: 140px; }
+            out property <int> result <- child.result;
+            child := Child { input <- 3; max-width <- 140px; }
         }
         component Child inherits Rectangle {
             in property <int> input;
-            out property <int> result: local.value + input;
-            local := Text { property <int> value: root.input + 2; text: "" + self.value; }
+            out property <int> result <- local.value + input;
+            local := Text { property <int> value <- root.input + 2; text <- "" + self.value; }
         }
     "#;
     let compilation = compile(source, "instances.xr").unwrap();
@@ -9075,11 +9103,11 @@ fn component_instances_resolve_and_verify_typed_property_references() {
         assert!(err.contains(expected), "{err}");
     }
     let private = source.replace(
-        "out property <int> result: local",
+        "out property <int> result <- local",
         "private property <int> result: local",
     );
     assert!(analyze(&private).unwrap_err().contains("private"));
-    let read_only = source.replace("input: 3", "result: 3");
+    let read_only = source.replace("input <- 3", "result: 3");
     assert!(analyze(&read_only).unwrap_err().contains("read-only"));
 }
 
@@ -9095,12 +9123,12 @@ fn rejects_recursive_instances_and_cross_instance_binding_cycles() {
 
     let cycle = r#"
         component App inherits Window {
-            property <int> feedback: child.result;
-            child := Child { input: root.feedback; }
+            property <int> feedback <- child.result;
+            child := Child { input <- root.feedback; }
         }
         component Child inherits Rectangle {
             in property <int> input;
-            out property <int> result: input;
+            out property <int> result <- input;
         }
     "#;
     assert!(
@@ -9114,12 +9142,12 @@ fn rejects_recursive_instances_and_cross_instance_binding_cycles() {
 fn component_links_verify_writable_matching_endpoints_and_alias_cycles() {
     let source = r#"
         component App inherits Window {
-            in-out property <string> shared: once "host";
-            left := Editor { draft <=> root.shared; }
-            right := Editor { draft <=> left.draft; }
+            in-out property <string> shared: "host";
+            left := Editor { draft <-> root.shared; }
+            right := Editor { draft <-> left.draft; }
         }
         component Editor inherits Rectangle {
-            in-out property <string> draft: once "child";
+            in-out property <string> draft: "child";
         }
     "#;
     let compiled = compile(source, "links.xr").unwrap();
@@ -9131,7 +9159,7 @@ fn component_links_verify_writable_matching_endpoints_and_alias_cycles() {
             .contains("InputProperty :: linked")
     );
     let raw = lower(source, "links.xr");
-    let cycle = source.replace("draft <=> root.shared", "draft <=> right.draft");
+    let cycle = source.replace("draft <-> root.shared", "draft <-> right.draft");
     assert!(
         analyze(&cycle)
             .unwrap_err()
@@ -9161,8 +9189,8 @@ fn component_links_verify_writable_matching_endpoints_and_alias_cycles() {
     );
     assert!(analyze(&read_only).unwrap_err().contains("read-only"));
     let mismatch = source.replace(
-        "in-out property <string> shared: once \"host\"",
-        "property <int> shared: once 1",
+        "in-out property <string> shared: \"host\"",
+        "property <int> shared: 1",
     );
     assert!(
         analyze(&mismatch)
@@ -9178,7 +9206,7 @@ fn repeated_component_links_require_live_writable_models_and_typed_fields() {
         component App inherits Window {
             in-out property <[Task]> tasks;
             ListView {
-                for row[index] in root.tasks : Editor { draft <=> row.title; }
+                for row[index] in root.tasks : Editor { draft <-> row.title; }
             }
         }
         component Editor inherits Rectangle {
@@ -9218,12 +9246,12 @@ fn repeated_component_links_require_live_writable_models_and_typed_fields() {
 fn callback_aliases_and_instance_handlers_share_a_verified_signature() {
     let source = r#"export component App inherits Window {
         property <int> bias: 3;
-        out property <int> result: root.compute(4);
-        pure callback compute <=> worker.score;
+        out property <int> result <- root.compute(4);
+        pure callback compute <-> worker.score;
         worker := Worker { score(input) => { input + root.bias } }
     }
     component Worker inherits Rectangle {
-        pure callback score <=> body.evaluate;
+        pure callback score <-> body.evaluate;
         body := Rectangle {
             pure callback evaluate(int) -> int;
             evaluate(input) => { input * 2 }
@@ -9254,8 +9282,8 @@ fn callback_aliases_and_instance_handlers_share_a_verified_signature() {
     assert!(
         analyze(
             r#"component App inherits Window {
-        callback left <=> root.right;
-        callback right <=> root.left;
+        callback left <-> root.right;
+        callback right <-> root.left;
     }"#
         )
         .unwrap_err()
@@ -9264,7 +9292,7 @@ fn callback_aliases_and_instance_handlers_share_a_verified_signature() {
     assert!(
         analyze(
             r#"component App inherits Window {
-        pure callback exposed <=> button.clicked;
+        pure callback exposed <-> button.clicked;
         button := Button {}
     }"#
         )
@@ -9276,7 +9304,7 @@ fn callback_aliases_and_instance_handlers_share_a_verified_signature() {
 #[test]
 fn property_aliases_verify_controls_types_and_cycles() {
     let source = r#"export component Editor inherits Rectangle {
-        in-out property <string> document <=> entry.text;
+        in-out property <string> document <-> entry.text;
         entry := LineEdit {}
     }"#;
     let compiled = compile(source, "aliases.xr").unwrap();
@@ -9297,19 +9325,19 @@ fn property_aliases_verify_controls_types_and_cycles() {
             .unwrap_err()
             .contains("property alias type mismatch")
     );
-    let cycle = source.replace("LineEdit {}", "LineEdit { text <=> root.document; }");
+    let cycle = source.replace("LineEdit {}", "LineEdit { text <-> root.document; }");
     assert!(
         analyze(&cycle)
             .unwrap_err()
             .contains("cyclic property binding")
     );
-    let read_only = source.replace("LineEdit {}", "LineEdit { text: root.document; }");
+    let read_only = source.replace("LineEdit {}", "LineEdit { text <- root.document; }");
     assert!(analyze(&read_only).unwrap_err().contains("read-only"));
 
     let raw = lower(
         r#"component App inherits Window {
-        property <string> data: once "value";
-        property <string> alias <=> root.data;
+        property <string> data: "value";
+        property <string> alias <-> root.data;
     }"#,
         "aliases.xr",
     );
@@ -9324,22 +9352,22 @@ fn property_aliases_verify_controls_types_and_cycles() {
 fn alias_inputs_detect_duplicate_and_recursive_initializers_at_the_leaf() {
     let source = r#"
         component Leaf inherits Rectangle {
-            in-out property <string> a <=> entry.text;
-            in-out property <string> b <=> entry.text;
+            in-out property <string> a <-> entry.text;
+            in-out property <string> b <-> entry.text;
             entry := LineEdit {}
         }
         component Wrapper inherits Rectangle {
-            in-out property <string> label-a <=> child.a;
-            in-out property <string> label-b <=> child.b;
+            in-out property <string> label-a <-> child.a;
+            in-out property <string> label-b <-> child.b;
             child := Leaf {}
         }
         component App inherits Window {
-            editor := Wrapper { label-a: "left"; }
+            editor := Wrapper { label-a <- "left"; }
         }
     "#;
     compile(source, "alias-inputs.xr").unwrap();
     let duplicate = source.replace(
-        "label-a: \"left\";",
+        "label-a <- \"left\";",
         "label-a: \"left\"; label-b: \"right\";",
     );
     assert!(
@@ -9348,7 +9376,7 @@ fn alias_inputs_detect_duplicate_and_recursive_initializers_at_the_leaf() {
             .unwrap()
             .contains("multiple inputs to the same property")
     );
-    let cycle = source.replace("label-a: \"left\";", "label-a: editor.label-b;");
+    let cycle = source.replace("label-a <- \"left\";", "label-a: editor.label-b;");
     assert!(
         analyze(&cycle)
             .unwrap_err()
@@ -9359,10 +9387,10 @@ fn alias_inputs_detect_duplicate_and_recursive_initializers_at_the_leaf() {
 #[test]
 fn mlir_roundtrip_preserves_typed_expressions_and_unicode() {
     let source = r#"export component App inherits Window {
-        in-out property <int> n: once 2;
-        out property <float> scale: n + 0.5;
-        title: "你好\n\"MLIR\"";
-        width: 100px * scale;
+        in-out property <int> n: 2;
+        out property <float> scale <- n + 0.5;
+        title <- "你好\n\"MLIR\"";
+        width <- 100px * scale;
         callback add(step: int);
         add(step) => { root.n += step; }
     }"#;
@@ -9406,7 +9434,7 @@ fn mlir_rejects_invalid_structure_and_unknown_operations() {
 
 #[test]
 fn multiple_components_forward_references_and_float_promotion() {
-    let m = analyze("component A inherits Rectangle { property <int> derived: seed * 2; property <int> seed: 4; } export component B inherits Window { property <float> scale: 1; }").unwrap();
+    let m = analyze("component A inherits Rectangle { property <int> derived <- seed * 2; property <int> seed: 4; } export component B inherits Window { property <float> scale: 1; }").unwrap();
     assert_eq!(m.components.len(), 2);
     assert_eq!(m.components[1].properties[0].init.op, "cast");
 }
@@ -9414,9 +9442,9 @@ fn multiple_components_forward_references_and_float_promotion() {
 #[test]
 fn gradient_stops_are_typed_and_verified_in_mlir() {
     let source = r#"export component Gallery inherits Window {
-        in property <color> accent: once #123;
-        property <brush> fill: @linear-gradient(-90deg, #000 20%, #fff, accent 80%);
-        background: fill;
+        in property <color> accent: #123;
+        property <brush> fill <- @linear-gradient(-90deg, #000 20%, #fff, accent 80%);
+        background <- fill;
     }"#;
     let output = compile(source, "gallery.xr").unwrap();
     assert!(output.mlir.contains("\"xr.linear_gradient\""));
@@ -9432,7 +9460,7 @@ fn gradient_stops_are_typed_and_verified_in_mlir() {
         ("true 0%", "expected color"),
     ] {
         let source = format!(
-            "component Gallery inherits Window {{ background: @radial-gradient(circle, {stops}); }}"
+            "component Gallery inherits Window {{ background <- @radial-gradient(circle, {stops}); }}"
         );
         let err = compile(&source, "invalid-gradient.xr").err().unwrap();
         assert!(err.contains(diagnostic), "{err}");
@@ -9442,7 +9470,7 @@ fn gradient_stops_are_typed_and_verified_in_mlir() {
 #[test]
 fn image_and_path_bindings_report_resource_errors() {
     let source = r#"component Demo inherits Window {
-        Image { source: @image-url("missing.png"); image-fit: contain; }
+        Image { source <- @image-url("missing.png"); image-fit <- contain; }
     }"#;
     let ir = mlir::process(&lower(source, "image.xr")).unwrap();
     assert!(ir.to_mlir().contains("\"xr.image_url\""));
@@ -9462,7 +9490,7 @@ fn image_and_path_bindings_report_resource_errors() {
     let empty = source.replace("missing.png", "");
     assert!(compile(&empty, "image.xr").is_ok());
 
-    let bad_path = r#"component Demo inherits Window { Path { commands: "M0 0 L10"; } }"#;
+    let bad_path = r#"component Demo inherits Window { Path { commands <- "M0 0 L10"; } }"#;
     assert!(
         compile(bad_path, "path.xr")
             .err()
@@ -9477,7 +9505,7 @@ fn native_frontend_and_mlir_are_safe_to_call_from_multiple_threads() {
         .map(|_| {
             std::thread::spawn(|| {
                 compile(
-                    "export component A inherits Window { title: \"ok\"; }",
+                    "export component A inherits Window { title <- \"ok\"; }",
                     "thread.xr",
                 )
                 .unwrap();
@@ -9492,8 +9520,8 @@ fn native_frontend_and_mlir_are_safe_to_call_from_multiple_threads() {
 #[test]
 fn markdown_literals_are_typed_in_mlir_and_compiled_to_static_style_ranges() {
     let source = r#"export component App inherits Window {
-        in property <styled-text> body: once @markdown("**bold** `code`");
-        StyledText { text: root.body; }
+        in property <styled-text> body: @markdown("**bold** `code`");
+        StyledText { text <- root.body; }
     }"#;
     let compiled = compile(source, "markdown.xr").unwrap();
     assert!(compiled.mlir.contains("\"xr.markdown\""));
@@ -9530,10 +9558,10 @@ fn markdown_literals_are_typed_in_mlir_and_compiled_to_static_style_ranges() {
 #[test]
 fn markdown_links_compile_with_a_typed_activation_handler() {
     let source = r#"export component App inherits Window {
-        out property <string> destination: once "";
+        out property <string> destination: "";
         body := StyledText {
-            text: @markdown("[**manual**](#docs)");
-            link-color: #41a6e7;
+            text <- @markdown("[**manual**](#docs)");
+            link-color <- #41a6e7;
             link-activated(target) => { root.destination = target; }
         }
     }"#;
@@ -9573,9 +9601,9 @@ fn nine_slice_keeps_typed_edges_and_validates_against_the_embedded_asset() {
     let file = path.to_str().unwrap();
     let source = r#"export component Media inherits Window {
         Image {
-            source: @image-url("frame.svg", nine-slice(4 6 8 10));
-            horizontal-tile-mode: repeat;
-            vertical-tile-mode: round;
+            source <- @image-url("frame.svg", nine-slice(4 6 8 10));
+            horizontal-tile-mode <- repeat;
+            vertical-tile-mode <- round;
         }
     }"#;
     let compiled = compile(source, file).unwrap();
@@ -9633,13 +9661,13 @@ fn animated_image_embeds_gif_frames_and_checks_read_only_playback_state() {
     let path = dir.join("animated.xr");
     let file = path.to_str().unwrap();
     let source = r#"export component Media inherits Window {
-        out property <int> frame: pulse.current-frame;
-        out property <int> frames: pulse.frame-count;
+        out property <int> frame <- pulse.current-frame;
+        out property <int> frames <- pulse.frame-count;
         pulse := AnimatedImage {
-            source: @image-url("pulse.gif");
-            paused: true;
-            speed: 2.0;
-            loops: -1;
+            source <- @image-url("pulse.gif");
+            paused <- true;
+            speed <- 2.0;
+            loops <- -1;
             finished() => {}
         }
     }"#;
@@ -9650,9 +9678,9 @@ fn animated_image_embeds_gif_frames_and_checks_read_only_playback_state() {
     for time in [80, 200, 260] {
         assert!(tokens.contains(&format!("end_ms : {time}u32")));
     }
-    let invalid = source.replace("paused: true", "current-frame: 2");
+    let invalid = source.replace("paused <- true", "current-frame: 2");
     assert!(compile(&invalid, file).err().unwrap().contains("read-only"));
-    let invalid = source.replace("speed: 2.0", "speed: true");
+    let invalid = source.replace("speed <- 2.0", "speed: true");
     assert!(
         compile(&invalid, file)
             .err()
@@ -9686,20 +9714,20 @@ fn animated_image_embeds_gif_frames_and_checks_read_only_playback_state() {
 #[test]
 fn image_clips_alignments_and_intrinsic_dimensions_are_typed_in_mlir() {
     let source = r#"export component Atlas inherits Window {
-        in property <image> atlas: once @image-url("");
-        out property <int> pixels: root.atlas.width * root.atlas.height;
+        in property <image> atlas: @image-url("");
+        out property <int> pixels <- root.atlas.width * root.atlas.height;
         Image {
-            source: root.atlas;
-            source-clip-x: 1; source-clip-y: -2;
-            source-clip-width: root.atlas.width;
-            horizontal-alignment: right;
-            vertical-alignment: bottom;
-            image-rendering: pixelated;
+            source <- root.atlas;
+            source-clip-x <- 1; source-clip-y <- -2;
+            source-clip-width <- root.atlas.width;
+            horizontal-alignment <- right;
+            vertical-alignment <- bottom;
+            image-rendering <- pixelated;
         }
         AnimatedImage {
-            source: root.atlas;
-            source-clip-height: 4;
-            horizontal-tile-mode: repeat;
+            source <- root.atlas;
+            source-clip-height <- 4;
+            horizontal-tile-mode <- repeat;
         }
     }"#;
     let result = compile(source, "atlas.xr").unwrap();
@@ -9708,7 +9736,7 @@ fn image_clips_alignments_and_intrinsic_dimensions_are_typed_in_mlir() {
     assert!(result.mlir.contains("!xr.imageverticalalignment"));
     assert!(result.mlir.contains("!xr.imagerendering"));
     assert!(result.rust.to_string().contains(". size ()"));
-    let invalid = source.replace("source-clip-x: 1", "source-clip-x: 1px");
+    let invalid = source.replace("source-clip-x <- 1", "source-clip-x: 1px");
     assert!(
         compile(&invalid, "atlas.xr")
             .err()
@@ -9740,14 +9768,14 @@ fn image_clips_alignments_and_intrinsic_dimensions_are_typed_in_mlir() {
 #[test]
 fn image_colorize_uses_typed_brushes_in_bindings_and_states() {
     let source = r#"export component Art inherits Window {
-        in property <bool> alternate: once false;
+        in property <bool> alternate: false;
         icon := Image {
-            source: @image-url("");
-            colorize: #0af;
+            source <- @image-url("");
+            colorize <- #0af;
         }
         AnimatedImage {
-            source: @image-url("");
-            colorize: root.alternate ? @linear-gradient(90deg, #0000, #f84) : #0af;
+            source <- @image-url("");
+            colorize <- root.alternate ? @linear-gradient(90deg, #0000, #f84) : #0af;
         }
         states [ alternate when root.alternate: {
             icon.colorize: @radial-gradient(circle, #fff, #369);
@@ -9758,7 +9786,7 @@ fn image_colorize_uses_typed_brushes_in_bindings_and_states() {
     assert!(result.mlir.contains("!xr.brush"));
     assert!(result.mlir.contains("\"xr.state_set\""));
     assert!(result.rust.to_string().contains("Brush :: Solid"));
-    let invalid = source.replace("colorize: #0af", "colorize: 5");
+    let invalid = source.replace("colorize <- #0af", "colorize: 5");
     assert!(
         compile(&invalid, "colorize.xr")
             .err()
@@ -9776,15 +9804,15 @@ fn image_colorize_uses_typed_brushes_in_bindings_and_states() {
 
 #[test]
 fn composition_properties_have_typed_bindings_on_nodes_and_instances() {
-    let source = r#"component Card inherits Rectangle { background: #024; }
+    let source = r#"component Card inherits Rectangle { background <- #024; }
     export component App inherits Window {
-        in property <bool> raised: once true;
+        in property <bool> raised: true;
         panel := Rectangle {
-            opacity: 0.5;
-            z: 2;
+            opacity <- 0.5;
+            z <- 2;
             animate opacity { duration: 120ms; }
         }
-        Card { opacity: 0.75; z: -1; }
+        Card { opacity <- 0.75; z <- -1; }
         states [ raise when root.raised: { panel.opacity: 1; panel.z: 3; } ]
     }"#;
     let result = compile(source, "compositing.xr").unwrap();
@@ -9803,14 +9831,14 @@ fn composition_properties_have_typed_bindings_on_nodes_and_instances() {
             .lines()
             .any(|line| line.contains("\"xr.layout_bind\"") && line.contains("name = \"z\""))
     );
-    let invalid = source.replace("opacity: 0.5", "opacity: true");
+    let invalid = source.replace("opacity <- 0.5", "opacity: true");
     assert!(
         compile(&invalid, "compositing.xr")
             .err()
             .unwrap()
             .contains("type mismatch")
     );
-    let invalid = source.replace("opacity: 0.5;", "Timer { opacity: 0.5; }");
+    let invalid = source.replace("opacity <- 0.5;", "Timer { opacity: 0.5; }");
     assert!(compile(&invalid, "compositing.xr").is_err());
 
     let raw = lower(source, "compositing.xr");
@@ -9825,19 +9853,19 @@ fn composition_properties_have_typed_bindings_on_nodes_and_instances() {
 #[test]
 fn rectangle_shadows_keep_typed_brush_geometry_and_state_overrides() {
     let source = r#"export component Card inherits Window {
-        in property <bool> lifted: once false;
+        in property <bool> lifted: false;
         panel := Rectangle {
-            background: #fff;
-            drop-shadow-color: #3154;
-            drop-shadow-offset-x: -4px;
-            drop-shadow-offset-y: 8px;
-            drop-shadow-spread: 2px;
-            drop-shadow-blur: 10px;
-            inner-shadow-color: #0008;
-            inner-shadow-offset-x: 2px;
-            inner-shadow-offset-y: 1px;
-            inner-shadow-spread: -1px;
-            inner-shadow-blur: 6px;
+            background <- #fff;
+            drop-shadow-color <- #3154;
+            drop-shadow-offset-x <- -4px;
+            drop-shadow-offset-y <- 8px;
+            drop-shadow-spread <- 2px;
+            drop-shadow-blur <- 10px;
+            inner-shadow-color <- #0008;
+            inner-shadow-offset-x <- 2px;
+            inner-shadow-offset-y <- 1px;
+            inner-shadow-spread <- -1px;
+            inner-shadow-blur <- 6px;
             animate drop-shadow-offset-y { duration: 80ms; }
         }
         states [ lift when root.lifted: { panel.drop-shadow-offset-y: 12px; } ]
@@ -9860,7 +9888,7 @@ fn rectangle_shadows_keep_typed_brush_geometry_and_state_overrides() {
             .lines()
             .any(|line| line.contains("xr.state_set") && line.contains("drop-shadow-offset-y"))
     );
-    let invalid = source.replace("inner-shadow-blur: 6px", "inner-shadow-blur: true");
+    let invalid = source.replace("inner-shadow-blur <- 6px", "inner-shadow-blur: true");
     assert!(
         compile(&invalid, "shadows.xr")
             .err()
@@ -9883,8 +9911,8 @@ fn rectangle_shadows_keep_typed_brush_geometry_and_state_overrides() {
 #[test]
 fn rectangle_clip_is_a_typed_binding_and_state_override() {
     let source = r#"export component Demo inherits Window {
-        in property <bool> enabled-clip: once false;
-        mask := Rectangle { clip: root.enabled-clip; }
+        in property <bool> enabled-clip: false;
+        mask := Rectangle { clip <- root.enabled-clip; }
         states [ rounded when root.enabled-clip: { mask.clip: true; } ]
     }"#;
     let compiled = compile(source, "clip.xr").unwrap();
@@ -9893,7 +9921,7 @@ fn rectangle_clip_is_a_typed_binding_and_state_override() {
             && line.contains("name = \"clip\"")
             && line.contains("!xr.bool")));
     }
-    let invalid = source.replace("clip: root.enabled-clip", "clip: 10px");
+    let invalid = source.replace("clip <- root.enabled-clip", "clip: 10px");
     assert!(
         compile(&invalid, "clip.xr")
             .err()
@@ -9911,18 +9939,18 @@ fn rectangle_clip_is_a_typed_binding_and_state_override() {
 
 #[test]
 fn transforms_are_typed_on_visual_nodes_instances_and_states() {
-    let source = r#"component Tile inherits Rectangle { background: #234; }
+    let source = r#"component Tile inherits Rectangle { background <- #234; }
     export component Demo inherits Window {
-        in property <bool> turned: once false;
+        in property <bool> turned: false;
         tile := Rectangle {
-            transform-rotation: 45;
-            transform-scale: 125%;
-            transform-scale-x: -1.0;
-            transform-origin-x: 30%;
-            transform-origin-y: 2px;
+            transform-rotation <- 45;
+            transform-scale <- 125%;
+            transform-scale-x <- -1.0;
+            transform-origin-x <- 30%;
+            transform-origin-y <- 2px;
             animate transform-rotation { duration: 120ms; }
         }
-        Tile { transform-origin-x: 50%; transform-rotation: 90; }
+        Tile { transform-origin-x <- 50%; transform-rotation <- 90; }
         states [ turned when root.turned: { tile.transform-rotation: 0; } ]
     }"#;
     let compiled = compile(source, "transform.xr").unwrap();
@@ -9942,7 +9970,7 @@ fn transforms_are_typed_on_visual_nodes_instances_and_states() {
                 && line.contains("transform-rotation")
                 && line.contains("!xr.float"))
     );
-    let invalid = source.replace("transform-rotation: 45", "transform-rotation: 45px");
+    let invalid = source.replace("transform-rotation <- 45", "transform-rotation: 45px");
     assert!(
         compile(&invalid, "transform.xr")
             .err()
@@ -9965,13 +9993,19 @@ fn transforms_are_typed_on_visual_nodes_instances_and_states() {
 fn slider_interaction_bindings_require_boolean_live_and_a_snap_mode() {
     let source = r#"
         component App inherits Window {
-            Slider { live: false; snap-mode: ScrollSnapMode.always; }
-            RangeSlider { live: true; snap-mode: ScrollSnapMode.on-release; }
+            Slider { live <- false; snap-mode <- ScrollSnapMode.always; }
+            RangeSlider { live <- true; snap-mode <- ScrollSnapMode.on-release; }
         }
     "#;
     let output = compile(source, "slider-snap.xr").unwrap();
     assert!(output.mlir.contains("!xr.scrollsnapmode"));
-    assert!(compile(&source.replace("live: false", "live: 1"), "slider-snap.xr").is_err());
+    assert!(
+        compile(
+            &source.replace("live <- false", "live: 1"),
+            "slider-snap.xr"
+        )
+        .is_err()
+    );
     let raw = lower(source, "slider-snap.xr");
     let malformed = raw.replace("name = \"live\"", "name = \"snap-mode\"");
     assert!(
@@ -9986,13 +10020,13 @@ fn table_sort_state_and_commands_are_typed_and_require_a_table_owner() {
     let source = r#"
         component App inherits Window {
             in property <[string]> records;
-            out property <int> column: table.current-sort-column;
-            out property <bool> descending: table.current-sort-descending;
+            out property <int> column <- table.current-sort-column;
+            out property <bool> descending <- table.current-sort-descending;
             callback sort();
             sort => { table.sort-by(0, true); table.clear-sort(); }
             table := TableView {
-                TableColumn { title: "Name"; }
-                for row in root.records : TableRow { Text { text: row; } }
+                TableColumn { title <- "Name"; }
+                for row in root.records : TableRow { Text { text <- row; } }
             }
         }
     "#;
@@ -10037,9 +10071,9 @@ fn auto_sort_requires_a_boolean_on_a_standard_table() {
         component App inherits Window {
             in property <[Entry]> records;
             StandardTableView {
-                model: root.records;
-                auto-sort: true;
-                TableColumn { field: "units"; title: "Units"; }
+                model <- root.records;
+                auto-sort <- true;
+                TableColumn { field <- "units"; title <- "Units"; }
             }
         }
     "#;
@@ -10047,7 +10081,7 @@ fn auto_sort_requires_a_boolean_on_a_standard_table() {
     let rust = output.rust.to_string();
     assert!(rust.contains("sorted_rows"));
     assert!(rust.contains("TableField :: compare_cells (& left . units , & right . units)"));
-    let bad = source.replace("auto-sort: true", "auto-sort: 1");
+    let bad = source.replace("auto-sort <- true", "auto-sort: 1");
     assert!(
         compile(&bad, "view-sort.xr")
             .err()
@@ -10068,9 +10102,9 @@ fn table_selection_commands_and_read_properties_are_verified() {
     let source = r#"
         component App inherits Window {
             in property <[string]> records;
-            out property <int> column: table.current-column;
-            out property <int> count: table.selection-count;
-            out property <bool> selected: table.has-selection;
+            out property <int> column <- table.current-column;
+            out property <int> count <- table.selection-count;
+            out property <bool> selected <- table.has-selection;
             callback select();
             select => {
                 table.select-cell(0, 0);
@@ -10079,10 +10113,10 @@ fn table_selection_commands_and_read_properties_are_verified() {
                 table.clear-selection();
             }
             table := TableView {
-                selection-target: cells; multi-select: true;
+                selection-target <- cells; multi-select <- true;
                 current-cell-changed(row, column) => {}
-                TableColumn { title: "Name"; }
-                for row in root.records : TableRow { Text { text: row; } }
+                TableColumn { title <- "Name"; }
+                for row in root.records : TableRow { Text { text <- row; } }
             }
         }
     "#;
@@ -10101,7 +10135,7 @@ fn table_selection_commands_and_read_properties_are_verified() {
             "not allowed in a pure callback",
         ),
         (
-            "selection-target: cells",
+            "selection-target <- cells",
             "current-column: 0; selection-target: cells",
             "read-only",
         ),
@@ -10134,10 +10168,10 @@ fn table_edit_requests_check_types_purity_and_receiver() {
             edit => { table.edit-cell(0, 0); table.cancel-edit(); }
             field := LineEdit {}
             table := TableView {
-                edit-on-typing: true;
-                edit-on-tab: true;
-                TableColumn { title: "Name"; }
-                for row in root.records : TableRow { TableCell { text <=> row; } }
+                edit-on-typing <- true;
+                edit-on-tab <- true;
+                TableColumn { title <- "Name"; }
+                for row in root.records : TableRow { TableCell { text <-> row; } }
             }
         }
     "#;
@@ -10163,8 +10197,12 @@ fn table_edit_requests_check_types_purity_and_receiver() {
             "pure callback edit();",
             "not allowed in a pure callback",
         ),
-        ("edit-on-typing: true", "edit-on-typing: 1", "type mismatch"),
-        ("edit-on-tab: true", "edit-on-tab: 1", "type mismatch"),
+        (
+            "edit-on-typing <- true",
+            "edit-on-typing: 1",
+            "type mismatch",
+        ),
+        ("edit-on-tab <- true", "edit-on-tab: 1", "type mismatch"),
     ] {
         let error = compile(&source.replace(from, to), "table-edit.xr")
             .err()
@@ -10184,14 +10222,14 @@ fn table_edit_requests_check_types_purity_and_receiver() {
 fn table_history_controls_verify_types_receivers_and_dependency_cycles() {
     let source = r#"
         component Demo inherits Window {
-            in-out property <[string]> records: once ["One"];
-            out property <bool> available: table.can-undo;
+            in-out property <[string]> records: ["One"];
+            out property <bool> available <- table.can-undo;
             callback revert();
             revert => { table.undo(); table.redo(); }
             table := TableView {
-                undoable: true;
-                TableColumn { title: "Name"; }
-                for row in root.records : TableRow { TableCell { text <=> row; } }
+                undoable <- true;
+                TableColumn { title <- "Name"; }
+                for row in root.records : TableRow { TableCell { text <-> row; } }
             }
         }
     "#;
@@ -10211,15 +10249,15 @@ fn table_history_controls_verify_types_receivers_and_dependency_cycles() {
             "pure callback revert();",
             "not allowed in a pure callback",
         ),
-        ("undoable: true", "can-undo: true", "read-only"),
+        ("undoable <- true", "can-undo: true", "read-only"),
         (
-            "undoable: true",
+            "undoable <- true",
             "undoable: self.can-undo",
             "cyclic property binding",
         ),
         (
-            "records: once [\"One\"]",
-            "records: once table.can-redo ? [\"One\"] : [\"Two\"]",
+            "records: [\"One\"]",
+            "records: table.can-redo ? [\"One\"] : [\"Two\"]",
             "cyclic property binding",
         ),
     ] {
@@ -10250,14 +10288,14 @@ fn standard_table_editable_columns_require_a_writable_record_model() {
         struct Entry { stock: Stock }
         component App inherits Window {
             in-out property <[Entry]> records;
-            in property <bool> allow-edit: once true;
+            in property <bool> allow-edit: true;
             table := StandardTableView {
-                model: root.records;
-                edit-on-typing: true;
-                pasteable: true;
-                TableColumn { field: "stock.quantity"; editable: root.allow-edit; }
-                TableColumn { field: "stock.due"; editable: true; }
-                TableColumn { field: "stock.price"; editable: true; }
+                model <- root.records;
+                edit-on-typing <- true;
+                pasteable <- true;
+                TableColumn { field <- "stock.quantity"; editable <- root.allow-edit; }
+                TableColumn { field <- "stock.due"; editable <- true; }
+                TableColumn { field <- "stock.price"; editable <- true; }
             }
             callback edit();
             edit => { table.edit-cell(0, 0); }
@@ -10285,12 +10323,16 @@ fn standard_table_editable_columns_require_a_writable_record_model() {
             "read-only",
         ),
         (
-            "model: root.records",
+            "model <- root.records",
             "model: [Entry { stock: Stock { quantity: 1, due: Date { year: 2026, month: 11, day: 11 }, price: 1.0 } }]",
             "writable model property",
         ),
-        ("editable: root.allow-edit", "editable: 12", "type mismatch"),
-        ("pasteable: true", "pasteable: 12", "type mismatch"),
+        (
+            "editable <- root.allow-edit",
+            "editable: 12",
+            "type mismatch",
+        ),
+        ("pasteable <- true", "pasteable: 12", "type mismatch"),
     ] {
         let error = compile(&source.replace(from, to), "editable-projection.xr")
             .err()
@@ -10315,10 +10357,10 @@ fn standard_table_filters_check_nested_string_fields_in_source_and_mlir() {
             in property <[FilteredRecord]> records;
             in property <string> query;
             StandardTableView {
-                model: root.records;
-                filter-field: "detail.label";
-                filter-text: root.query;
-                TableColumn { field: "detail.units"; }
+                model <- root.records;
+                filter-field <- "detail.label";
+                filter-text <- root.query;
+                TableColumn { field <- "detail.units"; }
             }
         }
     "#;
@@ -10326,17 +10368,17 @@ fn standard_table_filters_check_nested_string_fields_in_source_and_mlir() {
     assert!(compiled.rust.to_string().contains("projected_rows"));
     for (from, to, expected) in [
         (
-            "filter-field: \"detail.label\";",
+            "filter-field <- \"detail.label\";",
             "",
             "filter-text requires filter-field",
         ),
         (
-            "filter-field: \"detail.label\"",
+            "filter-field <- \"detail.label\"",
             "filter-field: \"detail.units\"",
             "requires a string field",
         ),
         (
-            "filter-field: \"detail.label\"",
+            "filter-field <- \"detail.label\"",
             "filter-field: root.query",
             "constant string field name",
         ),
@@ -10376,11 +10418,11 @@ fn editor_preview_compiles_open_buffers_and_reports_import_dependencies() {
         [
             (
                 imported.clone(),
-                "export component Card inherits Rectangle { width: 37px; }".into(),
+                "export component Card inherits Rectangle { width <- 37px; }".into(),
             ),
             (
                 new_import.clone(),
-                "export component NewItem inherits Rectangle { width: 41px; }".into(),
+                "export component NewItem inherits Rectangle { width <- 41px; }".into(),
             ),
         ]
         .into(),
@@ -10412,9 +10454,9 @@ fn editor_preview_compiles_open_buffers_and_reports_import_dependencies() {
 fn sound_effect_verifies_nonvisual_bindings_and_playback_commands() {
     let source = r#"
         export component App inherits Window {
-            out property <bool> loaded: chime.ready;
-            out property <int> remaining: chime.loops-remaining;
-            chime := SoundEffect { source: "click.wav"; volume: 0.5; loops: 2; }
+            out property <bool> loaded <- chime.ready;
+            out property <int> remaining <- chime.loops-remaining;
+            chime := SoundEffect { source <- "click.wav"; volume <- 0.5; loops <- 2; }
             confirm := Button { clicked => { chime.play(); } }
             cancel := Button { clicked => { chime.stop(); } }
         }
@@ -10425,10 +10467,10 @@ fn sound_effect_verifies_nonvisual_bindings_and_playback_commands() {
     assert!(compiled.mlir.contains("method = \"stop\""));
     assert!(compiled.mlir.contains("value = \"loops-remaining\""));
     for (from, to) in [
-        ("volume: 0.5", "width: 10px"),
-        ("volume: 0.5", "ready: true"),
-        ("loops: 2", "loops: true"),
-        ("loops: 2", "loops-remaining: 1"),
+        ("volume <- 0.5", "width: 10px"),
+        ("volume <- 0.5", "ready: true"),
+        ("loops <- 2", "loops: true"),
+        ("loops <- 2", "loops-remaining: 1"),
         ("chime.play()", "chime.seek(0)"),
         ("chime.play()", "chime.play(1)"),
         ("chime.stop()", "chime.stop(1)"),
@@ -10451,29 +10493,33 @@ fn sound_effect_verifies_nonvisual_bindings_and_playback_commands() {
 fn combo_submission_rules_are_typed_and_follow_the_draft() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> draft: once "12,50";
-            out property <bool> ready: amount.acceptable-input;
+            in-out property <string> draft: "12,50";
+            out property <bool> ready <- amount.acceptable-input;
             amount := ComboBox {
-                editable: true;
-                input-type: InputType.decimal;
-                decimal-separator: ",";
-                minimum-value: 10.0; maximum-value: 25.0;
-                minimum-length: 2; maximum-length: 5; decimals: 2;
-                edit-text <=> root.draft;
+                editable <- true;
+                input-type <- InputType.decimal;
+                decimal-separator <- ",";
+                minimum-value <- 10.0; maximum-value <- 25.0;
+                minimum-length <- 2; maximum-length <- 5; decimals <- 2;
+                edit-text <-> root.draft;
             }
         }
     "#;
     let compiled = compile(source, "combo_submission.xr").unwrap();
     assert!(compiled.mlir.contains("xr.text_accepts"));
     let conditional_model = source.replace(
-        "edit-text <=> root.draft;",
-        "edit-text <=> root.draft; model: root.ready ? [\"12,50\"] : [\"20,25\"];",
+        "edit-text <-> root.draft;",
+        "edit-text <-> root.draft; model: root.ready ? [\"12,50\"] : [\"20,25\"];",
     );
     assert!(compile(&conditional_model, "combo_submission.xr").is_ok());
     for (from, to, expected) in [
-        ("minimum-length: 2", "minimum-length: true", "type mismatch"),
-        ("minimum-length: 2", "acceptable-input: true", "read-only"),
-        ("minimum-length: 2", "submit-when: root.ready", "cyclic"),
+        (
+            "minimum-length <- 2",
+            "minimum-length: true",
+            "type mismatch",
+        ),
+        ("minimum-length <- 2", "acceptable-input: true", "read-only"),
+        ("minimum-length <- 2", "submit-when: root.ready", "cyclic"),
     ] {
         let error = compile(&source.replace(from, to), "combo_submission.xr")
             .err()
@@ -10481,7 +10527,7 @@ fn combo_submission_rules_are_typed_and_follow_the_draft() {
         assert!(error.contains(expected), "{error}");
     }
     let text_cycle = source.replace(
-        "edit-text <=> root.draft",
+        "edit-text <-> root.draft",
         "edit-text: root.ready ? \"yes\" : \"no\"",
     );
     let error = compile(&text_cycle, "combo_submission.xr").err().unwrap();
@@ -10524,8 +10570,8 @@ fn editing_finished_handler_is_typed_and_scoped_to_text_editors() {
 fn input_mask_type_and_pattern_are_checked() {
     let source = r#"
         export component App inherits Window {
-            code := LineEdit { input-mask: "AA-999"; maximum-length: 6; }
-            out property <bool> ready: code.acceptable-input;
+            code := LineEdit { input-mask <- "AA-999"; maximum-length <- 6; }
+            out property <bool> ready <- code.acceptable-input;
         }
     "#;
     assert!(compile(source, "masked.xr").is_ok());
@@ -10545,7 +10591,10 @@ fn input_mask_type_and_pattern_are_checked() {
             .unwrap()
             .contains("input-mask")
     );
-    let raw = lower(&source.replace(r#"input-mask: "AA-999";"#, ""), "masked.xr");
+    let raw = lower(
+        &source.replace(r#"input-mask <- "AA-999";"#, ""),
+        "masked.xr",
+    );
     let invalid = raw.replace(r#"name = "maximum-length""#, r#"name = "input-mask""#);
     assert!(
         mlir::process(&invalid)
@@ -10558,16 +10607,16 @@ fn input_mask_type_and_pattern_are_checked() {
 fn input_validity_is_a_typed_read_only_editor_property() {
     let source = r#"
         export component App inherits Window {
-            editor := LineEdit { text: "AB"; }
-            out property <InputValidity> state: editor.input-validity;
-            out property <bool> may-submit: root.state == InputValidity.acceptable;
+            editor := LineEdit { text <- "AB"; }
+            out property <InputValidity> state <- editor.input-validity;
+            out property <bool> may-submit <- root.state == InputValidity.acceptable;
         }
     "#;
     let output = compile(source, "input-validity.xr").unwrap();
     assert!(output.mlir.contains("xr.text_validity"));
     assert!(output.mlir.contains("!xr.inputvalidity"));
     let invalid = source.replace(
-        r#"text: "AB";"#,
+        r#"text <- "AB";"#,
         "input-validity: InputValidity.acceptable;",
     );
     assert!(
@@ -10593,12 +10642,12 @@ fn input_validity_is_a_typed_read_only_editor_property() {
 fn iso_time_helpers_and_popup_bounds_use_typed_ir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> text: once "13:30:42";
-            in property <Time> latest: once Time { hour: 17 };
-            out property <Time> typed: Times.parse-iso(root.text, root.latest);
-            out property <bool> valid: Times.is-valid-iso(root.text) && Times.in-range(root.typed, Time { hour: 9 }, root.latest);
-            out property <string> display: Times.format-iso(root.typed, false);
-            TimePickerPopup { minimum-time: Time { hour: 9 }; maximum-time: root.latest; }
+            in-out property <string> text: "13:30:42";
+            in property <Time> latest: Time { hour: 17 };
+            out property <Time> typed <- Times.parse-iso(root.text, root.latest);
+            out property <bool> valid <- Times.is-valid-iso(root.text) && Times.in-range(root.typed, Time { hour: 9 }, root.latest);
+            out property <string> display <- Times.format-iso(root.typed, false);
+            TimePickerPopup { minimum-time <- Time { hour: 9 }; maximum-time <- root.latest; }
         }
     "#;
     let output = compile(source, "time-field.xr").unwrap();
@@ -10613,7 +10662,7 @@ fn iso_time_helpers_and_popup_bounds_use_typed_ir() {
     }
     assert!(
         compile(
-            &source.replace("maximum-time: root.latest", "maximum-time: 17"),
+            &source.replace("maximum-time <- root.latest", "maximum-time: 17"),
             "time-field.xr"
         )
         .is_err()
@@ -10626,7 +10675,7 @@ fn iso_time_helpers_and_popup_bounds_use_typed_ir() {
         .is_err()
     );
     let raw = lower(
-        r#"export component App inherits Window { TimePickerPopup { show-seconds: true; } }"#,
+        r#"export component App inherits Window { TimePickerPopup { show-seconds <- true; } }"#,
         "time-field.xr",
     );
     let raw = raw.replace(r#"name = "show-seconds""#, r#"name = "minimum-time""#);
@@ -10641,12 +10690,12 @@ fn iso_time_helpers_and_popup_bounds_use_typed_ir() {
 fn date_parsing_and_availability_lower_with_typed_fallback_and_models() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> text: once "2024-02-29";
-            in property <Date> minimum: once Date { year: 2024, month: 2, day: 5 };
-            in property <Date> maximum: once Date { year: 2024, month: 4, day: 15 };
-            in-out property <[Date]> unavailable: once [Date { year: 2024, month: 2, day: 29 }];
-            out property <Date> parsed: Dates.parse-iso(root.text, root.minimum);
-            out property <bool> allowed: Dates.is-selectable(root.parsed, root.minimum, root.maximum, [6, 7], root.unavailable);
+            in-out property <string> text: "2024-02-29";
+            in property <Date> minimum: Date { year: 2024, month: 2, day: 5 };
+            in property <Date> maximum: Date { year: 2024, month: 4, day: 15 };
+            in-out property <[Date]> unavailable: [Date { year: 2024, month: 2, day: 29 }];
+            out property <Date> parsed <- Dates.parse-iso(root.text, root.minimum);
+            out property <bool> allowed <- Dates.is-selectable(root.parsed, root.minimum, root.maximum, [6, 7], root.unavailable);
         }
     "#;
     let output = compile(source, "date-text.xr").unwrap();
@@ -10679,9 +10728,9 @@ fn calendar_ranges_expose_typed_highlight_bindings_and_day_cell_inputs() {
     let source = r#"
         export component App inherits Window {
             MonthGrid {
-                highlight-start: Date { year: 2024, month: 2, day: 27 };
-                highlight-end: Date { year: 2024, month: 3, day: 1 };
-                DayCell { visible: cell-in-range || cell-range-start || cell-range-end; }
+                highlight-start <- Date { year: 2024, month: 2, day: 27 };
+                highlight-end <- Date { year: 2024, month: 3, day: 1 };
+                DayCell { visible <- cell-in-range || cell-range-start || cell-range-end; }
             }
         }
     "#;
@@ -10706,7 +10755,7 @@ fn calendar_ranges_expose_typed_highlight_bindings_and_day_cell_inputs() {
         .is_err()
     );
     let raw = lower(
-        r#"export component App inherits Window { MonthGrid { week-start: 5; } }"#,
+        r#"export component App inherits Window { MonthGrid { week-start <- 5; } }"#,
         "highlights.xr",
     );
     let raw = raw.replace(r#"name = "week-start""#, r#"name = "highlight-end""#);
@@ -10721,11 +10770,11 @@ fn calendar_ranges_expose_typed_highlight_bindings_and_day_cell_inputs() {
 fn date_month_models_and_fixed_month_grids_have_typed_ir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <Date> start: once Date { year: 2024, month: 2, day: 29 };
-            in-out property <Date> end: once Date { year: 2025, month: 3, day: 2 };
-            out property <[Date]> months: Dates.months(root.start, root.end);
-            out property <int> last-index: Dates.month-index(root.start, root.end, root.end);
-            MonthGrid { fixed-month: true; display-month: root.start; }
+            in-out property <Date> start: Date { year: 2024, month: 2, day: 29 };
+            in-out property <Date> end: Date { year: 2025, month: 3, day: 2 };
+            out property <[Date]> months <- Dates.months(root.start, root.end);
+            out property <int> last-index <- Dates.month-index(root.start, root.end, root.end);
+            MonthGrid { fixed-month <- true; display-month <- root.start; }
         }
     "#;
     let output = compile(source, "date-months.xr").unwrap();
@@ -10746,7 +10795,7 @@ fn date_month_models_and_fixed_month_grids_have_typed_ir() {
     );
     assert!(compile(&source.replace("MonthGrid", "Calendar"), "date-months.xr").is_err());
     let raw = lower(
-        r#"export component App inherits Window { MonthGrid { week-start: 1; } }"#,
+        r#"export component App inherits Window { MonthGrid { week-start <- 1; } }"#,
         "date-months.xr",
     );
     let raw = raw.replace(r#"name = "week-start""#, r#"name = "fixed-month""#);
@@ -10761,12 +10810,12 @@ fn date_month_models_and_fixed_month_grids_have_typed_ir() {
 fn date_lists_support_models_repeats_and_typed_calendar_bindings() {
     let source = r#"
         export component App inherits Window {
-            in-out property <[Date]> holidays: once [Date { year: 2024, month: 2, day: 29 }];
-            out property <Date> first-holiday: Model.at(root.holidays, 0, Date { year: 2024, month: 1, day: 1 });
+            in-out property <[Date]> holidays: [Date { year: 2024, month: 2, day: 29 }];
+            out property <Date> first-holiday <- Model.at(root.holidays, 0, Date { year: 2024, month: 1, day: 1 });
             pure callback echo([Date]) -> [Date];
             echo(dates) => { dates }
-            Calendar { disabled-dates: root.holidays; }
-            for holiday in root.holidays : Text { text: "" + holiday; }
+            Calendar { disabled-dates <- root.holidays; }
+            for holiday in root.holidays : Text { text <- "" + holiday; }
             add := Button { clicked => { Model.append(root.holidays, Date { year: 2024, month: 3, day: 1 }); } }
         }
     "#;
@@ -10782,13 +10831,13 @@ fn date_lists_support_models_repeats_and_typed_calendar_bindings() {
     }
     assert!(
         compile(
-            &source.replace("disabled-dates: root.holidays", "disabled-dates: [1]"),
+            &source.replace("disabled-dates <- root.holidays", "disabled-dates: [1]"),
             "holidays.xr"
         )
         .is_err()
     );
     let raw = lower(
-        r#"export component App inherits Window { Calendar { disabled-weekdays: [6]; } }"#,
+        r#"export component App inherits Window { Calendar { disabled-weekdays <- [6]; } }"#,
         "holidays.xr",
     );
     let raw = raw.replace(
@@ -10805,7 +10854,7 @@ fn date_lists_support_models_repeats_and_typed_calendar_bindings() {
 #[test]
 fn disabled_weekdays_are_typed_in_source_and_raw_mlir() {
     let source =
-        r#"export component App inherits Window { Calendar { disabled-weekdays: [6, 7]; } }"#;
+        r#"export component App inherits Window { Calendar { disabled-weekdays <- [6, 7]; } }"#;
     assert!(
         compile(source, "weekdays.xr")
             .unwrap()
@@ -10819,7 +10868,7 @@ fn disabled_weekdays_are_typed_in_source_and_raw_mlir() {
         )
         .is_err()
     );
-    let wrong_type = r#"export component App inherits Window { Calendar { week-start: 6; } }"#;
+    let wrong_type = r#"export component App inherits Window { Calendar { week-start <- 6; } }"#;
     let raw = lower(wrong_type, "weekdays.xr")
         .replace(r#"name = "week-start""#, r#"name = "disabled-weekdays""#);
     assert!(
@@ -10833,7 +10882,7 @@ fn disabled_weekdays_are_typed_in_source_and_raw_mlir() {
 fn editor_appearance_checks_types_and_owners() {
     let source = r#"
         export component App inherits Window {
-            editor := LineEdit { padding-left: 16px; placeholder-text-color: #ffb554; }
+            editor := LineEdit { padding-left <- 16px; placeholder-text-color <- #ffb554; }
         }
     "#;
     let output = compile(source, "appearance.xr").unwrap();
@@ -10843,7 +10892,7 @@ fn editor_appearance_checks_types_and_owners() {
     assert!(compile(&source.replace("16px", "false"), "appearance.xr").is_err());
     let invalid = lower(
         &source.replace(
-            "placeholder-text-color: #ffb554;",
+            "placeholder-text-color <- #ffb554;",
             "placeholder-text: \"hint\";",
         ),
         "appearance.xr",
@@ -10863,7 +10912,7 @@ fn editor_appearance_checks_types_and_owners() {
 fn password_character_checks_element_and_type_in_source_and_mlir() {
     let source = r#"
         export component App inherits Window {
-            editor := LineEdit { input-type: password; password-character: "🔒"; }
+            editor := LineEdit { input-type <- password; password-character <- "🔒"; }
         }
     "#;
     let output = compile(source, "password-character.xr").unwrap();
@@ -10871,10 +10920,10 @@ fn password_character_checks_element_and_type_in_source_and_mlir() {
     assert!(compile(&source.replace(r#""🔒""#, "true"), "password-character.xr").is_err());
     let wrong_element = source
         .replace("LineEdit", "TextArea")
-        .replace("input-type: password;", "");
+        .replace("input-type <- password;", "");
     assert!(compile(&wrong_element, "password-character.xr").is_err());
     let wrong_type = lower(
-        &source.replace(r#"password-character: "🔒";"#, "password-visible: true;"),
+        &source.replace(r#"password-character <- "🔒";"#, "password-visible: true;"),
         "password-character.xr",
     );
     let invalid = wrong_type.replace(
@@ -10892,14 +10941,14 @@ fn password_character_checks_element_and_type_in_source_and_mlir() {
 fn password_mask_delay_checks_raw_mlir_and_source_types() {
     let source = r#"
         export component App inherits Window {
-            editor := LineEdit { input-type: password; password-mask-delay: 750; }
+            editor := LineEdit { input-type <- password; password-mask-delay <- 750; }
         }
     "#;
     let output = compile(source, "password-mask-delay.xr").unwrap();
     assert!(output.mlir.contains(r#"name = "password-mask-delay""#));
     assert!(compile(&source.replace("750", "true"), "password-mask-delay.xr").is_err());
     let invalid = lower(
-        &source.replace("password-mask-delay: 750;", "password-visible: true;"),
+        &source.replace("password-mask-delay <- 750;", "password-visible: true;"),
         "password-mask-delay.xr",
     )
     .replace(
@@ -10917,8 +10966,8 @@ fn password_mask_delay_checks_raw_mlir_and_source_types() {
 fn input_pattern_checks_binding_types_and_reports_invalid_literals() {
     let source = r#"
         export component App inherits Window {
-            editor := LineEdit { input-pattern: "[A-Z]{2}-[0-9]{3}"; maximum-length: 6; }
-            out property <bool> valid: editor.acceptable-input;
+            editor := LineEdit { input-pattern <- "[A-Z]{2}-[0-9]{3}"; maximum-length <- 6; }
+            out property <bool> valid <- editor.acceptable-input;
         }
     "#;
     let output = compile(source, "input-pattern.xr").unwrap();
@@ -10948,7 +10997,7 @@ fn input_pattern_checks_binding_types_and_reports_invalid_literals() {
     );
 
     let raw = lower(
-        &source.replace(r#"input-pattern: "[A-Z]{2}-[0-9]{3}"; "#, ""),
+        &source.replace(r#"input-pattern <- "[A-Z]{2}-[0-9]{3}"; "#, ""),
         "input-pattern.xr",
     );
     let invalid = raw.replace(r#"name = "maximum-length""#, r#"name = "input-pattern""#);
@@ -11006,10 +11055,10 @@ fn text_editing_commands_check_operand_types_and_read_only_targets() {
 fn text_selection_colors_are_bound_and_type_checked() {
     let source = r#"
         export component App inherits Window {
-            in-out property <color> ink: once #ffe600;
-            LineEdit { selection-color: #603fa2; selected-text-color: root.ink; }
-            TextArea { selection-color: #603fa2; selected-text-color: root.ink; }
-            StyledText { selectable: true; selected-text-color: root.ink; }
+            in-out property <color> ink: #ffe600;
+            LineEdit { selection-color <- #603fa2; selected-text-color <- root.ink; }
+            TextArea { selection-color <- #603fa2; selected-text-color <- root.ink; }
+            StyledText { selectable <- true; selected-text-color <- root.ink; }
         }
     "#;
     let output = compile(source, "selection-colors.xr").unwrap();
@@ -11035,8 +11084,8 @@ fn text_selection_colors_are_bound_and_type_checked() {
 fn styled_text_selectable_enables_read_only_text_commands() {
     let source = r#"
         export component App inherits Window {
-            out property <string> selected: doc.selected-text;
-            doc := StyledText { selectable: true; text: @markdown("**Bold** [link](#a)"); }
+            out property <string> selected <- doc.selected-text;
+            doc := StyledText { selectable <- true; text <- @markdown("**Bold** [link](#a)"); }
             trigger := Button { clicked => { doc.focus(); doc.select-all(); doc.copy(); } }
         }
     "#;
@@ -11060,9 +11109,9 @@ fn styled_text_selectable_enables_read_only_text_commands() {
 fn persistent_selection_is_a_boolean_editor_binding() {
     let source = r#"
         export component App inherits Window {
-            TextArea { persistent-selection: true; }
-            LineEdit { persistent-selection: false; }
-            ComboBox { editable: true; persistent-selection: true; }
+            TextArea { persistent-selection <- true; }
+            LineEdit { persistent-selection <- false; }
+            ComboBox { editable <- true; persistent-selection <- true; }
         }
     "#;
     assert!(compile(source, "persistent.xr").is_ok());
@@ -11074,7 +11123,7 @@ fn persistent_selection_is_a_boolean_editor_binding() {
     );
     assert!(
         compile(
-            &source.replace("persistent-selection: true", "persistent-selection: 2"),
+            &source.replace("persistent-selection <- true", "persistent-selection: 2"),
             "persistent.xr"
         )
         .err()
@@ -11095,10 +11144,10 @@ fn persistent_selection_is_a_boolean_editor_binding() {
 fn editor_overwrite_and_select_word_are_checked() {
     let source = r#"
         export component Editor inherits Window {
-            in-out property <bool> overwrite: once true;
-            line := LineEdit { overwrite-mode: root.overwrite; }
-            TextArea { overwrite-mode: true; }
-            ComboBox { editable: true; overwrite-mode: root.overwrite; }
+            in-out property <bool> overwrite: true;
+            line := LineEdit { overwrite-mode <- root.overwrite; }
+            TextArea { overwrite-mode <- true; }
+            ComboBox { editable <- true; overwrite-mode <- root.overwrite; }
             select-tool := Button { clicked => { line.select-word(); } }
         }
     "#;
@@ -11108,7 +11157,7 @@ fn editor_overwrite_and_select_word_are_checked() {
     for (from, to, expected) in [
         ("TextArea {", "Label {", "overwrite-mode"),
         (
-            "overwrite-mode: true",
+            "overwrite-mode <- true",
             "overwrite-mode: 10",
             "type mismatch",
         ),
@@ -11137,13 +11186,13 @@ fn editor_overwrite_and_select_word_are_checked() {
 fn mouse_selection_mode_is_checked_in_source_and_mlir() {
     let source = r#"
         export component App inherits Window {
-            in-out property <MouseSelectionMode> mode: once MouseSelectionMode.words;
-            TextInput { mouse-selection-mode: root.mode; }
-            LineEdit { mouse-selection-mode: characters; }
-            TextEdit { mouse-selection-mode: caret; }
-            TextArea { mouse-selection-mode: root.mode; }
-            SearchField { mouse-selection-mode: root.mode; }
-            ComboBox { editable: true; mouse-selection-mode: root.mode; }
+            in-out property <MouseSelectionMode> mode: MouseSelectionMode.words;
+            TextInput { mouse-selection-mode <- root.mode; }
+            LineEdit { mouse-selection-mode <- characters; }
+            TextEdit { mouse-selection-mode <- caret; }
+            TextArea { mouse-selection-mode <- root.mode; }
+            SearchField { mouse-selection-mode <- root.mode; }
+            ComboBox { editable <- true; mouse-selection-mode <- root.mode; }
         }
     "#;
     let output = compile(source, "mouse-selection.xr").unwrap();
@@ -11156,7 +11205,7 @@ fn mouse_selection_mode_is_checked_in_source_and_mlir() {
     );
     for (from, to, expected) in [
         (
-            "mouse-selection-mode: caret",
+            "mouse-selection-mode <- caret",
             "mouse-selection-mode: true",
             "type mismatch",
         ),
@@ -11185,24 +11234,24 @@ fn mouse_selection_mode_is_checked_in_source_and_mlir() {
 fn text_submission_status_is_read_only_and_cannot_feed_its_own_rule() {
     let source = r#"
         export component App inherits Window {
-            in-out property <string> code: once "";
+            in-out property <string> code: "";
             entry := LineEdit {
-                minimum-length: 4;
-                submit-when: root.code != "0000";
-                text <=> root.code;
+                minimum-length <- 4;
+                submit-when <- root.code != "0000";
+                text <-> root.code;
             }
-            send := Button { enabled: entry.acceptable-input; }
+            send := Button { enabled <- entry.acceptable-input; }
         }
     "#;
     let compiled = compile(source, "text_submission.xr").unwrap();
     assert!(compiled.mlir.contains("\"xr.text_accepts\""));
 
-    let writable = source.replace("minimum-length: 4", "acceptable-input: true");
+    let writable = source.replace("minimum-length <- 4", "acceptable-input: true");
     let error = compile(&writable, "text_submission.xr").err().unwrap();
     assert!(error.contains("read-only"), "{error}");
 
     let assignment = source.replace(
-        "enabled: entry.acceptable-input;",
+        "enabled <- entry.acceptable-input;",
         "clicked => { entry.acceptable-input = true; }",
     );
     let error = compile(&assignment, "text_submission.xr").err().unwrap();
@@ -11227,20 +11276,20 @@ fn text_submission_status_is_read_only_and_cannot_feed_its_own_rule() {
 fn text_editor_numeric_limits_are_typed_in_source_and_mlir() {
     let source = r#"
         export component App inherits Window {
-            entry := TextInput { input-type: decimal; minimum-value: -1; decimals: 2; }
-            send := Button { enabled: entry.acceptable-input; }
+            entry := TextInput { input-type <- decimal; minimum-value <- -1; decimals <- 2; }
+            send := Button { enabled <- entry.acceptable-input; }
         }
     "#;
     let compiled = compile(source, "numeric_validation.xr").unwrap();
     for (old, new) in [
-        ("minimum-value: -1", "minimum-value: false"),
-        ("decimals: 2", "decimals: 2.5"),
-        ("minimum-value: -1", "maximum-value: \"100\""),
+        ("minimum-value <- -1", "minimum-value: false"),
+        ("decimals <- 2", "decimals: 2.5"),
+        ("minimum-value <- -1", "maximum-value: \"100\""),
     ] {
         assert!(compile(&source.replace(old, new), "numeric_validation.xr").is_err());
     }
     let animation = source.replace(
-        "decimals: 2;",
+        "decimals <- 2;",
         "decimals: 2; animate decimals { duration: 1ms; }",
     );
     let error = compile(&animation, "numeric_validation.xr").err().unwrap();
@@ -11254,7 +11303,7 @@ fn text_editor_numeric_limits_are_typed_in_source_and_mlir() {
     assert!(error.contains("requires a float"), "{error}");
 
     let cyclic = source.replace(
-        "minimum-value: -1",
+        "minimum-value <- -1",
         "minimum-value: self.acceptable-input ? -1 : 0",
     );
     let error = compile(&cyclic, "numeric_validation.xr").err().unwrap();
@@ -11265,8 +11314,8 @@ fn text_editor_numeric_limits_are_typed_in_source_and_mlir() {
 fn text_selection_reads_verify_type_owner_and_read_only_access() {
     let source = r#"
         export component App inherits Window {
-            out property <int> caret: entry.cursor-offset;
-            out property <string> selection: entry.selected-text;
+            out property <int> caret <- entry.cursor-offset;
+            out property <string> selection <- entry.selected-text;
             entry := TextArea {}
             panel := Rectangle {}
             run := Button {}
@@ -11302,8 +11351,8 @@ fn text_command_availability_is_read_only_and_lowers_to_a_boolean() {
     let source = r#"
         export component App inherits Window {
             document := TextEdit {}
-            undo-button := Button { enabled: document.can-undo; }
-            copy-button := Button { enabled: document.can-copy; }
+            undo-button := Button { enabled <- document.can-undo; }
+            copy-button := Button { enabled <- document.can-copy; }
         }
     "#;
     let compiled = compile(source, "edit_commands.xr").unwrap();
@@ -11326,8 +11375,8 @@ fn text_command_availability_is_read_only_and_lowers_to_a_boolean() {
 fn view_counts_are_read_only_and_check_projection_dependencies() {
     let source = r#"
         export component App inherits Window {
-            out property <int> rows: list.row-count;
-            list := ListView { for item in 3 : Text { text: "" + item; } }
+            out property <int> rows <- list.row-count;
+            list := ListView { for item in 3 : Text { text <- "" + item; } }
         }
     "#;
     let built = compile(source, "view_counts.xr").unwrap();
@@ -11368,8 +11417,8 @@ fn empty_state_is_a_single_static_part_of_a_virtual_view() {
     let source = r#"
         export component App inherits Window {
             ListView {
-                empty := EmptyState { Text { text: "No rows"; } }
-                for index in 1 : Text { text: "" + index; }
+                empty := EmptyState { Text { text <- "No rows"; } }
+                for index in 1 : Text { text <- "" + index; }
             }
         }
     "#;
@@ -11394,22 +11443,22 @@ fn list_selection_by_key_checks_model_field_and_control_mode() {
     let valid = r#"
         struct Record { id: int, text: string }
         export component App inherits Window {
-            in-out property <int> selection: once -1;
-            in property <[Record]> records: once [];
+            in-out property <int> selection: -1;
+            in property <[Record]> records: [];
             StandardListView {
-                current-key <=> root.selection;
-                row-key-field: "id";
-                model: root.records;
+                current-key <-> root.selection;
+                row-key-field <- "id";
+                model <- root.records;
             }
         }
     "#;
     let compiled = compile(valid, "keyed_selection.xr").unwrap();
     assert!(compiled.mlir.contains("name = \"row-key-field\""));
     for invalid in [
-        valid.replace("row-key-field: \"id\";", ""),
-        valid.replace("row-key-field: \"id\";", "row-key-field: \"text\";"),
+        valid.replace("row-key-field <- \"id\";", ""),
+        valid.replace("row-key-field <- \"id\";", "row-key-field: \"text\";"),
         valid.replace(
-            "row-key-field: \"id\";",
+            "row-key-field <- \"id\";",
             "row-key-field: \"id\"; current-index: 0;",
         ),
     ] {
@@ -11425,9 +11474,9 @@ fn key_navigation_has_typed_commands_and_read_only_selection_position() {
     let source = r#"
         struct Record { id: int, text: string }
         export component App inherits Window {
-            in property <[Record]> records: once [];
-            out property <int> position: rows.selected-view-index;
-            rows := StandardListView { model: root.records; row-key-field: "id"; }
+            in property <[Record]> records: [];
+            out property <int> position <- rows.selected-view-index;
+            rows := StandardListView { model <- root.records; row-key-field <- "id"; }
             go := Button {
                 clicked => { rows.select-key(8); rows.position-view-at-key(8, center); }
             }
@@ -11439,14 +11488,14 @@ fn key_navigation_has_typed_commands_and_read_only_selection_position() {
     assert!(compiled.mlir.contains("method = \"position-view-at-key\""));
 
     for bad in [
-        source.replace("row-key-field: \"id\";", ""),
+        source.replace("row-key-field <- \"id\";", ""),
         source.replace("at-key(8, center)", "at-key(8, false)"),
         source.replace(
-            "model: root.records;",
+            "model <- root.records;",
             "model: root.records; selected-view-index: 8;",
         ),
         source
-            .replace("row-key-field: \"id\";", "current-index: root.position;")
+            .replace("row-key-field <- \"id\";", "current-index: root.position;")
             .replace(
                 "rows.select-key(8); rows.position-view-at-key(8, center);",
                 "",
@@ -11464,11 +11513,11 @@ fn key_navigation_has_typed_commands_and_read_only_selection_position() {
 #[test]
 fn layout_direction_is_typed_on_windows_and_component_instances() {
     let source = r#"
-        component Pair inherits HorizontalLayout { Text { text: "item"; } }
+        component Pair inherits HorizontalLayout { Text { text <- "item"; } }
         export component App inherits Window {
-            in property <LayoutDirection> direction: once right-to-left;
-            layout-direction: root.direction;
-            Pair { layout-direction: left-to-right; }
+            in property <LayoutDirection> direction: right-to-left;
+            layout-direction <- root.direction;
+            Pair { layout-direction <- left-to-right; }
         }
     "#;
     let compiled = compile(source, "layout_direction.xr").unwrap();
@@ -11476,7 +11525,7 @@ fn layout_direction_is_typed_on_windows_and_component_instances() {
     assert!(compiled.mlir.contains("\"xr.layout_bind\""));
     assert!(
         compile(
-            &source.replace("layout-direction: root.direction", "layout-direction: 3"),
+            &source.replace("layout-direction <- root.direction", "layout-direction: 3"),
             "layout_direction.xr"
         )
         .is_err()
@@ -11492,16 +11541,19 @@ fn layout_direction_is_typed_on_windows_and_component_instances() {
 fn editor_horizontal_alignment_is_typed_through_mlir() {
     let source = r#"
         export component App inherits Window {
-            layout-direction: right-to-left;
-            LineEdit { horizontal-alignment: start; }
-            TextArea { horizontal-alignment: end; }
+            layout-direction <- right-to-left;
+            LineEdit { horizontal-alignment <- start; }
+            TextArea { horizontal-alignment <- end; }
         }
     "#;
     let compiled = compile(source, "rtl_text.xr").unwrap();
     assert!(compiled.mlir.contains("!xr.texthorizontalalignment"));
     assert!(
         compile(
-            &source.replace("horizontal-alignment: start", "horizontal-alignment: false"),
+            &source.replace(
+                "horizontal-alignment <- start",
+                "horizontal-alignment: false"
+            ),
             "rtl_text.xr"
         )
         .is_err()
@@ -11512,9 +11564,9 @@ fn editor_horizontal_alignment_is_typed_through_mlir() {
 fn scroll_visual_metrics_are_read_only_layout_outputs() {
     let source = r#"
         export component App inherits Window {
-            out property <float> start: bar.visual-position;
-            out property <float> extent: bar.visual-size;
-            bar := ScrollBar { width: 120px; minimum-size: 0.2; }
+            out property <float> start <- bar.visual-position;
+            out property <float> extent <- bar.visual-size;
+            bar := ScrollBar { width <- 120px; minimum-size <- 0.2; }
         }
     "#;
     let compiled = compile(source, "thumb-geometry.xr").unwrap();
@@ -11527,7 +11579,7 @@ fn scroll_visual_metrics_are_read_only_layout_outputs() {
         ("height: root.extent * 50px", "layout feedback"),
         ("minimum-size: root.extent", "cyclic property binding"),
     ] {
-        let invalid = source.replace("minimum-size: 0.2", field);
+        let invalid = source.replace("minimum-size <- 0.2", field);
         let error = compile(&invalid, "thumb-geometry.xr").err().unwrap();
         assert!(error.contains(expected), "{field}: {error}");
     }
@@ -11538,11 +11590,11 @@ fn scroll_artwork_requires_static_unique_parts_owned_by_scroll_controls() {
     let source = r#"
         export component App inherits Window {
             ScrollBar {
-                minimum-size: 0.2;
-                ScrollTrack { background: #203040; }
-                ScrollThumb { Rectangle { width: 50%; background: #506070; } }
+                minimum-size <- 0.2;
+                ScrollTrack { background <- #203040; }
+                ScrollThumb { Rectangle { width <- 50%; background <- #506070; } }
             }
-            ScrollIndicator { ScrollThumb { background: #708090; } }
+            ScrollIndicator { ScrollThumb { background <- #708090; } }
         }
     "#;
     let valid = compile(source, "scroll-artwork.xr").unwrap();
@@ -11577,11 +11629,11 @@ fn scroll_artwork_requires_static_unique_parts_owned_by_scroll_controls() {
 fn scroll_activity_is_typed_read_only_and_cannot_feed_layout() {
     let source = r#"
         export component App inherits Window {
-            out property <bool> moving: bar.active;
-            out property <bool> down: bar.pressed;
-            out property <bool> over: bar.hovered;
-            out property <bool> indicator-live: indicator.active;
-            bar := ScrollBar { width: 120px; height: 12px; }
+            out property <bool> moving <- bar.active;
+            out property <bool> down <- bar.pressed;
+            out property <bool> over <- bar.hovered;
+            out property <bool> indicator-live <- indicator.active;
+            bar := ScrollBar { width <- 120px; height <- 12px; }
             indicator := ScrollIndicator {}
         }
     "#;
@@ -11591,10 +11643,14 @@ fn scroll_activity_is_typed_read_only_and_cannot_feed_layout() {
         4
     );
     for (from, to, expected) in [
-        ("height: 12px;", "active: true;", "read-only"),
-        ("height: 12px;", "visible: root.moving;", "layout feedback"),
+        ("height <- 12px;", "active: true;", "read-only"),
         (
-            "height: 12px;",
+            "height <- 12px;",
+            "visible: root.moving;",
+            "layout feedback",
+        ),
+        (
+            "height <- 12px;",
             "policy: root.moving ? always-on : always-off;",
             "cyclic property binding",
         ),
@@ -11651,27 +11707,31 @@ fn relative_scroll_commands_check_receivers_and_operands() {
 fn scroll_view_gutters_have_typed_read_only_geometry_and_reject_feedback() {
     let source = r#"
         export component App inherits Window {
-            out property <length> bar-width: view.effective-scroll-bar-width;
-            out property <length> bar-height: view.effective-scroll-bar-height;
-            view := ScrollView { reserve-scroll-bar-space: true; width: 180px; }
+            out property <length> bar-width <- view.effective-scroll-bar-width;
+            out property <length> bar-height <- view.effective-scroll-bar-height;
+            view := ScrollView { reserve-scroll-bar-space <- true; width <- 180px; }
         }
     "#;
     let valid = compile(source, "scroll-gutters.xr").unwrap();
     assert_eq!(valid.mlir.matches("\"xr.viewport_read\"").count(), 2);
     for (from, to, diagnostic) in [
         (
-            "reserve-scroll-bar-space: true",
+            "reserve-scroll-bar-space <- true",
             "reserve-scroll-bar-space: 10px",
             "expected bool",
         ),
         (
-            "width: 180px",
+            "width <- 180px",
             "effective-scroll-bar-width: 8px",
             "read-only",
         ),
-        ("width: 180px", "height: root.bar-width", "layout feedback"),
         (
-            "reserve-scroll-bar-space: true",
+            "width <- 180px",
+            "height: root.bar-width",
+            "layout feedback",
+        ),
+        (
+            "reserve-scroll-bar-space <- true",
             "reserve-scroll-bar-space: root.bar-height > 0px",
             "layout feedback",
         ),
@@ -11686,8 +11746,8 @@ fn scroll_view_gutters_have_typed_read_only_geometry_and_reject_feedback() {
 fn focus_reveal_is_a_boolean_on_content_viewports() {
     let source = r#"
         export component Main inherits Window {
-            ScrollView { auto-reveal-focus: false; }
-            Flickable { auto-reveal-focus: true; }
+            ScrollView { auto-reveal-focus <- false; }
+            Flickable { auto-reveal-focus <- true; }
         }
     "#;
     let compiled = compile(source, "focus-reveal.xr").unwrap();
@@ -11706,7 +11766,7 @@ fn focus_reveal_is_a_boolean_on_content_viewports() {
 #[test]
 fn child_positioning_checks_the_target_and_both_alignment_types() {
     let source = r#"
-        component Card inherits Rectangle { width: 40px; height: 30px; }
+        component Card inherits Rectangle { width <- 40px; height <- 30px; }
         export component App inherits Window {
             callback jump();
             jump() => { view.position-view-at-child(card, center, contain); }
@@ -11802,8 +11862,8 @@ fn custom_scene_effect_validates_and_embeds_imported_shader_assets() {
     std::fs::write(
         &panel,
         r#"export component Panel inherits SceneView3D {
-            scene-effect: @shader-url("warm.wgsl");
-            scene-effect-strength: 0.5;
+            scene-effect <- @shader-url("warm.wgsl");
+            scene-effect-strength <- 0.5;
         }"#,
     )
     .unwrap();
@@ -11888,7 +11948,7 @@ fn scene_effect_chain_validates_record_types_in_dsl_and_mlir() {
     let invalid = r#"
         struct Effect { shader: string, scale: length }
         export component App inherits Window {
-            SceneView3D { scene-effects: [Effect { shader: "", scale: 1px }]; }
+            SceneView3D { scene-effects <- [Effect { shader: "", scale: 1px }]; }
         }
     "#;
     let error = compile(invalid, "effect-chain.xr")
@@ -11904,7 +11964,7 @@ fn scene_effect_chain_validates_record_types_in_dsl_and_mlir() {
         struct Fog { position: point3d, size: vector3d, density: float, color: color }
         export component App inherits Window {
             SceneView3D {
-                fog-volumes: [Fog { position: Point3D.new(0, 0, 0),
+                fog-volumes <- [Fog { position: Point3D.new(0, 0, 0),
                     size: Vector3D.new(1, 1, 1), density: 0.4, color: #223344 }];
             }
         }
@@ -11927,7 +11987,7 @@ fn scene_effect_pass_requires_string_names_for_nested_buffer_records() {
         struct Pass { shader: string, buffers: [Input] }
         export component App inherits Window {
             SceneView3D {
-                scene-effects: [Pass { shader: "", buffers: [Input { name: 4 }] }];
+                scene-effects <- [Pass { shader: "", buffers: [Input { name: 4 }] }];
             }
         }
     "#;
@@ -11965,7 +12025,7 @@ fn scene_effect_output_format_and_sampling_fields_have_string_types() {
             struct Buffer {{ name: string, filter: {filter_type} }}
             struct Pass {{ shader: string, output-format: {pass_format_type}, buffers: [Buffer] }}
             export component App inherits Window {{ SceneView3D {{
-                scene-effects: [Pass {{ shader: "", output-format: {fmt},
+                scene-effects <- [Pass {{ shader: "", output-format: {fmt},
                     buffers: [Buffer {{ name: "field", filter: {filter} }}] }}];
             }} }}
         "#
@@ -11980,7 +12040,7 @@ fn scene_effect_output_format_and_sampling_fields_have_string_types() {
         struct Buffer { name: string, max-anisotropy: float }
         struct Pass { shader: string, buffers: [Buffer] }
         export component App inherits Window { SceneView3D {
-            scene-effects: [Pass { shader: "", buffers: [Buffer { name: "field", max-anisotropy: 1.5 }] }];
+            scene-effects <- [Pass { shader: "", buffers: [Buffer { name: "field", max-anisotropy: 1.5 }] }];
         } }
     "#;
     let error = compile(source, "anisotropy.xr")
@@ -12001,7 +12061,7 @@ fn material_shader_files_are_embedded_and_reject_fragment_discard() {
     std::fs::create_dir_all(&dir).unwrap();
     let asset = dir.join("surface.wgsl");
     let source = r#"export component App inherits Window {
-        out property <string> shader: @material-shader-url("surface.wgsl");
+        out property <string> shader <- @material-shader-url("surface.wgsl");
     }"#;
     let filename = dir.join("app.xr");
     let valid = "fn scene_material(input: XrMaterialInput, surface: XrMaterialSurface) -> XrMaterialSurface { return surface; }";
@@ -12138,8 +12198,8 @@ fn named_scene_capture_records_are_typed_in_dsl_and_mlir() {
         struct Input { capture: string }
         struct Pass { shader: string, buffers: [Input] }
         export component Demo inherits Window { SceneView3D {
-            scene-captures: [Feed { name: "detail", camera: "", layers: 2, scale: 0.5, background: #00000000 }];
-            scene-effects: [Pass { shader: "", buffers: [Input { capture: "detail" }] }];
+            scene-captures <- [Feed { name: "detail", camera: "", layers: 2, scale: 0.5, background: #00000000 }];
+            scene-effects <- [Pass { shader: "", buffers: [Input { capture: "detail" }] }];
         } }
     "#;
     let compiled = compile(source, "scene-capture.xr").unwrap();
@@ -12185,7 +12245,7 @@ fn named_scene_capture_records_are_typed_in_dsl_and_mlir() {
         struct Fog { position: point3d, size: vector3d, density: float, color: color }
         export component Demo inherits Window {
             SceneView3D {
-                fog-volumes: [Fog { position: Point3D.new(0, 0, 0),
+                fog-volumes <- [Fog { position: Point3D.new(0, 0, 0),
                     size: Vector3D.new(1, 1, 1), density: 0.4, color: #223344 }];
             }
         }
@@ -12204,11 +12264,12 @@ fn named_scene_capture_records_are_typed_in_dsl_and_mlir() {
 #[test]
 fn scene_capture_sources_require_string_names_in_dsl_and_mlir() {
     for property in ["scene-color-capture", "scene-depth-capture"] {
-        let source =
-            format!("export component App inherits Window {{ SceneView3D {{ {property}: 50; }} }}");
+        let source = format!(
+            "export component App inherits Window {{ SceneView3D {{ {property} <- 50; }} }}"
+        );
         assert!(compile(&source, "capture-source.xr").is_err());
         let raw = lower(
-            "export component App inherits Window { SceneView3D { camera-yaw: 50; } }",
+            "export component App inherits Window { SceneView3D { camera-yaw <- 50; } }",
             "capture-source.xr",
         );
         let malformed = raw.replace("name = \"camera-yaw\"", &format!("name = \"{property}\""));
@@ -12223,7 +12284,7 @@ fn named_color_capture_inputs_require_strings_in_dsl_and_mlir() {
     let source = r#"
         struct Feed { name: string, spare-source: int }
         export component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "stage", spare-source: 42 }]; }
+            SceneView3D { scene-captures <- [Feed { name: "stage", spare-source: 42 }]; }
         }
     "#;
     let raw = lower(source, "capture-inputs.xr");
@@ -12246,7 +12307,7 @@ fn capture_override_material_uses_scene_material_type_rules() {
         struct Feed { name: string, override-material: Paint }
         export component App inherits Window {
             SceneView3D {
-                scene-captures: [Feed { name: "mask", override-material: Paint { marker: 1 } }];
+                scene-captures <- [Feed { name: "mask", override-material: Paint { marker: 1 } }];
             }
         }
     "#;
@@ -12266,7 +12327,7 @@ fn capture_pipeline_state_enforces_field_types_in_source_and_mlir() {
         struct Pipeline { marker: int }
         struct Feed { name: string, pipeline-state: Pipeline }
         export component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "glass", pipeline-state: Pipeline { marker: 1 } }]; }
+            SceneView3D { scene-captures <- [Feed { name: "glass", pipeline-state: Pipeline { marker: 1 } }]; }
         }
     "#;
     let raw = lower(source, "capture-pipeline.xr");
@@ -12295,7 +12356,7 @@ fn capture_raster_rectangles_require_float_coordinates_in_source_and_mlir() {
         struct Pipeline { margin: Bounds }
         struct Feed { name: string, pipeline-state: Pipeline }
         export component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "window", pipeline-state: Pipeline {
+            SceneView3D { scene-captures <- [Feed { name: "window", pipeline-state: Pipeline {
                 margin: Bounds { x: 0.0, y: 0.0, width: 1, height: 1.0 },
             } }]; }
         }
@@ -12324,7 +12385,7 @@ fn named_capture_depth_clear_requires_a_float_in_source_and_mlir() {
     let source = r#"
         struct Feed { name: string, marker: int }
         export component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "scene", marker: 1 }]; }
+            SceneView3D { scene-captures <- [Feed { name: "scene", marker: 1 }]; }
         }
     "#;
     let invalid = source.replace("marker", "depth-clear");
@@ -12344,7 +12405,7 @@ fn named_capture_stencil_validates_reference_and_masks_in_source_and_mlir() {
         struct Pipeline { stencil: Mask }
         struct Feed { name: string, pipeline-state: Pipeline }
         export component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "mask", pipeline-state: Pipeline {
+            SceneView3D { scene-captures <- [Feed { name: "mask", pipeline-state: Pipeline {
                 stencil: Mask { marker: 0.5 },
             } }]; }
         }
@@ -12374,7 +12435,7 @@ fn capture_polygon_mode_requires_a_string_in_source_and_mlir() {
         struct Pipeline { marker: int }
         struct Feed { name: string, pipeline-state: Pipeline }
         export component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "overlay", pipeline-state: Pipeline {
+            SceneView3D { scene-captures <- [Feed { name: "overlay", pipeline-state: Pipeline {
                 marker: 1,
             } }]; }
         }
@@ -12396,7 +12457,7 @@ fn capture_target_blend_validates_the_record_in_source_and_mlir() {
         struct Pipeline { target-blend: Blend, spare: int }
         struct Feed { name: string, pipeline-state: Pipeline }
         export component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "overlay", pipeline-state: Pipeline {
+            SceneView3D { scene-captures <- [Feed { name: "overlay", pipeline-state: Pipeline {
                 target-blend: Blend { marker: 0.5 }, spare: 0,
             } }]; }
         }
@@ -12436,7 +12497,7 @@ fn capture_color_format_requires_a_string_in_source_and_mlir() {
     let source = r#"
         struct Feed { name: string, marker: int }
         export component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "data", marker: 1 }]; }
+            SceneView3D { scene-captures <- [Feed { name: "data", marker: 1 }]; }
         }
     "#;
     let raw = lower(source, "capture-format.xr");
@@ -12457,7 +12518,7 @@ fn combined_capture_requires_a_boolean_in_source_and_mlir() {
     let source = r#"
         struct Feed { name: string, marker: string }
         export component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "surface", marker: "true" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "surface", marker: "true" }]; }
         }
     "#;
     let invalid = source.replace("marker", "combine-attachments");
@@ -12474,7 +12535,7 @@ fn combined_capture_requires_a_boolean_in_source_and_mlir() {
 fn reflection_work_budgets_require_integers_in_source_and_mlir() {
     let source = r#"
         export component App inherits Window {
-            SceneView3D { scene-exposure: 1.25; }
+            SceneView3D { scene-exposure <- 1.25; }
         }
     "#;
     let raw = lower(source, "reflection-budget.xr");
@@ -12502,7 +12563,7 @@ fn reflection_probe_debug_view_requires_a_boolean_in_source_and_mlir() {
         struct Probe { position: point3d, box-size: vector3d, marker: string }
         export component App inherits Window {
             SceneView3D {
-                reflection-probes: [Probe {
+                reflection-probes <- [Probe {
                     position: Point3D.new(0, 0, 0), box-size: Vector3D.new(4, 4, 4), marker: "on",
                 }];
             }
@@ -12528,7 +12589,7 @@ fn light_sampling_and_bake_fields_are_typed_in_source_and_mlir() {
         }
         export component App inherits Window {
             SceneView3D {
-                lights: [Lamp {
+                lights <- [Lamp {
                     kind: "spot", x: 0, y: 1, z: 2, yaw: 0, elevation: 0, intensity: 1,
                     color: #ffffff, range: 4, inner-angle: 15, outer-angle: 30, marker: true,
                 }];
@@ -12564,7 +12625,7 @@ fn model_bake_fields_are_typed_in_source_and_mlir() {
         }
         export component App inherits Window {
             SceneView3D {
-                model: [Actor {
+                model <- [Actor {
                     id: "actor", mesh: "primitive:box", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
                     yaw: 0, pitch: 0, roll: 0, color: #ffffff, marker: true,
                 }];
@@ -12592,7 +12653,7 @@ fn scene_light_settings_are_typed_in_source_and_mlir() {
             marker: bool,
         }
         export component App inherits Window {
-            SceneView3D { lights: [Lamp {
+            SceneView3D { lights <- [Lamp {
                 kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0,
                 intensity: 1, color: #fff, range: 0, inner-angle: 20, outer-angle: 35,
                 marker: true,
@@ -12640,8 +12701,8 @@ fn viewport_scissor_validates_rect_fields_and_only_affects_paint() {
     let text = r#"
         struct Region { x: length, y: length, width: length, height: length, enabled: bool }
         export component App inherits Window {
-            in-out property <Region> rect: once Region { x: 0px, y: 0px, width: 80px, height: 40px, enabled: true };
-            SceneView3D { scissor-rect: root.rect; }
+            in-out property <Region> rect: Region { x: 0px, y: 0px, width: 80px, height: 40px, enabled: true };
+            SceneView3D { scissor-rect <- root.rect; }
         }
     "#;
     let raw = lower(text, "scissor.xr");
@@ -12673,12 +12734,12 @@ fn viewport_scissor_validates_rect_fields_and_only_affects_paint() {
 fn viewport_flags_are_typed_and_only_affect_paint() {
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> inspect: once true;
+            in-out property <bool> inspect: true;
             SceneView3D {
-                depth-prepass: root.inspect;
-                debug-wireframe: root.inspect;
-                shadow-debug-cascades: root.inspect;
-                shadow-freeze-camera: root.inspect;
+                depth-prepass <- root.inspect;
+                debug-wireframe <- root.inspect;
+                shadow-debug-cascades <- root.inspect;
+                shadow-freeze-camera <- root.inspect;
             }
         }
     "#;
@@ -12698,7 +12759,7 @@ fn viewport_flags_are_typed_and_only_affect_paint() {
                 .any(|line| line.contains(name) && line.contains("xr.update_effect = \"paint\""))
         );
         let invalid =
-            format!("export component App inherits Window {{ SceneView3D {{ {name}: 1; }} }}");
+            format!("export component App inherits Window {{ SceneView3D {{ {name} <- 1; }} }}");
         assert!(compile(&invalid, "shadow-debug.xr").is_err());
         let bad = lower(&invalid.replace(name, "shadow-map-size"), "shadow-debug.xr")
             .replace("shadow-map-size", name);
@@ -12710,8 +12771,8 @@ fn viewport_flags_are_typed_and_only_affect_paint() {
 fn viewport_oit_method_is_typed_and_only_affects_paint() {
     let input = r#"
         export component App inherits Window {
-            in-out property <string> method: once "linked-list";
-            SceneView3D { oit-method: root.method; }
+            in-out property <string> method: "linked-list";
+            SceneView3D { oit-method <- root.method; }
         }
     "#;
     let mlir = mlir::process(&lower(input, "oit-method.xr"))
@@ -12722,10 +12783,7 @@ fn viewport_oit_method_is_typed_and_only_affects_paint() {
             |line| line.contains("oit-method") && line.contains("xr.update_effect = \"paint\"")
         )
     );
-    let invalid = input.replace(
-        "<string> method: once \"linked-list\"",
-        "<float> method: once 1.0",
-    );
+    let invalid = input.replace("<string> method: \"linked-list\"", "<float> method: 1.0");
     assert!(compile(&invalid, "oit-method.xr").is_err());
     let raw = lower(
         &invalid.replace("oit-method", "camera-yaw"),
@@ -12739,8 +12797,8 @@ fn viewport_oit_method_is_typed_and_only_affects_paint() {
 fn viewport_material_debug_is_typed_and_only_affects_paint() {
     let input = r#"
         export component App inherits Window {
-            in-out property <string> mode: once "normals";
-            SceneView3D { material-debug: root.mode; }
+            in-out property <string> mode: "normals";
+            SceneView3D { material-debug <- root.mode; }
         }
     "#;
     let mlir = mlir::process(&lower(input, "material-debug.xr"))
@@ -12749,7 +12807,7 @@ fn viewport_material_debug_is_typed_and_only_affects_paint() {
     assert!(mlir.lines().any(
         |line| line.contains("material-debug") && line.contains("xr.update_effect = \"paint\"")
     ));
-    let invalid = input.replace("<string> mode: once \"normals\"", "<float> mode: once 1.0");
+    let invalid = input.replace("<string> mode: \"normals\"", "<float> mode: 1.0");
     assert!(compile(&invalid, "material-debug.xr").is_err());
     let raw = lower(
         &invalid.replace("material-debug", "camera-yaw"),
@@ -12763,8 +12821,8 @@ fn viewport_material_debug_is_typed_and_only_affects_paint() {
 fn viewport_shadow_precision_is_typed_and_only_affects_paint() {
     let text = r#"
         export component App inherits Window {
-            in-out property <string> precision: once "depth16";
-            SceneView3D { shadow-map-precision: root.precision; }
+            in-out property <string> precision: "depth16";
+            SceneView3D { shadow-map-precision <- root.precision; }
         }
     "#;
     let raw = lower(text, "shadow-precision.xr");
@@ -12777,10 +12835,7 @@ fn viewport_shadow_precision_is_typed_and_only_affects_paint() {
             .any(|line| line.contains("shadow-map-precision")
                 && line.contains("xr.update_effect = \"paint\""))
     );
-    let invalid = text.replace(
-        "<string> precision: once \"depth16\"",
-        "<float> precision: once 1.0",
-    );
+    let invalid = text.replace("<string> precision: \"depth16\"", "<float> precision: 1.0");
     let diagnostic = compile(&invalid, "shadow-precision.xr")
         .err()
         .expect("invalid precision type");
@@ -12800,12 +12855,12 @@ fn viewport_shadow_precision_is_typed_and_only_affects_paint() {
 #[test]
 fn viewport_bake_quality_is_typed_in_source_and_mlir() {
     let raw = lower(
-        "export component App inherits Window { SceneView3D { shadows: true; } }",
+        "export component App inherits Window { SceneView3D { shadows <- true; } }",
         "bake-quality.xr",
     );
     for property in ["bake-denoise-passes", "bake-indirect-factor"] {
         let invalid = format!(
-            "export component App inherits Window {{ SceneView3D {{ {property}: true; }} }}"
+            "export component App inherits Window {{ SceneView3D {{ {property} <- true; }} }}"
         );
         assert!(
             compile(&invalid, "bake-quality.xr").is_err(),
@@ -12824,13 +12879,13 @@ fn viewport_bake_quality_is_typed_in_source_and_mlir() {
 fn rejects_writes_and_links_to_formula_properties() {
     for statement in [
         r#"callback change(); change => { root.source = "changed"; }"#,
-        "in-out property <string> alias <=> root.source;",
-        "TextInput { text <=> root.source; }",
+        "in-out property <string> alias <-> root.source;",
+        "TextInput { text <-> root.source; }",
     ] {
         let source = format!(
             r#"component App inherits Window {{
                 in property <string> base;
-                out property <string> source: root.base;
+                out property <string> source <- root.base;
                 {statement}
             }}"#
         );
@@ -12838,13 +12893,13 @@ fn rejects_writes_and_links_to_formula_properties() {
         assert!(error.contains("read-only"), "{error}");
     }
     for member in [
-        "in-out property <string> alias <=> child.source;",
+        "in-out property <string> alias <-> child.source;",
         r#"callback change(); change => { child.source = "changed"; }"#,
     ] {
         let source = format!(
             r#"component Child inherits Rectangle {{ in-out property <string> source; }}
                 component App inherits Window {{
-                    child := Child {{ source: "A"; }}
+                    child := Child {{ source <- "A"; }}
                     {member}
                 }}"#
         );
@@ -12858,8 +12913,8 @@ fn rust_api_only_exposes_writable_property_setters() {
     let compilation = compile(
         r#"export component App inherits Window {
             in property <string> base;
-            out property <string> formula: root.base;
-            in-out property <string> stored: once root.formula;
+            out property <string> formula <- root.base;
+            in-out property <string> stored: root.formula;
         }"#,
         "setters.xr",
     )
@@ -12875,7 +12930,7 @@ fn rust_api_only_exposes_writable_property_setters() {
 fn in_out_formulas_require_writable_storage_in_source_and_mlir() {
     let source = r#"export component App inherits Window {
         in property <string> source;
-        out property <string> display: root.source;
+        out property <string> display <- root.source;
     }"#;
     let error = compile(
         &source.replace("out property", "in-out property"),
@@ -12902,7 +12957,7 @@ fn cross_file_writes_use_instance_storage_and_resolve_callback_effects() {
     let filename = directory.join("ownership-app.xr");
     let editor = r#"export component Editor inherits Rectangle {
         in-out property <string> value;
-        in-out property <string> alternate <=> root.value;
+        in-out property <string> alternate <-> root.value;
         callback rename(string);
         rename(text) => { root.value = text; }
         callback rename-again(string);
@@ -12914,49 +12969,49 @@ fn cross_file_writes_use_instance_storage_and_resolve_callback_effects() {
     }"#;
     for (binding, statement, diagnostic) in [
         (
-            "alternate: root.source;",
+            "alternate <- root.source;",
             r#"editor.value = "X";"#,
             Some("cannot write read-only property `editor.value`"),
         ),
         (
-            "alternate: root.source;",
+            "alternate <- root.source;",
             r#"if false { editor.value = "X"; }"#,
             Some("cannot write read-only property `editor.value`"),
         ),
         (
-            "value: root.source;",
+            "value <- root.source;",
             r#"editor.rename("X");"#,
             Some("callback `editor.rename()` writes"),
         ),
         (
-            "alternate: root.source;",
+            "alternate <- root.source;",
             r#"editor.rename-again("X");"#,
             Some("callback `editor.rename-again()` writes"),
         ),
-        ("alternate: root.source;", r#"other.rename("X");"#, None),
+        ("alternate <- root.source;", r#"other.rename("X");"#, None),
         (
-            "alternate: root.source;",
+            "alternate <- root.source;",
             r#"editor.maybe-rename("X");"#,
             Some("callback `editor.maybe-rename()` may write"),
         ),
         (
-            "alternate: root.source;",
+            "alternate <- root.source;",
             r#"editor.never-rename("X");"#,
             None,
         ),
         (
-            "alternate <=> root.source;",
+            "alternate <-> root.source;",
             r#"editor.maybe-rename("X");"#,
             None,
         ),
-        ("alternate <=> root.source;", r#"editor.rename("X");"#, None),
+        ("alternate <-> root.source;", r#"editor.rename("X");"#, None),
     ] {
         let source = format!(
             r#"import {{ Editor }} from "ownership-editor.xr";
             export component App inherits Window {{
-                in-out property <string> source: once "A";
+                in-out property <string> source: "A";
                 editor := Editor {{ {binding} }}
-                other := Editor {{ value <=> root.source; }}
+                other := Editor {{ value <-> root.source; }}
                 callback act();
                 act => {{ {statement} }}
             }}"#
@@ -12987,10 +13042,10 @@ fn raw_mlir_rejects_writes_through_a_second_name_for_one_way_input_storage() {
     let raw = lower(
         r#"component Editor inherits Rectangle {
             in-out property <string> value;
-            in-out property <string> alternate <=> root.value;
+            in-out property <string> alternate <-> root.value;
         }
         export component App inherits Window {
-            editor := Editor { alternate: "A"; }
+            editor := Editor { alternate <- "A"; }
             other := Editor {}
             callback act();
             act => { other.value = "X"; }
@@ -13013,14 +13068,14 @@ fn raw_mlir_rejects_conditional_callback_writes_to_a_one_way_input() {
         let source = format!(
             r#"component Editor inherits Rectangle {{
                 in-out property <string> value;
-                in-out property <string> alternate <=> root.value;
+                in-out property <string> alternate <-> root.value;
                 callback maybe-rename(string);
                 maybe-rename(text) => {{ if {condition} {{ root.value = text; }} }}
             }}
             export component App inherits Window {{
-                in-out property <string> source: once "A";
-                editor := Editor {{ alternate: root.source; }}
-                other := Editor {{ value <=> root.source; }}
+                in-out property <string> source: "A";
+                editor := Editor {{ alternate <- root.source; }}
+                other := Editor {{ value <-> root.source; }}
                 callback act();
                 act => {{ other.maybe-rename("X"); }}
             }}"#

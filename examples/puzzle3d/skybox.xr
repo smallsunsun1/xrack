@@ -7,8 +7,8 @@ struct Actor {
 }
 
 export component SkyboxDemo inherits Window {
-    title: "XRack · 独立天空盒";
-    width: 420px; height: 256px; resizable: false; background: #172436;
+    title <- "XRack · 独立天空盒";
+    width <- 420px; height <- 256px; resizable <- false; background <- #172436;
     in-out property <bool> cube: true;
     in-out property <bool> painted: false;
     in-out property <bool> lighting: true;
@@ -25,33 +25,33 @@ export component SkyboxDemo inherits Window {
         color: #ecf4ff, material: Material { metalness: 0, roughness: 0.76 }, camera-kind: "",
     };
     SceneView3D {
-        width: 420px; height: 202px; camera: "eye"; cache-rendering: true;
-        scene-background: #213148; ambient-intensity: 0.08;
-        model: [
+        width <- 420px; height <- 202px; camera <- "eye"; cache-rendering <- true;
+        scene-background <- #213148; ambient-intensity <- 0.08;
+        model <- [
             Actor { id: "eye", mesh: "", y: 0.12, z: 6.3, camera-kind: "perspective", ..root.unit },
             Actor { id: "diffuse", x: -1.30, ..root.unit },
             Actor {
                 id: "chrome", x: 1.30, material: Material { metalness: 1, roughness: 0.16 }, ..root.unit
             },
         ];
-        environment: root.lighting ? @environment-url("models/studio.hdr") : "";
-        environment-skybox: root.show-sky;
-        skybox-source: root.cube ? @environment-url("models/skybox-cross.hdr") : "";
-        skybox-sky: PaintedSky {
+        environment <- root.lighting ? @environment-url("models/studio.hdr") : "";
+        environment-skybox <- root.show-sky;
+        skybox-source <- root.cube ? @environment-url("models/skybox-cross.hdr") : "";
+        skybox-sky <- PaintedSky {
             enabled: root.painted, sky-top-color: #754ab6, sky-horizon-color: #ffbd8e, sun-energy: 0,
         };
-        skybox-yaw: root.turn; skybox-pitch: root.tilt; skybox-roll: root.roll;
-        skybox-intensity: root.gain; skybox-blur: root.blur;
+        skybox-yaw <- root.turn; skybox-pitch <- root.tilt; skybox-roll <- root.roll;
+        skybox-intensity <- root.gain; skybox-blur <- root.blur;
     }
-    cube-toggle := CheckBox { x: 10px; y: 212px; width: 100px; height: 34px; text: "HDR 背景"; checked <=> root.cube; }
-    painted-toggle := CheckBox { x: 113px; y: 212px; width: 112px; height: 34px; text: "程序天空"; checked <=> root.painted; }
+    cube-toggle := CheckBox { x <- 10px; y <- 212px; width <- 100px; height <- 34px; text <- "HDR 背景"; checked <-> root.cube; }
+    painted-toggle := CheckBox { x <- 113px; y <- 212px; width <- 112px; height <- 34px; text <- "程序天空"; checked <-> root.painted; }
     rotate-sky := Button {
-        x: 229px; y: 212px; width: 101px; height: 34px; text: "旋转背景";
+        x <- 229px; y <- 212px; width <- 101px; height <- 34px; text <- "旋转背景";
         clicked => { root.turn = root.turn == 0 ? 90 : 0; }
     }
     blur-toggle := CheckBox {
-        x: 337px; y: 212px; width: 71px; height: 34px; text: "模糊";
-        checked: root.blur > 0;
+        x <- 337px; y <- 212px; width <- 71px; height <- 34px; text <- "模糊";
+        checked <- root.blur > 0;
         toggled => { root.blur = root.blur > 0 ? 0 : 0.75; }
     }
 }

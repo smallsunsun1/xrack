@@ -1216,14 +1216,21 @@ impl Instance {
     fn bind_input(&self, source: &InputSource) -> BoundInput {
         let owner = Rc::downgrade(&self.0);
         match source {
-            InputSource::Binding(expression) => {
+            InputSource::Binding {
+                expression,
+                initial,
+            } => {
                 let expression = expression.clone();
-                BoundInput::bound_optional(move || {
+                let read = move || {
                     let owner = owner.upgrade()?;
                     owner.binding_lifetime.track();
                     Some(Instance(owner, None).evaluate(&expression, &[]))
-                })
-                .protect_binding()
+                };
+                if *initial {
+                    BoundInput::initial_optional(read)
+                } else {
+                    BoundInput::bound_optional(read).protect_binding()
+                }
             }
             InputSource::RowLink(field) => {
                 let read_field = field.clone();
@@ -1317,6 +1324,9 @@ impl Instance {
     }
 
     fn initialize_once(&self) -> Result<()> {
+        for input in self.0.incoming.values() {
+            input.freeze_initial_result()?;
+        }
         for (member, slot) in &self.0.values {
             let property = &self.definition().properties[member];
             if property.mode == PropertyMode::Once
@@ -2186,7 +2196,7 @@ impl Instance {
             .clone()
     }
 
-    fn cached_visual(&self, slot: VisualSlot, value: &Expr) -> Result<Value> {
+    fn cached_visual(&self, slot: VisualSlot, value: &Expr, initial: bool) -> Result<Value> {
         // Table commands sample expressions against the row passed to the command.
         if self.0.row.as_ref().is_some_and(|row| row.sampled) {
             return self.evaluate(value, &[]);
@@ -2206,7 +2216,11 @@ impl Instance {
             .entry(slot)
             .or_default()
             .clone();
-        cache.try_get(|| owner.evaluate(value, &[]))
+        if initial {
+            cache.try_get_once(|| owner.evaluate(value, &[]))
+        } else {
+            cache.try_get(|| owner.evaluate(value, &[]))
+        }
     }
 
     #[cfg(test)]
@@ -2217,7 +2231,7 @@ impl Instance {
             .iter()
             .filter_map(|(&slot, value)| match slot {
                 VisualSlot::Planned(group) => Some((group, value.is_dirty())),
-                VisualSlot::Operand(_) => None,
+                VisualSlot::Operand(_) | VisualSlot::Initializer(_) => None,
             })
             .collect()
     }
@@ -2226,7 +2240,8 @@ impl Instance {
         use Expression::*;
         match expression.as_ref() {
             Literal(value) => Ok(value.clone()),
-            CachedVisual(group, value) => self.cached_visual(*group, value),
+            CachedVisual(group, value) => self.cached_visual(*group, value, false),
+            CachedInitializer(group, value) => self.cached_visual(*group, value, true),
             Read(member) => self.read(member),
             GeometryRead(target, metric) => self.geometry_read(target, *metric),
             SceneViewQuery(target, method, inputs) => {

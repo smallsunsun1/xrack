@@ -2,15 +2,15 @@ component CounterPanel inherits Rectangle {
     in-out property <int> count: 0;
 
     Text {
-        x: 16px; y: 18px;
-        text: "此页计数：" + root.count;
-        font-size: 22px;
-        color: #e7efff;
+        x <- 16px; y <- 18px;
+        text <- "此页计数：" + root.count;
+        font-size <- 22px;
+        color <- #e7efff;
     }
     add := Button {
-        x: 16px; y: 66px; width: 156px; height: 38px;
-        text: "增加计数";
-        background: #314b80;
+        x <- 16px; y <- 66px; width <- 156px; height <- 38px;
+        text <- "增加计数";
+        background <- #314b80;
         clicked => { root.count += 1; }
     }
 }
@@ -29,109 +29,109 @@ export component NavigationDemo inherits Window {
     out property <int> swipe-changes: 0;
     out property <int> indicator-changes: 0;
     out property <string> profile-label: "均衡";
-    out property <bool> settings-active: settings.active;
-    out property <bool> first-swipe-active: swipe-first.active;
-    out property <bool> middle-swipe-active: swipe-middle.active;
+    out property <bool> settings-active <- settings.active;
+    out property <bool> first-swipe-active <- swipe-first.active;
+    out property <bool> middle-swipe-active <- swipe-middle.active;
     pure callback visit-page(int) -> string;
     visit-page(index) => { index == 0 ? "切换标签页后，计数仍会保留" : "只有当前页内容参与求值" }
     pure callback visit-swipe-page(int) -> string;
     visit-swipe-page(index) => { index == 0 ? "离开再返回，计数仍保留" : "滑动或按方向键切页" }
 
-    title: "XRack 选项与标签页";
-    width: 632px; height: 598px;
-    background: #101725;
-    Text { x: 24px; y: 20px; text: "XRack 选项与标签页"; font-size: 25px; color: #f0f4ff; }
-    Text { x: 24px; y: 56px; text: "互斥选择 · 键盘导航 · 页面状态"; font-size: 15px; color: #a7b6ce; }
+    title <- "XRack 选项与标签页";
+    width <- 632px; height <- 598px;
+    background <- #101725;
+    Text { x <- 24px; y <- 20px; text <- "XRack 选项与标签页"; font-size <- 25px; color <- #f0f4ff; }
+    Text { x <- 24px; y <- 56px; text <- "互斥选择 · 键盘导航 · 页面状态"; font-size <- 15px; color <- #a7b6ce; }
 
     Rectangle {
-        x: 24px; y: 92px; width: 172px; height: 212px;
-        background: #1d293d; border-radius: 14px;
+        x <- 24px; y <- 92px; width <- 172px; height <- 212px;
+        background <- #1d293d; border-radius <- 14px;
         profiles-group := RadioGroup {
-            x: 12px; y: 14px; width: 148px; height: 143px;
-            title: "运行模式";
-            spacing: 8px;
-            current-index <=> root.profile;
-            for name in root.profiles : RadioButton { text: name; }
+            x <- 12px; y <- 14px; width <- 148px; height <- 143px;
+            title <- "运行模式";
+            spacing <- 8px;
+            current-index <-> root.profile;
+            for name in root.profiles : RadioButton { text <- name; }
             selected(value) => { root.profile-label = value; }
         }
     }
     Rectangle {
-        x: 212px; y: 92px; width: 396px; height: 212px;
-        background: #1d293d; border-radius: 14px;
+        x <- 212px; y <- 92px; width <- 396px; height <- 212px;
+        background <- #1d293d; border-radius <- 14px;
         pages := TabWidget {
-            x: 10px; y: 10px; width: 376px; height: 190px;
-            current-index <=> root.page;
-            orientation: root.vertical-tabs ? Orientation.vertical : Orientation.horizontal;
+            x <- 10px; y <- 10px; width <- 376px; height <- 190px;
+            current-index <-> root.page;
+            orientation <- root.vertical-tabs ? Orientation.vertical : Orientation.horizontal;
             changed(index) => { root.changes += 1; }
             overview := Tab {
-                title: "概览";
+                title <- "概览";
                 counter := CounterPanel {}
-                Text { x: 16px; y: 116px; text: root.visit-page(0); font-size: 14px; color: #a7b6ce; }
+                Text { x <- 16px; y <- 116px; text <- root.visit-page(0); font-size <- 14px; color <- #a7b6ce; }
             }
             settings := Tab {
-                title: "设置";
-                Text { x: 16px; y: 20px; text: root.visit-page(1); font-size: 15px; color: #e7efff; }
+                title <- "设置";
+                Text { x <- 16px; y <- 20px; text <- root.visit-page(1); font-size <- 15px; color <- #e7efff; }
                 orient := Switch {
-                    x: 16px; y: 59px; width: 180px; height: 32px;
-                    text: "左侧标签";
-                    checked <=> root.vertical-tabs;
+                    x <- 16px; y <- 59px; width <- 180px; height <- 32px;
+                    text <- "左侧标签";
+                    checked <-> root.vertical-tabs;
                 }
             }
-            help := Tab { title: "帮助"; enabled: false; }
+            help := Tab { title <- "帮助"; enabled <- false; }
         }
     }
     Text {
-        x: 24px; y: 320px;
-        text: "模式：" + root.profile-label + " · 标签切换 " + root.changes + " 次";
-        font-size: 14px; color: #a7b6ce;
+        x <- 24px; y <- 320px;
+        text <- "模式：" + root.profile-label + " · 标签切换 " + root.changes + " 次";
+        font-size <- 14px; color <- #a7b6ce;
     }
     Text {
-        x: 24px; y: 360px;
-        text: "滑动页面 · 中键拖动 · 第 " + (root.swipe-page + 1) + " 页";
-        font-size: 15px; color: #c5d3eb;
+        x <- 24px; y <- 360px;
+        text <- "滑动页面 · 中键拖动 · 第 " + (root.swipe-page + 1) + " 页";
+        font-size <- 15px; color <- #c5d3eb;
     }
     swipe-direction := Switch {
-        x: 450px; y: 351px; width: 158px; height: 32px;
-        text: "纵向切页";
-        checked <=> root.vertical-swipes;
+        x <- 450px; y <- 351px; width <- 158px; height <- 32px;
+        text <- "纵向切页";
+        checked <-> root.vertical-swipes;
     }
     Rectangle {
-        x: 24px; y: 393px; width: 584px; height: 182px;
-        background: #1d293d; border-radius: 14px;
+        x <- 24px; y <- 393px; width <- 584px; height <- 182px;
+        background <- #1d293d; border-radius <- 14px;
         swipe-view := SwipeView {
-            x: 10px; y: 10px; width: 564px; height: 130px;
-            current-index <=> root.swipe-page;
-            orientation: root.vertical-swipes ? Orientation.vertical : Orientation.horizontal;
-            interactive: root.swipe-interactive;
+            x <- 10px; y <- 10px; width <- 564px; height <- 130px;
+            current-index <-> root.swipe-page;
+            orientation <- root.vertical-swipes ? Orientation.vertical : Orientation.horizontal;
+            interactive <- root.swipe-interactive;
             changed(index) => { root.swipe-changes += 1; }
             swipe-first := SwipePage {
                 swipe-counter := CounterPanel {}
-                Text { x: 235px; y: 20px; text: root.visit-swipe-page(0); color: #acc0db; }
-                Text { x: 235px; y: 57px; text: "Tab 聚焦，方向键或 Home / End 切换"; font-size: 14px; color: #acc0db; }
+                Text { x <- 235px; y <- 20px; text <- root.visit-swipe-page(0); color <- #acc0db; }
+                Text { x <- 235px; y <- 57px; text <- "Tab 聚焦，方向键或 Home / End 切换"; font-size <- 14px; color <- #acc0db; }
             }
             swipe-middle := SwipePage {
-                visible: root.show-middle;
-                Text { x: 16px; y: 12px; text: root.visit-swipe-page(1); color: #acc0db; }
+                visible <- root.show-middle;
+                Text { x <- 16px; y <- 12px; text <- root.visit-swipe-page(1); color <- #acc0db; }
                 ScrollView {
-                    x: 16px; y: 43px; width: 360px; height: 74px;
-                    content-width: 540px;
+                    x <- 16px; y <- 43px; width <- 360px; height <- 74px;
+                    content-width <- 540px;
                     Rectangle {
-                        width: 100%; height: 100%; background: #30436c; border-radius: 7px;
-                        Text { x: 14px; y: 16px; text: "先滚动页内内容"; color: #e7efff; }
-                        Text { x: 376px; y: 16px; text: "页内滚动终点"; color: #e7efff; }
+                        width <- 100%; height <- 100%; background <- #30436c; border-radius <- 7px;
+                        Text { x <- 14px; y <- 16px; text <- "先滚动页内内容"; color <- #e7efff; }
+                        Text { x <- 376px; y <- 16px; text <- "页内滚动终点"; color <- #e7efff; }
                     }
                 }
             }
             SwipePage {
-                Text { x: 16px; y: 20px; text: "最后一页"; font-size: 22px; color: #e7efff; }
-                Text { x: 16px; y: 62px; text: root.visit-swipe-page(2); color: #acc0db; }
+                Text { x <- 16px; y <- 20px; text <- "最后一页"; font-size <- 22px; color <- #e7efff; }
+                Text { x <- 16px; y <- 62px; text <- root.visit-swipe-page(2); color <- #acc0db; }
             }
         }
         page-indicator := PageIndicator {
-            x: 222px; y: 145px; width: 140px; height: 28px;
-            count: root.indicator-count;
-            current-index <=> root.swipe-page;
-            interactive: root.swipe-interactive;
+            x <- 222px; y <- 145px; width <- 140px; height <- 28px;
+            count <- root.indicator-count;
+            current-index <-> root.swipe-page;
+            interactive <- root.swipe-interactive;
             changed(index) => { root.indicator-changes += 1; }
         }
     }
@@ -144,119 +144,119 @@ export component StackDemo inherits Window {
     pure callback visit-route(string) -> string;
     visit-route(route) => { "当前页面 · " + route }
 
-    title: "XRack · 页面导航栈";
-    width: 590px; height: 324px;
-    background: #101725;
+    title <- "XRack · 页面导航栈";
+    width <- 590px; height <- 324px;
+    background <- #101725;
 
     VerticalLayout {
-        padding: 20px;
-        spacing: 10px;
-        Text { text: "工作区导航栈"; font-size: 24px; color: #f0f4ff; }
-        Text { text: "打开详情，再用 Alt+左方向键或返回按钮回退"; font-size: 14px; color: #acc0db; }
+        padding <- 20px;
+        spacing <- 10px;
+        Text { text <- "工作区导航栈"; font-size <- 24px; color <- #f0f4ff; }
+        Text { text <- "打开详情，再用 Alt+左方向键或返回按钮回退"; font-size <- 14px; color <- #acc0db; }
         navigation := StackView {
-            initial-page: root.start-route;
-            transition-duration: 220;
+            initial-page <- root.start-route;
+            transition-duration <- 220;
             changed(page, depth) => {
                 root.navigations += 1;
             }
             overview := StackPage {
                 Rectangle {
-                    background: #263750; border-radius: 12px;
-                    Text { x: 18px; y: 20px; text: root.visit-route("overview"); font-size: 20px; color: #edf3ff; }
+                    background <- #263750; border-radius <- 12px;
+                    Text { x <- 18px; y <- 20px; text <- root.visit-route("overview"); font-size <- 20px; color <- #edf3ff; }
                     overview-next := Button {
-                        x: 18px; y: 68px; width: 160px; height: 40px;
-                        text: "打开详情";
+                        x <- 18px; y <- 68px; width <- 160px; height <- 40px;
+                        text <- "打开详情";
                         clicked() => { navigation.push("details"); }
                     }
                     overview-deep-link := Button {
-                        x: 192px; y: 68px; width: 160px; height: 40px;
-                        text: "直接打开预览";
+                        x <- 192px; y <- 68px; width <- 160px; height <- 40px;
+                        text <- "直接打开预览";
                         clicked() => { navigation.reset-to(root.preview-path); }
                     }
                 }
             }
             details := StackPage {
                 Rectangle {
-                    background: #253f51; border-radius: 12px;
+                    background <- #253f51; border-radius <- 12px;
                     detail-counter := CounterPanel {}
-                    Text { x: 212px; y: 20px; text: root.visit-route("details"); color: #edf3ff; }
+                    Text { x <- 212px; y <- 20px; text <- root.visit-route("details"); color <- #edf3ff; }
                     detail-next := Button {
-                        x: 212px; y: 66px; width: 134px; height: 38px;
-                        text: "打开预览";
+                        x <- 212px; y <- 66px; width <- 134px; height <- 38px;
+                        text <- "打开预览";
                         clicked() => { navigation.push("review"); }
                     }
                     detail-back := Button {
-                        x: 212px; y: 115px; width: 134px; height: 38px;
-                        text: "返回概览";
-                        enabled: navigation.can-go-back;
+                        x <- 212px; y <- 115px; width <- 134px; height <- 38px;
+                        text <- "返回概览";
+                        enabled <- navigation.can-go-back;
                         clicked() => { navigation.pop(); }
                     }
                 }
             }
             review := StackPage {
                 Rectangle {
-                    background: #3d355b; border-radius: 12px;
-                    Text { x: 18px; y: 20px; text: root.visit-route("review"); font-size: 20px; color: #edf3ff; }
+                    background <- #3d355b; border-radius <- 12px;
+                    Text { x <- 18px; y <- 20px; text <- root.visit-route("review"); font-size <- 20px; color <- #edf3ff; }
                     review-replace := Button {
-                        x: 18px; y: 67px; width: 170px; height: 38px;
-                        text: "用摘要替换预览";
+                        x <- 18px; y <- 67px; width <- 170px; height <- 38px;
+                        text <- "用摘要替换预览";
                         clicked() => { navigation.replace("summary"); }
                     }
                     review-home := Button {
-                        x: 18px; y: 116px; width: 170px; height: 38px;
-                        text: "回退到概览";
+                        x <- 18px; y <- 116px; width <- 170px; height <- 38px;
+                        text <- "回退到概览";
                         clicked() => { navigation.pop-to("overview"); }
                     }
                 }
             }
             summary := StackPage {
                 Rectangle {
-                    background: #2b4855; border-radius: 12px;
-                    Text { x: 18px; y: 20px; text: root.visit-route("summary"); font-size: 20px; color: #edf3ff; }
+                    background <- #2b4855; border-radius <- 12px;
+                    Text { x <- 18px; y <- 20px; text <- root.visit-route("summary"); font-size <- 20px; color <- #edf3ff; }
                     summary-back := Button {
-                        x: 18px; y: 67px; width: 170px; height: 38px;
-                        text: "返回详情";
-                        enabled: navigation.can-go-back;
+                        x <- 18px; y <- 67px; width <- 170px; height <- 38px;
+                        text <- "返回详情";
+                        enabled <- navigation.can-go-back;
                         clicked() => { navigation.pop(); }
                     }
                     summary-reset := Button {
-                        x: 18px; y: 116px; width: 170px; height: 38px;
-                        text: "重置到概览";
+                        x <- 18px; y <- 116px; width <- 170px; height <- 38px;
+                        text <- "重置到概览";
                         clicked() => { navigation.reset("overview"); }
                     }
                 }
             }
         }
         stack-status := Text {
-            text: "栈顶 " + navigation.current-page + " · 深度 " + navigation.depth + " · 导航 " + root.navigations + " 次";
-            font-size: 14px; color: #acc0db;
+            text <- "栈顶 " + navigation.current-page + " · 深度 " + navigation.depth + " · 导航 " + root.navigations + " 次";
+            font-size <- 14px; color <- #acc0db;
         }
     }
 }
 
 export component StackGuardDemo inherits Window {
-    title: "XRack · 页面离开守卫";
-    width: 560px; height: 360px;
-    background: #101725;
+    title <- "XRack · 页面离开守卫";
+    width <- 560px; height <- 360px;
+    background <- #101725;
 
     in-out property <string> saved: "界面设计";
-    in-out property <string> draft: once root.saved;
-    out property <bool> editor-active: editor.active;
-    out property <int> editor-index: editor.stack-index;
+    in-out property <string> draft: root.saved;
+    out property <bool> editor-active <- editor.active;
+    out property <int> editor-index <- editor.stack-index;
     out property <string> last-destination: "";
     out property <bool> last-removing: false;
     out property <string> lifecycle: "";
     out property <int> changes: 0;
     private property <bool> confirm-open: false;
-    callback can-leave-preview <=> preview.leave-requested;
+    callback can-leave-preview <-> preview.leave-requested;
 
-    Text { x: 20px; y: 18px; text: "项目笔记"; font-size: 26px; }
-    Text { x: 20px; y: 57px; text: "草稿随页面保留，丢弃前需要确认"; color: #acc0db; }
+    Text { x <- 20px; y <- 18px; text <- "项目笔记"; font-size <- 26px; }
+    Text { x <- 20px; y <- 57px; text <- "草稿随页面保留，丢弃前需要确认"; color <- #acc0db; }
 
     navigation := StackView {
-        x: 20px; y: 91px; width: 520px; height: 215px;
-        initial-page: "home";
-        transition-duration: 180;
+        x <- 20px; y <- 91px; width <- 520px; height <- 215px;
+        initial-page <- "home";
+        transition-duration <- 180;
         changed(page, depth) => {
             root.changes += 1;
             root.lifecycle += " changed " + page + " " + depth;
@@ -265,11 +265,11 @@ export component StackGuardDemo inherits Window {
             activated => { root.lifecycle += " home activated"; }
             deactivated => { root.lifecycle += " home deactivated"; }
             Rectangle {
-                background: #263750; border-radius: 10px;
-                Text { x: 18px; y: 20px; text: root.saved; font-size: 22px; }
+                background <- #263750; border-radius <- 10px;
+                Text { x <- 18px; y <- 20px; text <- root.saved; font-size <- 22px; }
                 edit-note := Button {
-                    x: 18px; y: 71px; width: 126px; height: 40px;
-                    text: "编辑笔记";
+                    x <- 18px; y <- 71px; width <- 126px; height <- 40px;
+                    text <- "编辑笔记";
                     clicked => { navigation.push("editor"); }
                 }
             }
@@ -285,25 +285,25 @@ export component StackGuardDemo inherits Window {
             deactivated => { root.lifecycle += " editor deactivated"; }
             removed => { root.lifecycle += " editor removed"; root.draft = root.saved; }
             Rectangle {
-                background: #253f51; border-radius: 10px;
-                Text { x: 18px; y: 18px; text: root.draft == root.saved ? "已保存" : "有未保存的改动"; }
+                background <- #253f51; border-radius <- 10px;
+                Text { x <- 18px; y <- 18px; text <- root.draft == root.saved ? "已保存" : "有未保存的改动"; }
                 note-field := LineEdit {
-                    x: 18px; y: 52px; width: 484px; height: 42px;
-                    text <=> root.draft;
+                    x <- 18px; y <- 52px; width <- 484px; height <- 42px;
+                    text <-> root.draft;
                 }
                 note-save := Button {
-                    x: 18px; y: 122px; width: 98px; height: 40px;
-                    text: "保存";
+                    x <- 18px; y <- 122px; width <- 98px; height <- 40px;
+                    text <- "保存";
                     clicked => { root.saved = root.draft; }
                 }
                 note-preview := Button {
-                    x: 128px; y: 122px; width: 98px; height: 40px;
-                    text: "预览";
+                    x <- 128px; y <- 122px; width <- 98px; height <- 40px;
+                    text <- "预览";
                     clicked => { navigation.push("preview"); }
                 }
                 note-back := Button {
-                    x: 238px; y: 122px; width: 98px; height: 40px;
-                    text: "返回";
+                    x <- 238px; y <- 122px; width <- 98px; height <- 40px;
+                    text <- "返回";
                     clicked => { navigation.pop(); }
                 }
             }
@@ -313,36 +313,36 @@ export component StackGuardDemo inherits Window {
             deactivated => { root.lifecycle += " preview deactivated"; }
             removed => { root.lifecycle += " preview removed"; }
             Rectangle {
-                background: #3d355b; border-radius: 10px;
-                Text { x: 18px; y: 20px; text: root.draft; font-size: 22px; }
+                background <- #3d355b; border-radius <- 10px;
+                Text { x <- 18px; y <- 20px; text <- root.draft; font-size <- 22px; }
                 preview-edit := Button {
-                    x: 18px; y: 71px; width: 126px; height: 40px;
-                    text: "继续编辑";
+                    x <- 18px; y <- 71px; width <- 126px; height <- 40px;
+                    text <- "继续编辑";
                     clicked => { navigation.pop(); }
                 }
                 preview-home := Button {
-                    x: 156px; y: 71px; width: 126px; height: 40px;
-                    text: "回到首页";
+                    x <- 156px; y <- 71px; width <- 126px; height <- 40px;
+                    text <- "回到首页";
                     clicked => { navigation.reset("home"); }
                 }
             }
         }
     }
     route-status := Text {
-        x: 20px; y: 319px;
-        text: "当前页 " + navigation.current-page + " · 编辑页索引 " + editor.stack-index;
-        color: #acc0db;
+        x <- 20px; y <- 319px;
+        text <- "当前页 " + navigation.current-page + " · 编辑页索引 " + editor.stack-index;
+        color <- #acc0db;
     }
 
     confirm-leave := Dialog {
-        title: "未保存的改动";
-        open <=> root.confirm-open;
-        width: 374px;
+        title <- "未保存的改动";
+        open <-> root.confirm-open;
+        width <- 374px;
         accepted => { root.draft = root.saved; navigation.reset("home"); }
-        Text { text: "返回首页会丢弃这次编辑。"; }
+        Text { text <- "返回首页会丢弃这次编辑。"; }
         DialogButtonBox {
-            keep-editing := DialogButton { text: "保留草稿"; role: reject; width: 100px; }
-            discard-note := DialogButton { text: "丢弃草稿"; role: accept; width: 100px; }
+            keep-editing := DialogButton { text <- "保留草稿"; role <- reject; width <- 100px; }
+            discard-note := DialogButton { text <- "丢弃草稿"; role <- accept; width <- 100px; }
         }
     }
 }
@@ -352,59 +352,59 @@ export component TabBarDemo inherits Window {
     in-out property <int> filter: 0;
     in-out property <[string]> filters: ["全部", "最近更新", "收藏"];
     out property <int> changes: 0;
-    out property <bool> overview-selected: overview-tab.checked;
+    out property <bool> overview-selected <- overview-tab.checked;
 
-    title: "XRack · 独立标签栏";
-    width: 536px; height: 318px;
-    background: #141e2f;
+    title <- "XRack · 独立标签栏";
+    width <- 536px; height <- 318px;
+    background <- #141e2f;
 
-    Text { x: 24px; y: 14px; text: "独立标签栏 · 滚动或按 Home / End"; color: #e7efff; font-size: 22px; }
+    Text { x <- 24px; y <- 14px; text <- "独立标签栏 · 滚动或按 Home / End"; color <- #e7efff; font-size <- 22px; }
     pages-bar := TabBar {
-        x: 24px; y: 54px; width: 488px; height: 44px;
-        accessible-name: "工作区页面";
-        spacing: 4px;
-        current-index <=> root.page;
+        x <- 24px; y <- 54px; width <- 488px; height <- 44px;
+        accessible-name <- "工作区页面";
+        spacing <- 4px;
+        current-index <-> root.page;
         changed(index) => { root.changes += 1; }
-        overview-tab := TabButton { text: "概览"; width: 120px; }
-        hidden-tab := TabButton { text: "隐藏页"; width: 120px; visible: false; }
-        disabled-tab := TabButton { text: "待开放"; width: 120px; enabled: false; }
-        reports-tab := TabButton { text: "报表"; width: 120px; }
-        history-tab := TabButton { text: "历史"; width: 120px; }
-        preferences-tab := TabButton { text: "偏好设置"; width: 164px; }
+        overview-tab := TabButton { text <- "概览"; width <- 120px; }
+        hidden-tab := TabButton { text <- "隐藏页"; width <- 120px; visible <- false; }
+        disabled-tab := TabButton { text <- "待开放"; width <- 120px; enabled <- false; }
+        reports-tab := TabButton { text <- "报表"; width <- 120px; }
+        history-tab := TabButton { text <- "历史"; width <- 120px; }
+        preferences-tab := TabButton { text <- "偏好设置"; width <- 164px; }
     }
     workspace := SwipeView {
-        x: 24px; y: 108px; width: 488px; height: 118px;
-        current-index <=> root.page;
-        SwipePage { Text { x: 12px; y: 20px; text: "概览 · 标签栏与页面共享一个页索引"; color: #e7efff; } }
-        SwipePage { visible: false; }
-        SwipePage { enabled: false; }
-        SwipePage { Text { x: 12px; y: 20px; text: "报表"; color: #e7efff; } }
-        SwipePage { Text { x: 12px; y: 20px; text: "历史"; color: #e7efff; } }
-        SwipePage { Text { x: 12px; y: 20px; text: "偏好设置 · 中键拖动可切回上一页"; color: #e7efff; } }
+        x <- 24px; y <- 108px; width <- 488px; height <- 118px;
+        current-index <-> root.page;
+        SwipePage { Text { x <- 12px; y <- 20px; text <- "概览 · 标签栏与页面共享一个页索引"; color <- #e7efff; } }
+        SwipePage { visible <- false; }
+        SwipePage { enabled <- false; }
+        SwipePage { Text { x <- 12px; y <- 20px; text <- "报表"; color <- #e7efff; } }
+        SwipePage { Text { x <- 12px; y <- 20px; text <- "历史"; color <- #e7efff; } }
+        SwipePage { Text { x <- 12px; y <- 20px; text <- "偏好设置 · 中键拖动可切回上一页"; color <- #e7efff; } }
     }
-    Text { x: 24px; y: 221px; text: "模型生成的标签 · 第 " + (root.filter + 1) + " 项"; color: #acc0db; }
+    Text { x <- 24px; y <- 221px; text <- "模型生成的标签 · 第 " + (root.filter + 1) + " 项"; color <- #acc0db; }
     filters-bar := TabBar {
-        x: 24px; y: 252px; width: 488px; height: 38px;
-        accessible-name: "筛选条件";
-        current-index <=> root.filter;
-        for label in root.filters : TabButton { text: label; }
+        x <- 24px; y <- 252px; width <- 488px; height <- 38px;
+        accessible-name <- "筛选条件";
+        current-index <-> root.filter;
+        for label in root.filters : TabButton { text <- label; }
     }
 }
 export component ApplicationWindowDemo inherits ApplicationWindow {
-    title: "XRack · 应用窗口";
-    width: 500px; height: 340px;
-    background: #182331;
-    color-scheme: dark;
-    padding: 12px; padding-left: 20px;
-    spacing: 6px;
+    title <- "XRack · 应用窗口";
+    width <- 500px; height <- 340px;
+    background <- #182331;
+    color-scheme <- dark;
+    padding <- 12px; padding-left <- 20px;
+    spacing <- 6px;
 
     in property <bool> show-menu: true;
     in property <bool> show-header: true;
     in property <bool> show-footer: true;
     in property <bool> allow-close: true;
     in-out property <bool> dialog-open: false;
-    out property <length> body-width: root.available-width;
-    out property <length> body-height: root.available-height;
+    out property <length> body-width <- root.available-width;
+    out property <length> body-height <- root.available-height;
     out property <int> menu-actions: 0;
     out property <int> body-actions: 0;
     out property <int> footer-actions: 0;
@@ -413,118 +413,118 @@ export component ApplicationWindowDemo inherits ApplicationWindow {
     close-requested() => { root.close-attempts += 1; root.allow-close }
 
     PageFooter {
-        visible: root.show-footer;
-        height: 38px;
-        padding-left: 20px;
-        background: #29394c;
+        visible <- root.show-footer;
+        height <- 38px;
+        padding-left <- 20px;
+        background <- #29394c;
         foot-action := Button {
-            width: 140px; height: 30px;
-            text: "状态 · " + root.footer-actions;
+            width <- 140px; height <- 30px;
+            text <- "状态 · " + root.footer-actions;
             clicked() => { root.footer-actions += 1; }
         }
     }
     body := ScrollView {
-        width: 100%; height: 100%;
-        content-height: 380px;
+        width <- 100%; height <- 100%;
+        content-height <- 380px;
         Rectangle {
-            width: 100%; height: 380px;
-            background: #1d2b3a;
+            width <- 100%; height <- 380px;
+            background <- #1d2b3a;
             body-action := Button {
-                x: 16px; y: 16px; width: 140px; height: 36px;
-                text: "正文 · " + root.body-actions;
+                x <- 16px; y <- 16px; width <- 140px; height <- 36px;
+                text <- "正文 · " + root.body-actions;
                 clicked() => { root.body-actions += 1; }
             }
             Text {
-                x: 16px; y: 70px; width: 290px; height: 28px;
-                text: "内容区 " + (root.body-width / 1px) + " × " + (root.body-height / 1px);
+                x <- 16px; y <- 70px; width <- 290px; height <- 28px;
+                text <- "内容区 " + (root.body-width / 1px) + " × " + (root.body-height / 1px);
             }
-            Text { x: 16px; y: 320px; text: "滚动区底部"; }
+            Text { x <- 16px; y <- 320px; text <- "滚动区底部"; }
         }
     }
     menu := MenuBar {
-        visible: root.show-menu;
-        height: 32px;
-        background: #27354d;
+        visible <- root.show-menu;
+        height <- 32px;
+        background <- #27354d;
         file := Menu {
-            title: "文件";
-            MenuItem { text: "刷新"; activated() => { root.menu-actions += 1; } }
+            title <- "文件";
+            MenuItem { text <- "刷新"; activated() => { root.menu-actions += 1; } }
         }
     }
     PageHeader {
-        visible: root.show-header;
-        height: 48px;
-        background: #304765;
+        visible <- root.show-header;
+        height <- 48px;
+        background <- #304765;
         ToolBar {
-            height: 48px;
-            padding: 6px; background: #304765;
-            head-action := ToolButton { text: "帮助"; clicked() => { root.dialog-open = true; } }
+            height <- 48px;
+            padding <- 6px; background <- #304765;
+            head-action := ToolButton { text <- "帮助"; clicked() => { root.dialog-open = true; } }
         }
     }
     help := Dialog {
-        open <=> root.dialog-open;
-        title: "应用窗口";
-        width: 240px; height: 120px;
-        Text { text: "页眉与页脚固定在窗口边缘。"; }
-        DialogButton { text: "关闭"; role: reject; }
+        open <-> root.dialog-open;
+        title <- "应用窗口";
+        width <- 240px; height <- 120px;
+        Text { text <- "页眉与页脚固定在窗口边缘。"; }
+        DialogButton { text <- "关闭"; role <- reject; }
     }
 }
 
 export component PageDemo inherits Window {
-    width: 360px; height: 240px;
-    title: "页面布局";
+    width <- 360px; height <- 240px;
+    title <- "页面布局";
     in-out property <bool> show-header: true;
     out property <int> saves: 0;
 
     settings := Page {
-        title: "工作区设置";
-        background: #141d2a;
-        padding: 12px; spacing: 6px;
+        title <- "工作区设置";
+        background <- #141d2a;
+        padding <- 12px; spacing <- 6px;
 
         page-footer := PageFooter {
-            height: 44px;
-            background: #253f51;
+            height <- 44px;
+            background <- #253f51;
             HorizontalLayout {
-                padding: 5px; spacing: 12px;
-                cross-axis-alignment: center;
+                padding <- 5px; spacing <- 12px;
+                cross-axis-alignment <- center;
                 save := Button {
-                    text: "保存"; width: 96px; height: 34px;
+                    text <- "保存"; width <- 96px; height <- 34px;
                     clicked() => { root.saves = root.saves + 1; }
                 }
-                Text { text: "已保存 " + root.saves + " 次"; color: #ffffff; }
+                Text { text <- "已保存 " + root.saves + " 次"; color <- #ffffff; }
             }
         }
 
         settings-scroll := ScrollView {
-            width: 100%; height: 100%;
-            content-height: 420px;
+            width <- 100%; height <- 100%;
+            content-height <- 420px;
             Rectangle {
-                width: 100%; height: 420px;
-                background: #386055;
-                option := CheckBox { x: 10px; y: 10px; text: "同步设置"; }
-                Text { x: 10px; y: 380px; text: "滚动到末尾"; color: #ffffff; }
+                width <- 100%; height <- 420px;
+                background <- #386055;
+                option := CheckBox { x <- 10px; y <- 10px; text <- "同步设置"; }
+                Text { x <- 10px; y <- 380px; text <- "滚动到末尾"; color <- #ffffff; }
             }
         }
 
         page-header := PageHeader {
-            visible: root.show-header;
-            background: #253249;
+            visible <- root.show-header;
+            background <- #253249;
             ToolBar {
-                background: #253249;
+                background <- #253249;
                 header-action := ToolButton {
-                    text: "收起页眉";
+                    text <- "收起页眉";
                     clicked() => { root.show-header = false; }
                 }
-                Text { text: "工作区设置"; color: #ffffff; }
+                Text { text <- "工作区设置"; color <- #ffffff; }
             }
         }
     }
 }
 
 export component DirectionalTabsDemo inherits Window {
-    title: "XRack · 标签页方向";
-    width: 624px; height: 264px;
-    background: #141e2f;
-    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+    title <- "XRack · 标签页方向";
+    width <- 624px; height <- 264px;
+    background <- #141e2f;
+    layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
 
     in-out property <bool> rtl: true;
     in-out property <bool> vertical: false;
@@ -532,46 +532,46 @@ export component DirectionalTabsDemo inherits Window {
     in-out property <int> detail: 0;
 
     flip := Button {
-        x: 20px; y: 20px; width: 152px; height: 32px;
-        text: root.rtl ? "从右到左" : "从左到右";
+        x <- 20px; y <- 20px; width <- 152px; height <- 32px;
+        text <- root.rtl ? "从右到左" : "从左到右";
         clicked => { root.rtl = !root.rtl; }
     }
     turn := Button {
-        x: 180px; y: 20px; width: 138px; height: 32px;
-        text: root.vertical ? "标签在侧边" : "标签在顶部";
+        x <- 180px; y <- 20px; width <- 138px; height <- 32px;
+        text <- root.vertical ? "标签在侧边" : "标签在顶部";
         clicked => { root.vertical = !root.vertical; }
     }
     tabs := TabBar {
-        x: 20px; y: 70px; width: 296px; height: 40px;
-        spacing: 6px;
-        current-index <=> root.page;
-        first-tab := TabButton { text: "概览"; width: 96px; }
-        TabButton { text: "隐藏"; visible: false; width: 96px; }
-        TabButton { text: "待开放"; enabled: false; width: 96px; }
-        records-tab := TabButton { text: "记录"; width: 96px; }
-        history-tab := TabButton { text: "历史"; width: 96px; }
-        last-tab := TabButton { text: "偏好"; width: 108px; }
+        x <- 20px; y <- 70px; width <- 296px; height <- 40px;
+        spacing <- 6px;
+        current-index <-> root.page;
+        first-tab := TabButton { text <- "概览"; width <- 96px; }
+        TabButton { text <- "隐藏"; visible <- false; width <- 96px; }
+        TabButton { text <- "待开放"; enabled <- false; width <- 96px; }
+        records-tab := TabButton { text <- "记录"; width <- 96px; }
+        history-tab := TabButton { text <- "历史"; width <- 96px; }
+        last-tab := TabButton { text <- "偏好"; width <- 108px; }
     }
     workspace := SwipeView {
-        x: 20px; y: 118px; width: 296px; height: 110px;
-        current-index <=> root.page;
-        SwipePage { Label { x: 12px; y: 16px; text: "概览 · 可拖动切页"; } }
-        SwipePage { visible: false; }
-        SwipePage { enabled: false; }
-        SwipePage { Label { x: 12px; y: 16px; text: "记录"; } }
-        SwipePage { Label { x: 12px; y: 16px; text: "历史"; } }
-        SwipePage { Label { x: 12px; y: 16px; text: "偏好"; } }
+        x <- 20px; y <- 118px; width <- 296px; height <- 110px;
+        current-index <-> root.page;
+        SwipePage { Label { x <- 12px; y <- 16px; text <- "概览 · 可拖动切页"; } }
+        SwipePage { visible <- false; }
+        SwipePage { enabled <- false; }
+        SwipePage { Label { x <- 12px; y <- 16px; text <- "记录"; } }
+        SwipePage { Label { x <- 12px; y <- 16px; text <- "历史"; } }
+        SwipePage { Label { x <- 12px; y <- 16px; text <- "偏好"; } }
     }
     details := TabWidget {
-        x: 340px; y: 70px; width: 264px; height: 158px;
-        orientation: root.vertical ? Orientation.vertical : Orientation.horizontal;
-        current-index <=> root.detail;
-        general := Tab { title: "常规"; Label { x: 8px; y: 12px; text: "常规设置"; } }
-        advanced := Tab { title: "高级"; Label { x: 8px; y: 12px; text: "高级设置"; } }
+        x <- 340px; y <- 70px; width <- 264px; height <- 158px;
+        orientation <- root.vertical ? Orientation.vertical : Orientation.horizontal;
+        current-index <-> root.detail;
+        general := Tab { title <- "常规"; Label { x <- 8px; y <- 12px; text <- "常规设置"; } }
+        advanced := Tab { title <- "高级"; Label { x <- 8px; y <- 12px; text <- "高级设置"; } }
     }
     status := Text {
-        x: 20px; y: 232px;
-        text: "页码 " + root.page + " · 设置 " + root.detail;
+        x <- 20px; y <- 232px;
+        text <- "页码 " + root.page + " · 设置 " + root.detail;
     }
 }
 
@@ -582,10 +582,10 @@ export struct GalleryEntry {
 }
 
 export component PathViewDemo inherits Window {
-    title: "XRack · 曲线路径浏览";
-    width: 640px;
-    height: 336px;
-    background: #111c2a;
+    title <- "XRack · 曲线路径浏览";
+    width <- 640px;
+    height <- 336px;
+    background <- #111c2a;
 
     in-out property <[GalleryEntry]> entries: [
         GalleryEntry { title: "概览", id: 10, tint: #5a7bd9 },
@@ -600,33 +600,33 @@ export component PathViewDemo inherits Window {
     in-out property <bool> curved: true;
     in-out property <bool> mirrored: false;
     in-out property <bool> gallery-enabled: true;
-    out property <int> selected-index: gallery.current-index;
-    out property <bool> moving: gallery.moving;
+    out property <int> selected-index <- gallery.current-index;
+    out property <bool> moving <- gallery.moving;
     out property <int> changes: 0;
     out property <int> last-value: 0;
 
     gallery := PathView {
-        x: 26px; y: 32px; width: 588px; height: 214px;
-        model: root.entries;
-        text-role: "title";
-        value-role: "id";
-        current-value <=> root.selected;
-        accessible-name: "资料分类";
-        enabled: root.gallery-enabled;
-        item-width: 118px;
-        item-height: 96px;
-        visible-item-count: 5;
-        wrap: true;
-        layout-direction: root.mirrored ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
-        path: root.curved ? "M 0 0.86 Q 0.5 -0.46 1 0.86" : "M 0 0.5 L 1 0.5";
+        x <- 26px; y <- 32px; width <- 588px; height <- 214px;
+        model <- root.entries;
+        text-role <- "title";
+        value-role <- "id";
+        current-value <-> root.selected;
+        accessible-name <- "资料分类";
+        enabled <- root.gallery-enabled;
+        item-width <- 118px;
+        item-height <- 96px;
+        visible-item-count <- 5;
+        wrap <- true;
+        layout-direction <- root.mirrored ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        path <- root.curved ? "M 0 0.86 Q 0.5 -0.46 1 0.86" : "M 0 0.5 L 1 0.5";
         PathViewOption {
-            background: option-data.tint;
-            border-radius: 9px;
-            opacity: option-enabled ? Math.max(0.52, 1.0 - Math.abs(option-progress - 0.5)) : 0.38;
+            background <- option-data.tint;
+            border-radius <- 9px;
+            opacity <- option-enabled ? Math.max(0.52, 1.0 - Math.abs(option-progress - 0.5)) : 0.38;
             VerticalLayout {
-                width: 100%; height: 100%; padding: 12px;
-                Text { text: option-text; color: #ffffff; font-size: 20px; }
-                Text { text: option-selected ? "当前选项" : "#" + option-data.id; color: #edf3ff; }
+                width <- 100%; height <- 100%; padding <- 12px;
+                Text { text <- option-text; color <- #ffffff; font-size <- 20px; }
+                Text { text <- option-selected ? "当前选项" : "#" + option-data.id; color <- #edf3ff; }
             }
         }
         value-selected(value) => {
@@ -636,19 +636,19 @@ export component PathViewDemo inherits Window {
     }
 
     caption := Text {
-        x: 28px; y: 259px;
-        text: gallery.current-text + " · ID " + root.selected;
-        color: #edf3ff;
+        x <- 28px; y <- 259px;
+        text <- gallery.current-text + " · ID " + root.selected;
+        color <- #edf3ff;
     }
     straighten := Button {
-        x: 28px; y: 290px; width: 148px;
-        text: root.curved ? "切换直线" : "切换曲线";
+        x <- 28px; y <- 290px; width <- 148px;
+        text <- root.curved ? "切换直线" : "切换曲线";
         clicked => { root.curved = !root.curved; }
     }
     mirror := CheckBox {
-        x: 191px; y: 290px;
-        text: "从右向左";
-        checked <=> root.mirrored;
+        x <- 191px; y <- 290px;
+        text <- "从右向左";
+        checked <-> root.mirrored;
     }
 }
 
@@ -658,9 +658,9 @@ export struct WorkspaceTab {
 }
 
 export component ValueTabsDemo inherits Window {
-    title: "XRack · 动态标签";
-    width: 620px; height: 320px;
-    background: #192639;
+    title <- "XRack · 动态标签";
+    width <- 620px; height <- 320px;
+    background <- #192639;
 
     in-out property <[WorkspaceTab]> documents: [
         WorkspaceTab { title: "概览", id: "home" },
@@ -669,21 +669,21 @@ export component ValueTabsDemo inherits Window {
     in-out property <string> selected: "draft";
     in-out property <bool> draft-open: true;
     in-out property <bool> notes-open: false;
-    out property <int> bar-index: bar.current-index;
-    out property <int> page-index: pages.current-index;
-    out property <int> static-index: summary.current-index;
-    out property <bool> draft-active: draft-page.active;
+    out property <int> bar-index <- bar.current-index;
+    out property <int> page-index <- pages.current-index;
+    out property <int> static-index <- summary.current-index;
+    out property <bool> draft-active <- draft-page.active;
     out property <int> page-edits: 0;
     out property <int> tab-choices: 0;
     out property <string> last-choice: "";
     out property <int> last-tab-index: -1;
 
     bar := TabBar {
-        x: 18px; y: 16px; width: 584px; height: 46px;
-        current-value <=> root.selected;
+        x <- 18px; y <- 16px; width <- 584px; height <- 46px;
+        current-value <-> root.selected;
         for item in root.documents : TabButton {
-            text: item.title;
-            value: item.id;
+            text <- item.title;
+            value <- item.id;
         }
         changed(index) => {
             root.tab-choices += 1;
@@ -692,43 +692,43 @@ export component ValueTabsDemo inherits Window {
         }
     }
     pages := SwipeView {
-        x: 18px; y: 76px; width: 328px; height: 116px;
-        current-value <=> root.selected;
+        x <- 18px; y <- 76px; width <- 328px; height <- 116px;
+        current-value <-> root.selected;
         home-page := SwipePage {
-            value: "home";
-            Text { x: 12px; y: 14px; text: "概览文档"; color: #e4eeff; }
+            value <- "home";
+            Text { x <- 12px; y <- 14px; text <- "概览文档"; color <- #e4eeff; }
         }
         draft-page := SwipePage {
-            value: "draft";
-            visible: root.draft-open;
+            value <- "draft";
+            visible <- root.draft-open;
             edit-draft := Button {
-                x: 12px; y: 14px; width: 148px;
-                text: "编辑草稿 " + root.page-edits;
+                x <- 12px; y <- 14px; width <- 148px;
+                text <- "编辑草稿 " + root.page-edits;
                 clicked => { root.page-edits += 1; }
             }
         }
         notes-page := SwipePage {
-            value: "notes";
-            visible: root.notes-open;
-            Text { x: 12px; y: 14px; text: "笔记文档"; color: #e4eeff; }
+            value <- "notes";
+            visible <- root.notes-open;
+            Text { x <- 12px; y <- 14px; text <- "笔记文档"; color <- #e4eeff; }
         }
     }
     summary := TabWidget {
-        x: 360px; y: 76px; width: 242px; height: 116px;
-        current-value <=> root.selected;
-        Tab { title: "概览"; value: "home"; Text { text: "概览状态"; color: #e4eeff; } }
-        Tab { title: "草稿"; value: "draft"; visible: root.draft-open; Text { text: "草稿状态"; color: #e4eeff; } }
-        Tab { title: "笔记"; value: "notes"; visible: root.notes-open; Text { text: "笔记状态"; color: #e4eeff; } }
+        x <- 360px; y <- 76px; width <- 242px; height <- 116px;
+        current-value <-> root.selected;
+        Tab { title <- "概览"; value <- "home"; Text { text <- "概览状态"; color <- #e4eeff; } }
+        Tab { title <- "草稿"; value <- "draft"; visible <- root.draft-open; Text { text <- "草稿状态"; color <- #e4eeff; } }
+        Tab { title <- "笔记"; value <- "notes"; visible <- root.notes-open; Text { text <- "笔记状态"; color <- #e4eeff; } }
     }
     status := Text {
-        x: 18px; y: 206px;
-        text: "当前 " + root.selected + " · 标签 " + root.bar-index + " · 内容页 " + root.page-index;
-        color: #e4eeff;
+        x <- 18px; y <- 206px;
+        text <- "当前 " + root.selected + " · 标签 " + root.bar-index + " · 内容页 " + root.page-index;
+        color <- #e4eeff;
     }
     insert := Button {
-        x: 18px; y: 250px; width: 162px;
-        text: "在前面插入笔记";
-        enabled: !root.notes-open && root.draft-open;
+        x <- 18px; y <- 250px; width <- 162px;
+        text <- "在前面插入笔记";
+        enabled <- !root.notes-open && root.draft-open;
         clicked => {
             root.notes-open = true;
             root.documents = [
@@ -739,9 +739,9 @@ export component ValueTabsDemo inherits Window {
         }
     }
     reorder := Button {
-        x: 199px; y: 250px; width: 140px;
-        text: "草稿移到前面";
-        enabled: root.notes-open && root.draft-open;
+        x <- 199px; y <- 250px; width <- 140px;
+        text <- "草稿移到前面";
+        enabled <- root.notes-open && root.draft-open;
         clicked => {
             root.documents = [
                 WorkspaceTab { title: "草稿", id: "draft" },
@@ -751,9 +751,9 @@ export component ValueTabsDemo inherits Window {
         }
     }
     close-draft := Button {
-        x: 358px; y: 250px; width: 128px;
-        text: "关闭草稿";
-        enabled: root.draft-open;
+        x <- 358px; y <- 250px; width <- 128px;
+        text <- "关闭草稿";
+        enabled <- root.draft-open;
         clicked => {
             root.draft-open = false;
             root.documents = root.notes-open ? [
@@ -769,26 +769,26 @@ component WorkspaceEditor inherits Rectangle {
     in property <string> title;
     in property <bool> show-details: false;
     private property <int> edits: 0;
-    background: #24364d;
+    background <- #24364d;
 
     editor-title := Text {
-        x: 18px; y: 20px; text: root.title + " · 编辑 " + root.edits + " 次";
-        color: #e4eeff; font-size: 20px;
+        x <- 18px; y <- 20px; text <- root.title + " · 编辑 " + root.edits + " 次";
+        color <- #e4eeff; font-size <- 20px;
     }
     edit := Button {
-        x: 18px; y: 65px; width: 116px; text: "编辑本页";
+        x <- 18px; y <- 65px; width <- 116px; text <- "编辑本页";
         clicked => { root.edits += 1; }
     }
     details := Button {
-        visible: root.show-details;
-        x: 146px; y: 65px; width: 116px; text: "详情";
+        visible <- root.show-details;
+        x <- 146px; y <- 65px; width <- 116px; text <- "详情";
     }
 }
 
 export component ModelSwipeDemo inherits Window {
-    title: "XRack · 模型驱动的文档";
-    width: 520px; height: 286px;
-    background: #192639;
+    title <- "XRack · 模型驱动的文档";
+    width <- 520px; height <- 286px;
+    background <- #192639;
 
     in-out property <[WorkspaceTab]> documents: [
         WorkspaceTab { title: "概览", id: "home" },
@@ -797,8 +797,8 @@ export component ModelSwipeDemo inherits Window {
     ];
     in-out property <string> selected: "draft";
     in-out property <int> page-transition: 180;
-    out property <int> page-index: pages.current-index;
-    out property <int> bar-index: bar.current-index;
+    out property <int> page-index <- pages.current-index;
+    out property <int> bar-index <- bar.current-index;
     out property <int> page-changes: 0;
     out property <int> tab-moves: 0;
     out property <int> page-moves: 0;
@@ -813,24 +813,24 @@ export component ModelSwipeDemo inherits Window {
     content-title(title) => { title }
 
     bar := TabBar {
-        x: 16px; y: 14px; width: 488px; height: 44px;
-        current-value <=> root.selected;
-        reorderable: true;
+        x <- 16px; y <- 14px; width <- 488px; height <- 44px;
+        current-value <-> root.selected;
+        reorderable <- true;
         tab-moved(from, to) => {
             root.tab-moves += 1;
             root.move-from = from;
             root.move-to = to;
             root.index-after-move = bar.current-index;
         }
-        for doc in root.documents : TabButton { text: doc.title; value: doc.id; }
+        for doc in root.documents : TabButton { text <- doc.title; value <- doc.id; }
     }
     pages := SwipeView {
-        x: 16px; y: 70px; width: 488px; height: 128px;
-        current-value <=> root.selected;
-        transition-duration: root.page-transition;
+        x <- 16px; y <- 70px; width <- 488px; height <- 128px;
+        current-value <-> root.selected;
+        transition-duration <- root.page-transition;
         for doc in root.documents : SwipePage {
-            value: doc.id;
-            WorkspaceEditor { title: root.content-title(doc.title); show-details: true; }
+            value <- doc.id;
+            WorkspaceEditor { title <- root.content-title(doc.title); show-details <- true; }
         }
         changed(index) => { root.page-changes += 1; }
         page-moved(from, to) => {
@@ -841,17 +841,17 @@ export component ModelSwipeDemo inherits Window {
         }
     }
     status := Text {
-        x: 16px; y: 209px;
-        text: root.selected + " · 标签 " + root.bar-index + " · 页面 " + root.page-index;
-        color: #e4eeff;
+        x <- 16px; y <- 209px;
+        text <- root.selected + " · 标签 " + root.bar-index + " · 页面 " + root.page-index;
+        color <- #e4eeff;
     }
     move-to-front := Button {
-        x: 190px; y: 240px; width: 154px; text: "把当前标签移到开头";
-        enabled: bar.current-index > 0;
+        x <- 190px; y <- 240px; width <- 154px; text <- "把当前标签移到开头";
+        enabled <- bar.current-index > 0;
         clicked => { bar.move-item(bar.current-index, 0); }
     }
     reorder := Button {
-        x: 16px; y: 240px; width: 162px; text: "用新顺序替换模型";
+        x <- 16px; y <- 240px; width <- 162px; text <- "用新顺序替换模型";
         clicked => {
             root.documents = [
                 WorkspaceTab { title: "笔记", id: "notes" },
@@ -861,15 +861,15 @@ export component ModelSwipeDemo inherits Window {
         }
     }
     Shortcut {
-        sequence: "F7";
+        sequence <- "F7";
         activated => { pages.move-item(1, 0); }
     }
 }
 
 export component ModelTabsDemo inherits Window {
-    title: "XRack · 模型驱动的内建标签页";
-    width: 560px; height: 334px;
-    background: #192639;
+    title <- "XRack · 模型驱动的内建标签页";
+    width <- 560px; height <- 334px;
+    background <- #192639;
 
     in-out property <[WorkspaceTab]> documents: [
         WorkspaceTab { title: "概览", id: "home" },
@@ -882,15 +882,15 @@ export component ModelTabsDemo inherits Window {
     in-out property <bool> mirrored: false;
     in-out property <bool> notes-enabled: true;
     in-out property <bool> notes-visible: true;
-    out property <int> page-index: tabs.current-index;
-    out property <int> page-count: tabs.count;
+    out property <int> page-index <- tabs.current-index;
+    out property <int> page-count <- tabs.count;
     out property <int> choices: 0;
     out property <int> tab-moves: 0;
     out property <string> last-close: "";
     in-out property <bool> allow-close: true;
     property <int> serial: 1;
     property <int> fallback-index: -1;
-    property <WorkspaceTab> fallback-document: Model.at(
+    property <WorkspaceTab> fallback-document <- Model.at(
         root.documents, root.fallback-index, WorkspaceTab { title: "", id: "" }
     );
     callback close-document(int, bool);
@@ -901,20 +901,20 @@ export component ModelTabsDemo inherits Window {
     }
 
     tabs := TabWidget {
-        x: 16px; y: 14px; width: root.compact ? 126px : 528px; height: 202px;
-        current-value <=> root.selected;
-        reorderable: true;
-        tabs-closable: root.allow-close;
-        orientation: root.side ? vertical : horizontal;
-        layout-direction: root.mirrored ? right-to-left : left-to-right;
+        x <- 16px; y <- 14px; width <- root.compact ? 126px : 528px; height <- 202px;
+        current-value <-> root.selected;
+        reorderable <- true;
+        tabs-closable <- root.allow-close;
+        orientation <- root.side ? vertical : horizontal;
+        layout-direction <- root.mirrored ? right-to-left : left-to-right;
         for doc in root.documents : Tab {
-            value: doc.id;
-            title: doc.title;
-            accessible-name: "文档 " + doc.title;
-            visible: doc.id != "notes" || root.notes-visible;
-            closable: root.allow-close && doc.id != "home";
-            enabled: doc.id != "notes" || root.notes-enabled;
-            WorkspaceEditor { width: 100%; height: 100%; title: doc.title; show-details: true; }
+            value <- doc.id;
+            title <- doc.title;
+            accessible-name <- "文档 " + doc.title;
+            visible <- doc.id != "notes" || root.notes-visible;
+            closable <- root.allow-close && doc.id != "home";
+            enabled <- doc.id != "notes" || root.notes-enabled;
+            WorkspaceEditor { width <- 100%; height <- 100%; title <- doc.title; show-details <- true; }
         }
         changed(index) => { root.choices += 1; }
         tab-moved(from, to) => { root.tab-moves += 1; }
@@ -924,34 +924,34 @@ export component ModelTabsDemo inherits Window {
         }
     }
     tab-position := PageIndicator {
-        x: 16px; y: 225px; width: 112px; height: 23px;
-        count: tabs.count;
-        current-index: tabs.current-index;
+        x <- 16px; y <- 225px; width <- 112px; height <- 23px;
+        count <- tabs.count;
+        current-index <- tabs.current-index;
     }
     status := Text {
-        x: 147px; y: 225px;
-        text: root.selected + " · 索引 " + root.page-index + " · " + root.page-count + " 页";
-        color: #e4eeff;
+        x <- 147px; y <- 225px;
+        text <- root.selected + " · 索引 " + root.page-index + " · " + root.page-count + " 页";
+        color <- #e4eeff;
     }
     compact-tabs := CheckBox {
-        x: 398px; y: 225px; width: 144px; text: "窄标签栏";
-        checked <=> root.compact;
+        x <- 398px; y <- 225px; width <- 144px; text <- "窄标签栏";
+        checked <-> root.compact;
     }
     sidebar := CheckBox {
-        x: 16px; y: 260px; width: 120px; text: "侧边栏";
-        checked <=> root.side;
+        x <- 16px; y <- 260px; width <- 120px; text <- "侧边栏";
+        checked <-> root.side;
     }
     mirror-tabs := CheckBox {
-        x: 154px; y: 260px; width: 142px; text: "从右向左";
-        checked <=> root.mirrored;
+        x <- 154px; y <- 260px; width <- 142px; text <- "从右向左";
+        checked <-> root.mirrored;
     }
     close-current := Button {
-        x: 314px; y: 260px; width: 178px; text: "关闭当前文档";
-        enabled: tabs.current-index >= 0 && root.selected != "home" && root.allow-close;
+        x <- 314px; y <- 260px; width <- 178px; text <- "关闭当前文档";
+        enabled <- tabs.current-index >= 0 && root.selected != "home" && root.allow-close;
         clicked => { root.close-document(tabs.current-index, true); }
     }
     new-document := Button {
-        x: 16px; y: 294px; width: 142px; text: "新建文档";
+        x <- 16px; y <- 294px; width <- 142px; text <- "新建文档";
         clicked => {
             Model.append(root.documents, WorkspaceTab {
                 title: "文档 " + root.serial,
@@ -962,7 +962,7 @@ export component ModelTabsDemo inherits Window {
         }
     }
     Shortcut {
-        sequence: "F6";
+        sequence <- "F6";
         activated => { root.selected = root.selected == "draft" ? "notes" : "draft"; }
     }
 }
@@ -975,12 +975,12 @@ export component IndexTabCommandsDemo inherits Window {
     callback move-tab(int, int);
     move-tab(from, to) => { tabs.move-item(from, to); }
     tabs := TabWidget {
-        current-index <=> root.selected;
+        current-index <-> root.selected;
         for label in root.labels : Tab {
-            title: label;
-            enabled: label != "A";
-            visible: label != "C";
-            WorkspaceEditor { title: label; }
+            title <- label;
+            enabled <- label != "A";
+            visible <- label != "C";
+            WorkspaceEditor { title <- label; }
         }
         tab-moved(from, to) => {
             root.moves += 1;
@@ -992,9 +992,9 @@ export component IndexTabCommandsDemo inherits Window {
 export component ModelEditFixture inherits Window {
     in-out property <[string]> labels: ["first", "second"];
     in-out property <[int]> codes: [1, 2, 3];
-    out property <int> label-count: Model.count(root.labels);
-    out property <int> code-count: Model.count(root.codes);
-    out property <string> first-label: Model.at(root.labels, 0, "");
+    out property <int> label-count <- Model.count(root.labels);
+    out property <int> code-count <- Model.count(root.codes);
+    out property <string> first-label <- Model.at(root.labels, 0, "");
     callback edit-models();
     edit-models() => {
         Model.append(root.labels, "third");
@@ -1018,16 +1018,16 @@ export component ModelEditFixture inherits Window {
 }
 
 export component StaticTabCloseFixture inherits Window {
-    width: 360px; height: 90px;
+    width <- 360px; height <- 90px;
     in-out property <bool> close-enabled: true;
     out property <int> requested: -1;
     out property <string> requested-value: "";
     bar := TabBar {
-        width: 352px; height: 44px;
-        tabs-closable: root.close-enabled;
-        TabButton { text: "Pinned"; value: "pinned"; closable: false; }
-        TabButton { text: "Notes"; value: "notes"; }
-        TabButton { text: "Draft"; value: "draft"; closable: true; }
+        width <- 352px; height <- 44px;
+        tabs-closable <- root.close-enabled;
+        TabButton { text <- "Pinned"; value <- "pinned"; closable <- false; }
+        TabButton { text <- "Notes"; value <- "notes"; }
+        TabButton { text <- "Draft"; value <- "draft"; closable <- true; }
         tab-close-requested(index, value) => {
             root.requested = index;
             root.requested-value = value;
@@ -1036,49 +1036,49 @@ export component StaticTabCloseFixture inherits Window {
 }
 
 export component StackLayoutDemo inherits Window {
-    title: "XRack · 叠放布局";
-    width: 520px;
-    height: 244px;
-    background: #192639;
+    title <- "XRack · 叠放布局";
+    width <- 520px;
+    height <- 244px;
+    background <- #192639;
 
     in-out property <int> page: 0;
-    out property <int> active-index: layers.active-index;
-    out property <int> page-count: layers.count;
-    out property <bool> advanced-active: advanced.active;
+    out property <int> active-index <- layers.active-index;
+    out property <int> page-count <- layers.count;
+    out property <bool> advanced-active <- advanced.active;
 
     ordinary := Button {
-        x: 16px; y: 14px; width: 118px; text: "常规";
+        x <- 16px; y <- 14px; width <- 118px; text <- "常规";
         clicked => { root.page = 0; }
     }
     advanced-page := Button {
-        x: 146px; y: 14px; width: 118px; text: "高级";
+        x <- 146px; y <- 14px; width <- 118px; text <- "高级";
         clicked => { root.page = 1; }
     }
     layers := StackLayout {
-        x: 16px; y: 60px; width: 488px; height: 138px;
-        padding: 8px;
-        current-index <=> root.page;
-        WorkspaceEditor { title: "常规设置"; show-details: true; }
+        x <- 16px; y <- 60px; width <- 488px; height <- 138px;
+        padding <- 8px;
+        current-index <-> root.page;
+        WorkspaceEditor { title <- "常规设置"; show-details <- true; }
         advanced := StackItem {
-            max-width: 360px;
-            WorkspaceEditor { width: 100%; height: 100%; title: "高级设置"; show-details: true; }
+            max-width <- 360px;
+            WorkspaceEditor { width <- 100%; height <- 100%; title <- "高级设置"; show-details <- true; }
         }
     }
     layout-status := Label {
-        x: 16px; y: 207px;
-        text: "布局位置 " + root.active-index + " · " + root.page-count + " 页";
+        x <- 16px; y <- 207px;
+        text <- "布局位置 " + root.active-index + " · " + root.page-count + " 页";
     }
     Shortcut {
-        sequence: "F6";
+        sequence <- "F6";
         activated => { root.page = root.page == 0 ? 1 : 0; }
     }
 }
 
 export component ModelStackLayoutDemo inherits Window {
-    title: "XRack · 模型驱动的叠放布局";
-    width: 520px;
-    height: 282px;
-    background: #192639;
+    title <- "XRack · 模型驱动的叠放布局";
+    width <- 520px;
+    height <- 282px;
+    background <- #192639;
 
     in-out property <[WorkspaceTab]> documents: [
         WorkspaceTab { title: "概览", id: "home" },
@@ -1086,39 +1086,39 @@ export component ModelStackLayoutDemo inherits Window {
         WorkspaceTab { title: "笔记", id: "notes" },
     ];
     in-out property <string> selected: "draft";
-    out property <int> active-index: layers.active-index;
-    out property <int> page-count: layers.count;
+    out property <int> active-index <- layers.active-index;
+    out property <int> page-count <- layers.count;
 
     bar := TabBar {
-        x: 16px; y: 14px; width: 488px; height: 44px;
-        current-value <=> root.selected;
-        for doc in root.documents : TabButton { text: doc.title; value: doc.id; }
+        x <- 16px; y <- 14px; width <- 488px; height <- 44px;
+        current-value <-> root.selected;
+        for doc in root.documents : TabButton { text <- doc.title; value <- doc.id; }
     }
     layers := StackLayout {
-        x: 16px; y: 70px; width: 488px; height: 128px;
-        current-value <=> root.selected;
-        padding: 4px;
+        x <- 16px; y <- 70px; width <- 488px; height <- 128px;
+        current-value <-> root.selected;
+        padding <- 4px;
         for doc in root.documents : StackItem {
-            value: doc.id;
-            preferred-width: 460px;
-            preferred-height: 120px;
-            WorkspaceEditor { width: 100%; height: 100%; title: doc.title; show-details: true; }
+            value <- doc.id;
+            preferred-width <- 460px;
+            preferred-height <- 120px;
+            WorkspaceEditor { width <- 100%; height <- 100%; title <- doc.title; show-details <- true; }
         }
     }
     layout-status := Label {
-        x: 16px; y: 208px;
-        text: root.selected + " · 布局位置 " + root.active-index + " · " + root.page-count + " 页";
+        x <- 16px; y <- 208px;
+        text <- root.selected + " · 布局位置 " + root.active-index + " · " + root.page-count + " 页";
     }
     promote := Button {
-        x: 16px; y: 240px; width: 174px; text: "把草稿移到开头";
+        x <- 16px; y <- 240px; width <- 174px; text <- "把草稿移到开头";
         clicked => { Model.move(root.documents, 1, 0); }
     }
     Shortcut {
-        sequence: "F6";
+        sequence <- "F6";
         activated => { root.selected = root.selected == "draft" ? "notes" : "draft"; }
     }
     Shortcut {
-        sequence: "F7";
+        sequence <- "F7";
         activated => { Model.move(root.documents, 1, 0); }
     }
 }

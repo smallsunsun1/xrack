@@ -45,35 +45,6 @@ pub fn parse(source: &str) -> Result<Document, Vec<Diagnostic>> {
     parse_tree(source.strip_prefix('\u{feff}').unwrap_or(source)).map(|tree| document(&tree))
 }
 
-/// Classify constant defaults from the source expression before optimization.
-fn constant_initializer(value: &Expr) -> bool {
-    match &value.kind {
-        ExprKind::Literal { .. } => true,
-        ExprKind::Array(values) => values.iter().all(constant_initializer),
-        ExprKind::Record { fields, base, .. } => {
-            base.as_deref().is_none_or(constant_initializer)
-                && fields
-                    .iter()
-                    .all(|field| constant_initializer(&field.value))
-        }
-        ExprKind::EnumValue { fields, .. } => fields
-            .iter()
-            .all(|field| constant_initializer(&field.value)),
-        ExprKind::Unary { value, .. } => constant_initializer(value),
-        ExprKind::Binary { op, left, right } => {
-            // Integer division and remainder can trap. Keep their ordinary
-            // binding behavior unless construction-time evaluation is explicit.
-            !matches!(op.as_str(), "/" | "%")
-                && constant_initializer(left)
-                && constant_initializer(right)
-        }
-        ExprKind::Conditional { condition, yes, no } => {
-            constant_initializer(condition) && constant_initializer(yes) && constant_initializer(no)
-        }
-        _ => false,
-    }
-}
-
 fn parse_tree(source: &str) -> Result<Rc<DocumentContextAll<'_>>, Vec<Diagnostic>> {
     let errors = Errors::default();
     let mut lexer = XrackLexer::new(InputStream::new(source));
@@ -152,6 +123,7 @@ pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> 
             };
             let angle = parent == RULE_property && matches!(spelling, "<" | ">");
             let attach_before = spelling == "::"
+                || (parent == RULE_oneWayBinding && spelling == "-")
                 || (angle && spelling == ">")
                 || (spelling == "("
                     && matches!(
@@ -601,6 +573,7 @@ fn state_block(block: &StateBlockContextAll<'_>) -> StateBlock {
                     name: binding.reference().required("state target").get_text(),
                     value: expression(&binding.expression().required("state binding")),
                     span: span(&*binding),
+                    initial: false,
                     two_way: false,
                 })
                 .collect();
@@ -657,17 +630,17 @@ fn state_block(block: &StateBlockContextAll<'_>) -> StateBlock {
 fn member(ctx: &MemberContextAll<'_>) -> Member {
     if let Some(property) = ctx.property() {
         let alias = property.reference();
-        let (mode, value) = if let Some(initializer) = property.propertyInitializer() {
-            let value = expression(&initializer.expression().required("property initializer"));
-            let mode = if initializer.get_child_count() == 2 || constant_initializer(&value) {
+        let value = property.expression().as_deref().map(expression);
+        let mode = if value.is_some() {
+            if child_text(&*property, property.get_child_count() - 3) == ":" {
                 PropertyMode::Once
             } else {
                 PropertyMode::Formula
-            };
-            (mode, Some(value))
+            }
         } else {
-            (PropertyMode::Stored, alias.as_deref().map(reference_expr))
+            PropertyMode::Stored
         };
+        let value = value.or_else(|| alias.as_deref().map(reference_expr));
         Member::Property(Property {
             mode,
             name: property.identifier().required("property name").get_text(),
@@ -719,6 +692,7 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
             name: binding.identifier().required("binding name").get_text(),
             value,
             span: span(&*binding),
+            initial: child_text(&*binding, 1) == ":",
             two_way: reference.is_some(),
         })
     } else if let Some(handler) = ctx.handler() {

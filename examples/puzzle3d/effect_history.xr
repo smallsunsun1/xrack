@@ -12,9 +12,9 @@ struct TrailPass {
 }
 
 export component EffectHistoryDemo inherits Window {
-    title: "XRack · 后处理反馈";
-    width: 480px; height: 310px; resizable: false;
-    background: #172332;
+    title <- "XRack · 后处理反馈";
+    width <- 480px; height <- 310px; resizable <- false;
+    background <- #172332;
 
     in-out property <float> object-x: -1.4;
     in-out property <float> decay: 0.82;
@@ -24,23 +24,23 @@ export component EffectHistoryDemo inherits Window {
     in-out property <string> history-format: "rgba16f";
     in-out property <length> view-width: 480px;
 
-    Rectangle { width: 480px; height: 242px; background: #24394e; }
+    Rectangle { width <- 480px; height <- 242px; background <- #24394e; }
     trail-view := SceneView3D {
-        width: root.view-width; height: 242px;
-        scene-background: #00000000;
-        camera-yaw: 0; camera-pitch: 0; camera-distance: 6;
-        cache-rendering: true;
-        scene-hdr: true;
-        scene-effect-history-revision: root.history-revision;
-        scene-effect-animate: root.animate-history;
-        model: [
+        width <- root.view-width; height <- 242px;
+        scene-background <- #00000000;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 6;
+        cache-rendering <- true;
+        scene-hdr <- true;
+        scene-effect-history-revision <- root.history-revision;
+        scene-effect-animate <- root.animate-history;
+        model <- [
             TrailActor {
                 id: "core", mesh: "primitive:box", x: root.object-x, y: 0, z: 0,
                 yaw: 14, pitch: 12, roll: 7, color: #ff8246,
                 scale-x: 0.74, scale-y: 0.74, scale-z: 0.74,
             },
         ];
-        scene-effects: [
+        scene-effects <- [
             TrailPass {
                 shader: @shader-url("effects/feedback.wgsl"),
                 output: "trail", history: true, strength: root.show-trail ? 1 : 0, scale: 0.5,
@@ -51,19 +51,19 @@ export component EffectHistoryDemo inherits Window {
         ];
     }
     move-core := Button {
-        x: 14px; y: 258px; width: 98px; height: 35px; text: "移动方块";
+        x <- 14px; y <- 258px; width <- 98px; height <- 35px; text <- "移动方块";
         clicked => { root.object-x = root.object-x < 0 ? 1.4 : -1.4; }
     }
     reset := Button {
-        x: 122px; y: 258px; width: 98px; height: 35px; text: "清除拖影";
+        x <- 122px; y <- 258px; width <- 98px; height <- 35px; text <- "清除拖影";
         clicked => { root.history-revision += 1; }
     }
     playback := CheckBox {
-        x: 231px; y: 258px; width: 103px; height: 35px;
-        text: "连续衰减"; checked <=> root.animate-history;
+        x <- 231px; y <- 258px; width <- 103px; height <- 35px;
+        text <- "连续衰减"; checked <-> root.animate-history;
     }
     decay-slider := Slider {
-        x: 340px; y: 258px; width: 124px; height: 35px;
-        minimum: 0.1; maximum: 0.98; step: 0.01; value <=> root.decay;
+        x <- 340px; y <- 258px; width <- 124px; height <- 35px;
+        minimum <- 0.1; maximum <- 0.98; step <- 0.01; value <-> root.decay;
     }
 }

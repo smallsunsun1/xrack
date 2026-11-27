@@ -426,6 +426,8 @@ pub struct StateTiming {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Binding {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub initial: bool,
     pub name: String,
     pub value: Expr,
     pub span: Span,

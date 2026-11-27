@@ -8,19 +8,19 @@ struct RootActor {
 }
 
 export component InstanceRootDemo inherits Window {
-    title: "XRack · Instance coordinate root";
-    width: 600px; height: 376px;
-    background: #1a2638;
+    title <- "XRack · Instance coordinate root";
+    width <- 600px; height <- 376px;
+    background <- #1a2638;
     in-out property <float> shift: 0;
     in-out property <bool> turn: false;
     in-out property <bool> anchored: true;
     in-out property <bool> anchor-visible: true;
     in-out property <string> root-name: "anchor";
     in-out property <string> copy-root: "";
-    in-out property <point2d> box-pointer: once Point2D.new(260px, 160px);
-    in-out property <point2d> mesh-pointer: once Point2D.new(460px, 240px);
-    property <string> link: root.anchored ? root.root-name : "";
-    property <point2d> view-size: Point2D.new(600px, 320px);
+    in-out property <point2d> box-pointer: Point2D.new(260px, 160px);
+    in-out property <point2d> mesh-pointer: Point2D.new(460px, 240px);
+    property <string> link <- root.anchored ? root.root-name : "";
+    property <point2d> view-size <- Point2D.new(600px, 320px);
 
     property <RootActor> base: RootActor {
         id: "", parent: "", mesh: "", x: 0, y: 0, z: 0,
@@ -28,7 +28,7 @@ export component InstanceRootDemo inherits Window {
         color: #ffffff, visible: true, instance-of: "", instance-template: false,
         instance-root: "", instancing-lod-factor: -1, camera-kind: "", camera-height: 8,
     };
-    property <[RootActor]> actors: [
+    property <[RootActor]> actors <- [
         RootActor { id: "view", z: 12, camera-kind: "orthographic", ..root.base },
         RootActor { id: "anchor", x: 1 + root.shift, visible: root.anchor-visible, ..root.base },
         RootActor {
@@ -48,19 +48,19 @@ export component InstanceRootDemo inherits Window {
         RootActor { id: "alternate", x: 3, ..root.base },
     ];
 
-    out property <hit3d> box-hit: Scene3D.hit-camera(root.actors, "view", root.view-size, root.box-pointer);
-    out property <hit3d> mesh-hit: Scene3D.hit-camera(root.actors, "view", root.view-size, root.mesh-pointer);
-    out property <point3d> frame-origin: Scene3D.map-position(
+    out property <hit3d> box-hit <- Scene3D.hit-camera(root.actors, "view", root.view-size, root.box-pointer);
+    out property <hit3d> mesh-hit <- Scene3D.hit-camera(root.actors, "view", root.view-size, root.mesh-pointer);
+    out property <point3d> frame-origin <- Scene3D.map-position(
         root.actors, "copy", "", Point3D.new(0, 0, 0), Point3D.new(99, 99, 99));
 
     SceneView3D {
-        width: root.view-size.x; height: root.view-size.y; model: root.actors;
-        camera: "view"; cache-rendering: true; scene-background: #263b54;
+        width <- root.view-size.x; height <- root.view-size.y; model <- root.actors;
+        camera <- "view"; cache-rendering <- true; scene-background <- #263b54;
     }
     HorizontalLayout {
-        x: 12px; y: 329px; width: 576px; height: 40px; spacing: 12px;
-        root-switch := CheckBox { width: 145px; text: "Shared root"; checked <=> root.anchored; }
-        rotate-switch := CheckBox { width: 137px; text: "Turn copy"; checked <=> root.turn; }
-        anchor-slider := Slider { width: 246px; minimum: -1; maximum: 1; value <=> root.shift; }
+        x <- 12px; y <- 329px; width <- 576px; height <- 40px; spacing <- 12px;
+        root-switch := CheckBox { width <- 145px; text <- "Shared root"; checked <-> root.anchored; }
+        rotate-switch := CheckBox { width <- 137px; text <- "Turn copy"; checked <-> root.turn; }
+        anchor-slider := Slider { width <- 246px; minimum <- -1; maximum <- 1; value <-> root.shift; }
     }
 }

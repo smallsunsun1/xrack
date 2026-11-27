@@ -7,8 +7,8 @@ struct LayerActor {
 }
 
 export component WindowLayersDemo inherits Window {
-    title: "XRack · 窗口 3D 底层与顶层";
-    width: 384px; height: 276px; background: #192638;
+    title <- "XRack · 窗口 3D 底层与顶层";
+    width <- 384px; height <- 276px; background <- #192638;
     in-out property <string> mode: "underlay";
     in-out property <bool> msaa: false;
     in-out property <int> ui-hits: 0;
@@ -19,7 +19,7 @@ export component WindowLayersDemo inherits Window {
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 28, pitch: 14, roll: 0,
         color: #67c0ef, camera-kind: "", camera-height: 3,
     };
-    property <scenemodel3d> world: Scene3D.prepare([
+    property <scenemodel3d> world <- Scene3D.prepare([
         LayerActor { id: "eye", mesh: "", z: 8, yaw: 0, pitch: 0, camera-kind: "orthographic", ..root.actor },
         LayerActor { id: "cube", x: 0.45, ..root.actor },
         LayerActor {
@@ -29,31 +29,31 @@ export component WindowLayersDemo inherits Window {
     ]);
 
     overlap-button := Button {
-        x: 22px; y: 92px; width: 148px; height: 38px;
-        text: "点击 2D 按钮";
+        x <- 22px; y <- 92px; width <- 148px; height <- 38px;
+        text <- "点击 2D 按钮";
         clicked => { root.ui-hits += 1; }
     }
     viewport := SceneView3D {
-        x: 56px; y: 24px; width: 286px; height: 168px;
-        z: -100;
-        model: root.world; camera: "eye";
-        render-mode: root.mode; multisampling: root.msaa;
-        scene-background: #2d456f;
+        x <- 56px; y <- 24px; width <- 286px; height <- 168px;
+        z <- -100;
+        model <- root.world; camera <- "eye";
+        render-mode <- root.mode; multisampling <- root.msaa;
+        scene-background <- #2d456f;
         view-input := TouchArea {
-            width: 286px; height: 168px;
+            width <- 286px; height <- 168px;
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down { root.view-hits += 1; }
             }
         }
     }
-    Text { x: 16px; y: 200px; text: "2D " + root.ui-hits + "   3D " + root.view-hits; color: #d6e6f4; }
+    Text { x <- 16px; y <- 200px; text <- "2D " + root.ui-hits + "   3D " + root.view-hits; color <- #d6e6f4; }
     layer-toggle := Button {
-        x: 16px; y: 225px; width: 148px; height: 38px;
-        text: root.mode == "underlay" ? "切换到顶层" : "切换到底层";
+        x <- 16px; y <- 225px; width <- 148px; height <- 38px;
+        text <- root.mode == "underlay" ? "切换到顶层" : "切换到底层";
         clicked => { root.mode = root.mode == "underlay" ? "overlay" : "underlay"; }
     }
     samples-toggle := CheckBox {
-        x: 182px; y: 225px; width: 128px; height: 38px;
-        text: "MSAA"; checked <=> root.msaa;
+        x <- 182px; y <- 225px; width <- 128px; height <- 38px;
+        text <- "MSAA"; checked <-> root.msaa;
     }
 }

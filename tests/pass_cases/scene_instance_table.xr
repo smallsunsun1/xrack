@@ -15,8 +15,8 @@ export component InstancePlan inherits Window {
         color: #fff, instance-of: "", instance-template: true,
     };
     SceneView3D {
-        width: 80px; height: 80px;
-        model: [root.prototype, Actor {
+        width <- 80px; height <- 80px;
+        model <- [root.prototype, Actor {
             id: "copy", x: root.shift, instance-of: "shape", instance-template: false, ..root.prototype
         }];
     }

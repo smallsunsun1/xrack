@@ -13,158 +13,158 @@ export component ControlsDemo inherits Window {
     out property <float> released-lower: 0;
     out property <float> released-upper: 0;
     in-out property <float> rotation: 0;
-    in-out property <DialInputMode> linear-mode: once horizontal;
+    in-out property <DialInputMode> linear-mode: horizontal;
     out property <int> dial-changes: 0;
     out property <int> dial-releases: 0;
     out property <float> dial-last-release: 0;
     pure callback interval-caption(float, float) -> string;
     interval-caption(lower, upper) => { "区间 " + lower + " – " + upper }
 
-    title: "XRack 控件示例";
-    width: 540px;
-    height: 652px;
-    background: #101725;
+    title <- "XRack 控件示例";
+    width <- 540px;
+    height <- 652px;
+    background <- #101725;
 
     Text {
-        x: 24px; y: 20px;
-        text: "XRack 控件示例";
-        font-size: 26px;
-        color: #f0f4ff;
+        x <- 24px; y <- 20px;
+        text <- "XRack 控件示例";
+        font-size <- 26px;
+        color <- #f0f4ff;
     }
     Text {
-        x: 24px; y: 57px;
-        text: "滑块 · 开关 · 进度指示器";
-        font-size: 15px;
-        color: #a7b6ce;
+        x <- 24px; y <- 57px;
+        text <- "滑块 · 开关 · 进度指示器";
+        font-size <- 15px;
+        color <- #a7b6ce;
     }
 
     Rectangle {
-        x: 24px; y: 92px; width: 316px; height: 230px;
-        background: #1d293d;
-        border-radius: 14px;
-        Text { x: 16px; y: 14px; text: "音量  " + root.volume; color: #edf3ff; }
+        x <- 24px; y <- 92px; width <- 316px; height <- 230px;
+        background <- #1d293d;
+        border-radius <- 14px;
+        Text { x <- 16px; y <- 14px; text <- "音量  " + root.volume; color <- #edf3ff; }
         volume-slider := Slider {
-            x: 16px; y: 42px; width: 284px; height: 28px;
-            minimum: 0;
-            maximum: 100;
-            step: 5;
-            enabled: !root.muted;
-            value <=> root.volume;
+            x <- 16px; y <- 42px; width <- 284px; height <- 28px;
+            minimum <- 0;
+            maximum <- 100;
+            step <- 5;
+            enabled <- !root.muted;
+            value <-> root.volume;
             changed(value) => { root.changes += 1; }
             released(value) => { root.releases += 1; root.last-release = value; }
         }
         mute-switch := Switch {
-            x: 16px; y: 76px; width: 284px; height: 30px;
-            text: "静音";
-            checked <=> root.muted;
+            x <- 16px; y <- 76px; width <- 284px; height <- 30px;
+            text <- "静音";
+            checked <-> root.muted;
         }
-        Text { x: 16px; y: 120px; text: "任务进度"; font-size: 15px; color: #a7b6ce; }
+        Text { x <- 16px; y <- 120px; text <- "任务进度"; font-size <- 15px; color <- #a7b6ce; }
         progress-meter := ProgressIndicator {
-            x: 16px; y: 151px; width: 284px; height: 10px;
-            progress: root.volume / 100.0;
-            indeterminate: root.busy;
+            x <- 16px; y <- 151px; width <- 284px; height <- 10px;
+            progress <- root.volume / 100.0;
+            indeterminate <- root.busy;
         }
         task-switch := Switch {
-            x: 16px; y: 174px; width: 284px; height: 30px;
-            text: "模拟未知进度";
-            checked <=> root.busy;
+            x <- 16px; y <- 174px; width <- 284px; height <- 30px;
+            text <- "模拟未知进度";
+            checked <-> root.busy;
         }
     }
 
     Rectangle {
-        x: 356px; y: 92px; width: 160px; height: 230px;
-        background: #1d293d;
-        border-radius: 14px;
-        Text { x: 16px; y: 14px; text: "垂直调节"; color: #edf3ff; }
+        x <- 356px; y <- 92px; width <- 160px; height <- 230px;
+        background <- #1d293d;
+        border-radius <- 14px;
+        Text { x <- 16px; y <- 14px; text <- "垂直调节"; color <- #edf3ff; }
         vertical-slider := Slider {
-            x: 32px; y: 51px; width: 28px; height: 148px;
-            orientation: vertical;
-            value <=> root.level;
-            step: 10;
+            x <- 32px; y <- 51px; width <- 28px; height <- 148px;
+            orientation <- vertical;
+            value <-> root.level;
+            step <- 10;
         }
-        Text { x: 77px; y: 113px; text: "" + root.level; color: #a8ddff; }
+        Text { x <- 77px; y <- 113px; text <- "" + root.level; color <- #a8ddff; }
     }
 
     Text {
-        x: 24px; y: 338px;
-        text: "变化 " + root.changes + " 次 · 结束 " + root.releases + " 次 · 结束值 " + root.last-release;
-        font-size: 14px;
-        color: #a7b6ce;
+        x <- 24px; y <- 338px;
+        text <- "变化 " + root.changes + " 次 · 结束 " + root.releases + " 次 · 结束值 " + root.last-release;
+        font-size <- 14px;
+        color <- #a7b6ce;
     }
 
     Rectangle {
-        x: 24px; y: 372px; width: 316px; height: 114px;
-        background: #1d293d;
-        border-radius: 14px;
-        Text { x: 16px; y: 16px; text: root.interval-caption(root.lower, root.upper); color: #edf3ff; }
+        x <- 24px; y <- 372px; width <- 316px; height <- 114px;
+        background <- #1d293d;
+        border-radius <- 14px;
+        Text { x <- 16px; y <- 16px; text <- root.interval-caption(root.lower, root.upper); color <- #edf3ff; }
         interval := RangeSlider {
-            x: 16px; y: 48px; width: 284px; height: 36px;
-            lower-value <=> root.lower;
-            upper-value <=> root.upper;
-            step: 5;
-            enabled: !root.muted;
+            x <- 16px; y <- 48px; width <- 284px; height <- 36px;
+            lower-value <-> root.lower;
+            upper-value <-> root.upper;
+            step <- 5;
+            enabled <- !root.muted;
             changed(lower, upper) => { root.interval-changes += 1; }
             released(lower, upper) => {
                 root.interval-releases += 1;
                 root.released-lower = lower;
                 root.released-upper = upper;
             }
-            Tooltip { text: "拖动手柄，或用 Tab 选中后按方向键"; }
+            Tooltip { text <- "拖动手柄，或用 Tab 选中后按方向键"; }
         }
     }
 
     Rectangle {
-        x: 356px; y: 372px; width: 160px; height: 114px;
-        background: #1d293d;
-        border-radius: 14px;
-        Text { x: 16px; y: 16px; text: "垂直区间"; color: #edf3ff; }
+        x <- 356px; y <- 372px; width <- 160px; height <- 114px;
+        background <- #1d293d;
+        border-radius <- 14px;
+        Text { x <- 16px; y <- 16px; text <- "垂直区间"; color <- #edf3ff; }
         vertical-interval := RangeSlider {
-            x: 104px; y: 12px; width: 32px; height: 90px;
-            orientation: vertical;
-            lower-value: 30;
-            upper-value: 70;
-            step: 10;
+            x <- 104px; y <- 12px; width <- 32px; height <- 90px;
+            orientation <- vertical;
+            lower-value <- 30;
+            upper-value <- 70;
+            step <- 10;
         }
     }
 
     Rectangle {
-        x: 24px; y: 504px; width: 492px; height: 124px;
-        background: #1d293d;
-        border-radius: 14px;
-        Text { x: 28px; y: 14px; text: "限位旋钮"; color: #edf3ff; }
-        Text { x: 204px; y: 14px; text: "循环旋钮"; color: #edf3ff; }
-        Text { x: 366px; y: 14px; text: "直线拖动"; color: #edf3ff; }
+        x <- 24px; y <- 504px; width <- 492px; height <- 124px;
+        background <- #1d293d;
+        border-radius <- 14px;
+        Text { x <- 28px; y <- 14px; text <- "限位旋钮"; color <- #edf3ff; }
+        Text { x <- 204px; y <- 14px; text <- "循环旋钮"; color <- #edf3ff; }
+        Text { x <- 366px; y <- 14px; text <- "直线拖动"; color <- #edf3ff; }
         rotary := Dial {
-            x: 26px; y: 36px; width: 78px; height: 78px;
-            minimum: -50; maximum: 50;
-            start-angle: -135; end-angle: 135;
-            value <=> root.rotation;
-            step: 5;
-            enabled: !root.muted;
+            x <- 26px; y <- 36px; width <- 78px; height <- 78px;
+            minimum <- -50; maximum <- 50;
+            start-angle <- -135; end-angle <- 135;
+            value <-> root.rotation;
+            step <- 5;
+            enabled <- !root.muted;
             changed(value) => { root.dial-changes += 1; }
             released(value) => { root.dial-releases += 1; root.dial-last-release = value; }
-            Tooltip { text: "拖动旋转，也可以用方向键调节"; }
+            Tooltip { text <- "拖动旋转，也可以用方向键调节"; }
         }
         phase := Dial {
-            x: 202px; y: 36px; width: 78px; height: 78px;
-            wrap: true;
-            value: 95;
-            step: 5;
+            x <- 202px; y <- 36px; width <- 78px; height <- 78px;
+            wrap <- true;
+            value <- 95;
+            step <- 5;
         }
         linear := Dial {
-            x: 364px; y: 36px; width: 78px; height: 78px;
-            input-mode: root.linear-mode;
-            value: 35;
-            step: 10;
+            x <- 364px; y <- 36px; width <- 78px; height <- 78px;
+            input-mode <- root.linear-mode;
+            value <- 35;
+            step <- 10;
         }
     }
 }
 
 export component CalendarAgendaDemo inherits Window {
-    title: "XRack · 团队日程";
-    width: 576px;
-    height: 478px;
-    background: #162034;
+    title <- "XRack · 团队日程";
+    width <- 576px;
+    height <- 478px;
+    background <- #162034;
     in-out property <Date> month: Date { year: 2026, month: 11, day: 1 };
     in-out property <Date> selected: Date { year: 2026, month: 11, day: 11 };
     in-out property <Date> review-date: Date { year: 2026, month: 11, day: 12 };
@@ -178,147 +178,147 @@ export component CalendarAgendaDemo inherits Window {
     callback browse(int);
 
     previous := Button {
-        x: 20px; y: 18px; width: 40px; height: 36px;
-        text: "‹"; accessible-name: "上个月";
+        x <- 20px; y <- 18px; width <- 40px; height <- 36px;
+        text <- "‹"; accessible-name <- "上个月";
         clicked => { root.browse(-1); }
     }
     Label {
-        x: 72px; y: 18px; width: 432px; height: 36px;
-        text: root.month.year + " 年 " + root.month.month + " 月";
-        font-size: 22px; horizontal-alignment: center; vertical-alignment: center;
+        x <- 72px; y <- 18px; width <- 432px; height <- 36px;
+        text <- root.month.year + " 年 " + root.month.month + " 月";
+        font-size <- 22px; horizontal-alignment <- center; vertical-alignment <- center;
     }
     next := Button {
-        x: 516px; y: 18px; width: 40px; height: 36px;
-        text: "›"; accessible-name: "下个月";
+        x <- 516px; y <- 18px; width <- 40px; height <- 36px;
+        text <- "›"; accessible-name <- "下个月";
         clicked => { root.browse(1); }
     }
     Label {
-        x: 20px; y: 72px; width: 44px; height: 32px;
-        text: "周"; horizontal-alignment: center; vertical-alignment: center;
+        x <- 20px; y <- 72px; width <- 44px; height <- 32px;
+        text <- "周"; horizontal-alignment <- center; vertical-alignment <- center;
     }
     DayOfWeekRow {
-        x: 66px; y: 72px; width: 490px; height: 32px;
-        weekday-labels: ["一", "二", "三", "四", "五", "六", "日"];
+        x <- 66px; y <- 72px; width <- 490px; height <- 32px;
+        weekday-labels <- ["一", "二", "三", "四", "五", "六", "日"];
     }
     WeekNumberColumn {
-        x: 20px; y: 104px; width: 44px; height: 312px;
-        display-month: root.month;
+        x <- 20px; y <- 104px; width <- 44px; height <- 312px;
+        display-month <- root.month;
     }
     agenda := MonthGrid {
-        x: 66px; y: 104px; width: 490px; height: 312px;
-        disabled-weekdays: root.blocked-weekdays;
-        disabled-dates: root.closed-dates;
-        highlight-start: root.highlight-start;
-        highlight-end: root.highlight-end;
-        date <=> root.selected;
-        display-month <=> root.month;
-        today: Date { year: 2026, month: 11, day: 11 };
+        x <- 66px; y <- 104px; width <- 490px; height <- 312px;
+        disabled-weekdays <- root.blocked-weekdays;
+        disabled-dates <- root.closed-dates;
+        highlight-start <- root.highlight-start;
+        highlight-end <- root.highlight-end;
+        date <-> root.selected;
+        display-month <-> root.month;
+        today <- Date { year: 2026, month: 11, day: 11 };
         activated(day) => { root.activations += 1; }
         DayCell {
-            background: cell-selected || cell-range-start || cell-range-end ? #3b56ad
+            background <- cell-selected || cell-range-start || cell-range-end ? #3b56ad
                 : cell-in-range ? #344875 : #25334b;
-            border-color: cell-today ? #a8bbff : #1b293d;
-            border-width: 1px;
-            border-radius: 6px;
-            accessible-description: cell-date == root.review-date ? root.review-label
+            border-color <- cell-today ? #a8bbff : #1b293d;
+            border-width <- 1px;
+            border-radius <- 6px;
+            accessible-description <- cell-date == root.review-date ? root.review-label
                 : cell-date == root.release-date ? "发布" : "";
             Text {
-                x: 8px; y: 5px;
-                text: "" + cell-date.day;
-                color: cell-in-month && cell-enabled ? #edf3ff : #9caac0;
+                x <- 8px; y <- 5px;
+                text <- "" + cell-date.day;
+                color <- cell-in-month && cell-enabled ? #edf3ff : #9caac0;
             }
             Rectangle {
-                x: 7px; y: 27px; width: 56px; height: 18px;
-                visible: cell-date == root.review-date || cell-date == root.release-date;
-                background: cell-date == root.release-date ? #3b665f : #5d4b76;
-                border-radius: 4px;
+                x <- 7px; y <- 27px; width <- 56px; height <- 18px;
+                visible <- cell-date == root.review-date || cell-date == root.release-date;
+                background <- cell-date == root.release-date ? #3b665f : #5d4b76;
+                border-radius <- 4px;
                 Label {
-                    width: 100%; height: 100%;
-                    text: cell-date == root.release-date ? "发布"
+                    width <- 100%; height <- 100%;
+                    text <- cell-date == root.release-date ? "发布"
                         : cell-date == root.review-date ? root.review-label : "";
-                    font-size: 11px; horizontal-alignment: center; vertical-alignment: center;
+                    font-size <- 11px; horizontal-alignment <- center; vertical-alignment <- center;
                 }
             }
         }
     }
     Label {
-        x: 66px; y: 431px; width: 490px; height: 30px;
-        text: "选中 · " + root.selected; vertical-alignment: center;
+        x <- 66px; y <- 431px; width <- 490px; height <- 30px;
+        text <- "选中 · " + root.selected; vertical-alignment <- center;
     }
 }
 
 export component MonthGridDemo inherits Window {
-    title: "XRack · 月份网格";
-    width: 444px;
-    height: 372px;
-    background: #162034;
+    title <- "XRack · 月份网格";
+    width <- 444px;
+    height <- 372px;
+    background <- #162034;
 
     in-out property <Date> selected: Date { year: 2021, month: 1, day: 11 };
     in-out property <Date> month: Date { year: 2021, month: 1, day: 1 };
     in-out property <Date> latest: Date { year: 2021, month: 2, day: 12 };
     in-out property <bool> sunday: true;
-    private property <int> first-weekday: root.sunday ? 7 : 1;
+    private property <int> first-weekday <- root.sunday ? 7 : 1;
     out property <int> changes: 0;
     out property <int> browses: 0;
     out property <int> activations: 0;
     callback browse(int);
 
     previous := Button {
-        x: 20px; y: 18px; width: 40px; height: 34px;
-        text: "‹"; accessible-name: "上个月";
+        x <- 20px; y <- 18px; width <- 40px; height <- 34px;
+        text <- "‹"; accessible-name <- "上个月";
         clicked => { root.browse(-1); }
     }
     Label {
-        x: 72px; y: 18px; width: 300px; height: 34px;
-        text: root.month.year + " 年 " + root.month.month + " 月";
-        font-size: 20px; horizontal-alignment: center; vertical-alignment: center;
+        x <- 72px; y <- 18px; width <- 300px; height <- 34px;
+        text <- root.month.year + " 年 " + root.month.month + " 月";
+        font-size <- 20px; horizontal-alignment <- center; vertical-alignment <- center;
     }
     next := Button {
-        x: 384px; y: 18px; width: 40px; height: 34px;
-        text: "›"; accessible-name: "下个月";
+        x <- 384px; y <- 18px; width <- 40px; height <- 34px;
+        text <- "›"; accessible-name <- "下个月";
         clicked => { root.browse(1); }
     }
     Label {
-        x: 20px; y: 64px; width: 44px; height: 28px;
-        text: "周"; horizontal-alignment: center; vertical-alignment: center;
+        x <- 20px; y <- 64px; width <- 44px; height <- 28px;
+        text <- "周"; horizontal-alignment <- center; vertical-alignment <- center;
     }
     weekdays := DayOfWeekRow {
-        x: 64px; y: 64px; width: 360px; height: 28px;
-        week-start: root.first-weekday;
-        weekday-labels: ["一", "二", "三", "四", "五", "六", "日"];
+        x <- 64px; y <- 64px; width <- 360px; height <- 28px;
+        week-start <- root.first-weekday;
+        weekday-labels <- ["一", "二", "三", "四", "五", "六", "日"];
     }
     weeks := WeekNumberColumn {
-        x: 20px; y: 92px; width: 44px; height: 216px;
-        display-month: root.month;
-        week-start: root.first-weekday;
+        x <- 20px; y <- 92px; width <- 44px; height <- 216px;
+        display-month <- root.month;
+        week-start <- root.first-weekday;
     }
     grid := MonthGrid {
-        x: 64px; y: 92px; width: 360px; height: 216px;
-        date <=> root.selected;
-        display-month <=> root.month;
-        today: Date { year: 2021, month: 1, day: 8 };
-        minimum-date: Date { year: 2020, month: 12, day: 28 };
-        maximum-date: root.latest;
-        week-start: root.first-weekday;
+        x <- 64px; y <- 92px; width <- 360px; height <- 216px;
+        date <-> root.selected;
+        display-month <-> root.month;
+        today <- Date { year: 2021, month: 1, day: 8 };
+        minimum-date <- Date { year: 2020, month: 12, day: 28 };
+        maximum-date <- root.latest;
+        week-start <- root.first-weekday;
         changed(day) => { root.changes += 1; }
         month-changed(month) => { root.browses += 1; }
         activated(day) => { root.activations += 1; }
     }
     Switch {
-        x: 20px; y: 326px; width: 172px; height: 30px;
-        text: "周日开始"; checked <=> root.sunday;
+        x <- 20px; y <- 326px; width <- 172px; height <- 30px;
+        text <- "周日开始"; checked <-> root.sunday;
     }
     Label {
-        x: 211px; y: 326px; width: 213px; height: 30px;
-        text: "选中 · " + root.selected; vertical-alignment: center;
+        x <- 211px; y <- 326px; width <- 213px; height <- 30px;
+        text <- "选中 · " + root.selected; vertical-alignment <- center;
     }
 }
 
 export component CalendarDemo inherits Window {
-    title: "XRack · 日期选择";
-    width: 440px;
-    height: 460px;
-    background: #162034;
+    title <- "XRack · 日期选择";
+    width <- 440px;
+    height <- 460px;
+    background <- #162034;
 
     in-out property <Date> selected: Date { year: 2024, month: 2, day: 28 };
     in-out property <Date> month: Date { year: 2024, month: 2, day: 1 };
@@ -335,53 +335,53 @@ export component CalendarDemo inherits Window {
     out property <int> cancels: 0;
 
     Text {
-        x: 22px; y: 14px;
-        text: "选中日期 · " + root.selected;
-        color: #edf3ff; font-size: 22px;
+        x <- 22px; y <- 14px;
+        text <- "选中日期 · " + root.selected;
+        color <- #edf3ff; font-size <- 22px;
     }
     calendar := Calendar {
-        x: 22px; y: 54px; width: 396px; height: 322px;
-        accessible-name: "行程日期";
-        date <=> root.selected;
-        display-month <=> root.month;
-        minimum-date: root.earliest;
-        disabled-weekdays: root.blocked-weekdays;
-        disabled-dates: root.closed-dates;
-        maximum-date: root.latest;
-        weekday-labels: root.weekdays;
+        x <- 22px; y <- 54px; width <- 396px; height <- 322px;
+        accessible-name <- "行程日期";
+        date <-> root.selected;
+        display-month <-> root.month;
+        minimum-date <- root.earliest;
+        disabled-weekdays <- root.blocked-weekdays;
+        disabled-dates <- root.closed-dates;
+        maximum-date <- root.latest;
+        weekday-labels <- root.weekdays;
         changed(day) => { root.date-changes += 1; root.picked-day = day.day; }
         month-changed(month) => { root.month-changes += 1; }
     }
     open-picker := Button {
-        x: 22px; y: 390px; width: 174px; height: 44px;
-        text: "在弹层中选择…";
+        x <- 22px; y <- 390px; width <- 174px; height <- 44px;
+        text <- "在弹层中选择…";
         clicked => { root.picker-open = true; }
     }
     picker := DatePickerPopup {
-        title: "选择行程日期";
-        width: 408px; height: 404px;
-        open <=> root.picker-open;
-        date <=> root.selected;
-        minimum-date: root.earliest;
-        disabled-weekdays: root.blocked-weekdays;
-        disabled-dates: root.closed-dates;
-        maximum-date: root.latest;
-        weekday-labels: root.weekdays;
-        cancel-text: "取消";
-        accept-text: "应用日期";
+        title <- "选择行程日期";
+        width <- 408px; height <- 404px;
+        open <-> root.picker-open;
+        date <-> root.selected;
+        minimum-date <- root.earliest;
+        disabled-weekdays <- root.blocked-weekdays;
+        disabled-dates <- root.closed-dates;
+        maximum-date <- root.latest;
+        weekday-labels <- root.weekdays;
+        cancel-text <- "取消";
+        accept-text <- "应用日期";
         accepted(date) => { root.month = date; root.accepts += 1; }
         canceled => { root.cancels += 1; }
     }
     workdays-toggle := Button {
-        x: 207px; y: 390px; width: 112px; height: 44px;
-        text: Model.is-empty(root.blocked-weekdays) ? "只选择工作日" : "允许周末";
+        x <- 207px; y <- 390px; width <- 112px; height <- 44px;
+        text <- Model.is-empty(root.blocked-weekdays) ? "只选择工作日" : "允许周末";
         clicked => {
             root.blocked-weekdays = Model.is-empty(root.blocked-weekdays) ? [6, 7] : [];
         }
     }
     leap-day-toggle := Button {
-        x: 325px; y: 390px; width: 93px; height: 44px;
-        text: Model.is-empty(root.closed-dates) ? "闰日停约" : "开放闰日";
+        x <- 325px; y <- 390px; width <- 93px; height <- 44px;
+        text <- Model.is-empty(root.closed-dates) ? "闰日停约" : "开放闰日";
         clicked => {
             root.closed-dates = Model.is-empty(root.closed-dates)
                 ? [Date { year: 2024, month: 2, day: 29 }] : [];
@@ -406,35 +406,35 @@ component CalendarMonthRow inherits Rectangle {
     callback date-activated(Date);
 
     Label {
-        x: 10px; y: 4px; height: 24px;
-        text: root.month.year + " 年 " + root.month.month + " 月";
-        font-size: 18px;
+        x <- 10px; y <- 4px; height <- 24px;
+        text <- root.month.year + " 年 " + root.month.month + " 月";
+        font-size <- 18px;
     }
     DayOfWeekRow {
-        x: 10px; y: 29px; width: 94%; height: 24px;
-        weekday-labels: ["一", "二", "三", "四", "五", "六", "日"];
+        x <- 10px; y <- 29px; width <- 94%; height <- 24px;
+        weekday-labels <- ["一", "二", "三", "四", "五", "六", "日"];
     }
     calendar-month := MonthGrid {
-        x: 10px; y: 53px; width: 94%; height: 178px;
-        accessible-name: root.month.year + " 年 " + root.month.month + " 月";
-        fixed-month: true;
-        display-month: root.month;
-        date <=> root.selected;
-        minimum-date: root.earliest;
-        maximum-date: root.latest;
-        disabled-weekdays: [6, 7];
-        disabled-dates: root.closures;
-        highlight-start: root.highlight-start;
-        highlight-end: root.highlight-end;
+        x <- 10px; y <- 53px; width <- 94%; height <- 178px;
+        accessible-name <- root.month.year + " 年 " + root.month.month + " 月";
+        fixed-month <- true;
+        display-month <- root.month;
+        date <-> root.selected;
+        minimum-date <- root.earliest;
+        maximum-date <- root.latest;
+        disabled-weekdays <- [6, 7];
+        disabled-dates <- root.closures;
+        highlight-start <- root.highlight-start;
+        highlight-end <- root.highlight-end;
         activated(day) => { root.date-activated(day); }
     }
 }
 
 export component CalendarBrowserDemo inherits Window {
-    title: "XRack · 多月日历";
-    width: 452px;
-    height: 575px;
-    background: #162034;
+    title <- "XRack · 多月日历";
+    width <- 452px;
+    height <- 575px;
+    background <- #162034;
 
     in-out property <Date> range-start: Date { year: 2024, month: 2, day: 5 };
     in-out property <Date> range-end: Date { year: 2124, month: 1, day: 31 };
@@ -443,7 +443,7 @@ export component CalendarBrowserDemo inherits Window {
     in-out property <[Date]> closures: [Date { year: 2024, month: 2, day: 29 }];
     in-out property <bool> select-range: false;
     private property <Date> empty-date: Date { year: 0, month: 1, day: 1 };
-    out property <DateIntervalSelection> interval: once DateIntervalSelection {
+    out property <DateIntervalSelection> interval: DateIntervalSelection {
         start: root.empty-date, end: root.empty-date, choosing-end: false
     };
     callback pick-date(Date);
@@ -456,42 +456,42 @@ export component CalendarBrowserDemo inherits Window {
             }
             : DateIntervalSelection { start: day, end: day, choosing-end: true };
     }
-    private property <[Date]> month-model: Dates.months(root.range-start, root.range-end);
-    out property <int> month-count: Model.count(root.month-model);
-    out property <int> jump-index: Dates.month-index(root.range-start, root.range-end, root.jump-target);
+    private property <[Date]> month-model <- Dates.months(root.range-start, root.range-end);
+    out property <int> month-count <- Model.count(root.month-model);
+    out property <int> jump-index <- Dates.month-index(root.range-start, root.range-end, root.jump-target);
 
     Label {
-        x: 16px; y: 12px; font-size: 20px;
-        text: !root.select-range ? "选中日期 · " + root.selected
+        x <- 16px; y <- 12px; font-size <- 20px;
+        text <- !root.select-range ? "选中日期 · " + root.selected
             : !Dates.is-valid(root.interval.start) ? "请选择区间起点"
             : root.interval.choosing-end ? "请选择终点 · " + root.interval.start
             : "区间 · " + root.interval.start + " → " + root.interval.end;
     }
     jump-month := Button {
-        x: 232px; y: 45px; width: 200px; height: 34px;
-        text: "跳到 " + root.jump-target.year + " 年 " + root.jump-target.month + " 月";
-        enabled: root.jump-index >= 0;
+        x <- 232px; y <- 45px; width <- 200px; height <- 34px;
+        text <- "跳到 " + root.jump-target.year + " 年 " + root.jump-target.month + " 月";
+        enabled <- root.jump-index >= 0;
         clicked => { months-view.position-view-at-index(root.jump-index, ScrollAlignment.beginning); }
     }
-    Label { x: 16px; y: 52px; text: root.month-count + " 个月"; }
+    Label { x <- 16px; y <- 52px; text <- root.month-count + " 个月"; }
     months-view := ListView {
-        x: 16px; y: 90px; width: 420px; height: 468px;
-        row-height: 237px;
-        accessible-name: "月份浏览";
+        x <- 16px; y <- 90px; width <- 420px; height <- 468px;
+        row-height <- 237px;
+        accessible-name <- "月份浏览";
         for month in root.month-model : CalendarMonthRow {
-            month: month;
-            earliest: root.range-start;
-            latest: root.range-end;
-            closures: root.closures;
-            selected <=> root.selected;
-            highlight-start: root.select-range ? root.interval.start : root.empty-date;
-            highlight-end: !root.select-range ? root.empty-date : root.interval.choosing-end ? root.selected : root.interval.end;
+            month <- month;
+            earliest <- root.range-start;
+            latest <- root.range-end;
+            closures <- root.closures;
+            selected <-> root.selected;
+            highlight-start <- root.select-range ? root.interval.start : root.empty-date;
+            highlight-end <- !root.select-range ? root.empty-date : root.interval.choosing-end ? root.selected : root.interval.end;
             date-activated(day) => { root.pick-date(day); }
         }
     }
     interval-toggle := Button {
-        x: 113px; y: 45px; width: 108px; height: 34px;
-        text: root.select-range ? "单日选择" : "区间选择";
+        x <- 113px; y <- 45px; width <- 108px; height <- 34px;
+        text <- root.select-range ? "单日选择" : "区间选择";
         clicked => { root.select-range = !root.select-range; }
     }
 }
@@ -502,9 +502,9 @@ export struct DecimalPrice {
 }
 
 export component DecimalSpinDemo inherits Window {
-    title: "XRack · 小数输入";
-    width: 480px; height: 306px;
-    background: #162034;
+    title <- "XRack · 小数输入";
+    width <- 480px; height <- 306px;
+    background <- #162034;
     in-out property <float> level: 0.2;
     in-out property <bool> use-comma: true;
     in-out property <bool> locked: false;
@@ -514,48 +514,48 @@ export component DecimalSpinDemo inherits Window {
     ];
     out property <int> edits: 0;
 
-    Text { x: 24px; y: 18px; text: "小数步进 · 数值 " + root.level; font-size: 22px; }
+    Text { x <- 24px; y <- 18px; text <- "小数步进 · 数值 " + root.level; font-size <- 22px; }
     gain := DoubleSpinBox {
-        x: 24px; y: 57px; width: 148px; height: 40px;
-        accessible-name: "增益";
-        minimum: -2; maximum: 2; step-size: 0.1; decimals: 2; wrap: true;
-        decimal-separator: root.use-comma ? "," : ".";
-        value <=> root.level;
-        read-only: root.locked;
+        x <- 24px; y <- 57px; width <- 148px; height <- 40px;
+        accessible-name <- "增益";
+        minimum <- -2; maximum <- 2; step-size <- 0.1; decimals <- 2; wrap <- true;
+        decimal-separator <- root.use-comma ? "," : ".";
+        value <-> root.level;
+        read-only <- root.locked;
         edited(value) => { root.edits += 1; }
     }
     comma-toggle := Switch {
-        x: 188px; y: 57px; width: 138px; height: 40px;
-        text: "逗号小数点";
-        checked <=> root.use-comma;
+        x <- 188px; y <- 57px; width <- 138px; height <- 40px;
+        text <- "逗号小数点";
+        checked <-> root.use-comma;
     }
     lock-toggle := CheckBox {
-        x: 344px; y: 57px; width: 112px; height: 40px;
-        text: "锁定";
-        checked <=> root.locked;
+        x <- 344px; y <- 57px; width <- 112px; height <- 40px;
+        text <- "锁定";
+        checked <-> root.locked;
     }
-    Text { x: 24px; y: 117px; text: "可编辑记录 · 单价"; font-size: 17px; color: #acc0db; }
+    Text { x <- 24px; y <- 117px; text <- "可编辑记录 · 单价"; font-size <- 17px; color <- #acc0db; }
     pricing := TableView {
-        x: 24px; y: 145px; width: 432px; height: 134px; row-height: 42px;
-        TableColumn { title: "项目"; min-width: 220px; }
-        TableColumn { title: "单价"; width: 148px; }
+        x <- 24px; y <- 145px; width <- 432px; height <- 134px; row-height <- 42px;
+        TableColumn { title <- "项目"; min-width <- 220px; }
+        TableColumn { title <- "单价"; width <- 148px; }
         for row in root.prices : TableRow {
-            TableCell { text <=> row.label; }
+            TableCell { text <-> row.label; }
             DoubleSpinBox {
-                value <=> row.price;
-                minimum: 0; maximum: 99; step-size: 0.25; decimals: 2;
-                decimal-separator: root.use-comma ? "," : ".";
-                accessible-name: "单价 · " + row.label;
+                value <-> row.price;
+                minimum <- 0; maximum <- 99; step-size <- 0.25; decimals <- 2;
+                decimal-separator <- root.use-comma ? "," : ".";
+                accessible-name <- "单价 · " + row.label;
             }
         }
     }
 }
 
 export component TumblerDemo inherits Window {
-    title: "XRack · 滚轮选择";
-    width: 388px;
-    height: 324px;
-    background: #162034;
+    title <- "XRack · 滚轮选择";
+    width <- 388px;
+    height <- 324px;
+    background <- #162034;
 
     in-out property <[string]> hours: [
         "00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11",
@@ -566,47 +566,47 @@ export component TumblerDemo inherits Window {
     in-out property <bool> cycle: true;
     in-out property <float> deceleration: 2400;
     in-out property <bool> minute-enabled: true;
-    out property <bool> dragging: minute-wheel.dragging;
-    out property <bool> flicking: minute-wheel.flicking;
-    out property <bool> moving: minute-wheel.moving;
+    out property <bool> dragging <- minute-wheel.dragging;
+    out property <bool> flicking <- minute-wheel.flicking;
+    out property <bool> moving <- minute-wheel.moving;
     out property <bool> moving-on-commit: false;
     out property <int> changes: 0;
 
-    Text { x: 24px; y: 16px; text: "拖动或滚动选择时间"; color: #edf3ff; font-size: 22px; }
+    Text { x <- 24px; y <- 16px; text <- "拖动或滚动选择时间"; color <- #edf3ff; font-size <- 22px; }
     hour-wheel := Tumbler {
-        x: 48px; y: 60px; width: 118px; height: 170px;
-        accessible-name: "小时";
-        model: root.hours;
-        current-index <=> root.hour;
-        visible-item-count: 5;
-        wrap: root.cycle;
-        flick-deceleration: root.deceleration;
+        x <- 48px; y <- 60px; width <- 118px; height <- 170px;
+        accessible-name <- "小时";
+        model <- root.hours;
+        current-index <-> root.hour;
+        visible-item-count <- 5;
+        wrap <- root.cycle;
+        flick-deceleration <- root.deceleration;
         changed(index) => { root.changes += 1; }
     }
     minute-wheel := Tumbler {
-        x: 216px; y: 60px; width: 118px; height: 170px;
-        accessible-name: "分钟";
-        count: 60;
-        current-index <=> root.minute;
-        visible-item-count: 5;
-        wrap: root.cycle;
-        flick-deceleration: root.deceleration;
-        enabled: root.minute-enabled;
+        x <- 216px; y <- 60px; width <- 118px; height <- 170px;
+        accessible-name <- "分钟";
+        count <- 60;
+        current-index <-> root.minute;
+        visible-item-count <- 5;
+        wrap <- root.cycle;
+        flick-deceleration <- root.deceleration;
+        enabled <- root.minute-enabled;
         changed(index) => {
             root.changes += 1;
             root.moving-on-commit = minute-wheel.moving;
         }
     }
     wheel-status := Text {
-        x: 24px; y: 250px;
-        text: "当前索引 " + root.hour + " : " + root.minute
+        x <- 24px; y <- 250px;
+        text <- "当前索引 " + root.hour + " : " + root.minute
             + (root.flicking ? " · 惯性滚动" : root.dragging ? " · 拖动中" : " · 提交 " + root.changes + " 次");
-        color: #acc0db;
+        color <- #acc0db;
     }
     cycle-toggle := CheckBox {
-        x: 24px; y: 281px; width: 158px; height: 32px;
-        text: "循环滚动";
-        checked <=> root.cycle;
+        x <- 24px; y <- 281px; width <- 158px; height <- 32px;
+        text <- "循环滚动";
+        checked <-> root.cycle;
     }
 }
 
@@ -617,9 +617,9 @@ export struct TimeZoneChoice {
 }
 
 export component RecordTumblerDemo inherits Window {
-    title: "XRack · 时区选择";
-    width: 410px; height: 294px;
-    background: #162034;
+    title <- "XRack · 时区选择";
+    width <- 410px; height <- 294px;
+    background <- #162034;
 
     in-out property <[TimeZoneChoice]> zones: [
         TimeZoneChoice { label: "纽约（冬令时）", offset: -300, abbreviation: "EST" },
@@ -627,39 +627,39 @@ export component RecordTumblerDemo inherits Window {
         TimeZoneChoice { label: "上海", offset: 480, abbreviation: "CST" },
     ];
     in-out property <int> offset: 480;
-    out property <int> position: zone-wheel.current-index;
-    out property <int> total: zone-wheel.count;
-    out property <string> city: zone-wheel.current-text;
-    out property <int> committed: zone-wheel.current-value;
+    out property <int> position <- zone-wheel.current-index;
+    out property <int> total <- zone-wheel.count;
+    out property <string> city <- zone-wheel.current-text;
+    out property <int> committed <- zone-wheel.current-value;
     out property <int> commits: 0;
     out property <int> reported-offset: 0;
     out property <int> observed-offset: 0;
     out property <int> reported-index: -1;
 
     zone-wheel := Tumbler {
-        x: 70px; y: 22px; width: 270px; height: 154px;
-        accessible-name: "时区";
-        model: root.zones;
-        text-role: "label";
-        value-role: "offset";
-        current-value <=> root.offset;
-        visible-item-count: 3;
+        x <- 70px; y <- 22px; width <- 270px; height <- 154px;
+        accessible-name <- "时区";
+        model <- root.zones;
+        text-role <- "label";
+        value-role <- "offset";
+        current-value <-> root.offset;
+        visible-item-count <- 3;
         TumblerOption {
-            background: option-selected ? #326898 : #243a53;
-            opacity: option-enabled ? Math.max(0.38, 1.0 - Math.abs(option-displacement) * 0.22) : 0.35;
+            background <- option-selected ? #326898 : #243a53;
+            opacity <- option-enabled ? Math.max(0.38, 1.0 - Math.abs(option-displacement) * 0.22) : 0.35;
             HorizontalLayout {
-                width: 100%; height: 100%;
-                padding-left: 14px; padding-right: 14px;
+                width <- 100%; height <- 100%;
+                padding-left <- 14px; padding-right <- 14px;
                 Text {
-                    text: option-text;
-                    color: #f1f7ff;
-                    vertical-alignment: center;
+                    text <- option-text;
+                    color <- #f1f7ff;
+                    vertical-alignment <- center;
                 }
                 Text {
-                    text: option-data.abbreviation;
-                    color: #b2d8ff;
-                    horizontal-alignment: right;
-                    vertical-alignment: center;
+                    text <- option-data.abbreviation;
+                    color <- #b2d8ff;
+                    horizontal-alignment <- right;
+                    vertical-alignment <- center;
                 }
             }
         }
@@ -673,13 +673,13 @@ export component RecordTumblerDemo inherits Window {
         }
     }
     caption := Text {
-        x: 24px; y: 191px;
-        text: root.city + "  ·  UTC 偏移 " + root.offset + " 分钟";
-        color: #edf3ff;
+        x <- 24px; y <- 191px;
+        text <- root.city + "  ·  UTC 偏移 " + root.offset + " 分钟";
+        color <- #edf3ff;
     }
     reorder := Button {
-        x: 24px; y: 226px; width: 196px;
-        text: "把上海移到首项";
+        x <- 24px; y <- 226px; width <- 196px;
+        text <- "把上海移到首项";
         clicked => {
             root.zones = [
                 TimeZoneChoice { label: "上海", offset: 480, abbreviation: "CST" },
@@ -691,39 +691,39 @@ export component RecordTumblerDemo inherits Window {
 }
 
 export component DelayDemo inherits Window {
-    title: "XRack · 长按确认";
-    width: 400px;
-    height: 214px;
-    background: #162034;
+    title <- "XRack · 长按确认";
+    width <- 400px;
+    height <- 214px;
+    background <- #162034;
 
     in-out property <bool> confirmed: false;
     in-out property <bool> allow-confirm: true;
     in-out property <int> hold-time: 800;
     out property <int> activations: 0;
 
-    Text { x: 24px; y: 16px; text: "按住确认，松开前可取消"; color: #edf3ff; font-size: 20px; }
+    Text { x <- 24px; y <- 16px; text <- "按住确认，松开前可取消"; color <- #edf3ff; font-size <- 20px; }
     confirm := DelayButton {
-        x: 24px; y: 59px; width: 232px; height: 48px;
-        text: root.confirmed ? "已确认 · 点击复位" : "按住确认";
-        accessible-name: "确认";
-        enabled: root.allow-confirm;
-        delay: root.hold-time;
-        checked <=> root.confirmed;
-        progress-color: #366483;
+        x <- 24px; y <- 59px; width <- 232px; height <- 48px;
+        text <- root.confirmed ? "已确认 · 点击复位" : "按住确认";
+        accessible-name <- "确认";
+        enabled <- root.allow-confirm;
+        delay <- root.hold-time;
+        checked <-> root.confirmed;
+        progress-color <- #366483;
         activated => { root.activations += 1; }
     }
     enable-toggle := CheckBox {
-        x: 24px; y: 120px; width: 155px; height: 34px;
-        text: "允许确认";
-        checked <=> root.allow-confirm;
+        x <- 24px; y <- 120px; width <- 155px; height <- 34px;
+        text <- "允许确认";
+        checked <-> root.allow-confirm;
     }
-    Text { x: 24px; y: 174px; text: "确认次数 " + root.activations; color: #acc0db; }
+    Text { x <- 24px; y <- 174px; text <- "确认次数 " + root.activations; color <- #acc0db; }
 }
 
 export component RepeatButtonsDemo inherits Window {
-    title: "XRack · 按钮双击、长按与连发";
-    width: 476px; height: 302px;
-    background: #162034;
+    title <- "XRack · 按钮双击、长按与连发";
+    width <- 476px; height <- 302px;
+    background <- #162034;
     in-out property <int> value: 0;
     in-out property <int> limit: 12;
     in-out property <bool> repeating: true;
@@ -735,7 +735,7 @@ export component RepeatButtonsDemo inherits Window {
     out property <int> holds: 0;
     out property <int> doubles: 0;
     out property <int> clicks-before-double: 0;
-    out property <bool> increase-pressed: increment.pressed;
+    out property <bool> increase-pressed <- increment.pressed;
     out property <bool> pressed-at-click: false;
     in property <bool> disable-on-release: false;
     out property <string> lifecycle: "";
@@ -746,20 +746,20 @@ export component RepeatButtonsDemo inherits Window {
     }
 
     bump := Action {
-        text: "计次";
+        text <- "计次";
         activated => { root.commands += 1; }
     }
     VerticalLayout {
-        padding: 18px; spacing: 10px;
-        Label { text: "按住增减，也可聚焦后按住空格"; font-size: 18px; }
+        padding <- 18px; spacing <- 10px;
+        Label { text <- "按住增减，也可聚焦后按住空格"; font-size <- 18px; }
         HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             increment := Button {
-                text: "增加"; enabled: root.value < root.limit;
-                auto-repeat: root.repeating;
-                auto-repeat-delay: root.first-delay;
-                auto-repeat-interval: root.interval;
-                press-and-hold-interval: root.hold-interval;
+                text <- "增加"; enabled <- root.value < root.limit;
+                auto-repeat <- root.repeating;
+                auto-repeat-delay <- root.first-delay;
+                auto-repeat-interval <- root.interval;
+                press-and-hold-interval <- root.hold-interval;
                 press-and-hold => { root.value = 0; root.holds += 1; }
                 pressed => { root.lifecycle = root.increase-pressed ? "press " : "invalid "; }
                 released => {
@@ -775,39 +775,39 @@ export component RepeatButtonsDemo inherits Window {
                 double-clicked => { root.record-double(); }
             }
             decrement := RoundButton {
-                text: "减少"; enabled: root.value > 0;
-                auto-repeat: root.repeating;
-                auto-repeat-delay: root.first-delay;
-                auto-repeat-interval: root.interval;
-                press-and-hold-interval: root.hold-interval;
+                text <- "减少"; enabled <- root.value > 0;
+                auto-repeat <- root.repeating;
+                auto-repeat-delay <- root.first-delay;
+                auto-repeat-interval <- root.interval;
+                press-and-hold-interval <- root.hold-interval;
                 press-and-hold => { root.holds += 1; }
                 clicked => { root.value -= 1; root.activations += 1; }
                 double-clicked => { root.record-double(); }
             }
             invoke-action := ToolButton {
-                action: bump;
-                auto-repeat: root.repeating;
-                auto-repeat-delay: root.first-delay;
-                auto-repeat-interval: root.interval;
-                press-and-hold-interval: root.hold-interval;
+                action <- bump;
+                auto-repeat <- root.repeating;
+                auto-repeat-delay <- root.first-delay;
+                auto-repeat-interval <- root.interval;
+                press-and-hold-interval <- root.hold-interval;
                 press-and-hold => { root.holds += 1; }
                 double-clicked => { root.record-double(); }
             }
         }
-        CheckBox { text: "自动重复"; checked <=> root.repeating; }
+        CheckBox { text <- "自动重复"; checked <-> root.repeating; }
         repeat-status := Label {
-            text: "数值 " + root.value + " · 增减次数 " + root.activations + " · 命令次数 " + root.commands;
+            text <- "数值 " + root.value + " · 增减次数 " + root.activations + " · 命令次数 " + root.commands;
         }
-        hold-status := Label { text: "长按次数 " + root.holds; }
-        double-status := Label { text: "双击次数 " + root.doubles + " · 触发时点击次数 " + root.clicks-before-double; }
-        pressed-status := Label { text: root.increase-pressed ? "增加按钮已按下" : "增加按钮已松开"; }
-        lifecycle-status := Label { text: root.lifecycle; }
+        hold-status := Label { text <- "长按次数 " + root.holds; }
+        double-status := Label { text <- "双击次数 " + root.doubles + " · 触发时点击次数 " + root.clicks-before-double; }
+        pressed-status := Label { text <- root.increase-pressed ? "增加按钮已按下" : "增加按钮已松开"; }
+        lifecycle-status := Label { text <- root.lifecycle; }
     }
 }
 
 export component ProgrammaticButtonsDemo inherits Window {
-    title: "XRack · 程序化点击";
-    width: 466px; height: 261px;
+    title <- "XRack · 程序化点击";
+    width <- 466px; height <- 261px;
     in-out property <bool> allow-click: true;
     in property <bool> show-target: true;
     in property <bool> disable-on-press: false;
@@ -826,21 +826,21 @@ export component ProgrammaticButtonsDemo inherits Window {
     run-choice => { choice-button.click(); }
 
     command := Action {
-        text: "共享命令";
+        text <- "共享命令";
         activated => { root.command-count += 1; }
     }
-    choices := ButtonGroup { accessible-name: "互斥选项"; }
-    Shortcut { sequence: "F4"; activated => { root.run-click(); } }
-    Shortcut { sequence: "F5"; activated => { root.run-animated(); } }
+    choices := ButtonGroup { accessible-name <- "互斥选项"; }
+    Shortcut { sequence <- "F4"; activated => { root.run-click(); } }
+    Shortcut { sequence <- "F5"; activated => { root.run-animated(); } }
     VerticalLayout {
-        padding: 18px; spacing: 8px;
+        padding <- 18px; spacing <- 8px;
         HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             if root.show-target: target := Button {
-                text: "切换状态"; checkable: true;
-                checked <=> root.checked;
-                enabled: root.allow-click;
-                focus-on-click: false;
+                text <- "切换状态"; checkable <- true;
+                checked <-> root.checked;
+                enabled <- root.allow-click;
+                focus-on-click <- false;
                 pressed => {
                     root.events += target.pressed ? "press " : "bad-press ";
                     root.allow-click = root.allow-click && !root.disable-on-press;
@@ -853,19 +853,19 @@ export component ProgrammaticButtonsDemo inherits Window {
                 toggled => { root.events += "toggle "; }
                 clicked => { root.events += "click "; target.click(); }
             }
-            linked := ToolButton { action: command; }
-            choice-button := RoundButton { text: "选项"; group: choices; }
+            linked := ToolButton { action <- command; }
+            choice-button := RoundButton { text <- "选项"; group <- choices; }
         }
-        trigger := Button { text: "从回调点击（F4）"; clicked => { root.run-click(); } }
-        animate-trigger := Button { text: "短按动画（F5）"; clicked => { root.run-animated(); } }
-        enabled-toggle := CheckBox { text: "允许点击"; checked <=> root.allow-click; }
-        click-status := Label { text: root.events; }
+        trigger := Button { text <- "从回调点击（F4）"; clicked => { root.run-click(); } }
+        animate-trigger := Button { text <- "短按动画（F5）"; clicked => { root.run-animated(); } }
+        enabled-toggle := CheckBox { text <- "允许点击"; checked <-> root.allow-click; }
+        click-status := Label { text <- root.events; }
     }
 }
 
 export component ProgrammaticToggleDemo inherits Window {
-    title: "XRack · 程序化勾选";
-    width: 560px; height: 265px;
+    title <- "XRack · 程序化勾选";
+    width <- 560px; height <- 265px;
     in-out property <bool> pin-visible: true;
     in-out property <bool> pin-enabled: true;
     in-out property <bool> pinned: false;
@@ -875,12 +875,12 @@ export component ProgrammaticToggleDemo inherits Window {
     in-out property <string> filter-mode: "";
     in property <bool> prefer-grid-alias: false;
     out property <int> user-events: 0;
-    out property <bool> plain-checked: plain.checked;
-    out property <bool> shared-mirror-checked: shared-mirror.checked;
-    out property <bool> grouped-flag-checked: grouped-flag.checked;
-    out property <bool> compact-checked: compact.checked;
-    out property <bool> grid-checked: grid-choice.checked;
-    out property <bool> filtered-checked: filtered.checked;
+    out property <bool> plain-checked <- plain.checked;
+    out property <bool> shared-mirror-checked <- shared-mirror.checked;
+    out property <bool> grouped-flag-checked <- grouped-flag.checked;
+    out property <bool> compact-checked <- compact.checked;
+    out property <bool> grid-checked <- grid-choice.checked;
+    out property <bool> filtered-checked <- filtered.checked;
     callback toggle-all();
 
     toggle-all => {
@@ -894,61 +894,61 @@ export component ProgrammaticToggleDemo inherits Window {
     }
 
     shared := Action {
-        text: "共享选项"; checkable: true; checked <=> root.shared-checked;
+        text <- "共享选项"; checkable <- true; checked <-> root.shared-checked;
         activated => { root.user-events += 1; }
     }
     filters := ActionGroup {
-        current-value <=> root.filter-mode;
+        current-value <-> root.filter-mode;
         activated(value) => { root.user-events += 1; }
         filter := Action {
-            text: "筛选"; value: "active";
+            text <- "筛选"; value <- "active";
             activated => { root.user-events += 1; }
         }
     }
     density-options := ButtonGroup {
-        current-index <=> root.density;
+        current-index <-> root.density;
         selected(value) => { root.user-events += 1; }
     }
     view-options := ButtonGroup {
-        current-value <=> root.view-mode;
+        current-value <-> root.view-mode;
         selected(value) => { root.user-events += 1; }
     }
-    flags := ButtonGroup { exclusive: false; }
-    Shortcut { sequence: "F6"; activated => { root.toggle-all(); } }
+    flags := ButtonGroup { exclusive <- false; }
+    Shortcut { sequence <- "F6"; activated => { root.toggle-all(); } }
     VerticalLayout {
-        padding: 16px; spacing: 10px;
+        padding <- 16px; spacing <- 10px;
         HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             pin := ToolButton {
-                text: "固定"; checkable: true; checked <=> root.pinned;
-                visible: root.pin-visible;
-                enabled: root.pin-enabled;
+                text <- "固定"; checkable <- true; checked <-> root.pinned;
+                visible <- root.pin-visible;
+                enabled <- root.pin-enabled;
                 toggled => { root.user-events += 1; }
             }
-            plain := Button { text: "普通"; clicked => { root.user-events += 1; } }
-            shared-button := Button { action: shared; }
+            plain := Button { text <- "普通"; clicked => { root.user-events += 1; } }
+            shared-button := Button { action <- shared; }
             shared-mirror := ToolButton {
-                action: shared;
-                text: "共享镜像";
+                action <- shared;
+                text <- "共享镜像";
                 ButtonContent {
-                    mirror-label := Text { text: shared-mirror.checked ? "共享已选" : "共享未选"; }
+                    mirror-label := Text { text <- shared-mirror.checked ? "共享已选" : "共享未选"; }
                 }
             }
-            grouped-flag := ToolButton { text: "选项"; group: flags; }
+            grouped-flag := ToolButton { text <- "选项"; group <- flags; }
         }
         HorizontalLayout {
-            spacing: 8px;
-            compact := Button { text: "紧凑"; group: density-options; }
-            comfy := Button { text: "舒适"; group: density-options; }
-            if root.prefer-grid-alias: grid-alias := Button { text: "grid"; group: view-options; }
-            grid-choice := RoundButton { text: "网格"; value: "grid"; group: view-options; }
-            unnamed := Button { text: "空值"; value: ""; group: view-options; }
-            filtered := ToolButton { action: filter; }
+            spacing <- 8px;
+            compact := Button { text <- "紧凑"; group <- density-options; }
+            comfy := Button { text <- "舒适"; group <- density-options; }
+            if root.prefer-grid-alias: grid-alias := Button { text <- "grid"; group <- view-options; }
+            grid-choice := RoundButton { text <- "网格"; value <- "grid"; group <- view-options; }
+            unnamed := Button { text <- "空值"; value <- ""; group <- view-options; }
+            filtered := ToolButton { action <- filter; }
         }
-        toggle-all-button := Button { text: "同步切换状态（F6）"; clicked => { root.toggle-all(); } }
-        flag-summary := CheckBox { text: "汇总"; check-state <=> flags.check-state; }
+        toggle-all-button := Button { text <- "同步切换状态（F6）"; clicked => { root.toggle-all(); } }
+        flag-summary := CheckBox { text <- "汇总"; check-state <-> flags.check-state; }
         toggle-status := Label {
-            text: (root.pinned ? "固定" : "未固定") + " · " + root.density + " · " + root.view-mode
+            text <- (root.pinned ? "固定" : "未固定") + " · " + root.density + " · " + root.view-mode
                 + " · " + root.filter-mode + " · 用户事件 " + root.user-events;
         }
     }
@@ -958,34 +958,34 @@ export component CheckedGroupPagesDemo inherits Window {
     in-out property <int> tab-index: 0;
     in-out property <int> swipe-index: 0;
     in property <bool> allow-alias: true;
-    out property <bool> fallback-checked: fallback.checked;
+    out property <bool> fallback-checked <- fallback.checked;
     callback open-options();
     open-options => { navigation.push("options"); }
 
-    choices := ButtonGroup { current-value: "grid"; }
+    choices := ButtonGroup { current-value <- "grid"; }
     VerticalLayout {
         navigation := StackView {
-            initial-page: "home";
+            initial-page <- "home";
             home := StackPage {}
             options := StackPage {
                 TabWidget {
-                    current-index <=> root.tab-index;
-                    Tab { title: "General"; }
+                    current-index <-> root.tab-index;
+                    Tab { title <- "General"; }
                     Tab {
-                        title: "Views";
+                        title <- "Views";
                         SwipeView {
-                            current-index <=> root.swipe-index;
+                            current-index <-> root.swipe-index;
                             SwipePage {}
                             SwipePage {
-                                enabled: root.allow-alias;
-                                alias-button := ToolButton { text: "Grid alias"; value: "grid"; group: choices; }
+                                enabled <- root.allow-alias;
+                                alias-button := ToolButton { text <- "Grid alias"; value <- "grid"; group <- choices; }
                             }
                         }
                     }
                 }
             }
         }
-        fallback := RoundButton { text: fallback.checked ? "Selected grid" : "Grid"; value: "grid"; group: choices; }
+        fallback := RoundButton { text <- fallback.checked ? "Selected grid" : "Grid"; value <- "grid"; group <- choices; }
     }
 }
 
@@ -996,8 +996,8 @@ export struct CheckedFilter {
 }
 
 export component CheckableButtonsDemo inherits Window {
-    title: "XRack · 可切换按钮";
-    width: 440px; height: 455px;
+    title <- "XRack · 可切换按钮";
+    width <- 440px; height <- 455px;
     in-out property <bool> pinned: false;
     in property <bool> allow-pin: true;
     in property <bool> pin-checkable: true;
@@ -1016,31 +1016,31 @@ export component CheckableButtonsDemo inherits Window {
     out property <int> manual-notifications: 0;
 
     VerticalLayout {
-        padding: 18px; spacing: 10px;
+        padding <- 18px; spacing <- 10px;
         pin := Button {
-            text: root.pinned ? "已固定" : "固定";
-            accessible-name: "固定";
-            checkable: root.pin-checkable;
-            checked <=> root.pinned;
-            enabled: root.allow-pin;
+            text <- root.pinned ? "已固定" : "固定";
+            accessible-name <- "固定";
+            checkable <- root.pin-checkable;
+            checked <-> root.pinned;
+            enabled <- root.allow-pin;
             toggled => { root.events += root.pinned ? "on " : "off "; }
             clicked => { root.events += root.pinned ? "click-on " : "click-off "; }
         }
         ToolButton {
-            text: "显示大纲";
-            checkable: true;
-            checked <=> root.tool-checked;
+            text <- "显示大纲";
+            checkable <- true;
+            checked <-> root.tool-checked;
         }
         HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             for filter[index] in root.filters: RoundButton {
-                text: self.checked ? filter.label + " ✓" : filter.label;
-                accessible-name: filter.label;
-                checkable: true;
-                checked: filter.overridden ? filter.selected : filter.label == "视频" && root.select-video;
+                text <- self.checked ? filter.label + " ✓" : filter.label;
+                accessible-name <- filter.label;
+                checkable <- true;
+                checked <- filter.overridden ? filter.selected : filter.label == "视频" && root.select-video;
                 ButtonContent {
                     for marker in ["●"]: Text {
-                        text: checked ? marker : "○";
+                        text <- checked ? marker : "○";
                     }
                 }
                 clicked => {
@@ -1052,17 +1052,17 @@ export component CheckableButtonsDemo inherits Window {
             }
         }
         pin-status := Label {
-            text: root.events + " · 筛选切换 " + root.filter-toggles + " 次"
+            text <- root.events + " · 筛选切换 " + root.filter-toggles + " 次"
                 + (root.manual-events == "" ? "" : " · " + root.manual-events);
         }
         HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             for filter in root.filters: HorizontalLayout {
-                spacing: 4px;
+                spacing <- 4px;
                 RoundButton {
-                    text: self.checked ? filter.label + " ✓" : filter.label;
-                    accessible-name: "手动切换 " + filter.label;
-                    checkable: false;
+                    text <- self.checked ? filter.label + " ✓" : filter.label;
+                    accessible-name <- "手动切换 " + filter.label;
+                    checkable <- false;
                     toggled => { root.manual-notifications += 1; }
                     clicked => {
                         self.toggle();
@@ -1070,9 +1070,9 @@ export component CheckableButtonsDemo inherits Window {
                     }
                 }
                 ToolButton {
-                    text: self.checked ? "共享 ✓" : "共享";
-                    checkable: false;
-                    checked <=> root.shared-filter;
+                    text <- self.checked ? "共享 ✓" : "共享";
+                    checkable <- false;
+                    checked <-> root.shared-filter;
                     toggled => { root.manual-notifications += 1; }
                     clicked => { self.toggle(); }
                 }
@@ -1082,8 +1082,8 @@ export component CheckableButtonsDemo inherits Window {
 }
 
 export component GroupedButtonsDemo inherits Window {
-    title: "XRack · 按钮分组";
-    width: 450px; height: 300px;
+    title <- "XRack · 按钮分组";
+    width <- 450px; height <- 300px;
     in-out property <string> view-mode: "list";
     in property <bool> grid-available: true;
     in property <bool> filters-enabled: true;
@@ -1092,40 +1092,40 @@ export component GroupedButtonsDemo inherits Window {
     out property <int> filter-toggles: 0;
 
     modes := ButtonGroup {
-        accessible-name: "视图模式";
-        current-value <=> root.view-mode;
+        accessible-name <- "视图模式";
+        current-value <-> root.view-mode;
         selected(value) => { root.events += "selected-" + value + " "; }
     }
     filters := ButtonGroup {
-        exclusive: false;
-        accessible-name: "筛选条件";
-        enabled: root.filters-enabled;
+        exclusive <- false;
+        accessible-name <- "筛选条件";
+        enabled <- root.filters-enabled;
     }
     VerticalLayout {
-        padding: 18px; spacing: 8px;
+        padding <- 18px; spacing <- 8px;
         HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             list := ToolButton {
-                text: "列表"; value: "list"; group: modes;
+                text <- "列表"; value <- "list"; group <- modes;
                 toggled => { root.events += "toggle-" + root.view-mode + " "; }
                 clicked => { root.events += "click-" + root.view-mode + " "; }
             }
             grid := RoundButton {
-                text: "网格"; value: "grid"; group: modes;
-                enabled: root.grid-available;
+                text <- "网格"; value <- "grid"; group <- modes;
+                enabled <- root.grid-available;
                 toggled => { root.events += "toggle-" + root.view-mode + " "; }
                 clicked => { root.events += "click-" + root.view-mode + " "; }
             }
         }
-        details := RadioButton { text: "详情"; value: "details"; group: modes; }
-        master := CheckBox { text: "全选筛选"; check-state <=> filters.check-state; }
+        details := RadioButton { text <- "详情"; value <- "details"; group <- modes; }
+        master := CheckBox { text <- "全选筛选"; check-state <-> filters.check-state; }
         starred-filter := Button {
-            text: "已收藏"; group: filters; checked <=> root.starred;
+            text <- "已收藏"; group <- filters; checked <-> root.starred;
             toggled => { root.filter-toggles += 1; }
         }
-        downloaded := Switch { text: "已下载"; group: filters; }
+        downloaded := Switch { text <- "已下载"; group <- filters; }
         group-status := Label {
-            text: root.view-mode + " · " + root.events + " · 筛选切换 " + root.filter-toggles + " 次";
+            text <- root.view-mode + " · " + root.events + " · 筛选切换 " + root.filter-toggles + " 次";
         }
     }
 }
@@ -1136,31 +1136,31 @@ export struct ReviewRow {
 }
 
 export component CheckStateDemo inherits Window {
-    title: "XRack · 三态复选";
-    width: 452px;
-    height: 350px;
-    background: #162034;
+    title <- "XRack · 三态复选";
+    width <- 452px;
+    height <- 350px;
+    background <- #162034;
 
     in-out property <bool> first: true;
     in-out property <bool> second: false;
     in-out property <CheckState> cycle-state;
-    private property <CheckState> summary:
+    private property <CheckState> summary <-
         root.first && root.second ? CheckState.checked :
         (root.first || root.second ? CheckState.partially-checked : CheckState.unchecked);
     out property <int> proposals: 0;
     out property <int> cycle-edits: 0;
     out property <int> first-edits: 0;
     out property <CheckState> last-first-state;
-    in-out property <[ReviewRow]> reviews: once [
+    in-out property <[ReviewRow]> reviews: [
         ReviewRow { title: "渲染检查", state: CheckState.partially-checked },
         ReviewRow { title: "输入检查", state: CheckState.unchecked },
     ];
 
-    Text { x: 24px; y: 16px; text: "部分选择 · 三态循环"; color: #edf3ff; font-size: 22px; }
+    Text { x <- 24px; y <- 16px; text <- "部分选择 · 三态循环"; color <- #edf3ff; font-size <- 22px; }
     master := CheckBox {
-        x: 24px; y: 57px; width: 240px; height: 34px;
-        text: "全选";
-        check-state: root.summary;
+        x <- 24px; y <- 57px; width <- 240px; height <- 34px;
+        text <- "全选";
+        check-state <- root.summary;
         check-state-changed(state) => {
             root.proposals += 1;
             root.first = state == CheckState.checked;
@@ -1168,47 +1168,47 @@ export component CheckStateDemo inherits Window {
         }
     }
     first-item := CheckBox {
-        x: 46px; y: 94px; width: 190px; height: 30px;
-        text: "图形测试";
-        checked <=> root.first;
+        x <- 46px; y <- 94px; width <- 190px; height <- 30px;
+        text <- "图形测试";
+        checked <-> root.first;
         toggled() => { root.first-edits += 1; }
         check-state-changed(state) => { root.last-first-state = state; }
     }
     second-item := CheckBox {
-        x: 46px; y: 128px; width: 190px; height: 30px;
-        text: "交互测试";
-        checked <=> root.second;
+        x <- 46px; y <- 128px; width <- 190px; height <- 30px;
+        text <- "交互测试";
+        checked <-> root.second;
     }
     cycle := CheckBox {
-        x: 24px; y: 166px; width: 188px; height: 34px;
-        text: "三态循环";
-        tristate: true;
-        check-state <=> root.cycle-state;
+        x <- 24px; y <- 166px; width <- 188px; height <- 34px;
+        text <- "三态循环";
+        tristate <- true;
+        check-state <-> root.cycle-state;
         check-state-changed(state) => { root.cycle-edits += 1; }
     }
     review-table := TableView {
-        x: 24px; y: 213px; width: 404px; height: 116px; row-height: 38px;
-        TableColumn { title: "检查项目"; min-width: 182px; }
-        TableColumn { title: "状态"; width: 144px; }
+        x <- 24px; y <- 213px; width <- 404px; height <- 116px; row-height <- 38px;
+        TableColumn { title <- "检查项目"; min-width <- 182px; }
+        TableColumn { title <- "状态"; width <- 144px; }
         for row in root.reviews : TableRow {
-            TableCell { text <=> row.title; }
-            CheckBox { tristate: true; check-state <=> row.state; text: "完成"; }
+            TableCell { text <-> row.title; }
+            CheckBox { tristate <- true; check-state <-> row.state; text <- "完成"; }
         }
     }
 }
 
 export component CheckGroupDemo inherits Window {
-    title: "XRack · 复选组";
-    width: 520px; height: 266px;
-    background: #162034;
+    title <- "XRack · 复选组";
+    width <- 520px; height <- 266px;
+    background <- #162034;
     in-out property <bool> assets: true;
     in-out property <bool> metadata: false;
-    in-out property <CheckState> validation: once CheckState.partially-checked;
+    in-out property <CheckState> validation: CheckState.partially-checked;
     in-out property <bool> background-work: false;
     in-out property <bool> show-validation: true;
     in-out property <bool> allow-metadata: false;
     in-out property <bool> group-enabled: true;
-    out property <CheckState> summary: options.check-state;
+    out property <CheckState> summary <- options.check-state;
     out property <CheckState> master-result;
     out property <CheckState> before-bulk;
     out property <int> child-edits: 0;
@@ -1219,84 +1219,84 @@ export component CheckGroupDemo inherits Window {
         root.master-result = options.check-state;
     }
 
-    options := ButtonGroup { exclusive: false; accessible-name: "导出选项"; enabled: root.group-enabled; }
+    options := ButtonGroup { exclusive <- false; accessible-name <- "导出选项"; enabled <- root.group-enabled; }
     VerticalLayout {
-        padding: 16px; spacing: 8px;
-        Label { text: "导出选项 · 跨布局汇总"; font-size: 22px; }
+        padding <- 16px; spacing <- 8px;
+        Label { text <- "导出选项 · 跨布局汇总"; font-size <- 22px; }
         select-all := CheckBox {
-            text: "全选导出选项";
-            enabled: root.group-enabled;
-            check-state <=> options.check-state;
+            text <- "全选导出选项";
+            enabled <- root.group-enabled;
+            check-state <-> options.check-state;
             check-state-changed(state) => { root.master-result = options.check-state; }
         }
         HorizontalLayout {
-            spacing: 16px;
+            spacing <- 16px;
             VerticalLayout {
                 include-assets := CheckBox {
-                    group: options; text: "资源"; checked <=> root.assets;
+                    group <- options; text <- "资源"; checked <-> root.assets;
                     toggled => { root.child-edits += 1; }
                 }
-                include-metadata := CheckBox { group: options; text: "元数据"; enabled: root.allow-metadata; checked <=> root.metadata; }
+                include-metadata := CheckBox { group <- options; text <- "元数据"; enabled <- root.allow-metadata; checked <-> root.metadata; }
             }
             VerticalLayout {
                 if root.show-validation : run-validation := CheckBox {
-                    group: options; text: "校验"; tristate: true; check-state <=> root.validation;
+                    group <- options; text <- "校验"; tristate <- true; check-state <-> root.validation;
                 }
-                use-background := Switch { group: options; text: "后台执行"; checked <=> root.background-work; }
+                use-background := Switch { group <- options; text <- "后台执行"; checked <-> root.background-work; }
             }
         }
-        show-validation-toggle := CheckBox { text: "显示校验选项"; checked <=> root.show-validation; }
-        allow-metadata-toggle := CheckBox { text: "允许单独操作元数据"; checked <=> root.allow-metadata; }
-        Label { text: "全选会更新全部导出选项，包括当前隐藏的项。"; }
+        show-validation-toggle := CheckBox { text <- "显示校验选项"; checked <-> root.show-validation; }
+        allow-metadata-toggle := CheckBox { text <- "允许单独操作元数据"; checked <-> root.allow-metadata; }
+        Label { text <- "全选会更新全部导出选项，包括当前隐藏的项。"; }
     }
 }
 
 component ExpanderSettings inherits VerticalLayout {
-    spacing: 8px;
+    spacing <- 8px;
     out property <string> draft: "localhost";
     callback saved();
     endpoint := LineEdit {
-        accessible-name: "服务地址";
-        text <=> root.draft;
+        accessible-name <- "服务地址";
+        text <-> root.draft;
     }
-    save := Button { text: "保存地址"; clicked => { root.saved(); } }
+    save := Button { text <- "保存地址"; clicked => { root.saved(); } }
 }
 
 export component ExpanderDemo inherits Window {
-    title: "XRack · 折叠设置";
-    width: 480px;
-    height: 350px;
-    background: #162034;
+    title <- "XRack · 折叠设置";
+    width <- 480px;
+    height <- 350px;
+    background <- #162034;
 
     in-out property <bool> details-open: false;
-    out property <string> draft: settings.draft;
+    out property <string> draft <- settings.draft;
     out property <int> expansion-changes: 0;
     out property <int> saves: 0;
 
     close-details := Shortcut {
-        sequence: "F8";
+        sequence <- "F8";
         activated => { root.details-open = false; }
     }
     VerticalLayout {
-        x: 18px; y: 14px; width: 444px; height: 320px;
-        spacing: 10px;
-        Label { text: "连接设置"; font-size: 22px; }
+        x <- 18px; y <- 14px; width <- 444px; height <- 320px;
+        spacing <- 10px;
+        Label { text <- "连接设置"; font-size <- 22px; }
         details := Expander {
-            title: "高级连接选项";
-            expanded <=> root.details-open;
+            title <- "高级连接选项";
+            expanded <-> root.details-open;
             expanded-changed(value) => { root.expansion-changes += 1; }
             settings := ExpanderSettings { saved => { root.saves += 1; } }
         }
-        after-details := Label { text: "草稿 · " + root.draft; }
-        Label { text: "在输入框按 F8 折叠"; color: #a9b6ca; }
+        after-details := Label { text <- "草稿 · " + root.draft; }
+        Label { text <- "在输入框按 F8 折叠"; color <- #a9b6ca; }
     }
 }
 
 export component GroupBoxDemo inherits Window {
-    title: "XRack · 表单分组";
-    width: 470px;
-    height: 376px;
-    background: #162034;
+    title <- "XRack · 表单分组";
+    width <- 470px;
+    height <- 376px;
+    background <- #162034;
 
     in-out property <bool> active: true;
     in-out property <string> address: "notify@example.invalid";
@@ -1306,156 +1306,156 @@ export component GroupBoxDemo inherits Window {
     out property <bool> last-active: true;
 
     open-preview := Action {
-        text: "查看预览";
-        shortcut: "Primary+Shift+P";
+        text <- "查看预览";
+        shortcut <- "Primary+Shift+P";
         activated => { root.preview-open = true; }
     }
-    Text { x: 22px; y: 15px; text: "表单分组"; color: #edf3ff; font-size: 22px; }
+    Text { x <- 22px; y <- 15px; text <- "表单分组"; color <- #edf3ff; font-size <- 22px; }
     delivery := GroupBox {
-        x: 22px; y: 55px; width: 426px; height: 168px;
-        title: "邮件通知";
-        checkable: true;
-        checked <=> root.active;
-        content-padding: 12px;
+        x <- 22px; y <- 55px; width <- 426px; height <- 168px;
+        title <- "邮件通知";
+        checkable <- true;
+        checked <-> root.active;
+        content-padding <- 12px;
         toggled(active) => { root.group-changes += 1; root.last-active = active; }
 
         address-field := LineEdit {
-            accessible-name: "通知地址";
-            text <=> root.address;
-            placeholder-text: "输入通知地址";
+            accessible-name <- "通知地址";
+            text <-> root.address;
+            placeholder-text <- "输入通知地址";
         }
-        preview := Button { action: open-preview; }
+        preview := Button { action <- open-preview; }
         details := Dialog {
-            title: "通知预览";
-            open <=> root.preview-open;
-            width: 356px;
-            height: 164px;
-            Text { text: "发送到 " + root.address; }
-            close-preview := DialogButton { text: "关闭"; role: reject; }
+            title <- "通知预览";
+            open <-> root.preview-open;
+            width <- 356px;
+            height <- 164px;
+            Text { text <- "发送到 " + root.address; }
+            close-preview := DialogButton { text <- "关闭"; role <- reject; }
         }
     }
     preferences := GroupBox {
-        x: 22px; y: 234px; width: 426px; height: 91px;
-        title: "常规";
-        content-padding: 9px;
-        audit-toggle := CheckBox { text: "保留操作记录"; checked <=> root.audit; }
+        x <- 22px; y <- 234px; width <- 426px; height <- 91px;
+        title <- "常规";
+        content-padding <- 9px;
+        audit-toggle := CheckBox { text <- "保留操作记录"; checked <-> root.audit; }
     }
     Text {
-        x: 22px; y: 340px;
-        text: "分组切换 " + root.group-changes + " 次";
-        color: #acc0db;
+        x <- 22px; y <- 340px;
+        text <- "分组切换 " + root.group-changes + " 次";
+        color <- #acc0db;
     }
 }
 
 export component CustomProgressDemo inherits Window {
-    title: "XRack · 自定义进度条";
-    width: 440px; height: 252px;
+    title <- "XRack · 自定义进度条";
+    width <- 440px; height <- 252px;
     in-out property <float> amount: 380.0;
     in-out property <bool> rtl: false;
     in-out property <bool> running: false;
     in-out property <bool> animated: true;
-    out property <float> normalized: styled-progress.position;
-    out property <float> visual: styled-progress.visual-position;
+    out property <float> normalized <- styled-progress.position;
+    out property <float> visual <- styled-progress.visual-position;
 
     Label {
-        x: 20px; y: 13px; text: "传输进度 · " + root.amount + " / 900 KiB";
-        font-size: 22px;
+        x <- 20px; y <- 13px; text <- "传输进度 · " + root.amount + " / 900 KiB";
+        font-size <- 22px;
     }
     styled-progress := ProgressIndicator {
-        x: 20px; y: 56px; width: 400px; height: 29px;
-        accessible-name: "传输进度";
-        minimum: 100.0; maximum: 900.0;
-        progress: root.amount; indeterminate: root.running; animated: root.animated;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        x <- 20px; y <- 56px; width <- 400px; height <- 29px;
+        accessible-name <- "传输进度";
+        minimum <- 100.0; maximum <- 900.0;
+        progress <- root.amount; indeterminate <- root.running; animated <- root.animated;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         ProgressFill {
-            background: #53af9b; border-radius: 6px;
+            background <- #53af9b; border-radius <- 6px;
             Rectangle {
-                x: 8px; y: 7px; width: 6px; height: 15px;
-                background: #e3fff7; border-radius: 2px;
+                x <- 8px; y <- 7px; width <- 6px; height <- 15px;
+                background <- #e3fff7; border-radius <- 2px;
             }
         }
-        ProgressTrack { background: #273b55; border-radius: 6px; }
+        ProgressTrack { background <- #273b55; border-radius <- 6px; }
     }
     track-only := ProgressIndicator {
-        x: 20px; y: 104px; width: 400px; height: 14px;
-        minimum: 100.0; maximum: 900.0;
-        progress: root.amount; color: #dc9957;
-        ProgressTrack { background: #30293b; border-radius: 4px; }
+        x <- 20px; y <- 104px; width <- 400px; height <- 14px;
+        minimum <- 100.0; maximum <- 900.0;
+        progress <- root.amount; color <- #dc9957;
+        ProgressTrack { background <- #30293b; border-radius <- 4px; }
     }
     amount-slider := Slider {
-        x: 20px; y: 137px; width: 400px; height: 31px;
-        minimum: 100; maximum: 900; step: 40;
-        value <=> root.amount;
+        x <- 20px; y <- 137px; width <- 400px; height <- 31px;
+        minimum <- 100; maximum <- 900; step <- 40;
+        value <-> root.amount;
     }
-    flip-progress := CheckBox { x: 20px; y: 190px; width: 120px; height: 34px; text: "从右到左"; checked <=> root.rtl; }
-    running-progress := CheckBox { x: 153px; y: 190px; width: 120px; height: 34px; text: "不定进度"; checked <=> root.running; }
-    animate-progress := CheckBox { x: 281px; y: 190px; width: 120px; height: 34px; text: "动画"; checked <=> root.animated; }
+    flip-progress := CheckBox { x <- 20px; y <- 190px; width <- 120px; height <- 34px; text <- "从右到左"; checked <-> root.rtl; }
+    running-progress := CheckBox { x <- 153px; y <- 190px; width <- 120px; height <- 34px; text <- "不定进度"; checked <-> root.running; }
+    animate-progress := CheckBox { x <- 281px; y <- 190px; width <- 120px; height <- 34px; text <- "动画"; checked <-> root.animated; }
 }
 
 export component IndicatorsDemo inherits Window {
-    title: "XRack · 进度与忙碌";
-    width: 452px;
-    height: 286px;
-    background: #162034;
+    title <- "XRack · 进度与忙碌";
+    width <- 452px;
+    height <- 286px;
+    background <- #162034;
 
     in-out property <bool> running: true;
     in-out property <bool> animated: true;
     in-out property <float> amount: 0.65;
 
-    Text { x: 24px; y: 14px; text: "进度与忙碌状态"; font-size: 22px; color: #edf3ff; }
+    Text { x <- 24px; y <- 14px; text <- "进度与忙碌状态"; font-size <- 22px; color <- #edf3ff; }
     busy := BusyIndicator {
-        x: 36px; y: 59px; width: 54px; height: 54px;
-        accessible-name: "后台任务";
-        running: root.running;
-        animated: root.animated;
+        x <- 36px; y <- 59px; width <- 54px; height <- 54px;
+        accessible-name <- "后台任务";
+        running <- root.running;
+        animated <- root.animated;
     }
     progress-ring := Spinner {
-        x: 176px; y: 59px; width: 54px; height: 54px;
-        accessible-name: "下载进度";
-        progress: root.amount;
-        color: #70d4ae;
-        track-color: #293c54;
+        x <- 176px; y <- 59px; width <- 54px; height <- 54px;
+        accessible-name <- "下载进度";
+        progress <- root.amount;
+        color <- #70d4ae;
+        track-color <- #293c54;
     }
     hybrid-ring := Spinner {
-        x: 316px; y: 59px; width: 54px; height: 54px;
-        accessible-name: "同步进度";
-        progress: root.amount;
-        indeterminate: root.running;
-        animated: root.animated;
-        stroke-width: 5px;
+        x <- 316px; y <- 59px; width <- 54px; height <- 54px;
+        accessible-name <- "同步进度";
+        progress <- root.amount;
+        indeterminate <- root.running;
+        animated <- root.animated;
+        stroke-width <- 5px;
     }
-    Text { x: 35px; y: 124px; text: "后台任务"; color: #b8caff; }
-    Text { x: 175px; y: 124px; text: "下载进度"; color: #b8caff; }
-    Text { x: 315px; y: 124px; text: "同步进度"; color: #b8caff; }
+    Text { x <- 35px; y <- 124px; text <- "后台任务"; color <- #b8caff; }
+    Text { x <- 175px; y <- 124px; text <- "下载进度"; color <- #b8caff; }
+    Text { x <- 315px; y <- 124px; text <- "同步进度"; color <- #b8caff; }
     activity-bar := ProgressIndicator {
-        x: 24px; y: 160px; width: 404px; height: 9px;
-        accessible-name: "任务进度条";
-        progress: root.amount;
-        indeterminate: root.running;
-        animated: root.animated;
+        x <- 24px; y <- 160px; width <- 404px; height <- 9px;
+        accessible-name <- "任务进度条";
+        progress <- root.amount;
+        indeterminate <- root.running;
+        animated <- root.animated;
     }
     progress-control := Slider {
-        x: 24px; y: 186px; width: 404px; height: 30px;
-        minimum: 0;
-        maximum: 1;
-        step: 0.05;
-        value <=> root.amount;
+        x <- 24px; y <- 186px; width <- 404px; height <- 30px;
+        minimum <- 0;
+        maximum <- 1;
+        step <- 0.05;
+        value <-> root.amount;
     }
     running-toggle := CheckBox {
-        x: 24px; y: 234px; width: 160px; height: 34px;
-        text: "后台任务运行";
-        checked <=> root.running;
+        x <- 24px; y <- 234px; width <- 160px; height <- 34px;
+        text <- "后台任务运行";
+        checked <-> root.running;
     }
     animation-toggle := CheckBox {
-        x: 205px; y: 234px; width: 170px; height: 34px;
-        text: "启用加载动画";
-        checked <=> root.animated;
+        x <- 205px; y <- 234px; width <- 170px; height <- 34px;
+        text <- "启用加载动画";
+        checked <-> root.animated;
     }
 }
 export component TimeDemo inherits Window {
-    title: "XRack · 时间选择";
-    width: 520px; height: 372px;
-    background: #162034;
+    title <- "XRack · 时间选择";
+    width <- 520px; height <- 372px;
+    background <- #162034;
 
     in-out property <Time> selected: Time { hour: 23, minute: 58, second: 41 };
     in-out property <bool> use-24: true;
@@ -1467,40 +1467,40 @@ export component TimeDemo inherits Window {
     out property <int> cancels: 0;
     out property <int> accepted-minute: -1;
 
-    Text { x: 24px; y: 18px; text: "已保存 · " + root.selected; font-size: 24px; }
+    Text { x <- 24px; y <- 18px; text <- "已保存 · " + root.selected; font-size <- 24px; }
     inline-time := TimePicker {
-        x: 24px; y: 64px; width: 472px; height: 170px;
-        time <=> root.selected;
-        use-24-hour-format: root.use-24;
-        show-seconds: root.seconds;
-        enabled: root.inline-enabled;
+        x <- 24px; y <- 64px; width <- 472px; height <- 170px;
+        time <-> root.selected;
+        use-24-hour-format <- root.use-24;
+        show-seconds <- root.seconds;
+        enabled <- root.inline-enabled;
         changed(time) => { root.changes += 1; }
     }
     open-time := Button {
-        x: 24px; y: 254px; width: 180px; height: 44px;
-        text: "在弹层中选择…";
+        x <- 24px; y <- 254px; width <- 180px; height <- 44px;
+        text <- "在弹层中选择…";
         clicked => { root.picker-open = true; }
     }
-    use24 := CheckBox { x: 228px; y: 262px; text: "24 小时制"; checked <=> root.use-24; }
-    seconds-toggle := CheckBox { x: 360px; y: 262px; text: "显示秒"; checked <=> root.seconds; }
+    use24 := CheckBox { x <- 228px; y <- 262px; text <- "24 小时制"; checked <-> root.use-24; }
+    seconds-toggle := CheckBox { x <- 360px; y <- 262px; text <- "显示秒"; checked <-> root.seconds; }
     popup-time := TimePickerPopup {
-        title: "调整时间";
-        open <=> root.picker-open;
-        time <=> root.selected;
-        use-24-hour-format: root.use-24;
-        show-seconds: root.seconds;
-        accept-text: "应用时间";
-        cancel-text: "取消";
+        title <- "调整时间";
+        open <-> root.picker-open;
+        time <-> root.selected;
+        use-24-hour-format <- root.use-24;
+        show-seconds <- root.seconds;
+        accept-text <- "应用时间";
+        cancel-text <- "取消";
         accepted(time) => { root.accepts += 1; root.accepted-minute = time.minute; }
         canceled => { root.cancels += 1; }
     }
 }
 
 export component ColorDemo inherits Window {
-    title: "XRack · 颜色选择";
-    width: 478px;
-    height: root.plane-visible ? 540px : 384px;
-    background: #162034;
+    title <- "XRack · 颜色选择";
+    width <- 478px;
+    height <- root.plane-visible ? 540px : 384px;
+    background <- #162034;
 
     in-out property <color> selected: #4080C080;
     in-out property <bool> picker-open: false;
@@ -1510,41 +1510,41 @@ export component ColorDemo inherits Window {
     out property <int> accepts: 0;
     out property <int> cancels: 0;
 
-    Text { x: 24px; y: 22px; text: "选择绘图颜色"; font-size: 24px; }
+    Text { x <- 24px; y <- 22px; text <- "选择绘图颜色"; font-size <- 24px; }
     saved-color := Rectangle {
-        x: 24px; y: 70px; width: 430px; height: 118px;
-        background: root.selected;
-        border-radius: 8px;
+        x <- 24px; y <- 70px; width <- 430px; height <- 118px;
+        background <- root.selected;
+        border-radius <- 8px;
     }
     open-color := Button {
-        x: 24px; y: 211px; width: 156px; height: 44px;
-        text: "选择颜色…";
+        x <- 24px; y <- 211px; width <- 156px; height <- 44px;
+        text <- "选择颜色…";
         clicked => { root.picker-open = true; }
     }
     show-alpha-toggle := CheckBox {
-        x: 202px; y: 216px;
-        text: "编辑透明度";
-        checked <=> root.alpha-visible;
+        x <- 202px; y <- 216px;
+        text <- "编辑透明度";
+        checked <-> root.alpha-visible;
     }
-    Text { x: 24px; y: 280px; text: "已确认 " + root.accepts + " 次"; }
+    Text { x <- 24px; y <- 280px; text <- "已确认 " + root.accepts + " 次"; }
     popup-color := ColorPickerPopup {
-        width: 380px;
-        title: "调整绘图颜色";
-        open <=> root.picker-open;
-        color <=> root.selected;
-        show-alpha: root.alpha-visible;
-        show-color-plane: root.plane-visible;
-        accept-text: "应用";
-        cancel-text: "取消";
+        width <- 380px;
+        title <- "调整绘图颜色";
+        open <-> root.picker-open;
+        color <-> root.selected;
+        show-alpha <- root.alpha-visible;
+        show-color-plane <- root.plane-visible;
+        accept-text <- "应用";
+        cancel-text <- "取消";
         accepted(value) => { root.accepts += 1; root.accepted-color = value; }
         canceled => { root.cancels += 1; }
     }
 }
 
 export component FontPickerDemo inherits Window {
-    title: "XRack · 字体选择";
-    width: 510px;
-    height: 430px;
+    title <- "XRack · 字体选择";
+    width <- 510px;
+    height <- 430px;
 
     in-out property <Font> selected: Font {
         family: "sans-serif", size: 22px, weight: 400, italic: false
@@ -1555,95 +1555,95 @@ export component FontPickerDemo inherits Window {
     out property <int> cancels: 0;
 
     Text {
-        x: 24px; y: 30px; width: 462px;
-        text: "字体预览 · Aa Bb Cc 0123";
-        font: root.selected;
+        x <- 24px; y <- 30px; width <- 462px;
+        text <- "字体预览 · Aa Bb Cc 0123";
+        font <- root.selected;
     }
-    Text { x: 24px; y: 100px; text: root.selected.family; }
+    Text { x <- 24px; y <- 100px; text <- root.selected.family; }
     open-font := Button {
-        x: 24px; y: 150px; width: 154px; height: 44px;
-        text: "选择字体…";
+        x <- 24px; y <- 150px; width <- 154px; height <- 44px;
+        text <- "选择字体…";
         clicked => { root.picker-open = true; }
     }
     popup-font := FontPickerPopup {
-        width: 430px;
-        title: "选择字体";
-        preview-text: "字体预览 · Aa Bb Cc 0123";
-        open <=> root.picker-open;
-        font <=> root.selected;
-        accept-text: "应用";
-        cancel-text: "取消";
+        width <- 430px;
+        title <- "选择字体";
+        preview-text <- "字体预览 · Aa Bb Cc 0123";
+        open <-> root.picker-open;
+        font <-> root.selected;
+        accept-text <- "应用";
+        cancel-text <- "取消";
         accepted(value) => { root.accepted-font = value; root.accepts += 1; }
         canceled => { root.cancels += 1; }
     }
 }
 
 export component ThemeDemo inherits Window {
-    title: "XRack · 窗口主题";
-    width: 446px;
-    height: 318px;
+    title <- "XRack · 窗口主题";
+    width <- 446px;
+    height <- 318px;
 
-    in-out property <ColorScheme> scheme: once ColorScheme.system;
+    in-out property <ColorScheme> scheme: ColorScheme.system;
     in-out property <color> accent: #3e65e8;
     private property <bool> warm: false;
     private property <bool> shown: false;
     in-out property <string> draft: "保留输入状态";
     in-out property <bool> selected: true;
 
-    color-scheme: root.scheme;
-    accent-color: root.accent;
+    color-scheme <- root.scheme;
+    accent-color <- root.accent;
 
-    Text { x: 20px; y: 16px; text: "窗口主题"; font-size: 22px; }
+    Text { x <- 20px; y <- 16px; text <- "窗口主题"; font-size <- 22px; }
     system-mode := Button {
-        x: 20px; y: 55px; width: 112px; height: 36px;
-        text: "跟随系统";
+        x <- 20px; y <- 55px; width <- 112px; height <- 36px;
+        text <- "跟随系统";
         clicked => { root.scheme = ColorScheme.system; }
     }
     light-mode := Button {
-        x: 141px; y: 55px; width: 78px; height: 36px;
-        text: "浅色";
+        x <- 141px; y <- 55px; width <- 78px; height <- 36px;
+        text <- "浅色";
         clicked => { root.scheme = ColorScheme.light; }
     }
     dark-mode := Button {
-        x: 228px; y: 55px; width: 78px; height: 36px;
-        text: "深色";
+        x <- 228px; y <- 55px; width <- 78px; height <- 36px;
+        text <- "深色";
         clicked => { root.scheme = ColorScheme.dark; }
     }
     accent-button := Button {
-        x: 315px; y: 55px; width: 111px; height: 36px;
-        text: "更换强调色";
+        x <- 315px; y <- 55px; width <- 111px; height <- 36px;
+        text <- "更换强调色";
         clicked => {
             root.warm = !root.warm;
             root.accent = root.warm ? #f5a63b : #3e65e8;
         }
     }
-    entry := LineEdit { x: 20px; y: 109px; width: 406px; height: 40px; text <=> root.draft; }
+    entry := LineEdit { x <- 20px; y <- 109px; width <- 406px; height <- 40px; text <-> root.draft; }
     choice := ComboBox {
-        x: 20px; y: 164px; width: 168px; height: 36px;
-        model: ["颜色", "字号", "间距"];
+        x <- 20px; y <- 164px; width <- 168px; height <- 36px;
+        model <- ["颜色", "字号", "间距"];
     }
-    range := Slider { x: 205px; y: 166px; width: 221px; value: 38.0; }
-    toggle := CheckBox { x: 20px; y: 215px; text: "已启用"; checked <=> root.selected; }
+    range := Slider { x <- 205px; y <- 166px; width <- 221px; value <- 38.0; }
+    toggle := CheckBox { x <- 20px; y <- 215px; text <- "已启用"; checked <-> root.selected; }
     show-dialog := Button {
-        x: 205px; y: 214px; width: 150px; height: 36px;
-        text: "打开对话框";
+        x <- 205px; y <- 214px; width <- 150px; height <- 36px;
+        text <- "打开对话框";
         clicked => { root.shown = true; }
     }
-    fixed-color := Rectangle { x: 20px; y: 270px; width: 26px; height: 26px; background: #bc5086; }
-    Text { x: 56px; y: 273px; text: "保留显式指定的颜色"; }
+    fixed-color := Rectangle { x <- 20px; y <- 270px; width <- 26px; height <- 26px; background <- #bc5086; }
+    Text { x <- 56px; y <- 273px; text <- "保留显式指定的颜色"; }
     themed-dialog := Dialog {
-        title: "与窗口共享调色板";
-        width: 306px;
-        open <=> root.shown;
-        Text { text: "对话框、菜单和控件使用相同主题。"; }
-        DialogButton { text: "关闭"; role: reject; }
+        title <- "与窗口共享调色板";
+        width <- 306px;
+        open <-> root.shown;
+        Text { text <- "对话框、菜单和控件使用相同主题。"; }
+        DialogButton { text <- "关闭"; role <- reject; }
     }
 }
 
 export component TimerDemo inherits Window {
-    title: "XRack · 声明式计时器";
-    width: 460px; height: 240px;
-    background: #162034;
+    title <- "XRack · 声明式计时器";
+    width <- 460px; height <- 240px;
+    background <- #162034;
 
     in-out property <int> remaining: 4;
     in-out property <int> interval-ms: 250;
@@ -1652,89 +1652,89 @@ export component TimerDemo inherits Window {
     out property <int> pulses: 0;
 
     countdown := Timer {
-        interval: root.interval-ms;
-        running <=> root.ticking;
-        repeat: true;
+        interval <- root.interval-ms;
+        running <-> root.ticking;
+        repeat <- true;
         triggered() => {
             root.remaining = root.remaining > 0 ? root.remaining - 1 : 0;
             root.ticking = root.remaining > 0;
         }
     }
     pulse := Timer {
-        interval: 120;
-        running <=> root.pulse-pending;
+        interval <- 120;
+        running <-> root.pulse-pending;
         triggered() => { root.pulses += 1; }
     }
 
     VerticalLayout {
-        padding: 20px; spacing: 12px; alignment: start;
-        Text { text: "倒计时 " + root.remaining; font-size: 26px; }
-        ProgressIndicator { progress: root.remaining / 4.0; }
-        Text { text: "单次触发 " + root.pulses + " 次"; }
+        padding <- 20px; spacing <- 12px; alignment <- start;
+        Text { text <- "倒计时 " + root.remaining; font-size <- 26px; }
+        ProgressIndicator { progress <- root.remaining / 4.0; }
+        Text { text <- "单次触发 " + root.pulses + " 次"; }
         HorizontalLayout {
-            spacing: 8px;
-            restart-countdown := Button { text: "重新计时"; clicked() => { root.remaining = 4; countdown.restart(); } }
-            pause-countdown := Button { text: "暂停"; clicked() => { countdown.stop(); } }
-            resume-countdown := Button { text: "继续"; clicked() => { countdown.start(); } }
-            start-pulse := Button { text: "单次触发"; clicked() => { pulse.restart(); } }
+            spacing <- 8px;
+            restart-countdown := Button { text <- "重新计时"; clicked() => { root.remaining = 4; countdown.restart(); } }
+            pause-countdown := Button { text <- "暂停"; clicked() => { countdown.stop(); } }
+            resume-countdown := Button { text <- "继续"; clicked() => { countdown.start(); } }
+            start-pulse := Button { text <- "单次触发"; clicked() => { pulse.restart(); } }
         }
     }
 }
 
 export component PaneFrameDemo inherits Window {
-    title: "XRack · 内容容器";
-    width: 460px; height: 270px;
-    color-scheme: dark;
-    background: #182331;
+    title <- "XRack · 内容容器";
+    width <- 460px; height <- 270px;
+    color-scheme <- dark;
+    background <- #182331;
     in property <length> left-padding: 20px;
     in property <length> content-size: 390px;
     in-out property <bool> content-enabled: true;
-    out property <length> pane-inner-width: surface.available-width;
-    out property <length> frame-inner-width: group.available-width;
-    out property <length> frame-inner-height: group.available-height;
+    out property <length> pane-inner-width <- surface.available-width;
+    out property <length> frame-inner-width <- group.available-width;
+    out property <length> frame-inner-height <- group.available-height;
     out property <int> inner-clicks: 0;
     out property <int> lower-clicks: 0;
 
     toggle := CheckBox {
-        x: 20px; y: 12px; width: 160px; height: 28px;
-        text: "启用内容区";
-        checked <=> root.content-enabled;
+        x <- 20px; y <- 12px; width <- 160px; height <- 28px;
+        text <- "启用内容区";
+        checked <-> root.content-enabled;
     }
     underlying := Button {
-        x: 20px; y: 50px; width: 430px; height: 164px;
-        text: "底层";
+        x <- 20px; y <- 50px; width <- 430px; height <- 164px;
+        text <- "底层";
         clicked() => { root.lower-clicks += 1; }
     }
     surface := Pane {
-        x: 20px; y: 50px;
-        padding: 12px; padding-left: root.left-padding; padding-right: 10px;
-        content-width: root.content-size; content-height: 140px;
-        enabled: root.content-enabled;
-        accessible-name: "设置面板";
+        x <- 20px; y <- 50px;
+        padding <- 12px; padding-left <- root.left-padding; padding-right <- 10px;
+        content-width <- root.content-size; content-height <- 140px;
+        enabled <- root.content-enabled;
+        accessible-name <- "设置面板";
         group := ControlFrame {
-            x: 8px; y: 12px;
-            padding: 8px;
-            clip: true;
-            background: #303d52;
-            accessible-name: "操作组";
+            x <- 8px; y <- 12px;
+            padding <- 8px;
+            clip <- true;
+            background <- #303d52;
+            accessible-name <- "操作组";
             action := Button {
-                x: 4px; y: 6px; width: 122px; height: 38px;
-                text: "执行 · " + root.inner-clicks;
+                x <- 4px; y <- 6px; width <- 122px; height <- 38px;
+                text <- "执行 · " + root.inner-clicks;
                 clicked() => { root.inner-clicks += 1; }
             }
         }
         Text {
-            x: 176px; y: 25px; width: 200px; height: 24px;
-            text: "ControlFrame 内容区 " + (root.frame-inner-width / 1px) + " × " + (root.frame-inner-height / 1px);
+            x <- 176px; y <- 25px; width <- 200px; height <- 24px;
+            text <- "ControlFrame 内容区 " + (root.frame-inner-width / 1px) + " × " + (root.frame-inner-height / 1px);
         }
-        Text { x: 8px; y: 104px; width: 200px; height: 24px; text: "Pane 内容宽度 " + (root.pane-inner-width / 1px); }
+        Text { x <- 8px; y <- 104px; width <- 200px; height <- 24px; text <- "Pane 内容宽度 " + (root.pane-inner-width / 1px); }
     }
 }
 
 export component WheelControlsDemo inherits Window {
-    title: "XRack · 滚轮调值";
-    width: 460px; height: 310px;
-    background: #182331;
+    title <- "XRack · 滚轮调值";
+    width <- 460px; height <- 310px;
+    background <- #182331;
     in-out property <bool> wheel-enabled: true;
     in-out property <bool> spin-read-only: false;
     in-out property <float> slider-value: 4.0;
@@ -1748,62 +1748,62 @@ export component WheelControlsDemo inherits Window {
     out property <int> edits: 0;
 
     toggle := CheckBox {
-        x: 20px; y: 14px; width: 200px; height: 28px;
-        text: "滚轮可调整数值"; checked <=> root.wheel-enabled;
+        x <- 20px; y <- 14px; width <- 200px; height <- 28px;
+        text <- "滚轮可调整数值"; checked <-> root.wheel-enabled;
     }
     viewport := ScrollView {
-        x: 18px; y: 56px; width: 424px; height: 226px;
-        content-height: 400px;
+        x <- 18px; y <- 56px; width <- 424px; height <- 226px;
+        content-height <- 400px;
         Rectangle {
-            width: 424px; height: 400px;
-            background: #222e3e; border-radius: 9px;
-            Text { x: 16px; y: 16px; text: "滑块 " + root.slider-value; }
+            width <- 424px; height <- 400px;
+            background <- #222e3e; border-radius <- 9px;
+            Text { x <- 16px; y <- 16px; text <- "滑块 " + root.slider-value; }
             slider := Slider {
-                x: 120px; y: 10px; width: 260px; height: 32px;
-                minimum: 0; maximum: 5; step: 1;
-                value <=> root.slider-value;
-                wheel-enabled: root.wheel-enabled;
+                x <- 120px; y <- 10px; width <- 260px; height <- 32px;
+                minimum <- 0; maximum <- 5; step <- 1;
+                value <-> root.slider-value;
+                wheel-enabled <- root.wheel-enabled;
                 changed(value) => { root.changes += 1; }
                 released(value) => { root.releases += 1; }
             }
-            Text { x: 16px; y: 60px; text: "区间 " + root.interval-start + " – " + root.interval-end; }
+            Text { x <- 16px; y <- 60px; text <- "区间 " + root.interval-start + " – " + root.interval-end; }
             interval := RangeSlider {
-                x: 120px; y: 54px; width: 260px; height: 32px;
-                minimum: 0; maximum: 10; step: 1;
-                lower-value <=> root.interval-start; upper-value <=> root.interval-end;
-                wheel-enabled: root.wheel-enabled;
+                x <- 120px; y <- 54px; width <- 260px; height <- 32px;
+                minimum <- 0; maximum <- 10; step <- 1;
+                lower-value <-> root.interval-start; upper-value <-> root.interval-end;
+                wheel-enabled <- root.wheel-enabled;
             }
             dial := Dial {
-                x: 18px; y: 102px; width: 60px; height: 60px;
-                minimum: 0; maximum: 5; step: 1; wrap: true;
-                value <=> root.dial-value;
-                wheel-enabled: root.wheel-enabled;
+                x <- 18px; y <- 102px; width <- 60px; height <- 60px;
+                minimum <- 0; maximum <- 5; step <- 1; wrap <- true;
+                value <-> root.dial-value;
+                wheel-enabled <- root.wheel-enabled;
             }
             spin := SpinBox {
-                x: 120px; y: 115px; width: 118px; height: 32px;
-                minimum: 0; maximum: 20; step-size: 2;
-                value <=> root.spin-value;
-                read-only: root.spin-read-only;
-                wheel-enabled: root.wheel-enabled;
+                x <- 120px; y <- 115px; width <- 118px; height <- 32px;
+                minimum <- 0; maximum <- 20; step-size <- 2;
+                value <-> root.spin-value;
+                read-only <- root.spin-read-only;
+                wheel-enabled <- root.wheel-enabled;
                 edited(value) => { root.edits += 1; }
             }
             decimal := DoubleSpinBox {
-                x: 260px; y: 115px; width: 120px; height: 32px;
-                minimum: 0.0; maximum: 0.3; step-size: 0.1; wrap: true;
-                value <=> root.decimal-value;
-                wheel-enabled: root.wheel-enabled;
+                x <- 260px; y <- 115px; width <- 120px; height <- 32px;
+                minimum <- 0.0; maximum <- 0.3; step-size <- 0.1; wrap <- true;
+                value <-> root.decimal-value;
+                wheel-enabled <- root.wheel-enabled;
                 edited(value) => { root.edits += 1; }
             }
-            Text { x: 16px; y: 187px; text: "滑块到达边界后，滚轮继续滚动页面。"; }
-            Text { x: 16px; y: 316px; text: "滚动内容的底部"; }
+            Text { x <- 16px; y <- 187px; text <- "滑块到达边界后，滚轮继续滚动页面。"; }
+            Text { x <- 16px; y <- 316px; text <- "滚动内容的底部"; }
         }
     }
 }
 
 export component SnapSlidersDemo inherits Window {
-    title: "XRack · 滑条吸附";
-    width: 500px; height: 290px;
-    background: #162034;
+    title <- "XRack · 滑条吸附";
+    width <- 500px; height <- 290px;
+    background <- #162034;
     in-out property <bool> live-update: false;
     in-out property <float> level: 20;
     in-out property <float> lower: 20;
@@ -1815,25 +1815,25 @@ export component SnapSlidersDemo inherits Window {
     out property <float> released-lower: 20;
 
     VerticalLayout {
-        padding: 20px; spacing: 10px;
-        Text { text: "步进吸附与预览"; font-size: 23px; }
-        CheckBox { text: "拖动时实时更新"; checked <=> root.live-update; }
-        Text { text: "拖动时吸附 · 已提交 " + root.level; }
+        padding <- 20px; spacing <- 10px;
+        Text { text <- "步进吸附与预览"; font-size <- 23px; }
+        CheckBox { text <- "拖动时实时更新"; checked <-> root.live-update; }
+        Text { text <- "拖动时吸附 · 已提交 " + root.level; }
         level-slider := Slider {
-            value <=> root.level;
-            minimum: 0; maximum: 100; step: 10;
-            live: root.live-update;
-            snap-mode: ScrollSnapMode.always;
+            value <-> root.level;
+            minimum <- 0; maximum <- 100; step <- 10;
+            live <- root.live-update;
+            snap-mode <- ScrollSnapMode.always;
             changed(value) => { root.level-changes += 1; }
             released(value) => { root.level-releases += 1; root.released-level = value; }
         }
-        Text { text: "松手时吸附 · 已提交 " + root.lower + "–" + root.upper; }
+        Text { text <- "松手时吸附 · 已提交 " + root.lower + "–" + root.upper; }
         band-slider := RangeSlider {
-            lower-value <=> root.lower;
-            upper-value <=> root.upper;
-            minimum: 0; maximum: 100; step: 10;
-            live: root.live-update;
-            snap-mode: ScrollSnapMode.on-release;
+            lower-value <-> root.lower;
+            upper-value <-> root.upper;
+            minimum <- 0; maximum <- 100; step <- 10;
+            live <- root.live-update;
+            snap-mode <- ScrollSnapMode.on-release;
             changed(lower, upper) => { root.band-changes += 1; }
             released(lower, upper) => { root.released-lower = lower; }
         }
@@ -1841,72 +1841,72 @@ export component SnapSlidersDemo inherits Window {
 }
 
 export component DirectionalSlidersDemo inherits Window {
-    title: "XRack · 滑块方向";
-    width: 400px; height: 260px;
-    background: #162034;
+    title <- "XRack · 滑块方向";
+    width <- 400px; height <- 260px;
+    background <- #162034;
     in-out property <bool> rtl: true;
     in-out property <float> level: 20;
     in-out property <float> lower: 20;
     in-out property <float> upper: 70;
     in-out property <float> vertical-value: 40;
-    out property <float> shown-level: level-slider.value;
-    out property <float> shown-lower: band-slider.lower-value;
-    out property <float> shown-upper: band-slider.upper-value;
-    out property <float> shown-vertical: vertical-slider.value;
+    out property <float> shown-level <- level-slider.value;
+    out property <float> shown-lower <- band-slider.lower-value;
+    out property <float> shown-upper <- band-slider.upper-value;
+    out property <float> shown-vertical <- vertical-slider.value;
     out property <bool> callback-values-current: true;
 
     flip := Button {
-        x: 20px; y: 18px; width: 200px; height: 32px;
-        text: root.rtl ? "从右到左 · 切换方向" : "从左到右 · 切换方向";
+        x <- 20px; y <- 18px; width <- 200px; height <- 32px;
+        text <- root.rtl ? "从右到左 · 切换方向" : "从左到右 · 切换方向";
         clicked => { root.rtl = !root.rtl; }
     }
     Rectangle {
-        x: 20px; y: 64px; width: 360px; height: 178px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        x <- 20px; y <- 64px; width <- 360px; height <- 178px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         level-slider := Slider {
-            x: 20px; y: 18px; width: 250px; height: 32px;
-            minimum: 0; maximum: 100; step: 10;
-            value <=> root.level;
-            accessible-name: "音量";
+            x <- 20px; y <- 18px; width <- 250px; height <- 32px;
+            minimum <- 0; maximum <- 100; step <- 10;
+            value <-> root.level;
+            accessible-name <- "音量";
             SliderHandle {
-                width: 22px; height: 22px;
-                background: #67d4cf;
-                border-radius: 5px;
+                width <- 22px; height <- 22px;
+                background <- #67d4cf;
+                border-radius <- 5px;
             }
         }
         band-slider := RangeSlider {
-            x: 20px; y: 80px; width: 250px; height: 32px;
-            minimum: 0; maximum: 100; step: 10;
-            lower-value <=> root.lower;
-            upper-value <=> root.upper;
-            live: false;
-            snap-mode: ScrollSnapMode.on-release;
-            wheel-enabled: true;
+            x <- 20px; y <- 80px; width <- 250px; height <- 32px;
+            minimum <- 0; maximum <- 100; step <- 10;
+            lower-value <-> root.lower;
+            upper-value <-> root.upper;
+            live <- false;
+            snap-mode <- ScrollSnapMode.on-release;
+            wheel-enabled <- true;
             changed(lower, upper) => {
                 root.callback-values-current = lower == self.lower-value && upper == self.upper-value;
             }
-            accessible-name: "区间";
+            accessible-name <- "区间";
             RangeLowerHandle {
-                width: 30px; height: 20px;
-                background: #f6ad55;
-                border-radius: 5px;
+                width <- 30px; height <- 20px;
+                background <- #f6ad55;
+                border-radius <- 5px;
             }
         }
         vertical-slider := Slider {
-            x: 300px; y: 18px; width: 32px; height: 114px;
-            orientation: Orientation.vertical;
-            minimum: 0; maximum: 100; step: 10;
-            value <=> root.vertical-value;
-            accessible-name: "纵向数值";
+            x <- 300px; y <- 18px; width <- 32px; height <- 114px;
+            orientation <- Orientation.vertical;
+            minimum <- 0; maximum <- 100; step <- 10;
+            value <-> root.vertical-value;
+            accessible-name <- "纵向数值";
         }
-        Text { x: 20px; y: 132px; text: "音量 " + level-slider.value + " · 区间 " + band-slider.lower-value + "–" + band-slider.upper-value; }
+        Text { x <- 20px; y <- 132px; text <- "音量 " + level-slider.value + " · 区间 " + band-slider.lower-value + "–" + band-slider.upper-value; }
     }
 }
 
 export component DirectionalFeedbackDemo inherits Window {
-    title: "XRack · 控件方向";
-    width: 464px; height: 310px;
-    background: #162034;
+    title <- "XRack · 控件方向";
+    width <- 464px; height <- 310px;
+    background <- #162034;
     in-out property <bool> rtl: true;
     in-out property <bool> checked: false;
     in-out property <bool> wireless: true;
@@ -1919,84 +1919,84 @@ export component DirectionalFeedbackDemo inherits Window {
     in-out property <int> page: 0;
 
     flip := Button {
-        x: 20px; y: 20px; width: 168px; height: 32px;
-        text: root.rtl ? "从右到左 · 切换" : "从左到右 · 切换";
+        x <- 20px; y <- 20px; width <- 168px; height <- 32px;
+        text <- root.rtl ? "从右到左 · 切换" : "从左到右 · 切换";
         clicked => { root.rtl = !root.rtl; }
     }
     Rectangle {
-        x: 20px; y: 65px; width: 424px; height: 229px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        x <- 20px; y <- 65px; width <- 424px; height <- 229px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         check := CheckBox {
-            x: 0px; y: 0px; width: 184px; height: 32px;
-            text: "允许通知";
-            checked <=> root.checked;
+            x <- 0px; y <- 0px; width <- 184px; height <- 32px;
+            text <- "允许通知";
+            checked <-> root.checked;
         }
         wifi := Switch {
-            x: 220px; y: 0px; width: 184px; height: 32px;
-            text: "Wi-Fi";
-            checked <=> root.wireless;
-            enabled: root.wireless-enabled;
+            x <- 220px; y <- 0px; width <- 184px; height <- 32px;
+            text <- "Wi-Fi";
+            checked <-> root.wireless;
+            enabled <- root.wireless-enabled;
             toggled => { root.wireless-changes += 1; }
         }
         share := CheckDelegate {
-            x: 0px; y: 40px; width: 184px; height: 38px;
-            text: "共享设置";
-            checked <=> root.shared;
+            x <- 0px; y <- 40px; width <- 184px; height <- 38px;
+            text <- "共享设置";
+            checked <-> root.shared;
             ToggleIndicator {
-                width: 26px; height: 20px;
-                background: root.shared ? #f6ad55 : #785075;
-                border-radius: 4px;
+                width <- 26px; height <- 20px;
+                background <- root.shared ? #f6ad55 : #785075;
+                border-radius <- 4px;
             }
         }
         profiles := RadioGroup {
-            x: 220px; y: 40px; width: 184px; height: 38px;
-            orientation: Orientation.horizontal;
-            current-index <=> root.profile;
-            standard := RadioButton { text: "标准"; }
-            advanced := RadioButton { text: "高级"; }
+            x <- 220px; y <- 40px; width <- 184px; height <- 38px;
+            orientation <- Orientation.horizontal;
+            current-index <-> root.profile;
+            standard := RadioButton { text <- "标准"; }
+            advanced := RadioButton { text <- "高级"; }
         }
         pages := PageIndicator {
-            x: 0px; y: 99px; width: 184px; height: 32px;
-            count: 4;
-            interactive: true;
-            current-index <=> root.page;
-            color: #75859a;
-            current-color: #f6ad55;
+            x <- 0px; y <- 99px; width <- 184px; height <- 32px;
+            count <- 4;
+            interactive <- true;
+            current-index <-> root.page;
+            color <- #75859a;
+            current-color <- #f6ad55;
         }
         meter := ProgressIndicator {
-            x: 220px; y: 111px; width: 184px; height: 12px;
-            progress: 0.25;
-            color: #67d4cf;
-            track-color: #35415b;
+            x <- 220px; y <- 111px; width <- 184px; height <- 12px;
+            progress <- 0.25;
+            color <- #67d4cf;
+            track-color <- #35415b;
         }
         status := Text {
-            x: 0px; y: 160px;
-            text: "页码 " + root.page + " · 模式 " + root.profile
+            x <- 0px; y <- 160px;
+            text <- "页码 " + root.page + " · 模式 " + root.profile
                 + (root.wireless ? " · 已联网" : " · 已断开");
         }
         custom := Switch {
-            x: 220px; y: 186px; width: 184px; height: 36px;
-            text: root.custom-enabled ? "同步已开" : "同步已关";
-            checked <=> root.custom-enabled;
+            x <- 220px; y <- 186px; width <- 184px; height <- 36px;
+            text <- root.custom-enabled ? "同步已开" : "同步已关";
+            checked <-> root.custom-enabled;
             toggled => { root.custom-changes += 1; }
             sync-thumb := SwitchThumb {
-                width: 50%; height: 18px;
-                background: #f6ad55;
-                border-radius: 5px;
+                width <- 50%; height <- 18px;
+                background <- #f6ad55;
+                border-radius <- 5px;
             }
             ToggleIndicator {
-                width: 64px; height: 26px;
-                background: root.custom-enabled ? #2c6b6b : #414f65;
-                border-radius: 8px;
+                width <- 64px; height <- 26px;
+                background <- root.custom-enabled ? #2c6b6b : #414f65;
+                border-radius <- 8px;
             }
         }
     }
 }
 
 export component DirectionalCalendarDemo inherits Window {
-    title: "XRack · 日历方向";
-    width: 724px; height: 362px;
-    background: #162034;
+    title <- "XRack · 日历方向";
+    width <- 724px; height <- 362px;
+    background <- #162034;
     in-out property <bool> rtl: true;
     in-out property <Date> selected: Date { year: 2024, month: 2, day: 28 };
     in-out property <Date> calendar-month: Date { year: 2024, month: 2, day: 1 };
@@ -2007,77 +2007,77 @@ export component DirectionalCalendarDemo inherits Window {
     private property <[string]> weekdays: ["一", "二", "三", "四", "五", "六", "日"];
 
     flip := Button {
-        x: 20px; y: 18px; width: 156px; height: 32px;
-        text: root.rtl ? "从右到左 · 切换" : "从左到右 · 切换";
+        x <- 20px; y <- 18px; width <- 156px; height <- 32px;
+        text <- root.rtl ? "从右到左 · 切换" : "从左到右 · 切换";
         clicked => { root.rtl = !root.rtl; }
     }
     Rectangle {
-        x: 20px; y: 64px; width: 684px; height: 280px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        x <- 20px; y <- 64px; width <- 684px; height <- 280px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         calendar := Calendar {
-            x: 0px; y: 0px; width: 320px; height: 240px;
-            date <=> root.selected;
-            display-month <=> root.calendar-month;
-            week-start: 7;
-            weekday-labels: root.weekdays;
+            x <- 0px; y <- 0px; width <- 320px; height <- 240px;
+            date <-> root.selected;
+            display-month <-> root.calendar-month;
+            week-start <- 7;
+            weekday-labels <- root.weekdays;
         }
         GridLayout {
-            x: 356px; y: 0px; width: 328px; height: 240px;
-            spacing: 0px;
+            x <- 356px; y <- 0px; width <- 328px; height <- 240px;
+            spacing <- 0px;
             Row {
                 Label {
-                    width: 48px; height: 30px; text: "周";
-                    horizontal-alignment: center; vertical-alignment: center;
+                    width <- 48px; height <- 30px; text <- "周";
+                    horizontal-alignment <- center; vertical-alignment <- center;
                 }
                 days := DayOfWeekRow {
-                    width: 280px; height: 30px;
-                    week-start: 7;
-                    weekday-labels: root.weekdays;
+                    width <- 280px; height <- 30px;
+                    week-start <- 7;
+                    weekday-labels <- root.weekdays;
                 }
             }
             Row {
                 weeks := WeekNumberColumn {
-                    width: 48px; height: 210px;
-                    display-month: root.grid-month;
-                    week-start: 7;
+                    width <- 48px; height <- 210px;
+                    display-month <- root.grid-month;
+                    week-start <- 7;
                 }
                 schedule := MonthGrid {
-                    width: 280px; height: 210px;
-                    date <=> root.grid-date;
-                    display-month <=> root.grid-month;
-                    week-start: 7;
+                    width <- 280px; height <- 210px;
+                    date <-> root.grid-date;
+                    display-month <-> root.grid-month;
+                    week-start <- 7;
                     activated(day) => { root.activations += 1; }
                     DayCell {
-                        background: cell-selected ? #d17e42 : cell-in-month ? #293c56 : #1e2a3d;
-                        border-radius: 5px;
+                        background <- cell-selected ? #d17e42 : cell-in-month ? #293c56 : #1e2a3d;
+                        border-radius <- 5px;
                         Label {
-                            width: 100%; height: 100%;
-                            text: "" + cell-date.day;
-                            horizontal-alignment: center; vertical-alignment: center;
+                            width <- 100%; height <- 100%;
+                            text <- "" + cell-date.day;
+                            horizontal-alignment <- center; vertical-alignment <- center;
                         }
                     }
                 }
             }
         }
         open-picker := Button {
-            x: 0px; y: 248px; width: 156px; height: 30px;
-            text: "打开日期弹层";
+            x <- 0px; y <- 248px; width <- 156px; height <- 30px;
+            text <- "打开日期弹层";
             clicked => { root.picker-open = true; }
         }
         picker := DatePickerPopup {
-            title: "选择日期";
-            width: 372px; height: 341px;
-            open <=> root.picker-open;
-            date <=> root.selected;
-            week-start: 7;
-            weekday-labels: root.weekdays;
-            accept-text: "应用日期";
-            cancel-text: "取消";
+            title <- "选择日期";
+            width <- 372px; height <- 341px;
+            open <-> root.picker-open;
+            date <-> root.selected;
+            week-start <- 7;
+            weekday-labels <- root.weekdays;
+            accept-text <- "应用日期";
+            cancel-text <- "取消";
             accepted(date) => { root.calendar-month = date; }
         }
         status := Text {
-            x: 190px; y: 252px;
-            text: "日历 " + root.selected + " · 日程 " + root.grid-date;
+            x <- 190px; y <- 252px;
+            text <- "日历 " + root.selected + " · 日程 " + root.grid-date;
         }
     }
 }

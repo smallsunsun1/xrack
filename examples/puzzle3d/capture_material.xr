@@ -14,9 +14,9 @@ struct MonitorFeed { name: string, camera: string, layers: int, scale: float }
 struct InsetPass { shader: string, strength: float, buffers: [MonitorInput] }
 
 export component CaptureMaterialDemo inherits Window {
-    title: "XRack · 材质读取场景画面";
-    width: 520px; height: 372px; resizable: false;
-    background: #162638;
+    title <- "XRack · 材质读取场景画面";
+    width <- 520px; height <- 372px; resizable <- false;
+    background <- #162638;
     in-out property <int> source-layer: 4;
     in-out property <bool> inset: true;
     in-out property <bool> direct-visible: true;
@@ -25,23 +25,23 @@ export component CaptureMaterialDemo inherits Window {
     property <MonitorStyle> standard: MonitorStyle {
         unlit: true, material-shader: "", shader-textures: [],
     };
-    property <MonitorStyle> direct: MonitorStyle {
+    property <MonitorStyle> direct <- MonitorStyle {
         unlit: true, material-shader: @material-shader-url("effects/capture_material_display.wgsl"),
         shader-textures: [MonitorInput { capture: "source", filter: "linear" }],
     };
-    property <MonitorStyle> relay: MonitorStyle {
+    property <MonitorStyle> relay <- MonitorStyle {
         shader-textures: [MonitorInput { capture: "relay", filter: "linear" }], ..root.direct
     };
-    property <MonitorActor> base: MonitorActor {
+    property <MonitorActor> base <- MonitorActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, layers: 1, camera-kind: "", camera-height: 4, material: root.standard, visible: true,
     };
 
     SceneView3D {
-        width: 520px; height: 280px; camera: "view"; layer-mask: 1;
-        scene-background: #23384f; scene-tone-map: none; cache-rendering: true;
-        model: [
+        width <- 520px; height <- 280px; camera <- "view"; layer-mask <- 1;
+        scene-background <- #23384f; scene-tone-map <- none; cache-rendering <- true;
+        model <- [
             MonitorActor { id: "view", mesh: "", z: 7, camera-kind: "orthographic", ..root.base },
             MonitorActor {
                 id: "source-eye", mesh: "", z: 7, camera-kind: "orthographic",
@@ -68,12 +68,12 @@ export component CaptureMaterialDemo inherits Window {
                 color: #468ed2, ..root.base
             },
         ];
-        scene-captures: [
+        scene-captures <- [
             MonitorFeed { name: "relay", camera: "source-eye", layers: 2, scale: 0.5 },
             MonitorFeed { name: "source", camera: "source-eye", layers: root.source-layer, scale: 0.5 },
             MonitorFeed { name: "source-alias", camera: "source-eye", layers: root.source-layer, scale: 0.5 },
         ];
-        scene-effects: [
+        scene-effects <- [
             InsetPass {
                 shader: @shader-url("effects/capture_material_inset.wgsl"),
                 strength: root.inset ? 1 : 0,
@@ -82,19 +82,19 @@ export component CaptureMaterialDemo inherits Window {
         ];
     }
 
-    Label { x: 29px; y: 288px; width: 220px; height: 24px; text: "经中转捕获"; }
-    Label { x: 287px; y: 288px; width: 211px; height: 24px; text: "直接采样"; }
+    Label { x <- 29px; y <- 288px; width <- 220px; height <- 24px; text <- "经中转捕获"; }
+    Label { x <- 287px; y <- 288px; width <- 211px; height <- 24px; text <- "直接采样"; }
     switch-layer := Button {
-        x: 18px; y: 323px; width: 135px; height: 32px;
-        text: "切换源图层";
+        x <- 18px; y <- 323px; width <- 135px; height <- 32px;
+        text <- "切换源图层";
         clicked => { root.source-layer = root.source-layer == 4 ? 8 : 4; }
     }
     CheckBox {
-        x: 177px; y: 323px; width: 135px; height: 32px;
-        text: "后处理小窗"; checked <=> root.inset;
+        x <- 177px; y <- 323px; width <- 135px; height <- 32px;
+        text <- "后处理小窗"; checked <-> root.inset;
     }
     CheckBox {
-        x: 335px; y: 323px; width: 160px; height: 32px;
-        text: "循环引用测试"; checked <=> root.feedback;
+        x <- 335px; y <- 323px; width <- 160px; height <- 32px;
+        text <- "循环引用测试"; checked <-> root.feedback;
     }
 }

@@ -8,7 +8,7 @@
 
 export component App inherits Window {
     in-out property <quaternion3d> input;
-    out property <quaternion3d> identity: Quaternion3D.identity();
-    out property <quaternion3d> unchanged: Quaternion3D.compose(root.input, Quaternion3D.identity());
-    out property <float> scalar: root.input.w;
+    out property <quaternion3d> identity <- Quaternion3D.identity();
+    out property <quaternion3d> unchanged <- Quaternion3D.compose(root.input, Quaternion3D.identity());
+    out property <float> scalar <- root.input.w;
 }

@@ -33,9 +33,9 @@ export component ParticlePlan inherits Window {
     in property <[Field]> fields;
     in property <float> time: 0;
     SceneView3D {
-        width: 100px; height: 100px;
-        particle-emitters: root.emitters;
-        particle-affectors: root.fields;
-        particle-time: root.time;
+        width <- 100px; height <- 100px;
+        particle-emitters <- root.emitters;
+        particle-affectors <- root.fields;
+        particle-time <- root.time;
     }
 }

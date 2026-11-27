@@ -9,11 +9,11 @@ struct FrustumActor {
 }
 
 export component OffAxisCameraDemo inherits Window {
-    title: "XRack · 偏轴相机";
-    width: 360px;
-    height: 296px;
-    resizable: false;
-    background: #141d29;
+    title <- "XRack · 偏轴相机";
+    width <- 360px;
+    height <- 296px;
+    resizable <- false;
+    background <- #141d29;
 
     in-out property <float> horizontal: 0.25;
     in-out property <float> vertical: 0.125;
@@ -22,16 +22,16 @@ export component OffAxisCameraDemo inherits Window {
     in-out property <bool> parallel: false;
     in-out property <bool> culling: true;
     in-out property <bool> effects: true;
-    in-out property <point2d> cursor: once Point2D.new(120px, 150px);
-    property <point2d> viewport-size: Point2D.new(360px, 240px);
-    property <float> lens-scale: root.parallel ? 8.0 : 1.0;
+    in-out property <point2d> cursor: Point2D.new(120px, 150px);
+    property <point2d> viewport-size <- Point2D.new(360px, 240px);
+    property <float> lens-scale <- root.parallel ? 8.0 : 1.0;
     property <FrustumActor> defaults: FrustumActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #ffffff, camera-kind: "", camera-near: 1, camera-far: 40,
         camera-left: -0.75, camera-right: 0.75, camera-bottom: -0.5, camera-top: 0.5,
     };
-    property <[FrustumActor]> scene: [
+    property <[FrustumActor]> scene <- [
         FrustumActor {
             id: "lens", mesh: "", z: 8,
             camera-kind: root.parallel ? "orthographic" : "frustum",
@@ -58,29 +58,29 @@ export component OffAxisCameraDemo inherits Window {
             color: #63d6bd, ..root.defaults
         },
     ];
-    out property <projectedpoint3d> projected: Scene3D.project-camera(root.scene, "lens",
+    out property <projectedpoint3d> projected <- Scene3D.project-camera(root.scene, "lens",
         root.viewport-size, Point3D.new(0, 0, 0));
-    out property <point3d> unprojected: Scene3D.unproject-camera(root.scene, "lens",
+    out property <point3d> unprojected <- Scene3D.unproject-camera(root.scene, "lens",
         root.viewport-size, root.projected.point, root.projected.depth, Point3D.new(100, 100, 100));
-    out property <string> picked: Scene3D.pick-camera(root.scene, "lens", root.viewport-size, root.cursor);
+    out property <string> picked <- Scene3D.pick-camera(root.scene, "lens", root.viewport-size, root.cursor);
 
     image := SceneView3D {
-        width: 360px;
-        height: 240px;
-        model: root.scene;
-        camera: "lens";
-        frustum-culling: root.culling;
-        scene-background: #172333;
-        environment: @environment-url("models/studio.hdr");
-        environment-skybox: true;
-        shadows: root.effects;
-        shadow-cascades: 3;
-        shadow-map-size: 512;
-        shadow-bias: 0.008;
-        ambient-occlusion: root.effects;
+        width <- 360px;
+        height <- 240px;
+        model <- root.scene;
+        camera <- "lens";
+        frustum-culling <- root.culling;
+        scene-background <- #172333;
+        environment <- @environment-url("models/studio.hdr");
+        environment-skybox <- true;
+        shadows <- root.effects;
+        shadow-cascades <- 3;
+        shadow-map-size <- 512;
+        shadow-bias <- 0.008;
+        ambient-occlusion <- root.effects;
     }
     scene-input := TouchArea {
-        width: 360px; height: 240px;
+        width <- 360px; height <- 240px;
         pointer-event(event) => {
             if event.kind == PointerEventKind.up && event.inside {
                 root.cursor = Point2D.new(event.x, event.y);
@@ -88,22 +88,22 @@ export component OffAxisCameraDemo inherits Window {
         }
     }
     Text {
-        x: 12px; y: 12px; color: #ffffff;
-        text: root.picked == "" ? "点击选择物体" : "已选中 · " + root.picked;
+        x <- 12px; y <- 12px; color <- #ffffff;
+        text <- root.picked == "" ? "点击选择物体" : "已选中 · " + root.picked;
     }
     HorizontalLayout {
-        x: 10px; y: 248px; width: 340px; height: 38px; spacing: 8px;
-        left := Button { width: 54px; text: "左"; clicked => { root.horizontal = -0.25; } }
+        x <- 10px; y <- 248px; width <- 340px; height <- 38px; spacing <- 8px;
+        left := Button { width <- 54px; text <- "左"; clicked => { root.horizontal = -0.25; } }
         centered := Button {
-            width: 54px; text: "居中";
+            width <- 54px; text <- "居中";
             clicked => { root.horizontal = 0; root.vertical = 0; }
         }
-        right := Button { width: 54px; text: "右"; clicked => { root.horizontal = 0.25; } }
+        right := Button { width <- 54px; text <- "右"; clicked => { root.horizontal = 0.25; } }
         change-projection := Button {
-            width: 64px;
-            text: root.parallel ? "正交" : "透视";
+            width <- 64px;
+            text <- root.parallel ? "正交" : "透视";
             clicked => { root.parallel = !root.parallel; }
         }
-        shift := Slider { width: 80px; minimum: -0.4; maximum: 0.4; value <=> root.horizontal; }
+        shift := Slider { width <- 80px; minimum <- -0.4; maximum <- 0.4; value <-> root.horizontal; }
     }
 }

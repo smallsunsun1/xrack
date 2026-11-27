@@ -7,7 +7,7 @@
     {
       "type": "reload_layout",
       "generation": 1,
-      "edits": [{ "before": "row-height: 30px;", "after": "row-height: 42px;" }],
+      "edits": [{ "before": "row-height <- 30px;", "after": "row-height <- 42px;" }],
       "row_height": 42
     },
     { "type": "expect_property", "name": "loading", "value": true },

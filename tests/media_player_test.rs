@@ -257,12 +257,12 @@ fn standalone_mlir_resolves_media_sources_and_subtitles_without_locations() {
         )))
     });
     let source = r#"export component App inherits Window {
-        in property <string> source: once "assets/clip.mp4";
-        out property <string> opened-source: player.media-title;
-        out property <string> opened-subtitle: player.subtitle;
+        in property <string> source: "assets/clip.mp4";
+        out property <string> opened-source <- player.media-title;
+        out property <string> opened-subtitle <- player.subtitle;
         player := MediaPlayer {
-            source: root.source;
-            subtitle-file: "assets/captions.vtt";
+            source <- root.source;
+            subtitle-file <- "assets/captions.vtt";
         }
     }"#;
     let directory = std::env::var_os("TEST_TMPDIR")
@@ -332,7 +332,7 @@ fn standalone_mlir_resolves_media_sources_and_subtitles_without_locations() {
     fs::write(
         &library,
         source.replace("component App", "component Player")
-            + r#"export component Clip inherits MediaPlayer { source: "assets/clip.mp4"; }"#,
+            + r#"export component Clip inherits MediaPlayer { source <- "assets/clip.mp4"; }"#,
     )
     .unwrap();
     for asset in ["clip.mp4", "captions.vtt"] {
@@ -412,7 +412,7 @@ fn standalone_mlir_resolves_media_sources_and_subtitles_without_locations() {
 #[test]
 fn state_metrics_are_read_only() {
     let document =
-        xrack_compiler::parse("component App inherits Window { MediaPlayer { duration: 2; } }")
+        xrack_compiler::parse("component App inherits Window { MediaPlayer { duration <- 2; } }")
             .unwrap();
     let failure = xrack_compiler::lower(&document, "invalid-video.xr").unwrap_err();
     assert!(failure.to_string().contains("read-only"));
@@ -447,7 +447,7 @@ fn repeated_media_requires_a_component_for_both_source_and_text_mlir() {
         component Clip inherits MediaPlayer {}
         export component App inherits Window {
             ListView {
-                row-height: 30px;
+                row-height <- 30px;
                 for index in 2: Clip {}
             }
         }

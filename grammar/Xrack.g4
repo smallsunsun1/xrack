@@ -27,13 +27,14 @@ stateDecl: identifier ('when' expression)? ':' '{' (stateBinding | stateTransiti
 stateBinding: reference ':' expression ';';
 stateTransition: ('in' | 'out' | 'in-out') '{' transitionAnimation* '}';
 transitionAnimation: 'animate' (reference (',' reference)* | '*') animationBody;
-property: visibility? 'property' '<' typeName '>' identifier (':' propertyInitializer | '<=>' reference)? ';';
-propertyInitializer: 'once'? expression;
+property: visibility? 'property' '<' typeName '>' identifier ((':' | oneWayBinding) expression | '<->' reference)? ';';
 visibility: 'in' | 'out' | 'in-out' | 'private';
 typeName: identifier | '[' identifier ']';
-callback: 'pure'? 'callback' identifier ('<=>' reference | '(' (parameter (',' parameter)* ','?)? ')' ('->' typeName)?)? ';';
+callback: 'pure'? 'callback' identifier ('<->' reference | '(' (parameter (',' parameter)* ','?)? ')' ('->' typeName)?)? ';';
 parameter: (identifier ':')? typeName;
-binding: identifier (':' expression | '<=>' reference) ';';
+binding: identifier ((':' | oneWayBinding) expression | '<->' reference) ';';
+// Keep '<' and '-' separate so an expression can still compare to a negative number.
+oneWayBinding: '<' '-';
 handler: identifier ('(' (identifier (',' identifier)*)? ')')? '=>' '{' statement* (expression ';'?)? '}';
 statement: (reference assignmentOp expression | call) ';' | ifStatement | forStatement | letStatement;
 letStatement: 'let' identifier '=' expression ';';
@@ -86,7 +87,7 @@ gradientStop: expression (NUMBER '%')?;
 reference: ('root' | 'self' | identifier) ('.' identifier)*;
 // Type words are contextual: `color: ...` is an ordinary element binding.
 identifier: IDENT | 'int' | 'float' | 'bool' | 'string' | 'length' | 'color' | 'brush' | 'image'
-          | 'ImageFit' | 'LayoutAlignment' | 'CrossAxisAlignment' | 'Orientation' | 'DialInputMode' | 'ScrollBarPolicy' | 'TextWrap' | 'DialogRole' | 'DrawerEdge' | 'SelectionTarget' | 'circle' | 'deg' | 'duration' | 'ms' | 'as' | 'from' | 'pure' | 'struct' | 'states' | 'when' | 'translations' | 'else' | 'let' | 'slot' | 'enum' | 'match' | 'function' | 'once';
+          | 'ImageFit' | 'LayoutAlignment' | 'CrossAxisAlignment' | 'Orientation' | 'DialInputMode' | 'ScrollBarPolicy' | 'TextWrap' | 'DialogRole' | 'DrawerEdge' | 'SelectionTarget' | 'circle' | 'deg' | 'duration' | 'ms' | 'as' | 'from' | 'pure' | 'struct' | 'states' | 'when' | 'translations' | 'else' | 'let' | 'slot' | 'enum' | 'match' | 'function';
 
 UNIT: 'px';
 COLOR: '#' [0-9a-fA-F]+;

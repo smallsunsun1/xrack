@@ -20,20 +20,20 @@ export component App inherits Window {
     pure callback read-tag() -> int;
     read-tag => { 1 }
 
-    out property <rotationtrack3d> packed: Quaternion3D.track([
+    out property <rotationtrack3d> packed <- Quaternion3D.track([
         Key { time: 0, orientation: Quaternion3D.identity() },
         Key { time: 2, orientation: Quaternion3D.new(0, 0, 1, 2) },
     ]);
-    out property <quaternion3d> end-pose: Quaternion3D.sample(Quaternion3D.track([
+    out property <quaternion3d> end-pose <- Quaternion3D.sample(Quaternion3D.track([
         Key { time: 0, orientation: Quaternion3D.identity() },
         Key { time: 2, orientation: Quaternion3D.new(0, 0, 1, 2) },
     ]), 3);
-    out property <rotationtrack3d> direct: Quaternion3D.track([
+    out property <rotationtrack3d> direct <- Quaternion3D.track([
         Key { time: 0, orientation: root.target },
         Key { time: 2, orientation: Quaternion3D.identity() },
     ]);
-    out property <rotationtrack3d> from-model: Quaternion3D.track(root.keys);
-    out property <rotationtrack3d> observed: Quaternion3D.track([
+    out property <rotationtrack3d> from-model <- Quaternion3D.track(root.keys);
+    out property <rotationtrack3d> observed <- Quaternion3D.track([
         TaggedKey { time: 0, orientation: root.target, tag: root.read-tag() },
     ]);
 }

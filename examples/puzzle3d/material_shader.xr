@@ -11,25 +11,25 @@ struct ProgramActor {
 }
 
 export component MaterialShaderDemo inherits Window {
-    title: "XRack · 可编程材质";
-    width: 634px; height: 385px; resizable: false;
-    background: #1a2638;
+    title <- "XRack · 可编程材质";
+    width <- 634px; height <- 385px; resizable <- false;
+    background <- #1a2638;
 
     in-out property <bool> surface-program: true;
     in-out property <bool> trim-program: true;
     in-out property <bool> cutout: false;
     in-out property <float> intensity: 0.95;
-    property <ProgramStyle> style: ProgramStyle {
+    property <ProgramStyle> style <- ProgramStyle {
         enabled: false, base-color: #fff, material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
         unlit: false, alpha-mode: "opaque", alpha-cutoff: 0.5,
     };
-    property <ProgramActor> base: ProgramActor {
+    property <ProgramActor> base <- ProgramActor {
         id: "", mesh: "", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, material-slots: ProgramSlots { slot-2: root.style, slot-0: root.style },
         casts-shadow: false, camera-kind: "", camera-height: 5.4,
     };
-    property <[ProgramActor]> world: [
+    property <[ProgramActor]> world <- [
         ProgramActor { id: "eye", z: 8, camera-kind: "orthographic", ..root.base },
         ProgramActor {
             id: "wall", mesh: "primitive:box", z: -1.7, scale-x: 16, scale-y: 8,
@@ -54,28 +54,28 @@ export component MaterialShaderDemo inherits Window {
             ..root.base,
         },
     ];
-    out property <string> body-hit: Scene3D.pick-camera(
+    out property <string> body-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(634px, 324px), Point2D.new(183px, 162px));
     SceneView3D {
-        width: 634px; height: 324px; model: root.world; camera: "eye";
-        light-yaw: -22; light-elevation: 39; ambient-intensity: 0.54;
-        shadows: true; shadow-map-size: 512;
-        scene-background: #263b54; scene-hdr: true; cache-rendering: true;
+        width <- 634px; height <- 324px; model <- root.world; camera <- "eye";
+        light-yaw <- -22; light-elevation <- 39; ambient-intensity <- 0.54;
+        shadows <- true; shadow-map-size <- 512;
+        scene-background <- #263b54; scene-hdr <- true; cache-rendering <- true;
     }
     surface-toggle := CheckBox {
-        x: 18px; y: 338px; width: 148px; height: 33px;
-        text: "PBR 纹理"; checked <=> root.surface-program;
+        x <- 18px; y <- 338px; width <- 148px; height <- 33px;
+        text <- "PBR 纹理"; checked <-> root.surface-program;
     }
     trim-toggle := CheckBox {
-        x: 169px; y: 338px; width: 141px; height: 33px;
-        text: "无光照饰条"; checked <=> root.trim-program;
+        x <- 169px; y <- 338px; width <- 141px; height <- 33px;
+        text <- "无光照饰条"; checked <-> root.trim-program;
     }
     cutout-toggle := CheckBox {
-        x: 316px; y: 338px; width: 125px; height: 33px;
-        text: "裁切外壳"; checked <=> root.cutout;
+        x <- 316px; y <- 338px; width <- 125px; height <- 33px;
+        text <- "裁切外壳"; checked <-> root.cutout;
     }
     amount := Slider {
-        x: 453px; y: 338px; width: 157px; height: 33px;
-        minimum: 0; maximum: 1; step: 0.01; value <=> root.intensity;
+        x <- 453px; y <- 338px; width <- 157px; height <- 33px;
+        minimum <- 0; maximum <- 1; step <- 0.01; value <-> root.intensity;
     }
 }

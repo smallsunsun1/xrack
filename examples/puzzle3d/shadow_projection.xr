@@ -15,8 +15,8 @@ struct Lamp {
 }
 
 export component ShadowProjectionDemo inherits Window {
-    title: "XRack · 逐灯阴影投影";
-    width: 360px; height: 368px; resizable: false; background: #182438;
+    title <- "XRack · 逐灯阴影投影";
+    width <- 360px; height <- 368px; resizable <- false; background <- #182438;
 
     in-out property <string> lamp-kind: "directional";
     in-out property <bool> short: false;
@@ -32,11 +32,11 @@ export component ShadowProjectionDemo inherits Window {
         scale-x: 1.46, scale-y: 2, scale-z: 0.1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, casts-shadow: false, receives-shadow: true,
     };
-    property <Actor> caster: Actor {
+    property <Actor> caster <- Actor {
         scale-x: 0.55, scale-y: 1, scale-z: 0.2,
         color: #ab6951, casts-shadow: true, receives-shadow: false, ..root.panel
     };
-    property <Lamp> red: Lamp {
+    property <Lamp> red <- Lamp {
         kind: root.lamp-kind, x: -4, y: 0, z: 13, yaw: -45, elevation: 0, color: #ff5448,
         intensity: root.lamp-kind == "directional" ? 2.6 : 90,
         range: 0, inner-angle: 12, outer-angle: 44, casts-shadow: true,
@@ -48,18 +48,18 @@ export component ShadowProjectionDemo inherits Window {
     };
 
     view := SceneView3D {
-        width: 360px; height: 272px;
-        scene-background: #23334c; ambient-intensity: 0.12; shadows: root.enabled;
-        shadow-map-size: 256; cache-rendering: true;
-        camera-distance: 16; camera-pitch: 0; camera-yaw: root.orbit;
-        model: [
+        width <- 360px; height <- 272px;
+        scene-background <- #23334c; ambient-intensity <- 0.12; shadows <- root.enabled;
+        shadow-map-size <- 256; cache-rendering <- true;
+        camera-distance <- 16; camera-pitch <- 0; camera-yaw <- root.orbit;
+        model <- [
             Actor { id: "near", x: -1, z: 10, ..root.panel },
             Actor { id: "far", x: 4, z: -8, scale-x: 4, scale-y: 3, ..root.panel },
             Actor { id: "near-caster", x: -2.6, z: 11.6, ..root.caster },
             Actor { id: "far-caster", x: 2.6, z: -6.6, scale-x: 0.9, scale-y: 2, ..root.caster },
             Actor { id: "side-caster", x: -10, z: 13, ..root.caster },
         ];
-        lights: [
+        lights <- [
             root.red,
             Lamp {
                 kind: "directional", color: #6ec391, intensity: 0.55,
@@ -70,25 +70,25 @@ export component ShadowProjectionDemo inherits Window {
     }
 
     lamp-button := Button {
-        x: 10px; y: 281px; width: 102px; height: 34px;
-        text: root.lamp-kind == "directional" ? "方向光" : root.lamp-kind == "point" ? "点光源" : "聚光灯";
+        x <- 10px; y <- 281px; width <- 102px; height <- 34px;
+        text <- root.lamp-kind == "directional" ? "方向光" : root.lamp-kind == "point" ? "点光源" : "聚光灯";
         clicked => { root.lamp-kind = root.lamp-kind == "directional" ? "point"
             : root.lamp-kind == "point" ? "spot" : "directional"; }
     }
     far-toggle := CheckBox {
-        x: 124px; y: 281px; width: 106px; height: 34px;
-        text: "缩短阴影"; checked: root.short; toggled => { root.short = !root.short; }
+        x <- 124px; y <- 281px; width <- 106px; height <- 34px;
+        text <- "缩短阴影"; checked <- root.short; toggled => { root.short = !root.short; }
     }
     split-toggle := CheckBox {
-        x: 241px; y: 281px; width: 110px; height: 34px;
-        text: "手动分点"; checked: root.manual; toggled => { root.manual = !root.manual; }
+        x <- 241px; y <- 281px; width <- 110px; height <- 34px;
+        text <- "手动分点"; checked <- root.manual; toggled => { root.manual = !root.manual; }
     }
     lock-toggle := CheckBox {
-        x: 10px; y: 323px; width: 132px; height: 34px;
-        text: "锁定纹素"; checked: root.locked; toggled => { root.locked = !root.locked; }
+        x <- 10px; y <- 323px; width <- 132px; height <- 34px;
+        text <- "锁定纹素"; checked <- root.locked; toggled => { root.locked = !root.locked; }
     }
     Slider {
-        x: 155px; y: 323px; width: 195px; height: 34px;
-        minimum: -8; maximum: 8; value <=> root.orbit;
+        x <- 155px; y <- 323px; width <- 195px; height <- 34px;
+        minimum <- -8; maximum <- 8; value <-> root.orbit;
     }
 }

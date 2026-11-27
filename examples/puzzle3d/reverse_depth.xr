@@ -8,36 +8,36 @@ struct PrecisionActor {
 }
 
 export component ReverseDepthDemo inherits Window {
-    title: "XRack · 远距离深度精度";
-    width: 432px; height: 314px; resizable: false;
-    background: #152130;
+    title <- "XRack · 远距离深度精度";
+    width <- 432px; height <- 314px; resizable <- false;
+    background <- #152130;
     in-out property <bool> reversed: true;
     in-out property <bool> msaa: false;
     in-out property <bool> prepass: false;
-    property <point2d> viewport: Point2D.new(432px, 252px);
-    property <PrecisionActor> base: PrecisionActor {
+    property <point2d> viewport <- Point2D.new(432px, 252px);
+    property <PrecisionActor> base <- PrecisionActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 46, scale-y: 33, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
         camera-kind: "", camera-near: 0.001, camera-far: 100000,
         camera-reverse-depth: root.reversed, material: PrecisionMaterial { unlit: true },
     };
-    property <scenemodel3d> scene: Scene3D.prepare([
+    property <scenemodel3d> scene <- Scene3D.prepare([
         PrecisionActor { id: "eye", mesh: "", z: 100, camera-kind: "perspective", ..root.base },
         PrecisionActor { id: "far-panel", color: #4976bd, ..root.base },
         PrecisionActor { id: "near-panel", z: 0.02, color: #f5ac60, ..root.base },
     ]);
-    out property <string> picked: Scene3D.pick-camera(
+    out property <string> picked <- Scene3D.pick-camera(
         root.scene, "eye", root.viewport, Point2D.new(216px, 126px));
 
     SceneView3D {
-        width: root.viewport.x; height: root.viewport.y; model: root.scene; camera: "eye";
-        depth-prepass: root.prepass;
-        scene-background: #23384f; scene-tone-map: none; multisampling: root.msaa;
+        width <- root.viewport.x; height <- root.viewport.y; model <- root.scene; camera <- "eye";
+        depth-prepass <- root.prepass;
+        scene-background <- #23384f; scene-tone-map <- none; multisampling <- root.msaa;
     }
     HorizontalLayout {
-        x: 14px; y: 263px; width: 404px; height: 36px; spacing: 12px;
-        depth-switch := CheckBox { text: "反向深度"; checked <=> root.reversed; }
-        sample-switch := CheckBox { text: "MSAA"; checked <=> root.msaa; }
-        prepass-switch := CheckBox { text: "深度预通道"; checked <=> root.prepass; }
+        x <- 14px; y <- 263px; width <- 404px; height <- 36px; spacing <- 12px;
+        depth-switch := CheckBox { text <- "反向深度"; checked <-> root.reversed; }
+        sample-switch := CheckBox { text <- "MSAA"; checked <-> root.msaa; }
+        prepass-switch := CheckBox { text <- "深度预通道"; checked <-> root.prepass; }
     }
 }

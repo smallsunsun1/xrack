@@ -20,8 +20,8 @@ struct Lamp {
 struct Feed { name: string, camera: string }
 
 export component MaterialDebugDemo inherits Window {
-    title: "XRack · 材质调试"; width: 480px; height: 332px;
-    background: #172437; resizable: false;
+    title <- "XRack · 材质调试"; width <- 480px; height <- 332px;
+    background <- #172437; resizable <- false;
     in-out property <int> mode: 0;
     in-out property <bool> effects: false;
     in-out property <bool> reference: false;
@@ -32,13 +32,13 @@ export component MaterialDebugDemo inherits Window {
         "normals", "tangents", "binormals", "f0", "diffuse", "specular", "shadow-occlusion"
     ];
 
-    property <Style> stock: Style {
+    property <Style> stock <- Style {
         base-color: #c08040, roughness: 0.25, metalness: 0,
         emissive-color: #000, emissive-strength: 1, occlusion-strength: 1,
         clearcoat: 0, clearcoat-roughness: 0.25, alpha-mode: "opaque",
         material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
     };
-    property <Actor> card: Actor {
+    property <Actor> card <- Actor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1.8, scale-y: 2.0, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, camera-kind: "", camera-height: 4, material: root.stock,
@@ -46,23 +46,23 @@ export component MaterialDebugDemo inherits Window {
     };
 
     view := SceneView3D {
-        width: 480px; height: 250px; camera: "eye"; cache-rendering: true;
-        scene-background: #26354a; scene-tone-map: none; ambient-intensity: 0.28;
-        material-debug: Model.at(root.modes, root.mode, "none");
-        debug-wireframe: root.wireframe;
-        shadows: true; shadow-map-size: 256;
-        bloom: root.effects; bloom-strength: 0.42; bloom-threshold: 0.13;
-        scene-exposure: root.effects ? 1.8 : 1;
-        temporal-aa: root.effects; temporal-aa-mode: "motion-vectors";
-        ambient-occlusion: true; ao-strength: 1;
-        scene-captures: [Feed { name: "lit", camera: "eye" }];
-        scene-color-capture: root.reference ? "lit" : "";
-        lights: [Lamp {
+        width <- 480px; height <- 250px; camera <- "eye"; cache-rendering <- true;
+        scene-background <- #26354a; scene-tone-map <- none; ambient-intensity <- 0.28;
+        material-debug <- Model.at(root.modes, root.mode, "none");
+        debug-wireframe <- root.wireframe;
+        shadows <- true; shadow-map-size <- 256;
+        bloom <- root.effects; bloom-strength <- 0.42; bloom-threshold <- 0.13;
+        scene-exposure <- root.effects ? 1.8 : 1;
+        temporal-aa <- root.effects; temporal-aa-mode <- "motion-vectors";
+        ambient-occlusion <- true; ao-strength <- 1;
+        scene-captures <- [Feed { name: "lit", camera: "eye" }];
+        scene-color-capture <- root.reference ? "lit" : "";
+        lights <- [Lamp {
             kind: "directional", x: 0, y: 0, z: 0, yaw: -35, elevation: 12,
             intensity: 1.7, color: #fff, range: 0, inner-angle: 18, outer-angle: 40,
             casts-shadow: true,
         }];
-        model: [
+        model <- [
             Actor { id: "eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.card },
             Actor { id: "stock", x: -1.4, ..root.card },
             Actor {
@@ -95,24 +95,24 @@ export component MaterialDebugDemo inherits Window {
     }
 
     mode-next := Button {
-        x: 12px; y: 259px; width: 108px; height: 33px;
-        text: "下一视图"; clicked => { root.mode = (root.mode + 1) % 13; }
+        x <- 12px; y <- 259px; width <- 108px; height <- 33px;
+        text <- "下一视图"; clicked => { root.mode = (root.mode + 1) % 13; }
     }
     ComboBox {
-        x: 133px; y: 259px; width: 208px; height: 33px;
-        model: root.modes; current-index <=> root.mode;
+        x <- 133px; y <- 259px; width <- 208px; height <- 33px;
+        model <- root.modes; current-index <-> root.mode;
     }
     wireframe-toggle := CheckBox {
-        x: 356px; y: 261px; width: 104px; height: 28px;
-        text: "线框"; checked <=> root.wireframe;
+        x <- 356px; y <- 261px; width <- 104px; height <- 28px;
+        text <- "线框"; checked <-> root.wireframe;
     }
-    Label { x: 12px; y: 303px; width: 155px; text: "左 内建  ·  右 自定义"; }
+    Label { x <- 12px; y <- 303px; width <- 155px; text <- "左 内建  ·  右 自定义"; }
     effects-toggle := CheckBox {
-        x: 190px; y: 300px; width: 91px; height: 26px;
-        text: "后期效果"; checked <=> root.effects;
+        x <- 190px; y <- 300px; width <- 91px; height <- 26px;
+        text <- "后期效果"; checked <-> root.effects;
     }
     glass-toggle := CheckBox {
-        x: 291px; y: 300px; width: 91px; height: 26px;
-        text: "透明面"; checked <=> root.glass;
+        x <- 291px; y <- 300px; width <- 91px; height <- 26px;
+        text <- "透明面"; checked <-> root.glass;
     }
 }

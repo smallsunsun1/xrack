@@ -5,7 +5,7 @@ const URI: &str = "file:///demo.xr";
 #[test]
 fn edit_buffer_updates_diagnostics_and_outline_over_stdio() {
     let bad =
-        "export component Demo inherits Window {\r\n    Text { text: \"中🙂\" + missing; }\r\n}";
+        "export component Demo inherits Window {\r\n    Text { text <- \"中🙂\" + missing; }\r\n}";
     let good = bad.replace(" + missing", "").replace("Demo", "Renamed");
     let mut input = Vec::new();
     let request = |id: i32, method: &str, params: Value| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
@@ -61,7 +61,7 @@ fn edit_buffer_updates_diagnostics_and_outline_over_stdio() {
         completion::legend()
     );
     let problem = &messages[1]["params"]["diagnostics"][0];
-    let column = "    Text { text: \"中🙂\" + ".encode_utf16().count();
+    let column = "    Text { text <- \"中🙂\" + ".encode_utf16().count();
     assert_eq!(problem["code"], "semantic");
     assert!(problem["message"].as_str().unwrap().contains("missing"));
     assert_eq!(
@@ -550,7 +550,7 @@ fn completion_resolves_editing_scopes_and_replaces_a_partial_name() {
         "component Other inherits Rectangle { property <int> hidden: 0; }\n",
         "export component Demo inherits Window {\n",
         "  label := Text { text: \"🙂\" + root.co|unt; }\n",
-        "  in-out property <int> count: once 0;\n",
+        "  in-out property <int> count: 0;\n",
         "}",
     ));
     assert_eq!(items.len(), 1);
@@ -707,7 +707,7 @@ fn builtin_functions_expose_documentation_and_contextual_completions() {
     const SOURCE: &str = r#"component Demo inherits Window {
         callback log();
         log => {}
-        title: Strings.format("{}", 1);
+        title <- Strings.format("{}", 1);
         button := Button {
             clicked => {
                 root.log();
@@ -729,7 +729,7 @@ fn builtin_functions_expose_documentation_and_contextual_completions() {
             .unwrap()
             .to_owned()
     };
-    assert!(hover("title: Strings.format", "title: Strings.for|mat").contains("sequential"));
+    assert!(hover("title <- Strings.format", "title: Strings.for|mat").contains("sequential"));
     assert!(hover("Log.debug(", "Log.de|bug(").contains("Log.write(LogLevel.debug, message)"));
     assert!(hover("LogLevel.info", "LogLevel.in|fo").contains("selects the info level"));
     assert!(hover("root.log()", "root.lo|g()").contains("callback log"));
@@ -776,7 +776,7 @@ fn builtin_functions_expose_documentation_and_contextual_completions() {
 
 #[test]
 fn global_properties_are_completed_and_resolve_to_their_declarations() {
-    let source = "export global Session { in-out property <int> count: once 1; private property <int> hidden: 0; } component App inherits Window { out property <int> seen: Session.|; }";
+    let source = "export global Session { in-out property <int> count: 1; private property <int> hidden: 0; } component App inherits Window { out property <int> seen: Session.|; }";
     let items = complete_at(source);
     assert!(items.iter().any(|item| item["label"] == "count"));
     assert!(!items.iter().any(|item| item["label"] == "hidden"));
@@ -1123,13 +1123,13 @@ fn sprite_playback_values_complete_in_emitter_records() {
             position: point3d, size: float, lifetime: float, color: color, sprite-playback: string,
         }
         component App inherits Window {
-            property <[Emitter]> emitters: [
+            property <[Emitter]> emitters <- [
                 Emitter {
                     position: Point3D.new(0, 0, 0), size: 1, color: #fff, lifetime: 2,
                     sprite-playback: "ping-|",
                 },
             ];
-            SceneView3D { particle-emitters: root.emitters; }
+            SceneView3D { particle-emitters <- root.emitters; }
         }"#;
     let items = complete_at(source);
     assert!(items.iter().any(|item| item["label"] == "ping-pong"));
@@ -1246,7 +1246,7 @@ fn particle_wave_modes_complete_and_report_field_types() {
         struct Field { affector-kind: string, global-pace: float }
         component App inherits Window {
             property <[Field]> fields: [];
-            SceneView3D { particle-affectors: root.fields; }
+            SceneView3D { particle-affectors <- root.fields; }
         }
     "#;
     let diagnostics = analysis::analyze(URI, source, None).diagnostics;
@@ -1281,7 +1281,7 @@ fn particle_birth_variations_complete_and_require_typed_fields() {
         }
         component App inherits Window {
             property <[Emitter]> rows: [];
-            SceneView3D { particle-emitters: root.rows; }
+            SceneView3D { particle-emitters <- root.rows; }
         }
     "#;
     let diagnostics = analysis::analyze(URI, source, None).diagnostics;
@@ -1342,7 +1342,7 @@ fn light_bake_modes_complete_in_light_records() {
     let source = r#"
         struct Lamp { bake-mode: string }
         component App inherits Window {
-            SceneView3D { lights: [Lamp { bake-mode: "|" }]; }
+            SceneView3D { lights <- [Lamp { bake-mode: "|" }]; }
         }
     "#;
     let items = complete_at(source);
@@ -1361,7 +1361,7 @@ fn lightmap_roles_complete_in_model_records() {
     let source = r#"
         struct Object { bake-role: string }
         component App inherits Window {
-            SceneView3D { model: [Object { bake-role: "|" }]; }
+            SceneView3D { model <- [Object { bake-role: "|" }]; }
         }
     "#;
     let items = complete_at(source);
@@ -1425,7 +1425,7 @@ fn viewport_modes_complete_in_scene_viewport_string_values() {
         ("render-overrides", "no", "none"),
     ] {
         let source = |kind| {
-            format!("component App inherits Window {{ {kind} {{ {property}: \"{prefix}|\"; }} }}")
+            format!("component App inherits Window {{ {kind} {{ {property} <- \"{prefix}|\"; }} }}")
         };
         let items = complete_at(&source("SceneView3D"));
         assert!(items.iter().any(|item| item["label"] == value), "{items:?}");
@@ -1476,7 +1476,7 @@ fn shadow_filter_completes_in_scene_light_records() {
     let source = r#"
         struct Lamp { shadow-filter: string, shadow-radius: float, shadow-strength: float, shadow-world-radius: float }
         component App inherits Window {
-            SceneView3D { lights: [Lamp { shadow-filter: "pcf|" }]; }
+            SceneView3D { lights <- [Lamp { shadow-filter: "pcf|" }]; }
         }
     "#;
     let items = complete_at(source);
@@ -1582,7 +1582,7 @@ fn transparency_methods_complete_on_the_viewport() {
         "{fields:?}"
     );
     let items =
-        complete_at(r#"component App inherits Window { SceneView3D { oit-method: "|"; } }"#);
+        complete_at(r#"component App inherits Window { SceneView3D { oit-method <- "|"; } }"#);
     for (name, _) in xrack_parser::builtins::SCENE_OIT_METHODS {
         assert!(
             items.iter().any(|item| item["label"] == *name),
@@ -1600,7 +1600,7 @@ fn material_diagnostics_complete_on_the_viewport() {
             .any(|item| item["label"] == "material-debug" && item["detail"] == "string")
     );
     let values =
-        complete_at(r#"component App inherits Window { SceneView3D { material-debug: "|"; } }"#);
+        complete_at(r#"component App inherits Window { SceneView3D { material-debug <- "|"; } }"#);
     for (name, _) in xrack_parser::builtins::SCENE_MATERIAL_DEBUG_MODES {
         assert!(
             values.iter().any(|item| item["label"] == *name),
@@ -1608,7 +1608,7 @@ fn material_diagnostics_complete_on_the_viewport() {
         );
     }
     let outside =
-        complete_at(r#"component App inherits Window { Rectangle { material-debug: "|"; } }"#);
+        complete_at(r#"component App inherits Window { Rectangle { material-debug <- "|"; } }"#);
     assert!(outside.iter().all(|item| item["label"] != "normals"));
 }
 
@@ -1621,7 +1621,7 @@ fn shadow_atlas_precision_completes_as_a_property_and_string_value() {
             .any(|item| item["label"] == "shadow-map-precision")
     );
     let values = complete_at(
-        r#"component App inherits Window { SceneView3D { shadow-map-precision: "dep|"; } }"#,
+        r#"component App inherits Window { SceneView3D { shadow-map-precision <- "dep|"; } }"#,
     );
     for value in ["depth16", "depth32"] {
         assert!(
@@ -1632,7 +1632,7 @@ fn shadow_atlas_precision_completes_as_a_property_and_string_value() {
     let light = complete_at(
         r#"
         struct Lamp { shadow-map-precision: string }
-        component App inherits Window { SceneView3D { lights: [Lamp { shadow-map-precision: "|"}]; } }
+        component App inherits Window { SceneView3D { lights <- [Lamp { shadow-map-precision: "|"}]; } }
     "#,
     );
     for value in ["depth16", "depth32", "inherit"] {
@@ -1691,11 +1691,11 @@ fn light_scope_completes_and_navigates_unique_model_nodes() {
                 Actor { id: "right-wing", mesh: "", lod-of: "" },
             ];
             SceneView3D {
-                model: root.models;
-                lights: [Light { scope: "le|" }];
+                model <- root.models;
+                lights <- [Light { scope: "le|" }];
             }
             SceneView3D {
-                model: [Actor { id: "left-other", mesh: "", lod-of: "" }];
+                model <- [Actor { id: "left-other", mesh: "", lod-of: "" }];
             }
         }
     "#;
@@ -2196,10 +2196,10 @@ fn repeated_tabs_offer_model_fields_and_a_read_only_count() {
         component App inherits Window {
             in property <[Document]> docs;
             tabs := TabWidget {
-                current-value: "one";
-                for doc in root.docs : Tab { value: doc.id; title: doc.label; }
+                current-value <- "one";
+                for doc in root.docs : Tab { value <- doc.id; title <- doc.label; }
             }
-            PageIndicator { count: tabs.count; }
+            PageIndicator { count <- tabs.count; }
         }
     "#;
     let analysis = analysis::analyze(URI, source, None);
@@ -2228,10 +2228,10 @@ fn swipe_page_inherits_typed_record_completion_from_its_model() {
         component App inherits Window {
             in property <[Document]> documents;
             SwipeView {
-                current-value: "initial";
+                current-value <- "initial";
                 for document in root.documents : SwipePage {
-                    value: document.id;
-                    Label { text: document.title; }
+                    value <- document.id;
+                    Label { text <- document.title; }
                 }
             }
         }
@@ -2424,11 +2424,11 @@ fn tab_reordering_completion_and_diagnostics_use_compiler_types() {
     let event = complete_at("component App inherits Window { TabBar { tab-mov| } }");
     assert!(event.iter().any(|item| item["label"] == "tab-moved"));
     let valid = r#"component App inherits Window {
-        in-out property <[string]> entries: once ["a", "b"];
-        out property <int> last-move: once 0;
+        in-out property <[string]> entries: ["a", "b"];
+        out property <int> last-move: 0;
         tabs := TabBar {
-            reorderable: true;
-            for label in root.entries: TabButton { text: label; }
+            reorderable <- true;
+            for label in root.entries: TabButton { text <- label; }
             tab-moved(from, to) => { root.last-move = from * 10 + to; }
         }
     }"#;
@@ -2489,13 +2489,13 @@ fn path_view_completes_the_row_template_and_typed_progress() {
         component App inherits Window {
             in property <[Entry]> entries;
             PathView {
-                path: "M 0 0.5 L 1 0.5";
-                model: root.entries;
-                text-role: "title";
-                item-width: 90px;
+                path <- "M 0 0.5 L 1 0.5";
+                model <- root.entries;
+                text-role <- "title";
+                item-width <- 90px;
                 PathViewOption {
-                    opacity: option-progress;
-                    Text { text: option-data.title; }
+                    opacity <- option-progress;
+                    Text { text <- option-data.title; }
                 }
             }
         }
@@ -2543,11 +2543,11 @@ fn tumbler_option_completes_record_fields_and_displacement() {
         component App inherits Window {
             in property <[Entry]> entries;
             Tumbler {
-                model: root.entries;
-                text-role: "label";
+                model <- root.entries;
+                text-role <- "label";
                 TumblerOption {
-                    opacity: Math.abs(option-displacement);
-                    Text { text: option-data.label; }
+                    opacity <- Math.abs(option-displacement);
+                    Text { text <- option-data.label; }
                 }
             }
         }
@@ -2585,15 +2585,15 @@ fn tumbler_completion_uses_the_record_value_role_type() {
         struct Entry { label: string, key: int }
         component App inherits Window {
             in-out property <[Entry]> choices;
-            in-out property <int> chosen: once 2;
+            in-out property <int> chosen: 2;
             wheel := Tumbler {
-                model: root.choices;
-                text-role: "label";
-                value-role: "key";
-                current-value <=> root.chosen;
+                model <- root.choices;
+                text-role <- "label";
+                value-role <- "key";
+                current-value <-> root.chosen;
                 value-selected(value) => { root.chosen = value; }
             }
-            Text { text: wheel.current-text; }
+            Text { text <- wheel.current-text; }
         }
     "#;
     let analyzed = analysis::analyze(URI, source, None);
@@ -2609,7 +2609,7 @@ fn tumbler_completion_uses_the_record_value_role_type() {
             .find(|item| item["label"] == label)
             .map(|item| item["detail"].clone())
     };
-    let bindings = complete_at(&source.replace("current-value <=> root.chosen;", "cur|"));
+    let bindings = complete_at(&source.replace("current-value <-> root.chosen;", "cur|"));
     assert_eq!(detail(&bindings, "current-value"), Some(json!("int")));
     assert_eq!(detail(&bindings, "current-text"), None);
     let usage = complete_at(&source.replace("wheel.current-text", "wheel.curr|"));
@@ -3297,7 +3297,7 @@ fn custom_camera_completes_projection_modes_and_validates_the_matrix_schema() {
         }
         export component App inherits Window {
             property <[Actor]> actors;
-            out property <scenemodel3d> scene: Scene3D.prepare(root.actors);
+            out property <scenemodel3d> scene <- Scene3D.prepare(root.actors);
         }
     "#;
     let analysis = analysis::analyze(URI, source, None);
@@ -3331,7 +3331,7 @@ fn aim_functions_complete_and_check_camera_up_type() {
         }
         export component App inherits Window {
             property <[Actor]> actors;
-            out property <scenemodel3d> scene: Scene3D.prepare(root.actors);
+            out property <scenemodel3d> scene <- Scene3D.prepare(root.actors);
         }
     "#;
     let analysis = analysis::analyze(URI, bad, None);
@@ -3374,7 +3374,7 @@ fn rotation_tracks_complete_and_report_bad_key_types() {
         struct BadKey { time: float, orientation: vector3d }
         export component App inherits Window {
             property <[BadKey]> keys;
-            out property <rotationtrack3d> track: Quaternion3D.track(root.keys);
+            out property <rotationtrack3d> track <- Quaternion3D.track(root.keys);
         }
     "#;
     let result = analysis::analyze(URI, invalid, None);
@@ -4015,7 +4015,7 @@ fn mesh_url_completes_automatic_lod_option() {
 fn mesh_url_completes_the_chart_option_after_lod() {
     let complete = |tail: &str| {
         complete_at(&format!(
-            r#"component App inherits Window {{ property <string> key: @mesh-url("model.glb", {tail}); }}"#
+            r#"component App inherits Window {{ property <string> key <- @mesh-url("model.glb", {tail}); }}"#
         ))
     };
     let options = complete("|");
@@ -4166,7 +4166,7 @@ fn png_mesh_resource_links_and_displays_heightfield_dimensions() {
     header.extend([16, 0, 0, 0, 0]);
     let png = root.join("ridge.png");
     std::fs::write(&png, header).unwrap();
-    let source = r#"component App inherits Window { title: @mesh-url("ridge.png"); }"#;
+    let source = r#"component App inherits Window { title <- @mesh-url("ridge.png"); }"#;
     let offset = source.find("ridge").unwrap();
     let hover = completion::query(
         "textDocument/hover",
@@ -4197,7 +4197,7 @@ fn host_mesh_asset_type_completes_and_is_checked_as_a_scene_field() {
     export component App inherits Window {
         in property <meshasset3d> asset;
         SceneView3D {
-            model: [Actor {
+            model <- [Actor {
                 id: "asset", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
                 yaw: 0, pitch: 0, roll: 0, color: #fff, mesh-asset: root.asset,
             }];
@@ -4225,7 +4225,7 @@ fn obj_asset_links_hover_and_material_slot_completion() {
     let obj = root.join("panel.obj");
     std::fs::write(&obj, "\u{feff}v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\nusemtl Trim\nf 1 2 3 # comment\nusemtl Unused\n").unwrap();
     let complete =
-        r#"component App inherits Window { property <string> mesh: @mesh-url("panel.obj"); }"#;
+        r#"component App inherits Window { property <string> mesh <- @mesh-url("panel.obj"); }"#;
     let hover = completion::query(
         "textDocument/hover",
         &uri,
@@ -4278,7 +4278,7 @@ fn names_glb_animation_clips_in_record_bindings() {
     bytes.extend(b"JSON");
     bytes.extend(json);
     std::fs::write(root.join("rig.glb"), bytes).unwrap();
-    let source = r#"component App inherits Window { property <Actor> mesh: Actor {
+    let source = r#"component App inherits Window { property <Actor> mesh <- Actor {
         animation: "S|", mesh: @mesh-url("rig.glb")
     }; }"#;
     let marker = source.find('|').unwrap();
@@ -4328,11 +4328,11 @@ fn camera_selector_completion_uses_the_rig_in_the_current_component() {
     }
     let marked = r#"
         component Other inherits Window {
-            property <[Actor]> scene: [Actor { id: "rig", mesh: @mesh-url("second.gltf") }];
+            property <[Actor]> scene <- [Actor { id: "rig", mesh: @mesh-url("second.gltf") }];
         }
         component App inherits Window {
-            property <[Actor]> scene: [Actor { id: "rig", mesh: @mesh-url("first.gltf") }];
-            SceneView3D { model: root.scene; camera: "rig/|"; }
+            property <[Actor]> scene <- [Actor { id: "rig", mesh: @mesh-url("first.gltf") }];
+            SceneView3D { model <- root.scene; camera <- "rig/|"; }
         }
     "#;
     let text = marked.replace('|', "");
@@ -4384,7 +4384,7 @@ fn glb_hover_lists_texture_samplers_and_material_metadata_without_binary_data() 
         .set_len(size.into())
         .unwrap();
 
-    let marked = r#"component App inherits Window { title: @mesh-url("fac|e.glb"); }"#;
+    let marked = r#"component App inherits Window { title <- @mesh-url("fac|e.glb"); }"#;
     let text = marked.replace('|', "");
     let cursor = analysis::Source::new(&text).coordinates(marked.find('|').unwrap());
     let hover = completion::query(
@@ -4467,7 +4467,8 @@ fn standard_library_completion_and_signature_help_use_the_shared_catalog() {
             .contains("Monday (1) through Sunday (7)")
     );
 
-    let invalid = "component App inherits Window { out property <bool> valid: Dates.is-valid(2); }";
+    let invalid =
+        "component App inherits Window { out property <bool> valid <- Dates.is-valid(2); }";
     let diagnostics = analysis::analyze(URI, invalid, None).diagnostics;
     assert!(
         diagnostics[URI][0]["message"]
@@ -4489,7 +4490,7 @@ fn standard_library_completion_and_signature_help_use_the_shared_catalog() {
             .contains("negotiated catalog locale")
     );
 
-    let invalid = "component App inherits Window { title: I18n.locale(1); }";
+    let invalid = "component App inherits Window { title <- I18n.locale(1); }";
     let diagnostic = &analysis::analyze(URI, invalid, None).diagnostics[URI][0];
     let start = invalid.find("I18n.locale").unwrap();
     assert_eq!(
@@ -4533,7 +4534,7 @@ fn element_receivers_shadow_builtin_namespaces() {
     }
     export component App inherits Window {
         Math := Operations {}
-        title: Strings.format("{}", Math.round(2));
+        title <- Strings.format("{}", Math.round(2));
     }"#;
     assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
     assert_eq!(
@@ -4898,11 +4899,11 @@ fn diagnostics_follow_transitive_unsaved_imports_and_fall_back_to_disk() {
     let bridge_uri = workspace.uri(&root.join("bridge.xr")).unwrap();
     let leaf = root.join("leaf.xr");
     let leaf_uri = workspace.uri(&leaf).unwrap();
-    let app = "import { Bridge } from \"bridge.xr\";\ncomponent App inherits Window { Bridge { value: 1; } }";
+    let app = "import { Bridge } from \"bridge.xr\";\ncomponent App inherits Window { Bridge { value <- 1; } }";
     let bridge = "import { Leaf } from \"leaf.xr\";\nexport component Bridge inherits Leaf {}";
     let good = "export component Leaf inherits Rectangle { in property <int> value; }";
     let different_type = "export component Leaf inherits Rectangle { in property <string> value; }";
-    let semantic_error = "export component Leaf inherits Rectangle {\n  Text { text: \"中🙂\" + missing; }\n  in property <int> value;\n}";
+    let semantic_error = "export component Leaf inherits Rectangle {\n  Text { text <- \"中🙂\" + missing; }\n  in property <int> value;\n}";
     let syntax_error = "export component Leaf inherits Rectangle {";
     std::fs::write(root.join("bridge.xr"), bridge).unwrap();
     std::fs::write(&leaf, good).unwrap();
@@ -4952,7 +4953,7 @@ fn diagnostics_follow_transitive_unsaved_imports_and_fall_back_to_disk() {
     assert_eq!(error["range"]["start"]["line"], 1);
     assert_eq!(
         error["range"]["start"]["character"],
-        "  Text { text: \"中🙂\" + ".encode_utf16().count()
+        "  Text { text <- \"中🙂\" + ".encode_utf16().count()
     );
     assert_eq!(leaf_reports[2]["diagnostics"][0]["code"], "syntax");
     assert_eq!(leaf_reports[3]["diagnostics"], json!([]));
@@ -5055,13 +5056,13 @@ fn references_and_rename_use_declaration_identity_across_workspace_files() {
     let app = workspace.uri(&root.join("app.xr")).unwrap();
     let unopened = workspace.uri(&root.join("unopened.xr")).unwrap();
     let declaration = "export component Card inherits Rectangle { in property <int> count; }";
-    let client = "import { Card as Tile } from \"widget.xr\";\ncomponent App inherits Window {\n tile := Tile { count: 3; }\n Text { text: \"🙂\" + tile.count; }\n}";
+    let client = "import { Card as Tile } from \"widget.xr\";\ncomponent App inherits Window {\n tile := Tile { count <- 3; }\n Text { text <- \"🙂\" + tile.count; }\n}";
     std::fs::write(
         root.join("widget.xr"),
         "export component Saved inherits Rectangle {}",
     )
     .unwrap();
-    std::fs::write(root.join("unopened.xr"), "import { Card } from \"widget.xr\"; component Another inherits Window { Card { count: 9; } }").unwrap();
+    std::fs::write(root.join("unopened.xr"), "import { Card } from \"widget.xr\"; component Another inherits Window { Card { count <- 9; } }").unwrap();
     let request = |id, method: &str, uri: &str, text: &str, marker: &str, name: &str| {
         let offset = text.find(marker).unwrap() + marker.len() - 1;
         let (line, character) = analysis::Source::new(text).coordinates(offset);
@@ -5138,8 +5139,7 @@ fn references_and_rename_use_declaration_identity_across_workspace_files() {
 #[test]
 fn reference_requests_observe_preceding_buffer_updates_over_stdio() {
     let uri = "untitled:counter.xr";
-    let first =
-        "component App inherits Window { property <int> count; Text { text: \"\" + root.count; } }";
+    let first = "component App inherits Window { property <int> count; Text { text <- \"\" + root.count; } }";
     let second = first.replace("count", "total");
     let request = |id, text: &str, spelling: &str| {
         let offset = text.rfind(spelling).unwrap();
@@ -5177,7 +5177,7 @@ fn definition_and_rename_use_inherited_private_members_and_fall_back_during_edit
     let app_uri = workspace.uri(&root.join("app.xr")).unwrap();
     let base = "export component Base inherits Window { property <int> hidden-count: 1; }";
     std::fs::write(&base_path, base).unwrap();
-    let app = "import { Base } from \"base.xr\"; component App inherits Base { Text { text: \"🙂\" + root.hidden-count; } }";
+    let app = "import { Base } from \"base.xr\"; component App inherits Base { Text { text <- \"🙂\" + root.hidden-count; } }";
     let incomplete = app.replace("root.hidden-count", "root");
     let open = json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":app_uri,"version":1,"text":app}}});
     let request = |id, method: &str, text: &str, marker: &str| {
@@ -5306,7 +5306,7 @@ fn rename_allows_equal_names_in_independent_component_and_handler_scopes() {
     }
     component Two inherits Window {
         property <int> total: 2;
-        Text { text: "" + root.total; }
+        Text { text <- "" + root.total; }
     }"#;
     let request = |id, marker: &str, new_name: &str| {
         let offset = source.find(marker).unwrap();
@@ -5348,7 +5348,7 @@ fn rename_rejects_duplicate_declarations_and_capture_in_both_directions() {
         calculate(shadow) => { count + shadow + total }
         Rectangle {
             property <int> local: 3;
-            Text { text: "" + total; }
+            Text { text <- "" + total; }
         }
     }"#;
     let request = |id, marker: &str, new_name: &str| {
@@ -5465,7 +5465,7 @@ fn signature_help_tracks_nested_calls_and_imported_unsaved_callbacks() {
 component App inherits Window {
     math := Helper {}
     pure callback convert(input: int, scale: int) -> int;
-    pure callback local <=> root.convert;
+    pure callback local <-> root.convert;
     property <int> first: math.sum(root.local(1, /*inner*/2), /*outer*/3);
     property <int> second: math.sum(4, /*incomplete*/
 }"#;
@@ -5489,7 +5489,7 @@ component App inherits Window {
         ),
         open(
             &library,
-            "import { Implementation } from \"implementation.xr\"; export component Math inherits Rectangle { service := Implementation {} pure callback sum <=> service.add; }",
+            "import { Implementation } from \"implementation.xr\"; export component Math inherits Rectangle { service := Implementation {} pure callback sum <-> service.add; }",
         ),
         open(&app, marked),
         hint(2, "/*inner*/"),
@@ -5536,7 +5536,7 @@ fn import_paths_expose_document_links_and_definition_targets() {
         "/*🙂*/ import { Card } from \"ui 部件.xr\";\r\n",
         "import \"body.ttf\";\r\n",
         "import { Missing } from \"missing.xr\";\r\n",
-        "component App inherits Window { title: \"ui 部件.xr\"; }",
+        "component App inherits Window { title <- \"ui 部件.xr\"; }",
     );
     let start = source.find("ui 部件.xr").unwrap();
     let coords = analysis::Source::new(source);
@@ -5726,10 +5726,10 @@ fn formatting_keeps_xrack_grammar_and_honors_indentation_options() {
     let source = r#"struct Entry{label:string, count:int}
 component Demo inherits Window{
 property<[Entry]> rows:[Entry{label:"a",count:1}];
-property<float> ratio:root.count%2+1.5e-2;
-property<brush> ink:@linear-gradient(-90 deg,#111 0%,#fff);
+property<float> ratio <- root.count%2+1.5e-2;
+property<brush> ink <- @linear-gradient(-90 deg,#111 0%,#fff);
 button:=Button{clicked=>{Log.write(LogLevel.info,Strings.format("{{{}}}",1));}}
-for row[i] in root.rows:Text{text: i>0?row.label:"🙂";}
+for row[i] in root.rows:Text{text <- i>0?row.label:"🙂";}
 states[active when true:{width:20 px;in{animate width{duration:2 ms;}}}]
 }"#;
     let options = json!({"tabSize":8,"insertSpaces":false,"insertFinalNewline":false});
@@ -5752,7 +5752,7 @@ states[active when true:{width:20 px;in{animate width{duration:2 ms;}}}]
     );
     assert!(
         formatted
-            .contains("for row[i] in root.rows: Text {\n\t\ttext: i > 0 ? row.label : \"🙂\";"),
+            .contains("for row[i] in root.rows: Text {\n\t\ttext <- i > 0 ? row.label : \"🙂\";"),
         "{formatted}"
     );
     assert!(
@@ -5772,7 +5772,7 @@ fn record_update_base_supports_diagnostics_navigation_and_completion() {
     let source = r#"struct User { name: string, age: int }
 component Demo inherits Window {
     property <User> original: User { name: "old", age: 27 };
-    property <User> changed: User {name:"new",.. root.original};
+    property <User> changed <- User {name:"new",.. root.original};
 }"#;
     let diagnostics = analysis::analyze(URI, source, None).diagnostics;
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
@@ -5934,7 +5934,7 @@ fn index_progress_waits_for_client_ack_and_reports_completion() {
 #[test]
 fn cancelling_an_index_request_returns_one_error_and_keeps_the_session_usable() {
     let uri = "untitled:cancel.xr";
-    let text = "component Demo inherits Window { property <int> count; Text { text: \"\" + root.count; } }";
+    let text = "component Demo inherits Window { property <int> count; Text { text <- \"\" + root.count; } }";
     let (line, character) = analysis::Source::new(text).coordinates(text.rfind("count").unwrap());
     let reference = |id| {
         json!({"jsonrpc":"2.0","id":id,"method":"textDocument/references","params":{
@@ -5966,7 +5966,7 @@ fn cancelling_an_index_request_returns_one_error_and_keeps_the_session_usable() 
 #[test]
 fn consecutive_edits_publish_the_latest_version_before_an_index_query() {
     let uri = "untitled:edit-burst.xr";
-    let first = "component Demo inherits Window { property <int> count; Text { text: \"\" + root.count; } }";
+    let first = "component Demo inherits Window { property <int> count; Text { text <- \"\" + root.count; } }";
     let final_text = format!("\n{}", first.replace("count", "total"));
     let (line, character) =
         analysis::Source::new(&final_text).coordinates(final_text.rfind("total").unwrap());
@@ -6392,7 +6392,7 @@ fn keyboard_assistance_completes_and_checks_editor_properties() {
             "{props:?}"
         );
     }
-    let source = "component App inherits Window { TextArea { keyboard-capitalization: words; auto-correct: false; spell-check: true; } }";
+    let source = "component App inherits Window { TextArea { keyboard-capitalization <- words; auto-correct <- false; spell-check <- true; } }";
     let report = analysis::analyze(URI, source, None).diagnostics;
     assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
     let invalid = source.replace("TextArea", "Rectangle");
@@ -6423,7 +6423,7 @@ fn keyboard_navigation_completes_only_on_text_editors() {
         );
     }
 
-    let source = "component App inherits Window { TextArea { keyboard-navigation: true; } }";
+    let source = "component App inherits Window { TextArea { keyboard-navigation <- true; } }";
     let report = analysis::analyze(URI, source, None).diagnostics;
     assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
     let invalid = source.replace("true", "3");
@@ -6445,7 +6445,7 @@ fn return_key_hints_complete_with_or_without_enum_qualification() {
             );
         }
     }
-    let valid = "component App inherits Window { LineEdit { return-key: ReturnKey.next; } }";
+    let valid = "component App inherits Window { LineEdit { return-key <- ReturnKey.next; } }";
     let report = analysis::analyze(URI, valid, None).diagnostics;
     assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
     let invalid = valid.replace("LineEdit", "TextArea");
@@ -6470,7 +6470,7 @@ fn accessible_heading_level_completes_only_on_text_and_label() {
             expected
         );
     }
-    let source = "component App inherits Window { Label { accessible-heading-level: 2; } }";
+    let source = "component App inherits Window { Label { accessible-heading-level <- 2; } }";
     let report = analysis::analyze(URI, source, None).diagnostics;
     assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
     let invalid = source.replace("2", "true");
@@ -6497,7 +6497,7 @@ fn accessible_live_completion_is_scoped_to_plain_text() {
             assert!(items.iter().any(|item| item["label"] == priority));
         }
     }
-    let source = "component App inherits Window { Label { accessible-live: polite; } }";
+    let source = "component App inherits Window { Label { accessible-live <- polite; } }";
     let report = analysis::analyze(URI, source, None).diagnostics;
     assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
     let invalid = source.replace("polite", "urgent");
@@ -6533,7 +6533,7 @@ fn touch_drag_delay_completes_only_on_drag_sources() {
             expected
         );
     }
-    let source = "component App inherits Window { DragArea { touch-drag-delay: 420; } }";
+    let source = "component App inherits Window { DragArea { touch-drag-delay <- 420; } }";
     let report = analysis::analyze(URI, source, None).diagnostics;
     assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
     let invalid = source.replace("420", "true");
@@ -6559,7 +6559,8 @@ fn keyboard_dismissal_on_drag_completes_only_on_viewports() {
             expected
         );
     }
-    let source = "component App inherits Window { ScrollView { dismiss-keyboard-on-drag: true; } }";
+    let source =
+        "component App inherits Window { ScrollView { dismiss-keyboard-on-drag <- true; } }";
     let report = analysis::analyze(URI, source, None).diagnostics;
     assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
     let invalid = source.replace("true", "\"true\"");
@@ -6600,9 +6601,9 @@ fn pull_to_refresh_completion_and_diagnostics_follow_scrollable_elements() {
     );
     let valid = r#"component App inherits Window {
         list := ListView {
-            pull-to-refresh: true;
+            pull-to-refresh <- true;
             refresh-requested() => {}
-            for row in ["item"] : Label { text: row; }
+            for row in ["item"] : Label { text <- row; }
         }
     }"#;
     let report = analysis::analyze(URI, valid, None).diagnostics;
@@ -6620,14 +6621,14 @@ fn cache_rendering_hint_completes_and_checks_visual_properties() {
     let valid = r#"
         component Panel inherits Rectangle {}
         component App inherits Window {
-            Panel { cache-rendering-hint: true; }
+            Panel { cache-rendering-hint <- true; }
         }
     "#;
     let report = analysis::analyze(URI, valid, None).diagnostics;
     assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
     for invalid in [
-        "component App inherits Window { Rectangle { cache-rendering-hint: 5; } }",
-        "component App inherits Window { Timer { cache-rendering-hint: true; } }",
+        "component App inherits Window { Rectangle { cache-rendering-hint <- 5; } }",
+        "component App inherits Window { Timer { cache-rendering-hint <- true; } }",
     ] {
         let report = analysis::analyze(URI, invalid, None).diagnostics;
         assert!(report.get(URI).is_some_and(|items| !items.is_empty()));
@@ -6645,7 +6646,7 @@ fn repeated_styled_text_links_complete_and_validate_as_strings() {
     let valid = r#"component App inherits Window {
         out property <string> target;
         for title in ["file"] : StyledText {
-            text: @markdown("[file](src/main.rs)");
+            text <- @markdown("[file](src/main.rs)");
             link-activated(path) => { root.target = title + path; }
         }
     }"#;
@@ -6670,7 +6671,7 @@ fn file_drop_failure_handler_completes_with_a_string_argument() {
     let valid = r#"component App inherits Window {
         out property <string> message;
         inbox := DropArea {
-            accept-files: true;
+            accept-files <- true;
             files-failed(reason) => { root.message = reason; }
         }
     }"#;
@@ -6707,12 +6708,12 @@ fn input_purpose_completion_and_diagnostics_follow_single_line_editors() {
             );
         }
     }
-    let valid = "component App inherits Window { LineEdit { input-type: email; input-purpose: username; } }";
+    let valid = "component App inherits Window { LineEdit { input-type <- email; input-purpose <- username; } }";
     let report = analysis::analyze(URI, valid, None).diagnostics;
     assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
     let invalid = valid
         .replace("LineEdit", "TextArea")
-        .replace("input-type: email;", "");
+        .replace("input-type <- email;", "");
     let report = analysis::analyze(URI, &invalid, None).diagnostics;
     assert!(report[URI].iter().any(|item| {
         item["message"]
@@ -6736,7 +6737,7 @@ fn contact_input_modes_complete_in_both_enum_forms() {
             );
         }
     }
-    let source = "component App inherits Window { LineEdit { input-type: email; } TextInput { input-type: InputType.url; } LineEdit { input-type: tel; } }";
+    let source = "component App inherits Window { LineEdit { input-type <- email; } TextInput { input-type <- InputType.url; } LineEdit { input-type <- tel; } }";
     let report = analysis::analyze(URI, source, None).diagnostics;
     assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
 }
@@ -6750,7 +6751,7 @@ fn input_validity_is_completed_as_a_read_only_enum() {
         |item| item["label"] == "input-validity" && item["detail"] == "read-only InputValidity"
     ));
     let values = complete_at(
-        "component App inherits Window { in property <InputValidity> status: once InputValidity.| }",
+        "component App inherits Window { in property <InputValidity> status: InputValidity.| }",
     );
     for expected in ["invalid", "intermediate", "acceptable"] {
         assert!(
@@ -6775,7 +6776,7 @@ fn pattern_validation_completes_the_binding_and_reports_bad_patterns() {
             "{kind}: {items:?}"
         );
     }
-    let source = r#"component App inherits Window { LineEdit { input-pattern: "["; } }"#;
+    let source = r#"component App inherits Window { LineEdit { input-pattern <- "["; } }"#;
     let report = analysis::analyze(URI, source, None).diagnostics;
     assert!(report[URI].iter().any(|diagnostic| {
         diagnostic["message"]
@@ -7278,7 +7279,7 @@ fn position_child_completes_and_resolves_only_viewport_descendants() {
 fn completes_enum_variants_and_callback_local_bindings() {
     let source = r#"enum Phase { Idle, Running }
 component Demo inherits Window {
-    property <Phase> phase: once Phase::Idle;
+    property <Phase> phase: Phase::Idle;
     callback start();
     start => {
         let next-phase = Phase::Running;
@@ -7336,8 +7337,8 @@ fn payload_enum_completion_and_match_binding_definition() {
     Ready(string),
 }
 component Demo inherits Window {
-    in property <Job> work: once Job::Ready("ok");
-    out property <string> status: match root.work {
+    in property <Job> work: Job::Ready("ok");
+    out property <string> status <- match root.work {
         Pending => "pending",
         Failed { reason: message, retryable: _ } => message,
         Ready(text) => text,
@@ -7384,7 +7385,7 @@ fn custom_render_completes_renderer_inputs() {
         assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
     }
     let source = r#"component App inherits Window {
-        CustomRender { renderer: "waveform"; data: "samples"; revision: 1; }
+        CustomRender { renderer <- "waveform"; data <- "samples"; revision <- 1; }
     }"#;
     let diagnostics = analysis::analyze(URI, source, None).diagnostics;
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
@@ -7394,8 +7395,8 @@ fn custom_render_completes_renderer_inputs() {
 fn model_lookup_completes_with_a_literal_field_path() {
     let source = r#"struct Entry { owner: string, label: string }
         export component Demo inherits Window {
-            in property <[Entry]> rows: once [];
-            out property <[Entry]> selected: Model.lookup(root.rows, "owner", "group");
+            in property <[Entry]> rows: [];
+            out property <[Entry]> selected <- Model.lookup(root.rows, "owner", "group");
         }"#;
     let items = complete_at(&source.replace("Model.lookup", "Model.loo|"));
     assert!(
@@ -7469,8 +7470,7 @@ fn mesh_asset_hover_reports_gpu_instance_groups_and_accessors() {
     .unwrap();
     let uri = workspace_file_uri(&directory.join("main.xr"));
     let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
-    let source =
-        r#"component App inherits Window { property <string> forest: @mesh-url("forest.gltf"); }"#;
+    let source = r#"component App inherits Window { property <string> forest <- @mesh-url("forest.gltf"); }"#;
     let cursor = analysis::Source::new(source).coordinates(source.find("forest.gltf").unwrap());
     let hover = completion::query(
         "textDocument/hover",
@@ -7491,7 +7491,7 @@ fn authored_instance_prototypes_complete_from_the_same_table() {
     let source = r#"struct Actor { id: string, mesh: string, instance-of: string, instance-template: bool }
         component App inherits Window {
             property <[Actor]> other: [Actor { id: "sh-outside", mesh: "primitive:box" }];
-            property <[Actor]> world: [
+            property <[Actor]> world <- [
                 Actor { id: "sh-duplicate", mesh: "primitive:box" },
                 Actor { id: "shape", mesh: "primitive:box", instance-template: true },
                 Actor { id: "sh-duplicate", mesh: "primitive:sphere" },
@@ -7725,7 +7725,7 @@ struct Actor {
 }
 export component Demo inherits Window {
     SceneView3D {
-        model: [Actor { id: "shape", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+        model <- [Actor { id: "shape", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
             scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
             geometry: Shape { shape: KIND, segments: VALUE },
         }];
@@ -7841,7 +7841,7 @@ fn physics_world_completion_and_mutation_diagnostics() {
     );
     assert_eq!(help["activeParameter"], 1);
 
-    let rejected = "export component Demo inherits Window { property <physicsworld3d> world; property <bool> invalid: Physics3D.set-collision-filter(root.world, 1, 2, 0); }";
+    let rejected = "export component Demo inherits Window { property <physicsworld3d> world; property <bool> invalid <- Physics3D.set-collision-filter(root.world, 1, 2, 0); }";
     let diagnostics = analysis::analyze(URI, rejected, None).diagnostics;
     assert!(
         diagnostics.values().flatten().any(|item| {
@@ -7892,7 +7892,7 @@ fn kinematic_contact_modes_have_typed_completions_and_require_callbacks() {
     let invalid = r#"
         export component Demo inherits Window {
             property <physicsworld3d> world;
-            out property <bool> edited: Physics3D.set-kinematic-contact-reports(root.world, true, false);
+            out property <bool> edited <- Physics3D.set-kinematic-contact-reports(root.world, true, false);
         }
     "#;
     let result = analysis::analyze(URI, invalid, None);
@@ -7976,7 +7976,7 @@ fn physics_world_settings_have_typed_completions_and_runtime_effects() {
     let invalid = r#"
         export component Demo inherits Window {
             property <physicsworld3d> world;
-            out property <bool> edited: Physics3D.set-gravity(root.world, Vector3D.new(0, -10, 0));
+            out property <bool> edited <- Physics3D.set-gravity(root.world, Vector3D.new(0, -10, 0));
         }
     "#;
     let result = analysis::analyze(URI, invalid, None);
@@ -8002,7 +8002,7 @@ fn scene_physics_debug_properties_complete_and_type_check() {
     let valid = r#"
         export component Demo inherits Window {
             property <physicsworld3d> world;
-            SceneView3D { physics-world: root.world; physics-debug: true; physics-debug-body: 3; }
+            SceneView3D { physics-world <- root.world; physics-debug <- true; physics-debug-body <- 3; }
         }
     "#;
     let result = analysis::analyze(URI, valid, None);
@@ -8012,7 +8012,7 @@ fn scene_physics_debug_properties_complete_and_type_check() {
         result.diagnostics
     );
     let invalid = valid.replace(
-        "physics-world: root.world",
+        "physics-world <- root.world",
         "physics-world: \"not a world\"",
     );
     let result = analysis::analyze(URI, &invalid, None);
@@ -8040,7 +8040,7 @@ fn scene_random_instances_check_count_and_complete_settings() {
         }
         export component App inherits Window {
             SceneView3D {
-                model: [Actor {
+                model <- [Actor {
                     id: "cube", mesh: "primitive:box", x: 0, y: 0, z: 0,
                     scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
                     random-instances: Scatter { count: 4, position-min: Vector3D.new(0, 0, 0) },
@@ -8076,7 +8076,7 @@ fn scene_random_instances_check_count_and_complete_settings() {
         r#"
         struct Scatter { count: int, color-model: string }
         component App inherits Window {
-            property <instancetable3d> table: Scene3D.random-instance-table(
+            property <instancetable3d> table <- Scene3D.random-instance-table(
                 Scatter { count: 16, color-model: "h|" });
         }
     "#,
@@ -8102,7 +8102,7 @@ fn scene_random_instances_check_count_and_complete_settings() {
         r#"
         struct Scatter { count: bool }
         export component App inherits Window {
-            out property <instancetable3d> table: Scene3D.random-instance-table(Scatter { count: true });
+            out property <instancetable3d> table <- Scene3D.random-instance-table(Scatter { count: true });
         }
     "#,
         None,
@@ -8125,7 +8125,7 @@ fn scene_instance_data_completes_and_checks_vector_fields() {
         }
         export component App inherits Window {
             SceneView3D {
-                model: [Actor {
+                model <- [Actor {
                     id: "panel", mesh: "primitive:box", x: 0, y: 0, z: 0,
                     scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
                     color: #ffffff, instance-data: Channels { x: 1, y: 0, z: 0, w: 0.2 },
@@ -8179,7 +8179,7 @@ fn scene_model_render_fields_complete_and_type_check() {
         }
         export component App inherits Window {
             SceneView3D {
-                model: [Actor {
+                model <- [Actor {
                     id: "panel", mesh: "primitive:box", x: 0, y: 0, z: 0,
                     scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
                     color: #ffffff, depth-bias: -0.5, instance-root: "base",
@@ -8333,7 +8333,7 @@ fn material_workflow_and_glossiness_channel_complete_and_type_check() {
         }
         export component App inherits Window {
             property <[Actor]> actors;
-            SceneView3D { model: root.actors; }
+            SceneView3D { model <- root.actors; }
         }
     "#;
     let result = analysis::analyze(URI, source, None);
@@ -8407,7 +8407,7 @@ fn solid_contact_event_commands_expose_typed_list_reads() {
     let impure = r#"
         export component App inherits Window {
             property <physicsworld3d> world;
-            property <bool> track: Physics3D.set-contact-events(root.world, 1, true);
+            property <bool> track <- Physics3D.set-contact-events(root.world, 1, true);
         }
     "#;
     let result = analysis::analyze(URI, impure, None);
@@ -8447,7 +8447,7 @@ fn prepared_scene_uses_a_builtin_type_and_typed_prepare_signature() {
     let invalid = r#"
         export component Demo inherits Window {
             property <scenemodel3d> scene;
-            property <scenemodel3d> nested: Scene3D.prepare(root.scene);
+            property <scenemodel3d> nested <- Scene3D.prepare(root.scene);
         }
     "#;
     let result = analysis::analyze(URI, invalid, None);
@@ -8493,7 +8493,7 @@ fn authored_instance_table_signature_and_schema_diagnostics() {
         struct Placement { scale: float }
         export component App inherits Window {
             property <[Placement]> rows;
-            property <instancetable3d> table: Scene3D.instance-table(root.rows);
+            property <instancetable3d> table <- Scene3D.instance-table(root.rows);
         }
     "#;
     let result = analysis::analyze(URI, invalid, None);
@@ -8515,8 +8515,8 @@ fn scene_model_body_attachment_completes_and_checks_its_type() {
         export component Demo inherits Window {
             property <physicsworld3d> world;
             SceneView3D {
-                physics-world: root.world;
-                model: [BodyVisual {
+                physics-world <- root.world;
+                model <- [BodyVisual {
                     id: "visual", mesh: "primitive:box", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
                     yaw: 0, pitch: 0, roll: 0, color: #ffffff, physics-body: "mover",
                 }];
@@ -8579,7 +8579,7 @@ fn frame_animation_completes_its_type_handler_and_commands() {
         export component App inherits Window {
             out property <float> last;
             driver := FrameAnimation {
-                running: true;
+                running <- true;
                 triggered(delta, elapsed, index) => { root.last = delta; }
             }
         }
@@ -8621,7 +8621,7 @@ fn physics_clock_exposes_typed_commands_and_interpolated_reads() {
     let valid = r#"
         export component Demo inherits Window {
             property <physicsworld3d> world;
-            out property <point3d> drawn: Physics3D.interpolated-position(root.world, 1);
+            out property <point3d> drawn <- Physics3D.interpolated-position(root.world, 1);
         }
     "#;
     let result = analysis::analyze(URI, valid, None);
@@ -8653,7 +8653,7 @@ fn physics_kinematic_handoff_and_pivot_target_have_typed_signatures() {
     let invalid = r#"
         export component Demo inherits Window {
             property <physicsworld3d> world;
-            out property <bool> changed: Physics3D.set-kinematic(root.world, 1, true);
+            out property <bool> changed <- Physics3D.set-kinematic(root.world, 1, true);
         }
     "#;
     let result = analysis::analyze(URI, invalid, None);
@@ -8687,7 +8687,7 @@ fn physics_mass_properties_share_completion_signatures_and_effects() {
     let invalid = r#"
         export component Demo inherits Window {
             property <physicsworld3d> world;
-            out property <bool> edited: Physics3D.set-default-density(root.world, 2);
+            out property <bool> edited <- Physics3D.set-default-density(root.world, 2);
         }
     "#;
     let result = analysis::analyze(URI, invalid, None);
@@ -8723,7 +8723,7 @@ fn physics_materials_expose_signatures_and_require_mutable_callbacks() {
     let invalid = r#"
         export component Demo inherits Window {
             property <physicsworld3d> world;
-            out property <bool> edited: Physics3D.set-material(root.world, 1, 0.9, 0.3, 0);
+            out property <bool> edited <- Physics3D.set-material(root.world, 1, 0.9, 0.3, 0);
         }
     "#;
     let result = analysis::analyze(URI, invalid, None);
@@ -8760,7 +8760,7 @@ fn physics_shape_queries_complete_and_share_collider_record_types() {
         export component Demo inherits Window {
             property <physicsworld3d> world;
             property <[BadShape]> shapes;
-            property <[int]> inside:
+            property <[int]> inside <-
                 Physics3D.shape-overlap(root.world, Point3D.new(0, 0, 0), Vector3D.new(0, 0, 0), root.shapes);
         }
     "#;
@@ -8836,7 +8836,7 @@ fn physics_body_control_completion_shows_world_space_point() {
     let rejected = r#"
         export component Demo inherits Window {
             property <physicsworld3d> world;
-            property <bool> invalid: Physics3D.set-gravity-scale(root.world, 1, 0);
+            property <bool> invalid <- Physics3D.set-gravity-scale(root.world, 1, 0);
         }
     "#;
     let diagnostics = analysis::analyze(URI, rejected, None).diagnostics;
@@ -8964,7 +8964,7 @@ struct Actor {
 }
 export component Demo inherits Window {
     SceneView3D {
-        model: [Actor { id: "body", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+        model <- [Actor { id: "body", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
             scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
             collision-shapes: [Shape { shape: KIND, position: Point3D.new(1, 0, 0), size: Vector3D.new(1, 2, 3) }],
         }];
@@ -9012,7 +9012,7 @@ struct Actor {
     scale-x: float, scale-y: float, scale-z: float, color: color, geometry: MeshData,
 }
 export component App inherits Window {
-    in property <[Vertex]> points: once [];
+    in property <[Vertex]> points: [];
     SceneView3D { model: [
         Actor { id: "panel", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
             scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
@@ -9055,7 +9055,7 @@ struct Actor {
     geometry: MeshData, material-slots: Slots,
 }
 export component App inherits Window {
-    SceneView3D { model: [
+    SceneView3D { model <- [
         Actor { id: "panel", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
             scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
             geometry: MeshData { vertices: [], subsets: [
@@ -9173,9 +9173,9 @@ component App inherits Window {
         r#"
         struct PanelMap { source: string, uv-flip-u: bool }
         struct Finish { base-item: PanelMap }
-        component Other inherits Window { Rectangle { texture-source: "dashboard-other"; } }
+        component Other inherits Window { Rectangle { texture-source <- "dashboard-other"; } }
         component App inherits Window {
-            Rectangle { texture-source: "dashboard"; }
+            Rectangle { texture-source <- "dashboard"; }
             property <Finish> finish: Finish {
                 base-item: PanelMap { source: "dash|", uv-flip-u: true },
             };
@@ -9187,8 +9187,8 @@ component App inherits Window {
     let image_names = complete_at(
         r#"
         component App inherits Window {
-            SceneView3D { texture-source: "security-feed"; }
-            Image { texture-input: "secur|"; }
+            SceneView3D { texture-source <- "security-feed"; }
+            Image { texture-input <- "secur|"; }
         }
         "#,
     );
@@ -9225,7 +9225,7 @@ fn scene_effect_buffer_completion_uses_only_earlier_outputs_in_the_chain() {
 fn previous_frame_effect_inputs_complete_persistent_outputs_including_self() {
     let source = r#"
         component Demo inherits Window {
-            SceneView3D { scene-effects: [
+            SceneView3D { scene-effects <- [
                 Effect { output: "trail-temporary", history: false },
                 Effect { output: "trail-self", history: true,
                     buffers: [Buffer { previous-frame: true, name: "trail-|" }]
@@ -9403,17 +9403,17 @@ fn material_shader_files_have_signature_path_completion_and_links() {
 fn named_scene_capture_completion_stays_within_the_view_and_offers_cameras() {
     let source = r#"
         component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "detail-other" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "detail-other" }]; }
             SceneView3D {
-                model: [
+                model <- [
                     Object { id: "side-eye", camera-kind: "orthographic" },
                     Object { id: "side-mesh", mesh: "primitive:box" }
                 ];
-                scene-captures: [
+                scene-captures <- [
                     Feed { name: "detail-main", camera: "CAMERA" },
                     Feed { name: "detail-disabled", enabled: false }
                 ];
-                scene-effects: [Pass { buffers: [Input { capture: "CAPTURE" }] }];
+                scene-effects <- [Pass { buffers: [Input { capture: "CAPTURE" }] }];
             }
         }
     "#;
@@ -9432,13 +9432,13 @@ fn shader_texture_capture_completion_uses_the_owning_viewport() {
     let items = complete_at(
         r#"
         component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "source-other" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "source-other" }]; }
             SceneView3D {
-                scene-captures: [
+                scene-captures <- [
                     Feed { name: "source-main" },
                     Feed { name: "source-off", enabled: false }
                 ];
-                model: [Object { material-slots: Slots {
+                model <- [Object { material-slots: Slots {
                     body: Style { shader-textures: [Input { capture: "source-|" }] }
                 } }];
             }
@@ -9451,7 +9451,7 @@ fn shader_texture_capture_completion_uses_the_owning_viewport() {
         r#"
         component App inherits Window {
             property <Style> screen: Style { shader-textures: [Input { capture: "source-|" }] };
-            SceneView3D { scene-captures: [Feed { name: "source-main" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "source-main" }]; }
         }
     "#,
     );
@@ -9503,13 +9503,13 @@ fn scene_capture_sources_complete_active_captures_from_the_same_view() {
         let source = r#"
         component App inherits Window {
             SceneView3D {
-                scene-captures: [
+                scene-captures <- [
                     Feed { name: "stage-live", enabled: true },
                     Feed { name: "stage-disabled", enabled: false },
                 ];
-                FIELD: "stage-|";
+                FIELD <- "stage-|";
             }
-            SceneView3D { scene-captures: [Feed { name: "stage-other" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "stage-other" }]; }
         }
     "#;
         let items = complete_at(&source.replace("FIELD", property));
@@ -9524,14 +9524,14 @@ fn capture_input_names_complete_other_enabled_feeds_in_the_owning_view() {
         struct Feed { name: string, color-source: string, depth-source: string, enabled: bool }
         component App inherits Window {
             SceneView3D {
-                scene-captures: [
+                scene-captures <- [
                     Feed { name: "stage-output", FIELD: "stage-|" },
                     Feed { name: "stage-lighting", enabled: true },
                     Feed { name: "stage-depth", enabled: true },
                     Feed { name: "stage-disabled", enabled: false },
                 ];
             }
-            SceneView3D { scene-captures: [Feed { name: "stage-other" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "stage-other" }]; }
         }
     "#;
     for field in ["color-source", "depth-source"] {
@@ -9546,7 +9546,7 @@ fn capture_input_names_complete_other_enabled_feeds_in_the_owning_view() {
 fn capture_renderables_completes_transparent_mode() {
     let items = complete_at(
         r#"component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "glass", renderables: "tran|" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "glass", renderables: "tran|" }]; }
         }"#,
     );
     assert_eq!(items.len(), 1, "{items:?}");
@@ -9559,12 +9559,12 @@ fn capture_override_shader_textures_use_the_owning_view() {
         r#"
         component App inherits Window {
             SceneView3D {
-                scene-captures: [
+                scene-captures <- [
                     Feed { name: "scene-color" },
                     Feed { name: "mask", override-material: Mat { shader-textures: [Input { capture: "scene-|" }] } },
                 ];
             }
-            SceneView3D { scene-captures: [Feed { name: "scene-other" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "scene-other" }]; }
         }
     "#,
     );
@@ -9630,11 +9630,11 @@ fn stencil_source_and_operations_complete_inside_named_captures() {
     let sources = complete_at(
         r#"
         component App inherits Window {
-            SceneView3D { scene-captures: [
+            SceneView3D { scene-captures <- [
                 Feed { name: "mask-inner" },
                 Feed { name: "panel", stencil-source: "mask-|" },
             ]; }
-            SceneView3D { scene-captures: [Feed { name: "mask-other" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "mask-other" }]; }
         }
     "#,
     );
@@ -9657,7 +9657,7 @@ fn capture_polygon_mode_completes_wireframe_values() {
     let items = complete_at(
         r#"
         component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "edges", pipeline-state: State {
+            SceneView3D { scene-captures <- [Feed { name: "edges", pipeline-state: State {
                 polygon-mode: "li|"
             } }]; }
         }
@@ -9694,7 +9694,7 @@ fn capture_color_format_completes_linear_attachment_formats() {
     let items = complete_at(
         r#"
         component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "mask", color-format: "rg|" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "mask", color-format: "rg|" }]; }
         }
         "#,
     );
@@ -9788,7 +9788,7 @@ fn capture_completes_the_mipmap_option_and_filter() {
     );
     let filter = complete_at(
         r#"component App inherits Window {
-            SceneView3D { scene-effects: [Pass { buffers: [Input { capture: "feed", mip-filter: "li|" }] }]; }
+            SceneView3D { scene-effects <- [Pass { buffers: [Input { capture: "feed", mip-filter: "li|" }] }]; }
         }"#,
     );
     assert!(filter.iter().any(|item| item["label"] == "linear"));
@@ -9796,7 +9796,7 @@ fn capture_completes_the_mipmap_option_and_filter() {
     for property in ["min-filter", "mag-filter"] {
         let candidates = complete_at(&format!(
             r#"component App inherits Window {{ SceneView3D {{
-                scene-effects: [Pass {{ buffers: [Input {{ capture: "feed", {property}: "ne|" }}] }}];
+                scene-effects <- [Pass {{ buffers: [Input {{ capture: "feed", {property}: "ne|" }}] }}];
             }} }}"#,
         ));
         assert!(candidates.iter().any(|item| item["label"] == "nearest"));
@@ -9819,7 +9819,7 @@ fn capture_completes_the_mipmap_option_and_filter() {
 #[test]
 fn capture_augment_inputs_complete_upstream_names_without_their_own_capture() {
     let prefix = r#"component App inherits Window {
-        SceneView3D { scene-captures: [
+        SceneView3D { scene-captures <- [
             Feed { name: "first" },
             Feed { name: "second", augment-textures: [Input { capture: "|", attachment: "depth" }] },
         ]; }
@@ -9841,7 +9841,7 @@ fn capture_material_data_completes_attachment_and_format() {
     let attachment = complete_at(
         r#"
         component App inherits Window {
-            SceneView3D { scene-effects: [Pass {
+            SceneView3D { scene-effects <- [Pass {
                 shader: "", buffers: [Input { capture: "surface", attachment: "material-|" }],
             }]; }
         }
@@ -9856,7 +9856,7 @@ fn capture_material_data_completes_attachment_and_format() {
     let formats = complete_at(
         r#"
         component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "surface", material-data-format: "rg16|" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "surface", material-data-format: "rg16|" }]; }
         }
         "#,
     );
@@ -9874,7 +9874,7 @@ fn capture_material_data_completes_attachment_and_format() {
     );
     let indexed = complete_at(
         r#"component App inherits Window {
-            SceneView3D { scene-captures: [Feed { name: "surface", material-data-2-format: "rgba32|" }]; }
+            SceneView3D { scene-captures <- [Feed { name: "surface", material-data-2-format: "rgba32|" }]; }
         }"#,
     );
     assert_eq!(indexed[0]["label"], "rgba32f");
@@ -9898,7 +9898,7 @@ fn capture_material_data_completes_attachment_and_format() {
 
     let high_precision = complete_at(
         r#"component App inherits Window {
-            SceneView3D { scene-effects: [Pass { output-format: "r32|" }]; }
+            SceneView3D { scene-effects <- [Pass { output-format: "r32|" }]; }
         }"#,
     );
     assert!(high_precision.iter().any(|item| item["label"] == "r32f"));
@@ -9949,7 +9949,7 @@ fn declarative_mesh_loader_completes_fields_and_paths_and_validates_read_only_ou
     let items = completion::complete(incomplete, 0, incomplete.len(), Some(&workspace));
     assert!(items.iter().any(|item| item["label"] == "mesh.obj"));
     let complete =
-        r#"component App inherits Window { loader := MeshLoader3D { source: "mesh.obj"; } }"#;
+        r#"component App inherits Window { loader := MeshLoader3D { source <- "mesh.obj"; } }"#;
     assert!(
         analysis::analyze(&uri, complete, Some(&workspace))
             .diagnostics
@@ -9997,7 +9997,7 @@ fn scene_bounds_completes_fields_loader_output_and_camera_fit() {
         "{function:?}"
     );
 
-    let invalid = r#"component App inherits Window { SceneView3D { camera-fit: "box"; } }"#;
+    let invalid = r#"component App inherits Window { SceneView3D { camera-fit <- "box"; } }"#;
     let diagnostics = analysis::analyze(URI, invalid, None).diagnostics;
     assert!(
         diagnostics.values().flatten().any(|item| {
@@ -10039,7 +10039,7 @@ fn scene_view_queries_complete_and_report_argument_types() {
     }
     let source = r#"component App inherits Window {
         view := SceneView3D {}
-        out property <point3d> result: view.unproject(Point2D.new(0px, 0px), 2, Point3D.new(0, 0, 0));
+        out property <point3d> result <- view.unproject(Point2D.new(0px, 0px), 2, Point3D.new(0, 0, 0));
     }"#;
     assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
     let position = analysis::Source::new(source)
@@ -10074,7 +10074,7 @@ fn scene_view_queries_complete_and_report_argument_types() {
 fn viewport_world_query_signatures_reject_pixel_coordinates() {
     let source = r#"component App inherits Window {
         view := SceneView3D {}
-        out property <hit3d> hit: view.ray-hit(Point3D.new(0, 1, 2), Vector3D.new(0, -1, 0), 10);
+        out property <hit3d> hit <- view.ray-hit(Point3D.new(0, 1, 2), Vector3D.new(0, -1, 0), 10);
     }"#;
     assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
     let position = analysis::Source::new(source)
@@ -10135,9 +10135,9 @@ fn mesh_node_completion_uses_selected_scene_paths_and_literal_loader_sources() {
     ] {
         let source = format!(
             r#"component App inherits Window {{
-            property <meshnode3d> queried: Scene3D.mesh-node({asset}, "/Room|");
-            property <string> mesh-key: @mesh-url("fixture.gltf");
-            importer := MeshLoader3D {{ source: "fixture.gltf"; }}
+            property <meshnode3d> queried <- Scene3D.mesh-node({asset}, "/Room|");
+            property <string> mesh-key <- @mesh-url("fixture.gltf");
+            importer := MeshLoader3D {{ source <- "fixture.gltf"; }}
         }}"#
         );
         let index = source.find('|').unwrap();
@@ -10154,7 +10154,7 @@ fn mesh_node_completion_uses_selected_scene_paths_and_literal_loader_sources() {
         assert!(!items.iter().any(|item| item["label"] == "/Unused"));
     }
     let mount = r#"component App inherits Window {
-        property <[Actor]> rows: [
+        property <[Actor]> rows <- [
             Actor { id: "badge", parent: "carrier", parent-node: "/Room|" },
             Actor { id: "carrier", mesh: @mesh-url("fixture.gltf") },
         ];
@@ -10168,8 +10168,8 @@ fn mesh_node_completion_uses_selected_scene_paths_and_literal_loader_sources() {
     }
     let with_loader = mount
         .replace(
-            "property <[Actor]> rows:",
-            "importer := MeshLoader3D { source: \"fixture.gltf\"; } property <[Actor]> rows:",
+            "property <[Actor]> rows <-",
+            "importer := MeshLoader3D { source: \"fixture.gltf\"; } property <[Actor]> rows <-",
         )
         .replace(
             r#"mesh: @mesh-url("fixture.gltf")"#,
@@ -10221,15 +10221,15 @@ fn mesh_node_completion_uses_selected_scene_paths_and_literal_loader_sources() {
         );
     }
     let particle = r#"component App inherits Window {
-        property <[Actor]> rows: [
+        property <[Actor]> rows <- [
             Actor { id: "carrier", mesh: @mesh-url("fixture.gltf") },
             Actor { id: "cart", mesh: "" },
             Actor { id: "cart", mesh: "" },
         ];
-        property <scenemodel3d> prepared: Scene3D.prepare(root.rows);
+        property <scenemodel3d> prepared <- Scene3D.prepare(root.rows);
         SceneView3D {
-            model: root.prepared;
-            particle-emitters: [Emitter { parent: "carrier", parent-node: "/Room|" }];
+            model <- root.prepared;
+            particle-emitters <- [Emitter { parent: "carrier", parent-node: "/Room|" }];
         }
     }"#;
     let offset = particle.find('|').unwrap();
@@ -10265,7 +10265,7 @@ fn mesh_node_completion_uses_selected_scene_paths_and_literal_loader_sources() {
         )
     );
     let mounted_field = particle.replace(
-        r#"particle-emitters: [Emitter { parent: "carrier", parent-node: "/Room|" }];"#,
+        r#"particle-emitters <- [Emitter { parent: "carrier", parent-node: "/Room|" }];"#,
         r#"particle-emitters: [Emitter { particle-group: "sparks" }, Emitter { particle-group: "dust" }];
            particle-affectors: [Field { parent: "carrier", parent-node: "/Room|", particle-group: "" }];"#,
     );
@@ -10306,7 +10306,7 @@ fn mesh_node_completion_uses_selected_scene_paths_and_literal_loader_sources() {
         );
     }
     let kinds = complete_at(
-        "component App inherits Window { property <[int]> ids: Scene3D.mesh-node-indices(\"\", \"li|\"); }",
+        "component App inherits Window { property <[int]> ids <- Scene3D.mesh-node-indices(\"\", \"li|\"); }",
     );
     assert!(kinds.iter().any(|item| item["label"] == "light"));
 }
@@ -10325,7 +10325,7 @@ fn scene_node_completion_and_selector_diagnostics_follow_builtin_signature() {
     let source = r#"
         export component App inherits Window {
             property <scenemodel3d> model;
-            property <meshnode3d> mount: Scene3D.scene-node(root.model, "rig", true);
+            property <meshnode3d> mount <- Scene3D.scene-node(root.model, "rig", true);
         }
     "#;
     let result = analysis::analyze(URI, source, None);
@@ -10347,7 +10347,7 @@ fn scene_animation_layer_diagnostics_check_the_nested_record_schema() {
         }
         export component App inherits Window {
             property <[Actor]> rows: [];
-            property <scenemodel3d> scene: Scene3D.prepare(root.rows);
+            property <scenemodel3d> scene <- Scene3D.prepare(root.rows);
         }
     "#;
     let diagnostics = analysis::analyze(URI, source, None).diagnostics;
@@ -10396,7 +10396,7 @@ fn particle_emission_track_validates_its_nested_keys_and_completes_fields() {
         struct Emitter { emission-track: [BirthKey], position: point3d, color: color, lifetime: float, size: float }
         export component App inherits Window {
             property <[Emitter]> emitters: [];
-            SceneView3D { particle-emitters: root.emitters; }
+            SceneView3D { particle-emitters <- root.emitters; }
         }
     "#;
     let result = analysis::analyze(URI, source, None);
@@ -10489,8 +10489,8 @@ fn particle_bursts_validate_event_types_and_complete_record_fields() {
 #[test]
 fn initializers_format_and_formulas_report_read_only_writes() {
     let source = r#"export component Demo inherits Window {
-    property <string> draft: once "A";
-    out property <string> title-text: root.draft;
+    property <string> draft: "A";
+    out property <string> title-text <- root.draft;
     callback rename();
     rename => { root.draft = "B"; }
 }"#;
@@ -10507,14 +10507,14 @@ fn initializers_format_and_formulas_report_read_only_writes() {
             .contains("read-only")
     );
 
-    let unformatted = source.replace("draft: once", "draft:once");
+    let unformatted = source.replace("title-text <- root.draft", "title-text< -root.draft");
     let edits = formatting::edits(&unformatted, &json!({}));
     let formatted = edits[0]["newText"].as_str().unwrap();
-    assert!(formatted.contains(r#"draft: once "A";"#));
+    assert!(formatted.contains("title-text <- root.draft;"));
     assert!(
-        complete_at("component Demo inherits Window { property <int> count: on| }")
+        complete_at("component Demo inherits Window { property <int> count <- ro| }")
             .iter()
-            .any(|item| item["label"] == "once")
+            .any(|item| item["label"] == "root")
     );
 }
 
@@ -10524,7 +10524,7 @@ fn cross_file_ownership_diagnostics_reject_definite_and_possible_writes() {
     let dependency = fixture_uri("ownership-editor.xr");
     let editor = r#"export component Editor inherits Rectangle {
         in-out property <string> value;
-        in-out property <string> alternate <=> root.value;
+        in-out property <string> alternate <-> root.value;
         callback rename(string);
         rename(text) => { root.value = text; }
         callback maybe-rename(string);
@@ -10546,7 +10546,7 @@ fn cross_file_ownership_diagnostics_reject_definite_and_possible_writes() {
         let source = format!(
             r#"import {{ Editor }} from "ownership-editor.xr";
 export component App inherits Window {{
-    editor := Editor {{ alternate: "A"; }}
+    editor := Editor {{ alternate <- "A"; }}
     callback act();
     act => {{ {write} }}
 }}"#

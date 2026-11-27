@@ -12,8 +12,8 @@ struct PassInput { capture: string, attachment: string }
 struct PassEffect { strength: float, shader: string, buffers: [PassInput] }
 
 export component CustomPipelineDemo inherits Window {
-    title: "XRack · 自定义视口管线";
-    width: 282px; height: 138px; background: #000;
+    title <- "XRack · 自定义视口管线";
+    width <- 282px; height <- 138px; background <- #000;
     in-out property <bool> custom: true;
     in-out property <bool> output: true;
     in-out property <bool> effect: false;
@@ -23,20 +23,20 @@ export component CustomPipelineDemo inherits Window {
         x: 0, y: 0, z: 0, scale-x: 0.8, scale-y: 0.8, scale-z: 0.8,
         yaw: 0, pitch: 0, roll: 0, camera-kind: "", camera-height: 2.0,
     };
-    property <scenemodel3d> scene: Scene3D.prepare([
+    property <scenemodel3d> scene <- Scene3D.prepare([
         PassActor { id: "eye", mesh: "", z: 5, camera-kind: "orthographic", ..root.actor },
         PassActor { id: "default", x: -1.40, color: #f00, ..root.actor },
         PassActor { id: "captured", x: 1.40, layers: 2, color: #0f0, ..root.actor },
     ]);
 
     viewport := SceneView3D {
-        x: 8px; y: 8px; width: 266px; height: 84px;
-        model: root.scene; camera: "eye"; layer-mask: 1;
-        scene-background: #283c7a; cache-rendering: true;
-        supersampling: 1.5;
-        render-overrides: root.custom ? "disable-internal-passes" : "none";
-        scene-color-capture: root.output ? "relay" : "";
-        scene-captures: [
+        x <- 8px; y <- 8px; width <- 266px; height <- 84px;
+        model <- root.scene; camera <- "eye"; layer-mask <- 1;
+        scene-background <- #283c7a; cache-rendering <- true;
+        supersampling <- 1.5;
+        render-overrides <- root.custom ? "disable-internal-passes" : "none";
+        scene-color-capture <- root.output ? "relay" : "";
+        scene-captures <- [
             RenderStage {
                 name: "geometry", camera: "eye", layers: 2, scale: 0.5,
                 background: #00000000, renderables: "opaque", color-source: "",
@@ -50,7 +50,7 @@ export component CustomPipelineDemo inherits Window {
                 background: #f0f, renderables: "none", color-source: "",
             },
         ];
-        scene-effects: [
+        scene-effects <- [
             PassEffect {
                 strength: root.effect ? 1.0 : 0.0,
                 shader: @shader-url("effects/custom_pipeline_output.wgsl"),
@@ -59,15 +59,15 @@ export component CustomPipelineDemo inherits Window {
         ];
     }
     mode-toggle := Button {
-        x: 8px; y: 99px; width: 84px; height: 30px;
-        text: root.custom ? "自定义" : "默认"; clicked => { root.custom = !root.custom; }
+        x <- 8px; y <- 99px; width <- 84px; height <- 30px;
+        text <- root.custom ? "自定义" : "默认"; clicked => { root.custom = !root.custom; }
     }
     output-toggle := CheckBox {
-        x: 103px; y: 99px; width: 88px; height: 30px;
-        text: "捕获"; checked <=> root.output;
+        x <- 103px; y <- 99px; width <- 88px; height <- 30px;
+        text <- "捕获"; checked <-> root.output;
     }
     effect-toggle := CheckBox {
-        x: 195px; y: 99px; width: 82px; height: 30px;
-        text: "效果"; checked <=> root.effect;
+        x <- 195px; y <- 99px; width <- 82px; height <- 30px;
+        text <- "效果"; checked <-> root.effect;
     }
 }

@@ -4,7 +4,7 @@ component Details inherits VerticalLayout {
     callback bump(amount: int) -> int;
     bump(amount) => { root.hits += amount; root.hits }
     card := Button {
-        text: root.title + ": " + root.hits;
+        text <- root.title + ": " + root.hits;
         clicked => { root.hits += 1; }
     }
 }
@@ -13,15 +13,15 @@ export component DynamicDemo inherits Window {
     private property <DetailsHandle> first;
     private property <DetailsHandle> second;
     private property <DetailsHandle> third;
-    out property <int> first-hits: left.get(root.first, "hits", -1);
+    out property <int> first-hits <- left.get(root.first, "hits", -1);
     private property <DetailsHandle> pending;
     private property <ExternalComponentHandle> external;
-    out property <string> pending-state: left.status(root.pending);
-    out property <string> external-state: right.status(root.external);
+    out property <string> pending-state <- left.status(root.pending);
+    out property <string> external-state <- right.status(root.external);
     out property <int> mounted-count: 0;
     out property <int> returned: 0;
-    out property <bool> first-mounted: left.is-mounted(root.first);
-    out property <bool> in-wrong-container: right.is-mounted(root.first);
+    out property <bool> first-mounted <- left.is-mounted(root.first);
+    out property <bool> in-wrong-container <- right.is-mounted(root.first);
 
     callback populate();
     populate => {
@@ -47,12 +47,12 @@ export component DynamicDemo inherits Window {
 
     left := DynamicContainer {
         mounted => { root.mounted-count += 1; }
-        width: 220px;
-        height: 220px;
+        width <- 220px;
+        height <- 220px;
     }
     right := DynamicContainer {
-        x: 245px;
-        width: 220px;
-        height: 220px;
+        x <- 245px;
+        width <- 220px;
+        height <- 220px;
     }
 }

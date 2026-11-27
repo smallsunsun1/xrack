@@ -15,10 +15,10 @@ component GesturePad inherits Rectangle {
     private property <int> taps: 0;
 
     VerticalLayout {
-        spacing: 8px;
-        gesture-state := Text { text: gesture.active ? "Gesture active" : "Gesture idle"; font-size: 17px; color: #173047; }
+        spacing <- 8px;
+        gesture-state := Text { text <- gesture.active ? "Gesture active" : "Gesture idle"; font-size <- 17px; color <- #173047; }
         gesture := ScaleRotateGestureHandler {
-            height: 178px;
+            height <- 178px;
             started() => {
                 root.initial-zoom = root.zoom;
                 root.initial-angle = root.angle;
@@ -36,37 +36,37 @@ component GesturePad inherits Rectangle {
             }
 
             Rectangle {
-                width: 100%; height: 100%;
-                accessible-name: "Gesture canvas";
-                background: #e6eef8; border-radius: 10px; clip: true;
+                width <- 100%; height <- 100%;
+                accessible-name <- "Gesture canvas";
+                background <- #e6eef8; border-radius <- 10px; clip <- true;
                 probe := Button {
-                    x: 18px; y: 20px; width: 100px; height: 44px;
-                    text: "Tap pad";
+                    x <- 18px; y <- 20px; width <- 100px; height <- 44px;
+                    text <- "Tap pad";
                     clicked => { root.taps += 1; }
                 }
                 Rectangle {
-                    x: 184px; y: 76px; width: 68px; height: 42px;
-                    background: #396d72; border-radius: 8px;
-                    transform-scale: root.zoom;
-                    transform-rotation: root.angle;
-                    Rectangle { x: 7px; y: 7px; width: 13px; height: 13px; background: #f8d178; }
+                    x <- 184px; y <- 76px; width <- 68px; height <- 42px;
+                    background <- #396d72; border-radius <- 8px;
+                    transform-scale <- root.zoom;
+                    transform-rotation <- root.angle;
+                    Rectangle { x <- 7px; y <- 7px; width <- 13px; height <- 13px; background <- #f8d178; }
                 }
             }
         }
         HorizontalLayout {
-            spacing: 20px;
-            zoom-label := Text { text: "Zoom " + Math.round(root.zoom * 100); font-size: 17px; color: #173047; }
-            angle-label := Text { text: "Angle " + Math.round(root.angle); font-size: 17px; color: #173047; }
+            spacing <- 20px;
+            zoom-label := Text { text <- "Zoom " + Math.round(root.zoom * 100); font-size <- 17px; color <- #173047; }
+            angle-label := Text { text <- "Angle " + Math.round(root.angle); font-size <- 17px; color <- #173047; }
         }
         HorizontalLayout {
-            spacing: 20px;
-            starts-label := Text { text: "Starts " + root.starts; font-size: 17px; color: #173047; }
-            ends-label := Text { text: "Ends " + root.ends; font-size: 17px; color: #173047; }
+            spacing <- 20px;
+            starts-label := Text { text <- "Starts " + root.starts; font-size <- 17px; color <- #173047; }
+            ends-label := Text { text <- "Ends " + root.ends; font-size <- 17px; color <- #173047; }
         }
         HorizontalLayout {
-            spacing: 20px;
-            cancels-label := Text { text: "Cancels " + root.cancellations; font-size: 17px; color: #173047; }
-            taps-label := Text { text: "Taps " + root.taps; font-size: 17px; color: #173047; }
+            spacing <- 20px;
+            cancels-label := Text { text <- "Cancels " + root.cancellations; font-size <- 17px; color <- #173047; }
+            taps-label := Text { text <- "Taps " + root.taps; font-size <- 17px; color <- #173047; }
         }
     }
 }
@@ -81,16 +81,16 @@ component RangePanel inherits Rectangle {
     private property <bool> release-pending: false;
 
     Text {
-        width: 298px; height: 30px;
-        text: "Drag the handles"; font-size: 17px; color: #173047;
-        horizontal-alignment: center; vertical-alignment: center;
+        width <- 298px; height <- 30px;
+        text <- "Drag the handles"; font-size <- 17px; color <- #173047;
+        horizontal-alignment <- center; vertical-alignment <- center;
     }
     band := RangeSlider {
-        y: 48px; width: 298px; height: 52px;
-        minimum: 0; maximum: 100; step: 5;
-        live: false; snap-mode: ScrollSnapMode.on-release;
-        lower-value <=> root.low; upper-value <=> root.high;
-        layout-direction: root.mirrored ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        y <- 48px; width <- 298px; height <- 52px;
+        minimum <- 0; maximum <- 100; step <- 5;
+        live <- false; snap-mode <- ScrollSnapMode.on-release;
+        lower-value <-> root.low; upper-value <-> root.high;
+        layout-direction <- root.mirrored ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         changed(low, high) => {
             root.edits += 1;
             root.ordered = root.ordered && root.low == low && root.high == high;
@@ -101,32 +101,32 @@ component RangePanel inherits Rectangle {
             root.ordered = root.ordered && root.low == low && root.high == high;
             root.release-pending = false;
         }
-        RangeLowerHandle { width: 30px; height: 30px; border-radius: 6px; background: #b24f3d; }
-        RangeUpperHandle { width: 24px; height: 24px; border-radius: 6px; background: #207968; }
+        RangeLowerHandle { width <- 30px; height <- 30px; border-radius <- 6px; background <- #b24f3d; }
+        RangeUpperHandle { width <- 24px; height <- 24px; border-radius <- 6px; background <- #207968; }
     }
     band-value := Text {
-        y: 111px; text: "Band " + root.low + " to " + root.high;
-        font-size: 17px; color: #173047;
+        y <- 111px; text <- "Band " + root.low + " to " + root.high;
+        font-size <- 17px; color <- #173047;
     }
     band-preview := Text {
-        y: 142px; text: band.lower-position != root.low / 100.0 ? "Preview lower" :
+        y <- 142px; text <- band.lower-position != root.low / 100.0 ? "Preview lower" :
             band.upper-position != root.high / 100.0 ? "Preview upper" : "Preview idle";
-        font-size: 17px; color: #173047;
+        font-size <- 17px; color <- #173047;
     }
-    band-edits := Text { y: 173px; text: "Range edits " + root.edits; font-size: 17px; color: #173047; }
-    band-releases := Text { x: 154px; y: 173px; text: "Range releases " + root.releases; font-size: 17px; color: #173047; }
+    band-edits := Text { y <- 173px; text <- "Range edits " + root.edits; font-size <- 17px; color <- #173047; }
+    band-releases := Text { x <- 154px; y <- 173px; text <- "Range releases " + root.releases; font-size <- 17px; color <- #173047; }
     band-order := Text {
-        y: 204px; font-size: 17px; color: #173047;
-        text: !root.ordered ? "Callback error" : root.release-pending ? "Release pending" : "Callbacks ordered";
+        y <- 204px; font-size <- 17px; color <- #173047;
+        text <- !root.ordered ? "Callback error" : root.release-pending ? "Release pending" : "Callbacks ordered";
     }
     mirror-range := CheckBox {
-        y: 240px; width: 144px; height: 44px;
-        text: root.mirrored ? "RTL range" : "Mirror range";
-        checked <=> root.mirrored;
+        y <- 240px; width <- 144px; height <- 44px;
+        text <- root.mirrored ? "RTL range" : "Mirror range";
+        checked <-> root.mirrored;
     }
     reset-range := Button {
-        x: 154px; y: 240px; width: 144px; height: 44px;
-        text: "Reset range";
+        x <- 154px; y <- 240px; width <- 144px; height <- 44px;
+        text <- "Reset range";
         clicked => { root.low = 50; root.high = 50; }
     }
 }
@@ -135,89 +135,89 @@ component DialPanel inherits Rectangle {
     private property <float> level: 75;
     private property <float> released-level: 75;
     private property <int> releases: 0;
-    private property <DialInputMode> mode: once circular;
+    private property <DialInputMode> mode: circular;
     private property <bool> locked: false;
     private property <bool> range-open: false;
     private property <bool> format-open: false;
 
     gain-dial := Dial {
-        x: 80px; y: 4px; width: 140px; height: 140px;
-        minimum: 0; maximum: 100;
-        start-angle: 0; end-angle: 360;
-        wrap: true;
-        input-mode: root.mode;
-        value <=> root.level;
-        enabled: !root.locked;
+        x <- 80px; y <- 4px; width <- 140px; height <- 140px;
+        minimum <- 0; maximum <- 100;
+        start-angle <- 0; end-angle <- 360;
+        wrap <- true;
+        input-mode <- root.mode;
+        value <-> root.level;
+        enabled <- !root.locked;
         released(value) => {
             root.releases += 1;
             root.released-level = value;
         }
     }
     dial-value := Text {
-        x: 80px; y: 4px; width: 140px; height: 140px;
-        text: "Dial " + Math.round(root.level);
-        horizontal-alignment: center; vertical-alignment: center;
-        font-size: 19px; color: #173047;
+        x <- 80px; y <- 4px; width <- 140px; height <- 140px;
+        text <- "Dial " + Math.round(root.level);
+        horizontal-alignment <- center; vertical-alignment <- center;
+        font-size <- 19px; color <- #173047;
     }
     circular := Button {
-        x: 0px; y: 160px; width: 92px; height: 44px;
-        text: "Circular";
-        enabled: root.mode != DialInputMode.circular;
+        x <- 0px; y <- 160px; width <- 92px; height <- 44px;
+        text <- "Circular";
+        enabled <- root.mode != DialInputMode.circular;
         clicked => { root.mode = DialInputMode.circular; }
     }
     horizontal-mode := Button {
-        x: 101px; y: 160px; width: 103px; height: 44px;
-        text: "Horizontal";
-        enabled: root.mode != DialInputMode.horizontal;
+        x <- 101px; y <- 160px; width <- 103px; height <- 44px;
+        text <- "Horizontal";
+        enabled <- root.mode != DialInputMode.horizontal;
         clicked => { root.mode = DialInputMode.horizontal; }
     }
     vertical-mode := Button {
-        x: 213px; y: 160px; width: 92px; height: 44px;
-        text: "Vertical";
-        enabled: root.mode != DialInputMode.vertical;
+        x <- 213px; y <- 160px; width <- 92px; height <- 44px;
+        text <- "Vertical";
+        enabled <- root.mode != DialInputMode.vertical;
         clicked => { root.mode = DialInputMode.vertical; }
     }
     dial-mode := Text {
-        x: 0px; y: 218px; font-size: 17px; color: #173047;
-        text: root.mode == DialInputMode.circular ? "Mode circular" :
+        x <- 0px; y <- 218px; font-size <- 17px; color <- #173047;
+        text <- root.mode == DialInputMode.circular ? "Mode circular" :
             root.mode == DialInputMode.horizontal ? "Mode horizontal" : "Mode vertical";
     }
     lock-dial := CheckBox {
-        x: 158px; y: 208px; height: 44px; width: 140px;
-        text: root.locked ? "Unlock dial" : "Lock dial";
-        checked <=> root.locked;
+        x <- 158px; y <- 208px; height <- 44px; width <- 140px;
+        text <- root.locked ? "Unlock dial" : "Lock dial";
+        checked <-> root.locked;
     }
     dial-releases := Text {
-        x: 0px; y: 264px;
-        text: "Dial releases " + root.releases;
-        font-size: 17px; color: #173047;
+        x <- 0px; y <- 264px;
+        text <- "Dial releases " + root.releases;
+        font-size <- 17px; color <- #173047;
     }
     dial-last-release := Text {
-        x: 158px; y: 264px;
-        text: "Released at " + Math.round(root.released-level);
-        font-size: 17px; color: #173047;
+        x <- 158px; y <- 264px;
+        text <- "Released at " + Math.round(root.released-level);
+        font-size <- 17px; color <- #173047;
     }
     open-tag-format := Button {
-        x: 0px; y: 52px; width: 76px; height: 44px; text: "Tags";
+        x <- 0px; y <- 52px; width <- 76px; height <- 44px; text <- "Tags";
         clicked => { root.format-open = true; }
     }
     open-range := Button {
-        x: 224px; y: 52px; width: 76px; height: 44px; text: "Range";
+        x <- 224px; y <- 52px; width <- 76px; height <- 44px; text <- "Range";
         clicked => { root.range-open = true; }
     }
     Dialog {
-        open <=> root.range-open;
-        title: "Range handles";
-        width: 338px; height: 376px;
-        background: #ffffff; color: #173047;
-        RangePanel { width: 100%; height: 292px; }
+        open <-> root.range-open;
+        title <- "Range handles";
+        width <- 338px; height <- 376px;
+        background <- #ffffff; color <- #173047;
+        RangePanel { width <- 100%; height <- 292px; }
     }
     Dialog {
-        open <=> root.format-open;
-        title: "Format asset tag";
-        width: 338px; height: 388px;
-        background: #ffffff; color: #173047;
-        TagFormatPanel { width: 100%; height: 304px; }
+        open <-> root.format-open;
+        title <- "Format asset tag";
+        width <- 338px; height <- 388px;
+        background <- #ffffff; color <- #173047;
+        TagFormatPanel { width <- 100%; height <- 304px; }
     }
 }
 
@@ -225,7 +225,7 @@ component ExportOptionsPanel inherits Rectangle {
     private property <bool> labels: true;
     private property <bool> manifest: false;
     private property <bool> compress: false;
-    private property <CheckState> review: once CheckState.unchecked;
+    private property <CheckState> review: CheckState.unchecked;
     private property <bool> show-review: false;
     private property <bool> options-locked: false;
     private property <int> bulk-edits: 0;
@@ -233,99 +233,99 @@ component ExportOptionsPanel inherits Rectangle {
     private property <bool> callback-order: true;
     private property <string> compression-event: "";
 
-    options := ButtonGroup { exclusive: false; enabled: !root.options-locked; }
+    options := ButtonGroup { exclusive <- false; enabled <- !root.options-locked; }
     export-summary := Text {
-        width: 100%; height: 28px;
-        horizontal-alignment: center; vertical-alignment: center;
-        text: options.check-state == CheckState.checked ? "All selected" :
+        width <- 100%; height <- 28px;
+        horizontal-alignment <- center; vertical-alignment <- center;
+        text <- options.check-state == CheckState.checked ? "All selected" :
             options.check-state == CheckState.partially-checked ? "Some selected" : "None selected";
-        font-size: 18px; color: #173047;
+        font-size <- 18px; color <- #173047;
     }
     select-export := CheckBox {
-        y: 38px; width: 298px; height: 44px;
-        text: "Select all"; enabled: !root.options-locked;
-        check-state <=> options.check-state;
+        y <- 38px; width <- 298px; height <- 44px;
+        text <- "Select all"; enabled <- !root.options-locked;
+        check-state <-> options.check-state;
         check-state-changed(state) => {
             root.bulk-edits += 1;
             root.callback-order = root.callback-order && options.check-state == state;
         }
         ToggleIndicator {
-            width: 24px; height: 24px;
-            background: select-export.check-state == CheckState.checked ? #27845f :
+            width <- 24px; height <- 24px;
+            background <- select-export.check-state == CheckState.checked ? #27845f :
                 select-export.check-state == CheckState.partially-checked ? #aa621d : #8e9cae;
-            border-radius: 4px;
+            border-radius <- 4px;
         }
     }
     export-labels := CheckBox {
-        y: 90px; width: 144px; height: 44px; group: options;
-        text: root.labels ? "Labels on" : "Labels off";
-        checked <=> root.labels;
+        y <- 90px; width <- 144px; height <- 44px; group <- options;
+        text <- root.labels ? "Labels on" : "Labels off";
+        checked <-> root.labels;
         toggled => { root.item-edits += 1; }
     }
     export-manifest := CheckBox {
-        x: 154px; y: 90px; width: 144px; height: 44px; group: options;
-        text: root.manifest ? "Manifest on" : "Manifest off";
-        checked <=> root.manifest; enabled: false;
+        x <- 154px; y <- 90px; width <- 144px; height <- 44px; group <- options;
+        text <- root.manifest ? "Manifest on" : "Manifest off";
+        checked <-> root.manifest; enabled <- false;
         toggled => { root.item-edits += 1; }
     }
     export-compress := Switch {
-        y: 142px; width: 298px; height: 44px; group: options;
-        text: root.compress ? "Compress on" : "Compress off";
-        checked <=> root.compress;
+        y <- 142px; width <- 298px; height <- 44px; group <- options;
+        text <- root.compress ? "Compress on" : "Compress off";
+        checked <-> root.compress;
         toggled => {
             root.item-edits += 1;
             root.compression-event = root.compress ? "Switch reported on" : "Switch reported off";
         }
     }
     if root.show-review : export-review := CheckBox {
-        y: 194px; width: 298px; height: 44px; group: options;
-        text: root.review == CheckState.checked ? "Review on" :
+        y <- 194px; width <- 298px; height <- 44px; group <- options;
+        text <- root.review == CheckState.checked ? "Review on" :
             root.review == CheckState.partially-checked ? "Review mixed" : "Review off";
-        tristate: true; check-state <=> root.review;
+        tristate <- true; check-state <-> root.review;
         check-state-changed(state) => {
             root.item-edits += 1;
             root.callback-order = root.callback-order && root.review == state;
         }
     }
     reveal-review := Button {
-        y: 252px; width: 144px; height: 44px;
-        text: root.show-review ? "Hide review" : "Reveal review";
+        y <- 252px; width <- 144px; height <- 44px;
+        text <- root.show-review ? "Hide review" : "Reveal review";
         clicked => { root.show-review = !root.show-review; }
     }
     lock-export := Button {
-        x: 154px; y: 252px; width: 144px; height: 44px;
-        text: root.options-locked ? "Unlock group" : "Lock group";
+        x <- 154px; y <- 252px; width <- 144px; height <- 44px;
+        text <- root.options-locked ? "Unlock group" : "Lock group";
         clicked => { root.options-locked = !root.options-locked; }
     }
     bulk-edits-label := Text {
-        y: 312px; text: "Bulk edits " + root.bulk-edits; font-size: 17px; color: #173047;
+        y <- 312px; text <- "Bulk edits " + root.bulk-edits; font-size <- 17px; color <- #173047;
     }
     item-edits-label := Text {
-        x: 154px; y: 320px; text: "Item edits " + root.item-edits; font-size: 17px; color: #173047;
+        x <- 154px; y <- 320px; text <- "Item edits " + root.item-edits; font-size <- 17px; color <- #173047;
     }
     group-order := Text {
-        y: 349px; text: root.callback-order ? "Order intact" : "Order error"; font-size: 17px; color: #173047;
+        y <- 349px; text <- root.callback-order ? "Order intact" : "Order error"; font-size <- 17px; color <- #173047;
     }
     compression-result := Text {
-        y: 379px; text: root.compression-event; font-size: 17px; color: #173047;
+        y <- 379px; text <- root.compression-event; font-size <- 17px; color <- #173047;
     }
 }
 
 component ConnectionDraft inherits VerticalLayout {
-    spacing: 8px;
+    spacing <- 8px;
     out property <string> draft: "";
-    out property <bool> editing: endpoint.has-focus;
+    out property <bool> editing <- endpoint.has-focus;
     callback saved();
 
     endpoint := LineEdit {
-        height: 44px;
-        text <=> root.draft;
-        accessible-name: "Server target";
-        placeholder-text: "Server target";
+        height <- 44px;
+        text <-> root.draft;
+        accessible-name <- "Server target";
+        placeholder-text <- "Server target";
     }
     apply-target := Button {
-        height: 44px;
-        text: "Apply target";
+        height <- 44px;
+        text <- "Apply target";
         clicked => { root.saved(); }
     }
 }
@@ -337,14 +337,14 @@ component TagFormatPanel inherits Rectangle {
     private property <int> finishes: 0;
     private property <string> finish-status: "No finished edit";
 
-    Text { text: "Asset tag"; font-size: 17px; color: #173047; }
+    Text { text <- "Asset tag"; font-size <- 17px; color <- #173047; }
     asset-tag := LineEdit {
-        y: 26px; width: 298px; height: 44px;
-        placeholder-text: "Scan or type";
-        input-mask: "AA-999";
-        input-pattern: "[A-Z]{2}-[0-9]{3}";
-        return-key: done;
-        text <=> root.tag;
+        y <- 26px; width <- 298px; height <- 44px;
+        placeholder-text <- "Scan or type";
+        input-mask <- "AA-999";
+        input-pattern <- "[A-Z]{2}-[0-9]{3}";
+        return-key <- done;
+        text <-> root.tag;
         accepted => {
             root.saved = root.tag;
             root.saves += 1;
@@ -355,28 +355,28 @@ component TagFormatPanel inherits Rectangle {
                 root.saved == value ? "Finished after save" : "Finished without submit";
         }
     }
-    Text { y: 82px; text: "Scanner sample"; font-size: 17px; color: #173047; }
+    Text { y <- 82px; text <- "Scanner sample"; font-size <- 17px; color <- #173047; }
     scan-sample := LineEdit {
-        y: 108px; width: 298px; height: 44px; read-only: true; text: "AB1";
+        y <- 108px; width <- 298px; height <- 44px; read-only <- true; text <- "AB1";
     }
     tag-draft := Text {
-        y: 168px; text: root.tag == "" ? "Tag empty" : "Draft " + root.tag;
-        font-size: 17px; color: #173047;
+        y <- 168px; text <- root.tag == "" ? "Tag empty" : "Draft " + root.tag;
+        font-size <- 17px; color <- #173047;
     }
     tag-ready := Text {
-        x: 154px; y: 174px; text: asset-tag.acceptable-input ? "Tag ready" : "Tag incomplete";
-        font-size: 17px; color: #173047;
+        x <- 154px; y <- 174px; text <- asset-tag.acceptable-input ? "Tag ready" : "Tag incomplete";
+        font-size <- 17px; color <- #173047;
     }
     tag-saved := Text {
-        y: 202px; text: root.saved == "" ? "Tag unsaved" : "Saved " + root.saved;
-        font-size: 17px; color: #173047;
+        y <- 202px; text <- root.saved == "" ? "Tag unsaved" : "Saved " + root.saved;
+        font-size <- 17px; color <- #173047;
     }
-    tag-saves := Text { y: 234px; text: "Saves " + root.saves; font-size: 17px; color: #173047; }
+    tag-saves := Text { y <- 234px; text <- "Saves " + root.saves; font-size <- 17px; color <- #173047; }
     tag-finishes := Text {
-        x: 154px; y: 240px; text: "Finishes " + root.finishes;
-        font-size: 17px; color: #173047;
+        x <- 154px; y <- 240px; text <- "Finishes " + root.finishes;
+        font-size <- 17px; color <- #173047;
     }
-    tag-finish := Text { y: 272px; text: root.finish-status; font-size: 17px; color: #173047; }
+    tag-finish := Text { y <- 272px; text <- root.finish-status; font-size <- 17px; color <- #173047; }
 }
 
 component ConnectionPanel inherits Rectangle {
@@ -387,59 +387,59 @@ component ConnectionPanel inherits Rectangle {
     private property <int> saves: 0;
 
     fold-shortcut := Shortcut {
-        sequence: "F8";
+        sequence <- "F8";
         activated => { root.details-open = false; }
     }
     VerticalLayout {
-        width: 100%; spacing: 6px; alignment: start;
+        width <- 100%; spacing <- 6px; alignment <- start;
         HorizontalLayout {
-            height: 44px; spacing: 8px;
+            height <- 44px; spacing <- 8px;
             fold-target := Button {
-                width: 144px; text: "Fold target";
-                enabled: root.details-open && root.delivery-on;
-                focus-on-click: false;
+                width <- 144px; text <- "Fold target";
+                enabled <- root.details-open && root.delivery-on;
+                focus-on-click <- false;
                 clicked => { root.details-open = false; }
             }
             disable-delivery := Button {
-                width: 154px; text: "Disable delivery";
-                enabled: root.delivery-on;
-                focus-on-click: false;
+                width <- 154px; text <- "Disable delivery";
+                enabled <- root.delivery-on;
+                focus-on-click <- false;
                 clicked => { root.delivery-on = false; }
             }
         }
         delivery := GroupBox {
-            title: root.delivery-on ? "Delivery on" : "Delivery off";
-            checkable: true;
-            checked <=> root.delivery-on;
+            title <- root.delivery-on ? "Delivery on" : "Delivery off";
+            checkable <- true;
+            checked <-> root.delivery-on;
             toggled(checked) => { root.group-edits += 1; }
-            content-padding: 8px;
+            content-padding <- 8px;
             details := Expander {
-                title: "Advanced target";
-                expanded <=> root.details-open;
+                title <- "Advanced target";
+                expanded <-> root.details-open;
                 expanded-changed(value) => { root.folds += 1; }
-                content-padding: 8px;
+                content-padding <- 8px;
                 profile := ConnectionDraft {
                     saved => { root.saves += 1; }
                 }
             }
         }
         connection-draft := Text {
-            height: 24px; font-size: 17px; color: #173047;
-            text: profile.draft == "" ? "Draft empty" : "Draft " + profile.draft;
+            height <- 24px; font-size <- 17px; color <- #173047;
+            text <- profile.draft == "" ? "Draft empty" : "Draft " + profile.draft;
         }
         connection-focus := Text {
-            height: 24px; font-size: 17px; color: #173047;
-            text: profile.editing ? "Editing target" : details.has-focus ? "Details focus" :
+            height <- 24px; font-size <- 17px; color <- #173047;
+            text <- profile.editing ? "Editing target" : details.has-focus ? "Details focus" :
                 delivery.has-focus ? "Delivery focus" : "Outside focus";
         }
         connection-folds := Text {
-            height: 24px; font-size: 17px; color: #173047; text: "Folds " + root.folds;
+            height <- 24px; font-size <- 17px; color <- #173047; text <- "Folds " + root.folds;
         }
         connection-groups := Text {
-            height: 24px; font-size: 17px; color: #173047; text: "Groups " + root.group-edits;
+            height <- 24px; font-size <- 17px; color <- #173047; text <- "Groups " + root.group-edits;
         }
         connection-saves := Text {
-            height: 24px; font-size: 17px; color: #173047; text: "Saves " + root.saves;
+            height <- 24px; font-size <- 17px; color <- #173047; text <- "Saves " + root.saves;
         }
     }
 }
@@ -452,49 +452,49 @@ component DelayConfirmationPanel inherits Rectangle {
     private property <bool> order-ok: true;
 
     auto-lock := Timer {
-        interval: 7000;
-        running <=> root.lock-pending;
+        interval <- 7000;
+        running <-> root.lock-pending;
         triggered => { root.locked = true; }
     }
     confirmation-count := Text {
-        width: 100%; height: 28px;
-        horizontal-alignment: center; vertical-alignment: center;
-        text: "Confirmations " + root.confirmations; color: #173047; font-size: 18px;
+        width <- 100%; height <- 28px;
+        horizontal-alignment <- center; vertical-alignment <- center;
+        text <- "Confirmations " + root.confirmations; color <- #173047; font-size <- 18px;
     }
     choice-scroll := ScrollView {
-        y: 52px; width: 298px; height: 206px; content-height: 390px;
+        y <- 52px; width <- 298px; height <- 206px; content-height <- 390px;
         confirmation := DelayButton {
-            x: 8px; y: 12px; width: 270px; height: 56px;
-            text: root.confirmed ? "Confirmed" : "Hold to verify";
-            checked <=> root.confirmed;
-            enabled: !root.locked; delay: 8200;
-            progress-color: #247e64;
+            x <- 8px; y <- 12px; width <- 270px; height <- 56px;
+            text <- root.confirmed ? "Confirmed" : "Hold to verify";
+            checked <-> root.confirmed;
+            enabled <- !root.locked; delay <- 8200;
+            progress-color <- #247e64;
             activated => {
                 root.confirmations += 1;
                 root.order-ok = root.order-ok && root.confirmed;
             }
         }
-        Text { x: 12px; y: 100px; text: "Scroll guide"; font-size: 17px; color: #173047; }
-        Text { x: 12px; y: 245px; text: "Archived choices"; font-size: 17px; color: #173047; }
+        Text { x <- 12px; y <- 100px; text <- "Scroll guide"; font-size <- 17px; color <- #173047; }
+        Text { x <- 12px; y <- 245px; text <- "Archived choices"; font-size <- 17px; color <- #173047; }
     }
     schedule-lock := Button {
-        y: 276px; width: 144px; height: 44px;
-        text: root.lock-pending ? "Lock pending" : "Schedule lock";
-        enabled: !root.locked && !root.lock-pending;
+        y <- 276px; width <- 144px; height <- 44px;
+        text <- root.lock-pending ? "Lock pending" : "Schedule lock";
+        enabled <- !root.locked && !root.lock-pending;
         clicked => { auto-lock.restart(); }
     }
     lock-confirmation := CheckBox {
-        x: 154px; y: 276px; width: 144px; height: 44px;
-        text: root.locked ? "Unlock check" : "Lock check";
-        checked <=> root.locked;
+        x <- 154px; y <- 276px; width <- 144px; height <- 44px;
+        text <- root.locked ? "Unlock check" : "Lock check";
+        checked <-> root.locked;
     }
     confirmation-state := Text {
-        y: 334px; font-size: 17px; color: #173047;
-        text: root.locked ? "Input locked" : root.confirmed ? "Confirmed state" : "Ready to hold";
+        y <- 334px; font-size <- 17px; color <- #173047;
+        text <- root.locked ? "Input locked" : root.confirmed ? "Confirmed state" : "Ready to hold";
     }
     confirmation-order := Text {
-        y: 362px; font-size: 17px; color: #173047;
-        text: root.order-ok ? "Order intact" : "Order error";
+        y <- 362px; font-size <- 17px; color <- #173047;
+        text <- root.order-ok ? "Order intact" : "Order error";
     }
 }
 
@@ -510,15 +510,15 @@ component ClickRoutesPanel inherits Rectangle {
     private property <int> other: 0;
 
     pair-command := Action {
-        text: "Pair target";
+        text <- "Pair target";
         activated => {
             root.commands += 1;
             root.order-ok = root.order-ok && root.commands == root.releases;
         }
     }
     pair-target := Button {
-        width: 298px; height: 52px;
-        action: pair-command; enabled: !root.locked;
+        width <- 298px; height <- 52px;
+        action <- pair-command; enabled <- !root.locked;
         pressed => {
             root.presses += 1;
             root.order-ok = root.order-ok && self.pressed;
@@ -538,39 +538,39 @@ component ClickRoutesPanel inherits Rectangle {
         }
     }
     other-target := Button {
-        y: 60px; width: 298px; height: 44px;
-        text: "Other target";
+        y <- 60px; width <- 298px; height <- 44px;
+        text <- "Other target";
         clicked => { root.other += 1; }
     }
     sync-pair-click := Button {
-        y: 116px; width: 144px; height: 44px;
-        text: "Program click";
+        y <- 116px; width <- 144px; height <- 44px;
+        text <- "Program click";
         clicked => { pair-target.click(); }
     }
     animate-pair := Button {
-        x: 154px; y: 116px; width: 144px; height: 44px;
-        text: "Animate twice";
+        x <- 154px; y <- 116px; width <- 144px; height <- 44px;
+        text <- "Animate twice";
         clicked => { pair-target.animate-click(); pair-target.animate-click(); }
     }
     cancel-pair := Button {
-        y: 168px; width: 144px; height: 44px;
-        text: "Cancel queued";
-        enabled: !root.locked;
+        y <- 168px; width <- 144px; height <- 44px;
+        text <- "Cancel queued";
+        enabled <- !root.locked;
         clicked => { pair-target.animate-click(); root.locked = true; }
     }
     lock-pair := CheckBox {
-        x: 154px; y: 168px; width: 144px; height: 44px;
-        text: root.locked ? "Unlock target" : "Lock target";
-        checked <=> root.locked;
+        x <- 154px; y <- 168px; width <- 144px; height <- 44px;
+        text <- root.locked ? "Unlock target" : "Lock target";
+        checked <-> root.locked;
     }
-    pair-commands := Text { y: 224px; text: "Commands " + root.commands; font-size: 17px; color: #173047; }
-    pair-count := Text { y: 259px; text: "Pairs " + root.pairs; font-size: 17px; color: #173047; }
-    paired-after := Text { x: 154px; y: 266px; text: "Paired after " + root.paired-after; font-size: 17px; color: #173047; }
-    pair-presses := Text { y: 294px; text: "Presses " + root.presses; font-size: 17px; color: #173047; }
-    pair-releases := Text { x: 154px; y: 301px; text: "Releases " + root.releases; font-size: 17px; color: #173047; }
-    pair-cancels := Text { y: 329px; text: "Cancels " + root.cancels; font-size: 17px; color: #173047; }
-    other-count := Text { x: 154px; y: 336px; text: "Other taps " + root.other; font-size: 17px; color: #173047; }
-    pair-order := Text { y: 364px; text: root.order-ok ? "Order intact" : "Order error"; font-size: 17px; color: #173047; }
+    pair-commands := Text { y <- 224px; text <- "Commands " + root.commands; font-size <- 17px; color <- #173047; }
+    pair-count := Text { y <- 259px; text <- "Pairs " + root.pairs; font-size <- 17px; color <- #173047; }
+    paired-after := Text { x <- 154px; y <- 266px; text <- "Paired after " + root.paired-after; font-size <- 17px; color <- #173047; }
+    pair-presses := Text { y <- 294px; text <- "Presses " + root.presses; font-size <- 17px; color <- #173047; }
+    pair-releases := Text { x <- 154px; y <- 301px; text <- "Releases " + root.releases; font-size <- 17px; color <- #173047; }
+    pair-cancels := Text { y <- 329px; text <- "Cancels " + root.cancels; font-size <- 17px; color <- #173047; }
+    other-count := Text { x <- 154px; y <- 336px; text <- "Other taps " + root.other; font-size <- 17px; color <- #173047; }
+    pair-order := Text { y <- 364px; text <- root.order-ok ? "Order intact" : "Order error"; font-size <- 17px; color <- #173047; }
 }
 
 component PasswordPanel inherits Rectangle {
@@ -578,40 +578,40 @@ component PasswordPanel inherits Rectangle {
     private property <string> probe: "checkpad";
     private property <bool> revealed: false;
 
-    Text { text: "Password field"; font-size: 17px; color: #173047; }
+    Text { text <- "Password field"; font-size <- 17px; color <- #173047; }
     password-entry := LineEdit {
-        y: 28px; width: 298px; height: 44px;
-        accessible-name: "Test passphrase";
-        input-type: password;
-        password-character: "X"; password-visible: root.revealed;
-        placeholder-text: "Test passphrase"; text <=> root.value;
+        y <- 28px; width <- 298px; height <- 44px;
+        accessible-name <- "Test passphrase";
+        input-type <- password;
+        password-character <- "X"; password-visible <- root.revealed;
+        placeholder-text <- "Test passphrase"; text <-> root.value;
     }
     reveal-password := Button {
-        y: 90px; width: 144px; height: 44px;
-        focus-on-click: false;
-        text: root.revealed ? "Mask value" : "Reveal value";
+        y <- 90px; width <- 144px; height <- 44px;
+        focus-on-click <- false;
+        text <- root.revealed ? "Mask value" : "Reveal value";
         clicked => { root.revealed = !root.revealed; }
     }
     clear-probe := Button {
-        x: 154px; y: 90px; width: 144px; height: 44px;
-        focus-on-click: false;
-        text: "Clear probe";
+        x <- 154px; y <- 90px; width <- 144px; height <- 44px;
+        focus-on-click <- false;
+        text <- "Clear probe";
         clicked => { root.probe = ""; }
     }
-    Text { y: 154px; text: "Clipboard probe"; font-size: 17px; color: #173047; }
+    Text { y <- 154px; text <- "Clipboard probe"; font-size <- 17px; color <- #173047; }
     clipboard-entry := TextInput {
-        y: 182px; width: 298px; height: 44px;
-        accessible-name: "Paste proof";
-        placeholder-text: "Paste proof";
-        text <=> root.probe;
+        y <- 182px; width <- 298px; height <- 44px;
+        accessible-name <- "Paste proof";
+        placeholder-text <- "Paste proof";
+        text <-> root.probe;
     }
     password-result := Text {
-        y: 246px; font-size: 17px; color: #173047;
-        text: root.value == "moss7" ? "Bound match" : root.value == "" ? "Bound empty" : "Bound changed";
+        y <- 246px; font-size <- 17px; color <- #173047;
+        text <- root.value == "moss7" ? "Bound match" : root.value == "" ? "Bound empty" : "Bound changed";
     }
     probe-result := Text {
-        y: 274px; font-size: 17px; color: #173047;
-        text: root.probe == "checkpad" ? "Probe sentinel" : root.probe == "" ? "Probe empty" : "Probe changed";
+        y <- 274px; font-size <- 17px; color <- #173047;
+        text <- root.probe == "checkpad" ? "Probe sentinel" : root.probe == "" ? "Probe empty" : "Probe changed";
     }
 }
 
@@ -631,8 +631,8 @@ component ButtonHoldPanel inherits Rectangle {
     private property <bool> password-open: false;
 
     inspect-button := Button {
-        width: 298px; height: 52px; text: "Inspect control";
-        press-and-hold-interval: 6000;
+        width <- 298px; height <- 52px; text <- "Inspect control";
+        press-and-hold-interval <- 6000;
         pressed => {
             root.presses += 1;
             root.order-ok = root.order-ok && self.pressed;
@@ -655,20 +655,20 @@ component ButtonHoldPanel inherits Rectangle {
         }
     }
     hold-state := Text {
-        y: 62px; text: inspect-button.pressed ? "Inspection held" : "Inspection idle";
-        font-size: 17px; color: #173047;
+        y <- 62px; text <- inspect-button.pressed ? "Inspection held" : "Inspection idle";
+        font-size <- 17px; color <- #173047;
     }
-    press-count := Text { y: 92px; text: "Presses " + root.presses; font-size: 17px; color: #173047; }
-    release-count := Text { x: 154px; y: 99px; text: "Releases " + root.releases; font-size: 17px; color: #173047; }
-    cancel-count := Text { y: 127px; text: "Cancels " + root.cancels; font-size: 17px; color: #173047; }
-    tap-count := Text { x: 154px; y: 134px; text: "Taps " + root.taps; font-size: 17px; color: #173047; }
-    hold-count := Text { y: 162px; text: "Holds " + root.holds; font-size: 17px; color: #173047; }
+    press-count := Text { y <- 92px; text <- "Presses " + root.presses; font-size <- 17px; color <- #173047; }
+    release-count := Text { x <- 154px; y <- 99px; text <- "Releases " + root.releases; font-size <- 17px; color <- #173047; }
+    cancel-count := Text { y <- 127px; text <- "Cancels " + root.cancels; font-size <- 17px; color <- #173047; }
+    tap-count := Text { x <- 154px; y <- 134px; text <- "Taps " + root.taps; font-size <- 17px; color <- #173047; }
+    hold-count := Text { y <- 162px; text <- "Holds " + root.holds; font-size <- 17px; color <- #173047; }
 
     repeat-step := ToolButton {
-        y: 199px; width: 298px; height: 52px;
-        text: root.repeats < 3 ? "Repeat step" : "Repeat stopped";
-        enabled: root.repeats < 3;
-        auto-repeat: true; auto-repeat-delay: 450; auto-repeat-interval: 220;
+        y <- 199px; width <- 298px; height <- 52px;
+        text <- root.repeats < 3 ? "Repeat step" : "Repeat stopped";
+        enabled <- root.repeats < 3;
+        auto-repeat <- true; auto-repeat-delay <- 450; auto-repeat-interval <- 220;
         clicked => {
             root.repeats += 1;
             root.repeat-saw-press = self.pressed;
@@ -676,67 +676,67 @@ component ButtonHoldPanel inherits Rectangle {
         released => { root.repeat-releases += 1; }
         canceled => { root.repeat-cancels += 1; }
     }
-    repeat-count := Text { y: 262px; text: "Steps " + root.repeats; font-size: 17px; color: #173047; }
+    repeat-count := Text { y <- 262px; text <- "Steps " + root.repeats; font-size <- 17px; color <- #173047; }
     open-click-routes := Button {
-        x: 154px; y: 249px; width: 144px; height: 44px;
-        text: "Open clicks";
+        x <- 154px; y <- 249px; width <- 144px; height <- 44px;
+        text <- "Open clicks";
         clicked => { root.clicks-open = true; }
     }
     repeat-cancel-count := Text {
-        y: 292px; text: "Step cancels " + root.repeat-cancels; font-size: 17px; color: #173047;
+        y <- 292px; text <- "Step cancels " + root.repeat-cancels; font-size <- 17px; color <- #173047;
     }
     repeat-release-count := Text {
-        y: 322px; text: "Step releases " + root.repeat-releases; font-size: 17px; color: #173047;
+        y <- 322px; text <- "Step releases " + root.repeat-releases; font-size <- 17px; color <- #173047;
     }
     open-password := Button {
-        x: 154px; y: 304px; width: 144px; height: 44px;
-        text: "Open privacy";
+        x <- 154px; y <- 304px; width <- 144px; height <- 44px;
+        text <- "Open privacy";
         clicked => { root.password-open = true; }
     }
     repeat-state := Text {
-        y: 352px;
-        text: root.repeats == 0 ? "Steps ready" :
+        y <- 352px;
+        text <- root.repeats == 0 ? "Steps ready" :
             root.repeat-saw-press ? "Step saw press" : "Step saw release";
-        font-size: 17px; color: #173047;
+        font-size <- 17px; color <- #173047;
     }
     hold-order := Text {
-        y: 382px; text: root.order-ok ? "Order intact" : "Order error";
-        font-size: 17px; color: #173047;
+        y <- 382px; text <- root.order-ok ? "Order intact" : "Order error";
+        font-size <- 17px; color <- #173047;
     }
     open-delay-confirmation := Button {
-        x: 154px; y: 367px; width: 144px; height: 44px;
-        text: "Open verify";
+        x <- 154px; y <- 367px; width <- 144px; height <- 44px;
+        text <- "Open verify";
         clicked => { root.delay-open = true; }
     }
     Dialog {
-        open <=> root.delay-open;
-        title: "Hold confirmation";
-        width: 338px; height: 474px;
-        background: #ffffff; color: #173047;
-        DelayConfirmationPanel { width: 100%; height: 390px; }
+        open <-> root.delay-open;
+        title <- "Hold confirmation";
+        width <- 338px; height <- 474px;
+        background <- #ffffff; color <- #173047;
+        DelayConfirmationPanel { width <- 100%; height <- 390px; }
     }
     Dialog {
-        open <=> root.clicks-open;
-        title: "Click routes";
-        width: 338px; height: 482px;
-        background: #ffffff; color: #173047;
-        ClickRoutesPanel { width: 100%; height: 398px; }
+        open <-> root.clicks-open;
+        title <- "Click routes";
+        width <- 338px; height <- 482px;
+        background <- #ffffff; color <- #173047;
+        ClickRoutesPanel { width <- 100%; height <- 398px; }
     }
     Dialog {
-        open <=> root.password-open;
-        title: "Password privacy";
-        width: 338px; height: 392px;
-        background: #ffffff; color: #173047;
-        PasswordPanel { width: 100%; height: 308px; }
+        open <-> root.password-open;
+        title <- "Password privacy";
+        width <- 338px; height <- 392px;
+        background <- #ffffff; color <- #173047;
+        PasswordPanel { width <- 100%; height <- 308px; }
     }
 }
 
 export component MobileControls inherits Window {
-    title: "XRack Controls";
-    width: 390px;
-    height: 740px;
-    background: #f3f7fb;
-    color-scheme: light;
+    title <- "XRack Controls";
+    width <- 390px;
+    height <- 740px;
+    background <- #f3f7fb;
+    color-scheme <- light;
 
     in-out property <float> volume: 25;
     in-out property <bool> muted: false;
@@ -766,236 +766,236 @@ export component MobileControls inherits Window {
     private property <bool> connection-open: false;
     private property <bool> button-holds-open: false;
 
-    Text { color: #173047; x: 24px; y: 20px; text: "XRack Controls"; font-size: 27px; font-weight: 700; }
+    Text { color <- #173047; x <- 24px; y <- 20px; text <- "XRack Controls"; font-size <- 27px; font-weight <- 700; }
     open-dial := Button {
-        x: 240px; y: 14px; width: 126px; height: 44px;
-        text: "Open dial";
+        x <- 240px; y <- 14px; width <- 126px; height <- 44px;
+        text <- "Open dial";
         clicked => { root.dial-open = true; }
     }
-    volume-label := Text { color: #173047; font-size: 17px; x: 24px; y: 66px; text: "Volume " + root.volume; }
+    volume-label := Text { color <- #173047; font-size <- 17px; x <- 24px; y <- 66px; text <- "Volume " + root.volume; }
     volume-slider := Slider {
-        x: 24px; y: 94px; width: 342px; height: 40px;
-        accessible-name: "Volume control";
-        minimum: 0; maximum: 100; step: 5;
-        snap-mode: ScrollSnapMode.always;
-        value <=> root.volume;
-        enabled: !root.muted;
+        x <- 24px; y <- 94px; width <- 342px; height <- 40px;
+        accessible-name <- "Volume control";
+        minimum <- 0; maximum <- 100; step <- 5;
+        snap-mode <- ScrollSnapMode.always;
+        value <-> root.volume;
+        enabled <- !root.muted;
         changed(value) => { root.changes += 1; }
         released(value) => { root.releases += 1; }
     }
     mute := Switch {
-        x: 24px; y: 142px; width: 150px; height: 40px;
-        text: "Mute";
-        checked <=> root.muted;
+        x <- 24px; y <- 142px; width <- 150px; height <- 40px;
+        text <- "Mute";
+        checked <-> root.muted;
     }
     meter := ProgressIndicator {
-        x: 194px; y: 156px; width: 172px; height: 12px;
-        progress: root.volume / 100.0;
+        x <- 194px; y <- 156px; width <- 172px; height <- 12px;
+        progress <- root.volume / 100.0;
     }
     open-connection := Button {
-        x: 228px; y: 182px; width: 138px; height: 44px;
-        text: "Open profile";
+        x <- 228px; y <- 182px; width <- 138px; height <- 44px;
+        text <- "Open profile";
         clicked => { root.connection-open = true; }
     }
 
-    range-label := Text { color: #173047; font-size: 17px; x: 24px; y: 202px; text: "Range " + root.lower + " - " + root.upper; }
+    range-label := Text { color <- #173047; font-size <- 17px; x <- 24px; y <- 202px; text <- "Range " + root.lower + " - " + root.upper; }
     range := RangeSlider {
-        x: 24px; y: 230px; width: 342px; height: 40px;
-        minimum: 0; maximum: 100; step: 5;
-        snap-mode: ScrollSnapMode.on-release;
-        lower-value <=> root.lower;
-        upper-value <=> root.upper;
-        enabled: !root.locked;
+        x <- 24px; y <- 230px; width <- 342px; height <- 40px;
+        minimum <- 0; maximum <- 100; step <- 5;
+        snap-mode <- ScrollSnapMode.on-release;
+        lower-value <-> root.lower;
+        upper-value <-> root.upper;
+        enabled <- !root.locked;
     }
     lock := CheckBox {
-        x: 24px; y: 280px; width: 200px; height: 40px;
-        text: "Lock inputs";
-        checked <=> root.locked;
+        x <- 24px; y <- 280px; width <- 200px; height <- 40px;
+        text <- "Lock inputs";
+        checked <-> root.locked;
     }
     open-export := Button {
-        x: 228px; y: 278px; width: 138px; height: 44px;
-        text: "Open options";
+        x <- 228px; y <- 278px; width <- 138px; height <- 44px;
+        text <- "Open options";
         clicked => { root.export-open = true; }
     }
 
-    count-label := Text { color: #173047; font-size: 17px; x: 24px; y: 340px; text: "Count " + root.count; }
-    gain-label := Text { color: #173047; font-size: 17px; x: 204px; y: 340px; text: "Gain " + root.gain; }
+    count-label := Text { color <- #173047; font-size <- 17px; x <- 24px; y <- 340px; text <- "Count " + root.count; }
+    gain-label := Text { color <- #173047; font-size <- 17px; x <- 204px; y <- 340px; text <- "Gain " + root.gain; }
     count-input := SpinBox {
-        x: 24px; y: 368px; width: 144px; height: 44px;
-        minimum: 0; maximum: 5; step-size: 1;
-        value <=> root.count;
-        enabled: !root.locked;
+        x <- 24px; y <- 368px; width <- 144px; height <- 44px;
+        minimum <- 0; maximum <- 5; step-size <- 1;
+        value <-> root.count;
+        enabled <- !root.locked;
     }
     gain-input := DoubleSpinBox {
-        x: 204px; y: 368px; width: 144px; height: 44px;
-        minimum: 0; maximum: 3; step-size: 0.5; decimals: 1;
-        value <=> root.gain;
-        enabled: !root.locked;
+        x <- 204px; y <- 368px; width <- 144px; height <- 44px;
+        minimum <- 0; maximum <- 3; step-size <- 0.5; decimals <- 1;
+        value <-> root.gain;
+        enabled <- !root.locked;
     }
 
     open-button-holds := Button {
-        x: 228px; y: 417px; width: 138px; height: 44px;
-        text: "Open holds";
+        x <- 228px; y <- 417px; width <- 138px; height <- 44px;
+        text <- "Open holds";
         clicked => { root.button-holds-open = true; }
     }
-    choice-label := Text { color: #173047; font-size: 17px;
-        x: 24px; y: 438px;
-        text: "Priority " + (root.priority == 0 ? "Normal" : root.priority == 1 ? "Urgent" : "Deferred");
+    choice-label := Text { color <- #173047; font-size <- 17px;
+        x <- 24px; y <- 438px;
+        text <- "Priority " + (root.priority == 0 ? "Normal" : root.priority == 1 ? "Urgent" : "Deferred");
     }
     priority-choice := ComboBox {
-        x: 24px; y: 466px; width: 342px; height: 44px;
-        model: ["Normal", "Urgent", "Deferred"];
-        current-index <=> root.priority;
-        enabled: !root.locked;
+        x <- 24px; y <- 466px; width <- 342px; height <- 44px;
+        model <- ["Normal", "Urgent", "Deferred"];
+        current-index <-> root.priority;
+        enabled <- !root.locked;
     }
 
     opener := Button {
-        x: 24px; y: 544px; width: 152px; height: 44px;
-        text: "Open dialog";
+        x <- 24px; y <- 544px; width <- 152px; height <- 44px;
+        text <- "Open dialog";
         clicked => { root.shown = true; }
     }
     background-action := Button {
-        x: 192px; y: 544px; width: 170px; height: 44px;
-        text: "Background " + root.background-clicks;
+        x <- 192px; y <- 544px; width <- 170px; height <- 44px;
+        text <- "Background " + root.background-clicks;
         clicked => { root.background-clicks += 1; }
     }
-    changes-label := Text { color: #173047; font-size: 17px; x: 24px; y: 614px; text: "Changes " + root.changes; }
-    releases-label := Text { color: #173047; font-size: 17px; x: 204px; y: 614px; text: "Releases " + root.releases; }
-    accepted-label := Text { color: #173047; font-size: 17px; x: 24px; y: 648px; text: "Accepted " + root.accepted; }
-    rejected-label := Text { color: #173047; font-size: 17px; x: 204px; y: 648px; text: "Rejected " + root.rejected; }
+    changes-label := Text { color <- #173047; font-size <- 17px; x <- 24px; y <- 614px; text <- "Changes " + root.changes; }
+    releases-label := Text { color <- #173047; font-size <- 17px; x <- 204px; y <- 614px; text <- "Releases " + root.releases; }
+    accepted-label := Text { color <- #173047; font-size <- 17px; x <- 24px; y <- 648px; text <- "Accepted " + root.accepted; }
+    rejected-label := Text { color <- #173047; font-size <- 17px; x <- 204px; y <- 648px; text <- "Rejected " + root.rejected; }
     open-wheels := Button {
-        x: 24px; y: 680px; width: 170px; height: 44px;
-        text: "Open wheels";
+        x <- 24px; y <- 680px; width <- 170px; height <- 44px;
+        text <- "Open wheels";
         clicked => { root.wheels-open = true; }
     }
     open-gestures := Button {
-        x: 200px; y: 680px; width: 166px; height: 44px;
-        text: "Open gestures";
+        x <- 200px; y <- 680px; width <- 166px; height <- 44px;
+        text <- "Open gestures";
         clicked => { root.gesture-open = true; }
     }
 
     Dialog {
-        open <=> root.gesture-open;
-        title: "Touch transforms";
-        width: 338px; height: 414px;
-        background: #ffffff; color: #173047;
-        GesturePad { width: 100%; height: 318px; }
+        open <-> root.gesture-open;
+        title <- "Touch transforms";
+        width <- 338px; height <- 414px;
+        background <- #ffffff; color <- #173047;
+        GesturePad { width <- 100%; height <- 318px; }
     }
 
     Dialog {
-        open <=> root.dial-open;
-        title: "Dial controls";
-        width: 338px; height: 386px;
-        background: #ffffff; color: #173047;
-        DialPanel { width: 100%; height: 304px; }
+        open <-> root.dial-open;
+        title <- "Dial controls";
+        width <- 338px; height <- 386px;
+        background <- #ffffff; color <- #173047;
+        DialPanel { width <- 100%; height <- 304px; }
     }
     Dialog {
-        open <=> root.export-open;
-        title: "Export options";
-        width: 338px; height: 492px;
-        background: #ffffff; color: #173047;
-        ExportOptionsPanel { width: 100%; height: 408px; }
+        open <-> root.export-open;
+        title <- "Export options";
+        width <- 338px; height <- 492px;
+        background <- #ffffff; color <- #173047;
+        ExportOptionsPanel { width <- 100%; height <- 408px; }
     }
     Dialog {
-        open <=> root.connection-open;
-        title: "Connection profile";
-        width: 338px; height: 498px;
-        background: #ffffff; color: #173047;
-        ConnectionPanel { width: 100%; height: 414px; }
+        open <-> root.connection-open;
+        title <- "Connection profile";
+        width <- 338px; height <- 498px;
+        background <- #ffffff; color <- #173047;
+        ConnectionPanel { width <- 100%; height <- 414px; }
     }
     Dialog {
-        open <=> root.button-holds-open;
-        title: "Button holds";
-        width: 338px; height: 496px;
-        background: #ffffff; color: #173047;
-        ButtonHoldPanel { width: 100%; height: 412px; }
+        open <-> root.button-holds-open;
+        title <- "Button holds";
+        width <- 338px; height <- 496px;
+        background <- #ffffff; color <- #173047;
+        ButtonHoldPanel { width <- 100%; height <- 412px; }
     }
 
     wheels := Dialog {
-        open <=> root.wheels-open;
-        title: "Selection wheels";
-        width: 338px; height: 514px;
-        background: #ffffff; color: #173047;
+        open <-> root.wheels-open;
+        title <- "Selection wheels";
+        width <- 338px; height <- 514px;
+        background <- #ffffff; color <- #173047;
         VerticalLayout {
-            spacing: 6px;
-            wheel-value := Text { text: "Wheel index " + root.wheel-index; font-size: 17px; color: #173047; }
-            wheel-count := Text { text: "Wheel commits " + root.wheel-commits; font-size: 17px; color: #173047; }
-            wheel-state := Text { text: wheel.dragging ? "Dragging wheel" : "Wheel idle"; font-size: 17px; color: #173047; }
+            spacing <- 6px;
+            wheel-value := Text { text <- "Wheel index " + root.wheel-index; font-size <- 17px; color <- #173047; }
+            wheel-count := Text { text <- "Wheel commits " + root.wheel-commits; font-size <- 17px; color <- #173047; }
+            wheel-state := Text { text <- wheel.dragging ? "Dragging wheel" : "Wheel idle"; font-size <- 17px; color <- #173047; }
             wheel := Tumbler {
-                height: 108px;
-                model: ["Cedar", "Maple", "Birch", "Pine", "Willow"];
-                visible-item-count: 3;
-                current-index <=> root.wheel-index;
-                wrap: root.wrap-wheel;
-                enabled: !root.lock-wheels;
-                flick-deceleration: 0;
+                height <- 108px;
+                model <- ["Cedar", "Maple", "Birch", "Pine", "Willow"];
+                visible-item-count <- 3;
+                current-index <-> root.wheel-index;
+                wrap <- root.wrap-wheel;
+                enabled <- !root.lock-wheels;
+                flick-deceleration <- 0;
                 changed(index) => { root.wheel-commits += 1; }
             }
-            wrap := CheckBox { text: root.wrap-wheel ? "Clamp wheel" : "Wrap wheel"; checked <=> root.wrap-wheel; height: 34px; }
-            card-value := Text { text: "Card code " + root.card-code; font-size: 17px; color: #173047; }
-            card-count := Text { text: "Card commits " + root.card-commits; font-size: 17px; color: #173047; }
+            wrap := CheckBox { text <- root.wrap-wheel ? "Clamp wheel" : "Wrap wheel"; checked <-> root.wrap-wheel; height <- 34px; }
+            card-value := Text { text <- "Card code " + root.card-code; font-size <- 17px; color <- #173047; }
+            card-count := Text { text <- "Card commits " + root.card-commits; font-size <- 17px; color <- #173047; }
             gallery := PathView {
-                accessible-name: "Route cards";
-                height: 105px;
-                model: [
+                accessible-name <- "Route cards";
+                height <- 105px;
+                model <- [
                     GalleryCard { caption: "Port", code: 10, tint: #385e8c },
                     GalleryCard { caption: "Buoy", code: 20, tint: #396d72 },
                     GalleryCard { caption: "Reef", code: 30, tint: #76549b },
                     GalleryCard { caption: "Pier", code: 40, tint: #674e81 },
                     GalleryCard { caption: "Dock", code: 50, tint: #3c648c },
                 ];
-                text-role: "caption"; value-role: "code";
-                current-value <=> root.card-code;
-                item-width: 72px; item-height: 48px;
-                visible-item-count: 3;
-                path: "M 0 0.82 Q 0.5 0.05 1 0.82";
-                layout-direction: root.mirror-cards ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
-                wrap: false;
-                enabled: !root.lock-wheels;
-                flick-deceleration: 0;
+                text-role <- "caption"; value-role <- "code";
+                current-value <-> root.card-code;
+                item-width <- 72px; item-height <- 48px;
+                visible-item-count <- 3;
+                path <- "M 0 0.82 Q 0.5 0.05 1 0.82";
+                layout-direction <- root.mirror-cards ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+                wrap <- false;
+                enabled <- !root.lock-wheels;
+                flick-deceleration <- 0;
                 value-selected(value) => { root.card-commits += 1; }
                 PathViewOption {
-                    background: root.lock-wheels ? #e7edf5 : option-data.tint;
-                    border-radius: 8px;
+                    background <- root.lock-wheels ? #e7edf5 : option-data.tint;
+                    border-radius <- 8px;
                     Text {
-                        width: 100%; height: 100%;
-                        text: option-text; color: #ffffff; font-size: 17px;
-                        horizontal-alignment: center; vertical-alignment: center;
+                        width <- 100%; height <- 100%;
+                        text <- option-text; color <- #ffffff; font-size <- 17px;
+                        horizontal-alignment <- center; vertical-alignment <- center;
                     }
                 }
             }
             HorizontalLayout {
-                height: 42px;
-                spacing: 8px;
+                height <- 42px;
+                spacing <- 8px;
                 mirror := CheckBox {
-                    text: root.mirror-cards ? "Unmirror cards" : "Mirror cards";
-                    checked <=> root.mirror-cards;
-                    horizontal-stretch: 1;
+                    text <- root.mirror-cards ? "Unmirror cards" : "Mirror cards";
+                    checked <-> root.mirror-cards;
+                    horizontal-stretch <- 1;
                 }
                 lock-wheels := CheckBox {
-                    text: root.lock-wheels ? "Unlock wheels" : "Lock wheels";
-                    checked <=> root.lock-wheels;
-                    horizontal-stretch: 1;
+                    text <- root.lock-wheels ? "Unlock wheels" : "Lock wheels";
+                    checked <-> root.lock-wheels;
+                    horizontal-stretch <- 1;
                 }
             }
         }
     }
 
     confirm := Dialog {
-        open <=> root.shown;
-        title: "Confirm settings";
-        width: 310px;
-        height: 220px;
-        close-on-outside: true;
-        background: #ffffff;
-        color: #173047;
+        open <-> root.shown;
+        title <- "Confirm settings";
+        width <- 310px;
+        height <- 220px;
+        close-on-outside <- true;
+        background <- #ffffff;
+        color <- #173047;
         accepted => { root.accepted += 1; }
         rejected => { root.rejected += 1; }
-        Text { color: #173047; font-size: 17px; text: "Keep the current values?"; }
+        Text { color <- #173047; font-size <- 17px; text <- "Keep the current values?"; }
         HorizontalLayout {
-            spacing: 12px;
-            cancel := DialogButton { text: "Cancel"; role: reject; }
-            apply := DialogButton { text: "Apply"; role: accept; }
+            spacing <- 12px;
+            cancel := DialogButton { text <- "Cancel"; role <- reject; }
+            apply := DialogButton { text <- "Apply"; role <- accept; }
         }
     }
 }

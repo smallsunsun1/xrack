@@ -51,9 +51,9 @@ struct CompositeActor {
 }
 
 export component CaptureCompositeDemo inherits Window {
-    title: "XRack · Deferred and forward composition";
-    width: 480px; height: 350px; resizable: false;
-    background: #151e2a;
+    title <- "XRack · Deferred and forward composition";
+    width <- 480px; height <- 350px; resizable <- false;
+    background <- #151e2a;
     in-out property <float> glass-depth: 0;
     in-out property <string> capture-color-format: "rgba16f";
     in-out property <string> capture-alias-color-format: "";
@@ -70,8 +70,8 @@ export component CaptureCompositeDemo inherits Window {
     in-out property <string> data-input-capture: "accent";
     in-out property <string> paired-background-capture: "";
     in-out property <bool> paired-stencil: false;
-    property <bool> light-reads-material-data: root.paired-material-consumer || root.paired-background-capture == "lighting";
-    property <bool> show-paired-capture: root.paired-capture && root.offscreen-composition;
+    property <bool> light-reads-material-data <- root.paired-material-consumer || root.paired-background-capture == "lighting";
+    property <bool> show-paired-capture <- root.paired-capture && root.offscreen-composition;
     in-out property <bool> share-depth: true;
     in-out property <bool> use-color: true;
     in-out property <bool> offscreen-composition: false;
@@ -114,7 +114,7 @@ export component CaptureCompositeDemo inherits Window {
     in-out property <color> override-color: #e24493;
     in-out property <bool> compare-capture-alias: false;
     in-out property <string> lighting-source: "lighting";
-    property <string> depth-feed: root.share-depth
+    property <string> depth-feed <- root.share-depth
         ? (root.seed-depth ? "seed" : root.different-camera ? "other-depth" : "surface") : "";
     in-out property <bool> weighted: false;
     in-out property <bool> different-camera: false;
@@ -122,24 +122,24 @@ export component CaptureCompositeDemo inherits Window {
     in-out property <bool> reflections: false;
     in-out property <float> light-x: -1.8;
 
-    property <CaptureBounds> inset: CaptureBounds {
+    property <CaptureBounds> inset <- CaptureBounds {
         enabled: root.capture-viewport, x: 0.25, y: 0.25, width: 0.5, height: 0.5,
     };
-    property <CaptureBounds> clip: CaptureBounds {
+    property <CaptureBounds> clip <- CaptureBounds {
         enabled: root.capture-scissor, x: 0.5, y: 0.0, width: root.capture-scissor-width, height: 1.0,
     };
     property <StencilStyle> no-stencil: StencilStyle {
         enabled: false, reference: 0, read-mask: 255, write-mask: 255, compare: "always",
         fail: "keep", depth-fail: "keep", pass: "keep",
     };
-    property <TargetBlend> custom-target: TargetBlend {
+    property <TargetBlend> custom-target <- TargetBlend {
         enabled: root.custom-blend, blend-enabled: root.capture-blend-enabled,
         write-mask: root.capture-write-mask, constant: root.capture-blend-constant,
         source-color: "constant", destination-color: "one", color-operation: root.capture-color-operation,
         source-alpha: "constant", destination-alpha: "zero", alpha-operation: root.capture-alpha-operation,
     };
-    property <TargetBlend> material-target: TargetBlend { enabled: false, ..root.custom-target };
-    property <CaptureState> capture-pipeline: CaptureState {
+    property <TargetBlend> material-target <- TargetBlend { enabled: false, ..root.custom-target };
+    property <CaptureState> capture-pipeline <- CaptureState {
         enabled: root.pipeline-enabled,
         depth-test: root.capture-depth-test, depth-write: root.capture-depth-write,
         depth-compare: root.capture-depth-compare, cull-mode: root.capture-cull-mode,
@@ -147,10 +147,10 @@ export component CaptureCompositeDemo inherits Window {
         stencil: root.no-stencil, color-write: true, polygon-mode: root.capture-polygon-mode,
         target-blend: root.custom-target,
     };
-    property <CaptureState> default-pipeline: CaptureState {
+    property <CaptureState> default-pipeline <- CaptureState {
         enabled: false, ..root.capture-pipeline
     };
-    property <CaptureState> surface-pipeline: CaptureState {
+    property <CaptureState> surface-pipeline <- CaptureState {
         enabled: root.map-surface || root.inspect-clear || root.paired-stencil, depth-test: true, depth-write: true,
         depth-compare: root.inspect-clear ? "always" : "material",
         cull-mode: "material", blend-mode: "material", viewport: root.inset,
@@ -162,7 +162,7 @@ export component CaptureCompositeDemo inherits Window {
     property <CaptureBounds> disabled-bounds: CaptureBounds {
         enabled: false, x: 0, y: 0, width: 1, height: 1,
     };
-    property <CaptureState> mask-pipeline: CaptureState {
+    property <CaptureState> mask-pipeline <- CaptureState {
         enabled: true, depth-test: true, depth-write: true,
         depth-compare: root.stencil-depth-fail ? "never" : "always",
         cull-mode: "material", blend-mode: "material", color-write: false, polygon-mode: "fill",
@@ -174,7 +174,7 @@ export component CaptureCompositeDemo inherits Window {
             ..root.no-stencil
         },
     };
-    property <CaptureState> portal-pipeline: CaptureState {
+    property <CaptureState> portal-pipeline <- CaptureState {
         enabled: true, depth-test: true, depth-write: false, depth-compare: "material",
         cull-mode: "material", blend-mode: "material", color-write: true, polygon-mode: root.capture-polygon-mode,
         viewport: root.disabled-bounds, scissor: root.disabled-bounds,
@@ -184,25 +184,25 @@ export component CaptureCompositeDemo inherits Window {
             compare: root.stencil-compare, ..root.no-stencil
         },
     };
-    property <CaptureOverride> capture-style: CaptureOverride {
+    property <CaptureOverride> capture-style <- CaptureOverride {
         enabled: root.override-enabled, base-color: root.override-color, unlit: true,
         alpha-mode: "opaque", vertex-colors: false,
         material-shader: root.override-shader ? @material-shader-url("effects/capture_material_display.wgsl") : "",
         shader-textures: [CompositeInput { capture: "accent", attachment: "color" }],
     };
-    property <CaptureOverride> original-material: CaptureOverride {
+    property <CaptureOverride> original-material <- CaptureOverride {
         enabled: false, ..root.capture-style
     };
-    property <CompositeMaterial> standard: CompositeMaterial {
+    property <CompositeMaterial> standard <- CompositeMaterial {
         base-color: #21a9dc, unlit: false, alpha-mode: "opaque", metalness: 0.32, roughness: 0.45, transmission: 0,
         material-shader: "", shader-textures: [], shader-parameters: Vector3D.new(0, 0, 0),
     };
-    property <CompositeMaterial> glass: CompositeMaterial {
+    property <CompositeMaterial> glass <- CompositeMaterial {
         base-color: #f39d4880, unlit: !root.capture-refractive,
         alpha-mode: root.capture-refractive ? "opaque" : "blend",
         transmission: root.capture-refractive ? 0.76 : 0, ..root.standard
     };
-    property <CompositeMaterial> light: CompositeMaterial {
+    property <CompositeMaterial> light <- CompositeMaterial {
         unlit: true,
         material-shader: root.light-reads-material-data
             ? @material-shader-url("effects/capture_material_display.wgsl")
@@ -224,13 +224,13 @@ export component CaptureCompositeDemo inherits Window {
         enabled: false, slot: "", base-color: #fff, alpha-mode: "opaque", unlit: true,
         depth-draw-mode: "opaque-prepass", material-shader: "", shader-textures: [],
     };
-    property <CompositeSlots> empty-slots: CompositeSlots {
+    property <CompositeSlots> empty-slots <- CompositeSlots {
         body: root.base-slot, slot-0: root.base-slot, default-slot: root.base-slot,
     };
-    property <CompositeSlot> glass-slot: CompositeSlot {
+    property <CompositeSlot> glass-slot <- CompositeSlot {
         enabled: true, base-color: #f39d4880, alpha-mode: "blend", ..root.base-slot
     };
-    property <CompositeSlots> mixed-slots: CompositeSlots {
+    property <CompositeSlots> mixed-slots <- CompositeSlots {
         body: CompositeSlot {
             enabled: true, slot: "Body finish", alpha-mode: "mask",
             material-shader: @material-shader-url("effects/capture_material_display.wgsl"),
@@ -239,21 +239,21 @@ export component CaptureCompositeDemo inherits Window {
         },
         slot-0: root.glass-slot, default-slot: root.glass-slot,
     };
-    property <CompositeActor> actor: CompositeActor {
+    property <CompositeActor> actor <- CompositeActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         layers: 1, color: #fff, camera-kind: "", camera-height: 4, camera-near: 1, camera-far: 12,
         material: root.standard, material-slots: root.empty-slots,
     };
     SceneView3D {
-        width: 480px; height: 288px;
-        camera: "eye"; layer-mask: root.offscreen-composition ? 0 : 1;
-        cache-rendering: true; scene-background: #192d44;
-        scene-tone-map: none; multisampling: root.antialias;
-        order-independent-transparency: root.weighted;
-        screen-space-reflections: root.reflections;
-        particle-time: 0.2;
-        particle-emitters: [
+        width <- 480px; height <- 288px;
+        camera <- "eye"; layer-mask <- root.offscreen-composition ? 0 : 1;
+        cache-rendering <- true; scene-background <- #192d44;
+        scene-tone-map <- none; multisampling <- root.antialias;
+        order-independent-transparency <- root.weighted;
+        screen-space-reflections <- root.reflections;
+        particle-time <- 0.2;
+        particle-emitters <- [
             CompositeEmitter { position: Point3D.new(1.2, 1.25, 2), size: 0.49, color: #e67fac80,
                 lifetime: 2, bursts: [ParticleBurst { time: 0, count: root.particle-fixture ? 1 : 0 }], layers: 1,
                 particle-model: "primitive:box", particle-blend-mode: "source-over" },
@@ -261,11 +261,11 @@ export component CaptureCompositeDemo inherits Window {
                 lifetime: 2, bursts: [ParticleBurst { time: 0, count: root.particle-fixture ? 1 : 0 }], layers: 1,
                 particle-model: "", particle-blend-mode: "source-over" },
         ];
-        scene-color-capture: root.show-paired-capture
+        scene-color-capture <- root.show-paired-capture
             ? (root.paired-material-consumer ? "lighting" : "surface") : root.offscreen-composition
             ? (root.stencil-demo ? "portal" : "forward") : (root.use-color ? "lighting" : "");
-        scene-depth-capture: root.offscreen-composition ? "" : root.depth-feed;
-        scene-effects: [
+        scene-depth-capture <- root.offscreen-composition ? "" : root.depth-feed;
+        scene-effects <- [
             CompositeEffect {
                 strength: root.show-paired-capture && root.paired-material-data && !root.paired-material-consumer ? 1.0 : 0.0,
                 parameters: Vector3D.new(0, 0, 2),
@@ -311,7 +311,7 @@ export component CaptureCompositeDemo inherits Window {
                 buffers: [CompositeInput { capture: "surface", attachment: "depth" }],
             },
         ];
-        model: [
+        model <- [
             CompositeActor { id: "eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.actor },
             CompositeActor { id: "side-eye", mesh: "", x: 0.5, z: 7, camera-kind: "orthographic", ..root.actor },
             CompositeActor {
@@ -362,7 +362,7 @@ export component CaptureCompositeDemo inherits Window {
                 x: -0.65, z: 2, scale-x: 2.1, scale-y: 2.0, layers: 16, ..root.actor
             },
         ];
-        scene-captures: [
+        scene-captures <- [
             CompositeFeed {
                 name: "forward", material-data-format: "rgba16f", combine-attachments: false, color-format: root.capture-color-format, camera: "eye", layers: 1,
                 color-source: root.use-color ? root.lighting-source : "", depth-source: root.depth-feed,
@@ -404,8 +404,8 @@ export component CaptureCompositeDemo inherits Window {
         ];
     }
     if root.offscreen-composition && !root.pipeline-enabled && !root.stencil-demo : format-demo := Button {
-        x: 12px; y: 12px; width: 140px; height: 34px;
-        text: (root.show-paired-capture ? root.paired-capture-format : root.capture-color-format) == "r8" ? "Capture HDR" : "Capture R8";
+        x <- 12px; y <- 12px; width <- 140px; height <- 34px;
+        text <- (root.show-paired-capture ? root.paired-capture-format : root.capture-color-format) == "r8" ? "Capture HDR" : "Capture R8";
         clicked => {
             if root.show-paired-capture {
                 root.paired-capture-format = root.paired-capture-format == "r8" ? "rgba16f" : "r8";
@@ -415,52 +415,52 @@ export component CaptureCompositeDemo inherits Window {
         }
     }
     if root.offscreen-composition && !root.pipeline-enabled && !root.stencil-demo : paired-demo := Button {
-        x: 156px; y: 12px; width: 60px; height: 34px;
-        text: root.show-paired-capture && root.combine-capture-attachments ? "Split" : "MRT";
+        x <- 156px; y <- 12px; width <- 60px; height <- 34px;
+        text <- root.show-paired-capture && root.combine-capture-attachments ? "Split" : "MRT";
         clicked => {
             root.paired-capture = true;
             root.combine-capture-attachments = !root.combine-capture-attachments;
         }
     }
     if root.offscreen-composition && root.pipeline-enabled && !root.stencil-demo : CheckBox {
-        x: 12px; y: 12px; width: 102px; height: 30px;
-        text: "Viewport"; checked <=> root.capture-viewport;
+        x <- 12px; y <- 12px; width <- 102px; height <- 30px;
+        text <- "Viewport"; checked <-> root.capture-viewport;
     }
     if root.offscreen-composition && root.pipeline-enabled && !root.stencil-demo : CheckBox {
-        x: 117px; y: 12px; width: 101px; height: 30px;
-        text: "Scissor"; checked <=> root.capture-scissor;
+        x <- 117px; y <- 12px; width <- 101px; height <- 30px;
+        text <- "Scissor"; checked <-> root.capture-scissor;
     }
     if root.offscreen-composition && !root.stencil-demo : CheckBox {
-        x: 219px; y: 12px; width: 120px; height: 30px;
-        text: "Pipeline"; checked <=> root.pipeline-enabled;
+        x <- 219px; y <- 12px; width <- 120px; height <- 30px;
+        text <- "Pipeline"; checked <-> root.pipeline-enabled;
     }
     if root.offscreen-composition && !root.stencil-demo : CheckBox {
-        x: 350px; y: 12px; width: 120px; height: 30px;
-        text: "Override"; checked <=> root.override-enabled;
+        x <- 350px; y <- 12px; width <- 120px; height <- 30px;
+        text <- "Override"; checked <-> root.override-enabled;
     }
     if root.offscreen-composition : CheckBox {
-        x: 14px; y: 251px; width: 107px; height: 31px;
-        text: "Stencil"; checked <=> root.stencil-demo;
+        x <- 14px; y <- 251px; width <- 107px; height <- 31px;
+        text <- "Stencil"; checked <-> root.stencil-demo;
     }
     if root.offscreen-composition : wireframe-demo := Button {
-        x: 132px; y: 251px; width: 108px; height: 34px;
-        text: root.capture-polygon-mode == "line" ? "Fill" : "Wireframe";
+        x <- 132px; y <- 251px; width <- 108px; height <- 34px;
+        text <- root.capture-polygon-mode == "line" ? "Fill" : "Wireframe";
         clicked => {
             root.pipeline-enabled = true;
             root.capture-polygon-mode = root.capture-polygon-mode == "line" ? "fill" : "line";
         }
     }
     if root.offscreen-composition : blend-demo := Button {
-        x: 241px; y: 251px; width: 108px; height: 34px;
-        text: root.custom-blend ? "Material" : "Blend";
+        x <- 241px; y <- 251px; width <- 108px; height <- 34px;
+        text <- root.custom-blend ? "Material" : "Blend";
         clicked => {
             root.pipeline-enabled = true;
             root.custom-blend = !root.custom-blend;
         }
     }
     if root.offscreen-composition && !root.stencil-demo : clear-demo := Button {
-        x: 351px; y: 251px; width: 115px; height: 34px;
-        text: root.capture-depth-clear == 1 ? "Clear near" : "Clear far";
+        x <- 351px; y <- 251px; width <- 115px; height <- 34px;
+        text <- root.capture-depth-clear == 1 ? "Clear near" : "Clear far";
         clicked => {
             root.pipeline-enabled = true;
             root.capture-depth-test = true;
@@ -470,30 +470,30 @@ export component CaptureCompositeDemo inherits Window {
         }
     }
     swap-glass := Button {
-        x: 14px; y: 305px; width: 104px; height: 34px;
-        text: root.glass-depth < 1 ? "Front" : "Back";
+        x <- 14px; y <- 305px; width <- 104px; height <- 34px;
+        text <- root.glass-depth < 1 ? "Front" : "Back";
         clicked => { root.glass-depth = root.glass-depth < 1 ? 2 : 0; }
     }
     if root.show-paired-capture : data-demo := Button {
-        x: 130px; y: 305px; width: 105px; height: 34px;
-        text: root.paired-material-data ? "Normals" : "Data";
+        x <- 130px; y <- 305px; width <- 105px; height <- 34px;
+        text <- root.paired-material-data ? "Normals" : "Data";
         clicked => { root.paired-material-data = !root.paired-material-data; }
     }
     CheckBox {
-        x: 130px; y: 305px; width: 105px; height: 34px;
-        text: "Depth"; checked <=> root.share-depth; visible: !root.show-paired-capture && (!root.offscreen-composition || !root.stencil-demo);
+        x <- 130px; y <- 305px; width <- 105px; height <- 34px;
+        text <- "Depth"; checked <-> root.share-depth; visible <- !root.show-paired-capture && (!root.offscreen-composition || !root.stencil-demo);
     }
     if root.show-paired-capture : paired-source-demo := Button {
-        x: 241px; y: 305px; width: 108px; height: 34px;
-        text: root.paired-background-capture == "" ? "Source" : "Clear";
+        x <- 241px; y <- 305px; width <- 108px; height <- 34px;
+        text <- root.paired-background-capture == "" ? "Source" : "Clear";
         clicked => {
             root.data-sample-input = root.paired-background-capture == "";
             root.paired-background-capture = root.data-sample-input ? "accent" : "";
         }
     }
     if root.offscreen-composition && !root.stencil-demo && !root.show-paired-capture : filter-button := Button {
-        x: 241px; y: 305px; width: 108px; height: 34px;
-        text: root.capture-renderables == "all" ? "All"
+        x <- 241px; y <- 305px; width <- 108px; height <- 34px;
+        text <- root.capture-renderables == "all" ? "All"
             : root.capture-renderables == "opaque" ? "Opaque"
             : root.capture-renderables == "transparent" ? "Blend" : "Inputs";
         clicked => {
@@ -503,11 +503,11 @@ export component CaptureCompositeDemo inherits Window {
         }
     }
     if !root.offscreen-composition : CheckBox {
-        x: 241px; y: 305px; width: 108px; height: 34px;
-        text: "Weighted"; checked <=> root.weighted;
+        x <- 241px; y <- 305px; width <- 108px; height <- 34px;
+        text <- "Weighted"; checked <-> root.weighted;
     }
     CheckBox {
-        x: 358px; y: 305px; width: 111px; height: 34px;
-        text: "Offscreen"; checked <=> root.offscreen-composition;
+        x <- 358px; y <- 305px; width <- 111px; height <- 34px;
+        text <- "Offscreen"; checked <-> root.offscreen-composition;
     }
 }

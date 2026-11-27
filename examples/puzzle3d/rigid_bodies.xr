@@ -7,14 +7,14 @@ struct RigidActor {
 }
 
 export component RigidBodiesDemo inherits Window {
-    title: "XRack · 动态刚体";
-    width: 640px; height: 470px;
-    resizable: false;
-    background: #182637;
+    title <- "XRack · 动态刚体";
+    width <- 640px; height <- 470px;
+    resizable <- false;
+    background <- #182637;
 
     in-out property <bool> running: false;
     in-out property <bool> lift-raised: false;
-    in-out property <physicsworld3d> world: once Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    in-out property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
     out property <int> first: 0;
     out property <int> second: 0;
     out property <int> crate-body: 0;
@@ -25,23 +25,23 @@ export component RigidBodiesDemo inherits Window {
     out property <int> sensor-exits: 0;
     out property <bool> sensor-enabled: true;
     property <float> radius: 0.5;
-    property <vector3d> crate-size: Vector3D.new(0.8, 0.9, 0.8);
-    property <point3d> first-start: Point3D.new(-2.4, 0.5, 0);
-    property <point3d> second-start: Point3D.new(-0.4, 0.5, 0);
-    property <point3d> crate-start: Point3D.new(1.4, 1.45, -0.9);
-    property <point3d> lift-start: Point3D.new(root.crate-start.x, 0.15, root.crate-start.z);
-    property <vector3d> lift-size: Vector3D.new(1.7, 0.3, 1.45);
-    property <vector3d> lift-rotation: Vector3D.new(15, 0, 0);
-    property <point3d> sensor-center: Point3D.new(root.lift-start.x, 2.27, root.lift-start.z);
-    property <vector3d> sensor-size: Vector3D.new(1.25, 0.3, 1.1);
-    out property <point3d> first-position: root.first == 0 ? root.first-start : Physics3D.position(root.world, root.first);
-    out property <point3d> second-position: root.second == 0 ? root.second-start : Physics3D.position(root.world, root.second);
-    out property <point3d> crate-position: root.crate-body == 0 ? root.crate-start : Physics3D.position(root.world, root.crate-body);
-    out property <point3d> lift-position: root.lift-body == 0 ? root.lift-start : Physics3D.position(root.world, root.lift-body);
-    out property <vector3d> first-velocity: Physics3D.velocity(root.world, root.first);
-    out property <vector3d> crate-rotation: Physics3D.rotation(root.world, root.crate-body);
-    out property <bool> sensor-active: Physics3D.trigger-overlaps(root.world, root.lift-trigger, root.crate-body);
-    out property <int> sensor-count: Physics3D.trigger-count(root.world, root.lift-trigger);
+    property <vector3d> crate-size <- Vector3D.new(0.8, 0.9, 0.8);
+    property <point3d> first-start <- Point3D.new(-2.4, 0.5, 0);
+    property <point3d> second-start <- Point3D.new(-0.4, 0.5, 0);
+    property <point3d> crate-start <- Point3D.new(1.4, 1.45, -0.9);
+    property <point3d> lift-start <- Point3D.new(root.crate-start.x, 0.15, root.crate-start.z);
+    property <vector3d> lift-size <- Vector3D.new(1.7, 0.3, 1.45);
+    property <vector3d> lift-rotation <- Vector3D.new(15, 0, 0);
+    property <point3d> sensor-center <- Point3D.new(root.lift-start.x, 2.27, root.lift-start.z);
+    property <vector3d> sensor-size <- Vector3D.new(1.25, 0.3, 1.1);
+    out property <point3d> first-position <- root.first == 0 ? root.first-start : Physics3D.position(root.world, root.first);
+    out property <point3d> second-position <- root.second == 0 ? root.second-start : Physics3D.position(root.world, root.second);
+    out property <point3d> crate-position <- root.crate-body == 0 ? root.crate-start : Physics3D.position(root.world, root.crate-body);
+    out property <point3d> lift-position <- root.lift-body == 0 ? root.lift-start : Physics3D.position(root.world, root.lift-body);
+    out property <vector3d> first-velocity <- Physics3D.velocity(root.world, root.first);
+    out property <vector3d> crate-rotation <- Physics3D.rotation(root.world, root.crate-body);
+    out property <bool> sensor-active <- Physics3D.trigger-overlaps(root.world, root.lift-trigger, root.crate-body);
+    out property <int> sensor-count <- Physics3D.trigger-count(root.world, root.lift-trigger);
 
     callback reset();
     reset() => {
@@ -90,7 +90,7 @@ export component RigidBodiesDemo inherits Window {
         Physics3D.apply-impulse(root.world, root.first, Vector3D.new(6, 0, 0));
     }
     clock := Timer {
-        interval: 16; repeat: true; running: root.running;
+        interval <- 16; repeat <- true; running <- root.running;
         triggered => { root.advance(); }
     }
 
@@ -99,12 +99,12 @@ export component RigidBodiesDemo inherits Window {
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #7d91ac,
         material: RigidMaterial { alpha-mode: "opaque" },
     };
-    property <RigidActor> ball: RigidActor {
+    property <RigidActor> ball <- RigidActor {
         mesh: "primitive:sphere",
         scale-x: root.radius, scale-y: root.radius, scale-z: root.radius,
         ..root.base
     };
-    property <[RigidActor]> bodies: [
+    property <[RigidActor]> bodies <- [
         RigidActor {
             id: "ground", y: -0.1, scale-x: 10, scale-y: 0.2, scale-z: 6, color: #365357, ..root.base
         },
@@ -135,35 +135,35 @@ export component RigidBodiesDemo inherits Window {
         },
     ];
     SceneView3D {
-        width: 640px; height: 400px;
-        model: root.bodies; camera-yaw: -20; camera-pitch: 38; camera-distance: 10.5;
-        scene-background: #253d53; ambient-intensity: 0.4; multisampling: true;
+        width <- 640px; height <- 400px;
+        model <- root.bodies; camera-yaw <- -20; camera-pitch <- 38; camera-distance <- 10.5;
+        scene-background <- #253d53; ambient-intensity <- 0.4; multisampling <- true;
     }
-    Text { x: 16px; y: 14px; color: #eef3f9; text: "模拟步数 " + root.ticks; }
+    Text { x <- 16px; y <- 14px; color <- #eef3f9; text <- "模拟步数 " + root.ticks; }
     sensor-status := Text {
-        x: 16px; y: 41px;
-        color: root.sensor-active ? #82eac9 : #c3d1e5;
-        text: "感应区 " + root.sensor-count + " · 进入 " + root.sensor-entries + " · 离开 " + root.sensor-exits;
+        x <- 16px; y <- 41px;
+        color <- root.sensor-active ? #82eac9 : #c3d1e5;
+        text <- "感应区 " + root.sensor-count + " · 进入 " + root.sensor-entries + " · 离开 " + root.sensor-exits;
     }
     sensor-toggle := CheckBox {
-        x: 508px; y: 12px; width: 116px; height: 33px;
-        text: "感应启用"; checked: root.sensor-enabled;
+        x <- 508px; y <- 12px; width <- 116px; height <- 33px;
+        text <- "感应启用"; checked <- root.sensor-enabled;
         toggled => {
             if root.first == 0 { root.reset(); }
             root.enable-sensor(!root.sensor-enabled);
         }
     }
     HorizontalLayout {
-        x: 14px; y: 412px; width: 612px; height: 44px; spacing: 10px;
+        x <- 14px; y <- 412px; width <- 612px; height <- 44px; spacing <- 10px;
         run-button := Button {
-            width: 105px; text: root.running ? "暂停" : "运行";
+            width <- 105px; text <- root.running ? "暂停" : "运行";
             clicked => { root.running = !root.running; }
         }
-        step-button := Button { width: 105px; text: "单步"; clicked => { root.advance(); } }
-        launch-button := Button { width: 105px; text: "施加冲量"; clicked => { root.launch(); } }
-        reset-button := Button { width: 105px; text: "重置"; clicked => { root.reset(); } }
+        step-button := Button { width <- 105px; text <- "单步"; clicked => { root.advance(); } }
+        launch-button := Button { width <- 105px; text <- "施加冲量"; clicked => { root.launch(); } }
+        reset-button := Button { width <- 105px; text <- "重置"; clicked => { root.reset(); } }
         lift-button := Button {
-            width: 105px; text: root.lift-raised ? "降下平台" : "升起平台";
+            width <- 105px; text <- root.lift-raised ? "降下平台" : "升起平台";
             clicked => {
                 if root.first == 0 { root.reset(); }
                 root.lift-raised = !root.lift-raised;

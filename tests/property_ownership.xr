@@ -5,11 +5,11 @@ enum TitleMode {
 
 component DocumentEditor inherits Rectangle {
     in property <string> document-title;
-    out property <string> live-title: root.document-title;
-    private property <string> draft: once root.document-title;
-    in-out property <string> editable-title <=> root.draft;
+    out property <string> live-title <- root.document-title;
+    private property <string> draft: root.document-title;
+    in-out property <string> editable-title <-> root.draft;
     private property <TitleMode> title-mode: TitleMode::Follow;
-    out property <string> display-title: match root.title-mode {
+    out property <string> display-title <- match root.title-mode {
         Follow => root.document-title,
         Custom(text) => text,
     };
@@ -27,17 +27,24 @@ component InputProbe inherits Rectangle {
     request-rename(value) => { if value != "" { root.rename-requested(value); } }
 }
 
+component SnapshotInput inherits Rectangle {
+    in-out property <string> value;
+}
+
 export component PropertyOwnership inherits Window {
     in-out property <string> document-title: "A";
     in-out property <length> offset: -10px;
     in-out property <int> count: 1 + 2;
-    out property <string> live-title: document.live-title;
-    out property <string> display-title: document.display-title;
-    out property <string> draft-title: document.editable-title;
-    out property <string> probe-title: probe.supplied;
+    out property <string> live-title <- document.live-title;
+    out property <string> display-title <- document.display-title;
+    out property <string> draft-title <- document.editable-title;
+    out property <string> probe-title <- probe.supplied;
+    out property <string> snapshot-title <- snapshot.value;
+    callback edit-snapshot(string);
+    edit-snapshot(text) => { snapshot.value = text; }
     out property <string> requested-title;
     out property <string> reported;
-    in-out property <string> draft <=> document.editable-title;
+    in-out property <string> draft <-> document.editable-title;
 
     callback rename(string);
     rename(text) => { document.rename(text); }
@@ -46,37 +53,46 @@ export component PropertyOwnership inherits Window {
     callback request-child-rename(string);
     request-child-rename(text) => { probe.request-rename(text); }
 
-    document := DocumentEditor { document-title: root.document-title; }
+    document := DocumentEditor { document-title <- root.document-title; }
     probe := InputProbe {
-        supplied: root.document-title;
+        supplied <- root.document-title;
         rename-requested(text) => { root.requested-title = text; }
     }
 
     fixed := TextEdit {
-        y: 20px;
-        width: 180px;
-        height: 30px;
-        text: root.document-title;
+        y <- 20px;
+        width <- 180px;
+        height <- 30px;
+        text <- root.document-title;
         edited(text) => { root.reported = text; }
     }
     writable := TextInput {
-        y: 60px;
-        width: 180px;
-        height: 30px;
-        text <=> root.draft;
+        y <- 60px;
+        width <- 180px;
+        height <- 30px;
+        text <-> root.draft;
     }
     viewport := ScrollView {
-        y: 100px;
-        width: 180px;
-        height: 80px;
-        content-height: 300px;
-        content-y: root.offset;
+        y <- 100px;
+        width <- 180px;
+        height <- 80px;
+        content-height <- 300px;
+        content-y <- root.offset;
     }
     linked-viewport := ScrollView {
-        y: 190px;
-        width: 180px;
-        height: 80px;
-        content-height: 300px;
-        content-y <=> root.offset;
+        y <- 190px;
+        width <- 180px;
+        height <- 80px;
+        content-height <- 300px;
+        content-y <-> root.offset;
     }
+    snapshot := SnapshotInput { value: root.document-title; }
+    snapshot-text := TextInput {
+        y: 280px; width: 180px; height: 30px;
+        text: root.document-title;
+    }
+    snapshot-rows := VerticalLayout {
+        for index in 2: Text { text: root.document-title + index; }
+    }
+
 }

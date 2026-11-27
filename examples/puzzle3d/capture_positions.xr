@@ -19,9 +19,9 @@ struct PositionFeed { name: string, camera: string, layers: int, scale: float }
 struct PositionEffect { shader: string, buffers: [PositionInput] }
 
 export component CapturePositionsDemo inherits Window {
-    title: "XRack · 捕获相机反投影";
-    width: 540px; height: 362px; resizable: false;
-    background: #172437;
+    title <- "XRack · 捕获相机反投影";
+    width <- 540px; height <- 362px; resizable <- false;
+    background <- #172437;
     in-out property <float> west-shift: 0;
     in-out property <float> west-z: 2;
     in-out property <bool> asymmetric: false;
@@ -33,15 +33,15 @@ export component CapturePositionsDemo inherits Window {
         PositionInput { capture: "west", attachment: "normal-roughness", filter: "nearest" },
         PositionInput { capture: "unavailable", attachment: "depth", filter: "nearest" },
     ];
-    property <PositionMaterial> stock: PositionMaterial {
+    property <PositionMaterial> stock <- PositionMaterial {
         unlit: true, material-shader: "", shader-parameters: Vector3D.new(0, 0, 0), shader-textures: [],
     };
-    property <PositionMaterial> display: PositionMaterial {
+    property <PositionMaterial> display <- PositionMaterial {
         unlit: true, material-shader: @material-shader-url("effects/capture_position_material.wgsl"),
         shader-parameters: Vector3D.new(0, 0, 0), shader-textures: root.samples,
     };
-    property <float> parallel-half-width: 2.0 * 540.0 / 280.0;
-    property <PositionActor> base: PositionActor {
+    property <float> parallel-half-width <- 2.0 * 540.0 / 280.0;
+    property <PositionActor> base <- PositionActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, layers: 1, camera-kind: "", camera-height: 4, camera-near: 1, camera-far: 9,
@@ -52,9 +52,9 @@ export component CapturePositionsDemo inherits Window {
     };
 
     SceneView3D {
-        width: 540px; height: 280px; camera: "viewport"; layer-mask: 1;
-        scene-background: #23384f; scene-tone-map: none; cache-rendering: true;
-        model: [
+        width <- 540px; height <- 280px; camera <- "viewport"; layer-mask <- 1;
+        scene-background <- #23384f; scene-tone-map <- none; cache-rendering <- true;
+        model <- [
             PositionActor { id: "viewport", mesh: "", z: 7, camera-kind: "orthographic", ..root.base },
             PositionActor {
                 id: "west-camera", mesh: "", x: -1.5 + root.west-shift, z: 7,
@@ -84,26 +84,26 @@ export component CapturePositionsDemo inherits Window {
                 id: "east-plane", layers: 4, x: 1.5, z: 3, scale-x: 3.4, scale-y: 2.9, ..root.base
             },
         ];
-        scene-captures: [
+        scene-captures <- [
             PositionFeed { name: "west", camera: "west-camera", layers: 2, scale: 0.5 },
             PositionFeed { name: "east", camera: "east-camera", layers: 4, scale: 0.5 },
         ];
-        scene-effects: [
+        scene-effects <- [
             PositionEffect {
                 shader: @shader-url("effects/capture_position_strip.wgsl"), buffers: root.samples,
             }
         ];
     }
     move-camera := Button {
-        x: 17px; y: 306px; width: 148px; height: 32px;
-        text: "移动左捕获相机"; clicked => { root.west-shift = root.west-shift == 0 ? 0.6 : 0; }
+        x <- 17px; y <- 306px; width <- 148px; height <- 32px;
+        text <- "移动左捕获相机"; clicked => { root.west-shift = root.west-shift == 0 ? 0.6 : 0; }
     }
     move-plane := Button {
-        x: 182px; y: 306px; width: 139px; height: 32px;
-        text: "移动左被摄平面"; clicked => { root.west-z = root.west-z == 2 ? 3 : 2; }
+        x <- 182px; y <- 306px; width <- 139px; height <- 32px;
+        text <- "移动左被摄平面"; clicked => { root.west-z = root.west-z == 2 ? 3 : 2; }
     }
     CheckBox {
-        x: 343px; y: 306px; width: 175px; height: 32px;
-        text: "右侧偏轴透视"; checked <=> root.asymmetric;
+        x <- 343px; y <- 306px; width <- 175px; height <- 32px;
+        text <- "右侧偏轴透视"; checked <-> root.asymmetric;
     }
 }

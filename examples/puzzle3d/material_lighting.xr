@@ -17,20 +17,20 @@ struct Lamp {
 }
 
 export component MaterialLightingDemo inherits Window {
-    title: "XRack · 材质光照函数";
-    width: 520px; height: 362px; resizable: false;
-    background: #172437;
+    title <- "XRack · 材质光照函数";
+    width <- 520px; height <- 362px; resizable <- false;
+    background <- #172437;
     in-out property <int> light-kind: 0;
     in-out property <float> amount: 1.0;
     in-out property <float> specular-gain: 0.0;
     in-out property <bool> shadows: false;
     in-out property <float> point-range: 8.0;
     in-out property <bool> programmable: true;
-    property <LightStyle> stock: LightStyle {
+    property <LightStyle> stock <- LightStyle {
         material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
         unlit: false, roughness: 0.62, metalness: 0,
     };
-    property <LitActor> plate: LitActor {
+    property <LitActor> plate <- LitActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 2.1, scale-y: 2.55, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #dedede, camera-kind: "", camera-height: 4,
@@ -42,11 +42,11 @@ export component MaterialLightingDemo inherits Window {
         casts-shadow: false,
     };
     SceneView3D {
-        width: 520px; height: 270px; camera: "eye";
-        scene-background: #24354b; scene-tone-map: none; cache-rendering: true;
-        ambient-intensity: root.light-kind == 3 ? 0.75 : 0.035;
-        ambient-color: #ffffff; shadows: root.shadows; shadow-map-size: 512;
-        lights: [
+        width <- 520px; height <- 270px; camera <- "eye";
+        scene-background <- #24354b; scene-tone-map <- none; cache-rendering <- true;
+        ambient-intensity <- root.light-kind == 3 ? 0.75 : 0.035;
+        ambient-color <- #ffffff; shadows <- root.shadows; shadow-map-size <- 512;
+        lights <- [
             Lamp {
                 kind: "directional", yaw: 34, intensity: root.light-kind == 0 ? 2.15 : 0,
                 casts-shadow: root.shadows, ..root.lamp
@@ -57,7 +57,7 @@ export component MaterialLightingDemo inherits Window {
             },
             Lamp { kind: "spot", intensity: root.light-kind == 2 ? 24.0 : 0, ..root.lamp },
         ];
-        model: [
+        model <- [
             LitActor { id: "eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.plate },
             LitActor {
                 id: "programmable", x: -1.35,
@@ -77,26 +77,26 @@ export component MaterialLightingDemo inherits Window {
         ];
     }
 
-    Label { x: 91px; y: 274px; width: 155px; height: 23px; text: "可编程光照"; }
-    Label { x: 316px; y: 274px; width: 135px; height: 23px; text: "内建 PBR"; }
+    Label { x <- 91px; y <- 274px; width <- 155px; height <- 23px; text <- "可编程光照"; }
+    Label { x <- 316px; y <- 274px; width <- 135px; height <- 23px; text <- "内建 PBR"; }
     directional := Button {
-        x: 11px; y: 310px; width: 88px; height: 32px;
-        text: "方向光"; clicked => { root.light-kind = 0; }
+        x <- 11px; y <- 310px; width <- 88px; height <- 32px;
+        text <- "方向光"; clicked => { root.light-kind = 0; }
     }
     point := Button {
-        x: 111px; y: 310px; width: 82px; height: 32px;
-        text: "点光"; clicked => { root.light-kind = 1; }
+        x <- 111px; y <- 310px; width <- 82px; height <- 32px;
+        text <- "点光"; clicked => { root.light-kind = 1; }
     }
     spot := Button {
-        x: 205px; y: 310px; width: 87px; height: 32px;
-        text: "聚光"; clicked => { root.light-kind = 2; }
+        x <- 205px; y <- 310px; width <- 87px; height <- 32px;
+        text <- "聚光"; clicked => { root.light-kind = 2; }
     }
     ambient := Button {
-        x: 304px; y: 310px; width: 85px; height: 32px;
-        text: "环境光"; clicked => { root.light-kind = 3; }
+        x <- 304px; y <- 310px; width <- 85px; height <- 32px;
+        text <- "环境光"; clicked => { root.light-kind = 3; }
     }
     CheckBox {
-        x: 407px; y: 310px; width: 103px; height: 32px;
-        checked <=> root.shadows; text: "投影";
+        x <- 407px; y <- 310px; width <- 103px; height <- 32px;
+        checked <-> root.shadows; text <- "投影";
     }
 }

@@ -5,10 +5,10 @@ struct FogProfile {
 }
 
 export component FogProfilesDemo inherits Window {
-    title: "XRack · 雾体旋转与高度衰减";
-    width: 600px; height: 422px;
-    resizable: false;
-    background: #142134;
+    title <- "XRack · 雾体旋转与高度衰减";
+    width <- 600px; height <- 422px;
+    resizable <- false;
+    background <- #142134;
     in-out property <bool> profiles: true;
     in-out property <bool> overlap: true;
     in-out property <bool> flipped: false;
@@ -20,7 +20,7 @@ export component FogProfilesDemo inherits Window {
     in-out property <float> height-end: -1.1;
     in-out property <string> shape: "box";
 
-    property <FogProfile> cool: FogProfile {
+    property <FogProfile> cool <- FogProfile {
         position: Point3D.new(0, 0, 0), size: Vector3D.new(6.0, 2.6, 2),
         density: 0.7, color: #71cee4, fog-shape: root.shape,
         yaw: 0, pitch: 0, roll: root.angle,
@@ -28,7 +28,7 @@ export component FogProfilesDemo inherits Window {
         fog-height-start: root.flipped ? root.height-end : root.height-start,
         fog-height-end: root.flipped ? root.height-start : root.height-end,
     };
-    property <FogProfile> warm: FogProfile {
+    property <FogProfile> warm <- FogProfile {
         position: Point3D.new(1.2, -0.12, -0.22), size: Vector3D.new(5.1, 2.0, 3.2),
         density: 0.45, color: #f3ac73, fog-shape: "sphere",
         yaw: 0, pitch: 0, roll: 28,
@@ -36,26 +36,26 @@ export component FogProfilesDemo inherits Window {
         fog-height-start: root.height-end,
         fog-height-end: root.height-start,
     };
-    property <[FogProfile]> air: !root.overlap ? [root.cool]
+    property <[FogProfile]> air <- !root.overlap ? [root.cool]
         : root.reversed ? [root.warm, root.cool] : [root.cool, root.warm];
 
     view := SceneView3D {
-        width: 600px; height: 356px;
-        camera-yaw: 0; camera-pitch: root.camera-pitch; camera-distance: 10;
-        scene-background: #203346;
-        light-yaw: 20; light-elevation: 35;
-        fog-volumes: root.air;
-        fog-volume-scattering: root.lit ? 6.0 : 0.0;
-        fog-volume-samples: 8;
-        cache-rendering: true;
+        width <- 600px; height <- 356px;
+        camera-yaw <- 0; camera-pitch <- root.camera-pitch; camera-distance <- 10;
+        scene-background <- #203346;
+        light-yaw <- 20; light-elevation <- 35;
+        fog-volumes <- root.air;
+        fog-volume-scattering <- root.lit ? 6.0 : 0.0;
+        fog-volume-samples <- 8;
+        cache-rendering <- true;
     }
     HorizontalLayout {
-        x: 14px; y: 367px; width: 572px; height: 44px; spacing: 9px;
-        profile-toggle := CheckBox { width: 103px; text: "高度衰减"; checked <=> root.profiles; }
-        overlap-toggle := CheckBox { width: 92px; text: "暖色雾"; checked <=> root.overlap; }
-        reverse-toggle := CheckBox { width: 84px; text: "倒置"; checked <=> root.flipped; enabled: root.profiles; }
+        x <- 14px; y <- 367px; width <- 572px; height <- 44px; spacing <- 9px;
+        profile-toggle := CheckBox { width <- 103px; text <- "高度衰减"; checked <-> root.profiles; }
+        overlap-toggle := CheckBox { width <- 92px; text <- "暖色雾"; checked <-> root.overlap; }
+        reverse-toggle := CheckBox { width <- 84px; text <- "倒置"; checked <-> root.flipped; enabled <- root.profiles; }
         angle-slider := Slider {
-            width: 218px; minimum: -55; maximum: 55; value <=> root.angle;
+            width <- 218px; minimum <- -55; maximum <- 55; value <-> root.angle;
         }
     }
 }

@@ -9,13 +9,13 @@ struct DebugCollider {
 }
 
 export component PhysicsDebugDemo inherits Window {
-    title: "XRack · 碰撞体调试";
-    width: 736px; height: 462px; resizable: false; background: #172735;
+    title <- "XRack · 碰撞体调试";
+    width <- 736px; height <- 462px; resizable <- false; background <- #172735;
 
-    property <vector3d> zero: Vector3D.new(0, 0, 0);
-    property <point3d> origin: Point3D.new(0, 0, 0);
-    property <physicsworld3d> world: Physics3D.new(root.zero, 0.1);
-    property <string> panels: @mesh-url("models/cull-panels.gltf");
+    property <vector3d> zero <- Vector3D.new(0, 0, 0);
+    property <point3d> origin <- Point3D.new(0, 0, 0);
+    property <physicsworld3d> world <- Physics3D.new(root.zero, 0.1);
+    property <string> panels <- @mesh-url("models/cull-panels.gltf");
     out property <int> compound: 0;
     out property <int> platform: 0;
     out property <int> surface: 0;
@@ -62,37 +62,37 @@ export component PhysicsDebugDemo inherits Window {
             yaw: 0, pitch: 0, roll: 0, color: tint,
         }
     }
-    property <[DebugActor]> actors: [
+    property <[DebugActor]> actors <- [
         root.block("floor", "primitive:box", Point3D.new(0, -0.1, 0), Vector3D.new(8.6, 0.2, 5.6), #293f50),
         root.block("model", "primitive:box", Point3D.new(-1.6, 0.9, 0.35), Vector3D.new(1.3, 1.05, 0.95), #4b5c69),
         root.block("platform-model", "primitive:box", Point3D.new(1.35, 0.75, 0.85), Vector3D.new(1.7, 0.32, 0.8), #475b68),
     ];
     property <[DebugActor]> empty-model;
     view := SceneView3D {
-        width: 736px; height: 378px;
-        cache-rendering: true;
-        model: root.show-model ? root.actors : root.empty-model;
-        camera-yaw: -16; camera-pitch: 32; camera-distance: 10.5;
-        scene-background: #20394a; ambient-intensity: 0.55; multisampling: true;
-        physics-world: root.world;
-        physics-debug: root.debug;
-        physics-debug-body: root.focus ? root.compound : 0;
+        width <- 736px; height <- 378px;
+        cache-rendering <- true;
+        model <- root.show-model ? root.actors : root.empty-model;
+        camera-yaw <- -16; camera-pitch <- 32; camera-distance <- 10.5;
+        scene-background <- #20394a; ambient-intensity <- 0.55; multisampling <- true;
+        physics-world <- root.world;
+        physics-debug <- root.debug;
+        physics-debug-body <- root.focus ? root.compound : 0;
     }
     debug-status := Text {
-        x: 18px; y: 14px; color: #eef4f7;
-        text: (root.debug ? (root.focus ? "复合体线框" : "物理世界线框") : "关闭线框")
+        x <- 18px; y <- 14px; color <- #eef4f7;
+        text <- (root.debug ? (root.focus ? "复合体线框" : "物理世界线框") : "关闭线框")
             + "   ·   移动 " + root.frame;
     }
     Text {
-        x: 18px; y: 44px; color: #bccfe0;
-        text: "蓝 固定体   ·   橙 动态体   ·   青 运动学   ·   紫 感应区";
+        x <- 18px; y <- 44px; color <- #bccfe0;
+        text <- "蓝 固定体   ·   橙 动态体   ·   青 运动学   ·   紫 感应区";
     }
     HorizontalLayout {
-        x: 16px; y: 397px; width: 704px; height: 44px; spacing: 9px;
-        start := Button { text: "加载碰撞体"; clicked => { root.reset(); } }
-        overlay := Button { text: root.debug ? "关闭线框" : "打开线框"; clicked => { root.debug = !root.debug; } }
-        focus := Button { text: root.focus ? "显示全部" : "只看复合体"; clicked => { root.focus = !root.focus; } }
-        blocks := Button { text: root.show-model ? "隐藏模型" : "显示模型"; clicked => { root.show-model = !root.show-model; } }
-        move := Button { text: "移动碰撞体"; clicked => { root.move-colliders(); } }
+        x <- 16px; y <- 397px; width <- 704px; height <- 44px; spacing <- 9px;
+        start := Button { text <- "加载碰撞体"; clicked => { root.reset(); } }
+        overlay := Button { text <- root.debug ? "关闭线框" : "打开线框"; clicked => { root.debug = !root.debug; } }
+        focus := Button { text <- root.focus ? "显示全部" : "只看复合体"; clicked => { root.focus = !root.focus; } }
+        blocks := Button { text <- root.show-model ? "隐藏模型" : "显示模型"; clicked => { root.show-model = !root.show-model; } }
+        move := Button { text <- "移动碰撞体"; clicked => { root.move-colliders(); } }
     }
 }

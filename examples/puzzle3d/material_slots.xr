@@ -14,9 +14,9 @@ struct PaletteActor {
 }
 
 export component MaterialSlotsDemo inherits Window {
-    title: "XRack · 逐槽材质";
-    width: 634px; height: 420px;
-    resizable: false; background: #1a2638;
+    title <- "XRack · 逐槽材质";
+    width <- 634px; height <- 420px;
+    resizable <- false; background <- #1a2638;
 
     in-out property <string> target: "Body finish";
     in-out property <bool> warm: true;
@@ -26,16 +26,16 @@ export component MaterialSlotsDemo inherits Window {
     property <CoatStyle> original: CoatStyle {
         enabled: false, slot: "", base-color: #ffffff, alpha-mode: "opaque", alpha-cutoff: 0.5,
     };
-    property <ScenePalette> no-overrides: ScenePalette {
+    property <ScenePalette> no-overrides <- ScenePalette {
         body: root.original, slot-0: root.original, default-slot: root.original,
     };
-    property <PaletteActor> base: PaletteActor {
+    property <PaletteActor> base <- PaletteActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, material-slots: root.no-overrides, casts-shadow: true,
         camera-kind: "", camera-height: 5.4,
     };
-    property <[PaletteActor]> world: [
+    property <[PaletteActor]> world <- [
         PaletteActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
         PaletteActor {
             id: "wall", z: -1.7, scale-x: 16, scale-y: 8, scale-z: 0.1,
@@ -55,23 +55,23 @@ export component MaterialSlotsDemo inherits Window {
             ..root.base
         },
     ];
-    out property <string> body-hit: Scene3D.pick-camera(
+    out property <string> body-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(634px, 324px), Point2D.new(183px, 162px));
     SceneView3D {
-        width: 634px; height: 324px; model: root.world; camera: "eye";
-        scene-background: #263b54; ambient-intensity: 0.44; light-yaw: -22; light-elevation: 39;
-        shadows: true; shadow-map-size: 512; scene-hdr: true; cache-rendering: true;
+        width <- 634px; height <- 324px; model <- root.world; camera <- "eye";
+        scene-background <- #263b54; ambient-intensity <- 0.44; light-yaw <- -22; light-elevation <- 39;
+        shadows <- true; shadow-map-size <- 512; scene-hdr <- true; cache-rendering <- true;
     }
-    Label { x: 106px; y: 328px; width: 150px; height: 31px; text: "Body finish · #2"; horizontal-alignment: center; }
-    Label { x: 250px; y: 328px; width: 134px; height: 31px; text: "Trim · #0"; horizontal-alignment: center; }
-    Label { x: 385px; y: 328px; width: 128px; height: 31px; text: "#default"; horizontal-alignment: center; }
-    palette-toggle := CheckBox { x: 13px; y: 371px; width: 87px; height: 34px; text: "暖色"; checked <=> root.warm; }
-    mask-toggle := CheckBox { x: 112px; y: 371px; width: 124px; height: 34px; text: "裁切外壳"; checked <=> root.cutout; }
-    trim-toggle := CheckBox { x: 249px; y: 371px; width: 122px; height: 34px; text: "覆盖饰条"; checked <=> root.accent; }
-    default-toggle := CheckBox { x: 382px; y: 371px; width: 130px; height: 34px; text: "覆盖默认槽"; checked <=> root.implicit-style; }
+    Label { x <- 106px; y <- 328px; width <- 150px; height <- 31px; text <- "Body finish · #2"; horizontal-alignment <- center; }
+    Label { x <- 250px; y <- 328px; width <- 134px; height <- 31px; text <- "Trim · #0"; horizontal-alignment <- center; }
+    Label { x <- 385px; y <- 328px; width <- 128px; height <- 31px; text <- "#default"; horizontal-alignment <- center; }
+    palette-toggle := CheckBox { x <- 13px; y <- 371px; width <- 87px; height <- 34px; text <- "暖色"; checked <-> root.warm; }
+    mask-toggle := CheckBox { x <- 112px; y <- 371px; width <- 124px; height <- 34px; text <- "裁切外壳"; checked <-> root.cutout; }
+    trim-toggle := CheckBox { x <- 249px; y <- 371px; width <- 122px; height <- 34px; text <- "覆盖饰条"; checked <-> root.accent; }
+    default-toggle := CheckBox { x <- 382px; y <- 371px; width <- 130px; height <- 34px; text <- "覆盖默认槽"; checked <-> root.implicit-style; }
     selector-toggle := Button {
-        x: 516px; y: 370px; width: 103px; height: 35px;
-        text: root.target == "#2" ? "按索引" : "按名称";
+        x <- 516px; y <- 370px; width <- 103px; height <- 35px;
+        text <- root.target == "#2" ? "按索引" : "按名称";
         clicked => { root.target = root.target == "#2" ? "Body finish" : "#2"; }
     }
 }

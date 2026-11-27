@@ -9,19 +9,19 @@ struct MeshActor {
 }
 
 export component AuthoredMeshDemo inherits Window {
-    title: "XRack · Editable triangle mesh";
-    width: 600px; height: 372px; background: #192330;
+    title <- "XRack · Editable triangle mesh";
+    width <- 600px; height <- 372px; background <- #192330;
 
     in-out property <float> offset: 0.0;
     in-out property <color> tint: #fff;
     in-out property <bool> duplicate: false;
     property <bool> notched: false;
     property <bool> index-removed: false;
-    property <PanelVertex> vertex: PanelVertex {
+    property <PanelVertex> vertex <- PanelVertex {
         position: Point3D.new(0, 0, 0), normal: Vector3D.new(0, 0, 0),
         u: 0, v: 0, color: #ed9951,
     };
-    in-out property <[PanelVertex]> points: once [
+    in-out property <[PanelVertex]> points: [
         PanelVertex { position: Point3D.new(-1, -1, 0), u: 0, v: 1, ..root.vertex },
         PanelVertex { position: Point3D.new(1, -1, 0), u: 1, v: 1, ..root.vertex },
         PanelVertex { position: Point3D.new(1, 1, 0), u: 1, v: 0, ..root.vertex },
@@ -46,40 +46,40 @@ export component AuthoredMeshDemo inherits Window {
     callback set-last-index(int);
     set-last-index(index) => { Model.set(root.topology, 5, index); }
 
-    property <PanelMesh> panel: PanelMesh { vertices: root.points, indices: root.topology };
-    property <MeshActor> defaults: MeshActor {
+    property <PanelMesh> panel <- PanelMesh { vertices: root.points, indices: root.topology };
+    property <MeshActor> defaults <- MeshActor {
         id: "", geometry: root.panel, material: PanelFinish { unlit: true, base-color: #fff },
         x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, color: #fff, camera-kind: "", camera-height: 4,
         instance-of: "", visible: true,
     };
-    out property <[MeshActor]> world: [
+    out property <[MeshActor]> world <- [
         MeshActor { id: "eye", camera-kind: "orthographic", z: 8,
             geometry: PanelMesh { vertices: [], indices: [] }, ..root.defaults },
         MeshActor { id: "panel", x: root.offset, color: root.tint, ..root.defaults },
         MeshActor { id: "second", instance-of: "panel", x: 2.25, color: #7ffbff, visible: root.duplicate, ..root.defaults }
     ];
-    out property <string> corner-hit: Scene3D.pick-camera(
+    out property <string> corner-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(600px, 320px), Point2D.new(250px, 112px));
-    out property <hit3d> corner-sweep: Scene3D.sphere-cast(
+    out property <hit3d> corner-sweep <- Scene3D.sphere-cast(
         root.world, Point3D.new(-0.625, 0.6, 4), Vector3D.new(0, 0, -1), 7, 0.045);
 
     SceneView3D {
-        width: 600px; height: 320px; model: root.world; camera: "eye";
-        scene-background: #22334b;
+        width <- 600px; height <- 320px; model <- root.world; camera <- "eye";
+        scene-background <- #22334b;
     }
     vertex-button := Button {
-        x: 12px; y: 334px; width: 142px; height: 30px;
-        text: root.notched ? "Restore corner" : "Move corner";
+        x <- 12px; y <- 334px; width <- 142px; height <- 30px;
+        text <- root.notched ? "Restore corner" : "Move corner";
         clicked => { root.move-corner(); }
     }
     index-button := Button {
-        x: 169px; y: 334px; width: 150px; height: 30px;
-        text: root.index-removed ? "Restore triangle" : "Move triangle";
+        x <- 169px; y <- 334px; width <- 150px; height <- 30px;
+        text <- root.index-removed ? "Restore triangle" : "Move triangle";
         clicked => {
             root.index-removed = !root.index-removed;
             root.set-last-index(root.index-removed ? 1 : 3);
         }
     }
-    CheckBox { x: 357px; y: 334px; width: 135px; text: "Instance"; checked <=> root.duplicate; }
+    CheckBox { x <- 357px; y <- 334px; width <- 135px; text <- "Instance"; checked <-> root.duplicate; }
 }

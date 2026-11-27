@@ -25,9 +25,9 @@ struct SignalProbe {
 struct SignalEffect { shader: string, strength: float, buffers: [FeedInput] }
 
 export component ProbeCaptureFeedDemo inherits Window {
-    title: "XRack · 探针反射命名画面";
-    width: 532px; height: 366px; resizable: false;
-    background: #172437;
+    title <- "XRack · 探针反射命名画面";
+    width <- 532px; height <- 366px; resizable <- false;
+    background <- #172437;
 
     in-out property <int> source-layer: 2;
     in-out property <string> refresh: "on-change";
@@ -47,14 +47,14 @@ export component ProbeCaptureFeedDemo inherits Window {
     in-out property <int> probe-size: 32;
     in-out property <bool> two-probes: false;
     in-out property <bool> debug-view: false;
-    property <string> signal-item: root.item-source ? "live-signal" : "";
-    property <string> signal-capture: root.item-source ? "" : "signal";
-    property <string> inset-source: root.reflected-inset ? "probe-view" : "signal";
+    property <string> signal-item <- root.item-source ? "live-signal" : "";
+    property <string> signal-capture <- root.item-source ? "" : "signal";
+    property <string> inset-source <- root.reflected-inset ? "probe-view" : "signal";
 
     property <SignalMaterial> builtin: SignalMaterial {
         enabled: false, unlit: false, material-shader: "", shader-textures: [], base-item: "", alpha-mode: "opaque",
     };
-    property <SignalMaterial> card: SignalMaterial {
+    property <SignalMaterial> card <- SignalMaterial {
         enabled: true, unlit: true,
         material-shader: root.item-source && root.item-base ? "" : @material-shader-url("effects/capture_material_display.wgsl"),
         shader-textures: [FeedInput { capture: root.signal-capture, attachment: "color", filter: "nearest",
@@ -62,14 +62,14 @@ export component ProbeCaptureFeedDemo inherits Window {
         base-item: root.item-base ? root.signal-item : "",
         alpha-mode: root.item-source && root.item-base ? "mask" : "opaque",
     };
-    property <SignalActor> defaults: SignalActor {
+    property <SignalActor> defaults <- SignalActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0, color: #fff,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         layers: 1, camera-kind: "", camera-height: 4,
         casts-reflections: true, receives-reflections: true, material: root.builtin,
     };
 
-    property <SignalProbe> primary-probe: SignalProbe {
+    property <SignalProbe> primary-probe <- SignalProbe {
         position: Point3D.new(root.two-probes ? -2.1 : 0, 0, 0),
         box-size: Vector3D.new(root.two-probes ? 3.8 : 8, 8, 24),
         parallax-correction: true, capture-size: root.probe-size, refresh-mode: root.refresh,
@@ -77,17 +77,17 @@ export component ProbeCaptureFeedDemo inherits Window {
         debug-view: root.debug-view,
     };
     SceneView3D {
-        width: 532px; height: 270px;
-        reflection-faces-per-frame: root.face-budget;
-        reflection-filter-passes-per-frame: root.filter-budget;
-        reflection-filter-texels-per-frame: root.texel-budget;
-        camera-distance: 8;
-        camera-yaw: 0; camera-pitch: 0; layer-mask: 1;
-        scene-background: #24354d; scene-hdr: true; scene-tone-map: none;
-        light-yaw: -30; light-elevation: 58; cache-rendering: true;
-        shadows: root.item-source && root.item-base;
-        ambient-occlusion: root.item-source && root.item-base;
-        model: [
+        width <- 532px; height <- 270px;
+        reflection-faces-per-frame <- root.face-budget;
+        reflection-filter-passes-per-frame <- root.filter-budget;
+        reflection-filter-texels-per-frame <- root.texel-budget;
+        camera-distance <- 8;
+        camera-yaw <- 0; camera-pitch <- 0; layer-mask <- 1;
+        scene-background <- #24354d; scene-hdr <- true; scene-tone-map <- none;
+        light-yaw <- -30; light-elevation <- 58; cache-rendering <- true;
+        shadows <- root.item-source && root.item-base;
+        ambient-occlusion <- root.item-source && root.item-base;
+        model <- [
             SignalActor {
                 id: "mirror", mesh: @mesh-url("models/probe-sphere.gltf"), x: root.two-probes ? -2.1 : 0,
                 scale-x: 1.55, scale-y: 1.55, scale-z: 1.55, casts-reflections: false, ..root.defaults
@@ -118,7 +118,7 @@ export component ProbeCaptureFeedDemo inherits Window {
                 material: SignalMaterial { enabled: true, unlit: true, ..root.builtin }, ..root.defaults
             },
         ];
-        scene-captures: [
+        scene-captures <- [
             SignalFeed {
                 name: "signal", camera: "color-camera", layers: root.source-layer, scale: 0.5,
                 combine-attachments: root.combine-feed, renderables: "opaque",
@@ -128,11 +128,11 @@ export component ProbeCaptureFeedDemo inherits Window {
                 combine-attachments: root.combine-feed, renderables: "opaque",
             },
         ];
-        reflection-probes: root.two-probes ? [
+        reflection-probes <- root.two-probes ? [
             root.primary-probe,
             SignalProbe { position: Point3D.new(2.1, 0, 0), ..root.primary-probe },
         ] : [root.primary-probe];
-        scene-effects: [
+        scene-effects <- [
             SignalEffect {
                 shader: @shader-url("effects/probe_capture_inset.wgsl"),
                 strength: root.inset ? 1 : 0,
@@ -149,42 +149,42 @@ export component ProbeCaptureFeedDemo inherits Window {
     }
 
     Rectangle {
-        width: 80px; height: 48px;
-        texture-source: "live-signal"; texture-only: true; visible: root.item-source;
-        texture-mipmaps: root.item-mipmaps;
-        background: root.source-layer == 2 ? #df6843 : #478ed8;
+        width <- 80px; height <- 48px;
+        texture-source <- "live-signal"; texture-only <- true; visible <- root.item-source;
+        texture-mipmaps <- root.item-mipmaps;
+        background <- root.source-layer == 2 ? #df6843 : #478ed8;
     }
     Rectangle {
-        width: 64px; height: 40px;
-        texture-source: "live-badge"; texture-only: true; visible: root.item-source;
-        background: root.badge-lit ? #eab452 : #53878d;
+        width <- 64px; height <- 40px;
+        texture-source <- "live-badge"; texture-only <- true; visible <- root.item-source;
+        background <- root.badge-lit ? #eab452 : #53878d;
     }
 
     change-source := Button {
-        x: 14px; y: 283px; width: 112px; height: 38px;
-        text: "切换画面"; clicked => { root.source-layer = root.source-layer == 2 ? 4 : 2; }
+        x <- 14px; y <- 283px; width <- 112px; height <- 38px;
+        text <- "切换画面"; clicked => { root.source-layer = root.source-layer == 2 ? 4 : 2; }
     }
     refresh-policy := Button {
-        x: 133px; y: 283px; width: 115px; height: 38px;
-        text: root.refresh == "first-frame" ? "固定首帧" : "按变化刷新";
+        x <- 133px; y <- 283px; width <- 115px; height <- 38px;
+        text <- root.refresh == "first-frame" ? "固定首帧" : "按变化刷新";
         clicked => { root.refresh = root.refresh == "first-frame" ? "on-change" : "first-frame"; }
     }
     refresh-cube := Button {
-        x: 257px; y: 283px; width: 109px; height: 38px;
-        text: "刷新探针"; clicked => { root.revision += 1; }
+        x <- 257px; y <- 283px; width <- 109px; height <- 38px;
+        text <- "刷新探针"; clicked => { root.revision += 1; }
     }
     CheckBox {
-        x: 385px; y: 283px; width: 132px; height: 38px;
-        text: "显示源小窗"; checked <=> root.inset;
+        x <- 385px; y <- 283px; width <- 132px; height <- 38px;
+        text <- "显示源小窗"; checked <-> root.inset;
     }
     slicing-policy := Button {
-        x: 14px; y: 324px; width: 112px; height: 38px;
-        text: root.slicing == "individual-faces" ? "整组捕获" : "逐面捕获";
+        x <- 14px; y <- 324px; width <- 112px; height <- 38px;
+        text <- root.slicing == "individual-faces" ? "整组捕获" : "逐面捕获";
         clicked => { root.slicing = root.slicing == "individual-faces" ? "none" : "individual-faces"; }
     }
     merge-feed := Button {
-        x: 133px; y: 324px; width: 115px; height: 38px;
-        text: root.combine-feed ? "拆分附件" : "合并附件";
+        x <- 133px; y <- 324px; width <- 115px; height <- 38px;
+        text <- root.combine-feed ? "拆分附件" : "合并附件";
         clicked => {
             root.inset = true;
             root.inset-depth = true;
@@ -192,21 +192,21 @@ export component ProbeCaptureFeedDemo inherits Window {
         }
     }
     item-mode := Button {
-        x: 257px; y: 324px; width: 109px; height: 38px;
-        text: root.item-source ? "命名捕获" : "控件贴图";
+        x <- 257px; y <- 324px; width <- 109px; height <- 38px;
+        text <- root.item-source ? "命名捕获" : "控件贴图";
         clicked => {
             root.item-source = !root.item-source;
             root.inset = true;
         }
     }
     mip-mode := Button {
-        x: 385px; y: 324px; width: 132px; height: 38px; visible: root.item-source;
-        text: root.item-mipmaps ? "关闭 Mip" : "开启 Mip";
+        x <- 385px; y <- 324px; width <- 132px; height <- 38px; visible <- root.item-source;
+        text <- root.item-mipmaps ? "关闭 Mip" : "开启 Mip";
         clicked => { root.item-mipmaps = !root.item-mipmaps; }
     }
     probe-budget := Button {
-        x: 385px; y: 324px; width: 132px; height: 38px; visible: !root.item-source;
-        text: root.two-probes ? "解除帧预算" : "限制帧预算";
+        x <- 385px; y <- 324px; width <- 132px; height <- 38px; visible <- !root.item-source;
+        text <- root.two-probes ? "解除帧预算" : "限制帧预算";
         clicked => {
             root.two-probes = !root.two-probes;
             root.face-budget = root.two-probes ? 1 : 0;

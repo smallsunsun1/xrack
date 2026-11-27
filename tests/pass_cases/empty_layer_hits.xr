@@ -11,6 +11,6 @@ struct Actor {
 
 export component EmptyLayers inherits Window {
     in property <[Actor]> actors: [];
-    out property <[hit3d]> hits: Scene3D.hit-all(root.actors, 0, 0, 8,
+    out property <[hit3d]> hits <- Scene3D.hit-all(root.actors, 0, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(100px, 100px), 0);
 }

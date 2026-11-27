@@ -1,10 +1,10 @@
 export component FieldNotes inherits Window {
-    title: (root.dirty ? "* " : "") + root.document-name + " — XRack Notes";
-    width: 720px;
-    height: 460px;
-    min-width: 400px;
-    min-height: 280px;
-    color-scheme: system;
+    title <- (root.dirty ? "* " : "") + root.document-name + " — XRack Notes";
+    width <- 720px;
+    height <- 460px;
+    min-width <- 400px;
+    min-height <- 280px;
+    color-scheme <- system;
 
     in-out property <string> content: "";
     in property <string> saved-content: "";
@@ -12,8 +12,8 @@ export component FieldNotes inherits Window {
     in property <string> document-name: "未命名";
     in-out property <string> status: "支持 UTF-8 文本与 Markdown";
     in property <bool> working: false;
-    out property <bool> dirty: root.content != root.saved-content;
-    private property <bool> locked: root.working || open-picker.pending || save-picker.pending || discard.pending;
+    out property <bool> dirty <- root.content != root.saved-content;
+    private property <bool> locked <- root.working || open-picker.pending || save-picker.pending || discard.pending;
     private property <bool> opening: false;
     private property <bool> confirmed-close: false;
     callback open-document(path: string);
@@ -46,71 +46,71 @@ export component FieldNotes inherits Window {
     }
 
     open-picker := FileDialog {
-        mode: open-file;
-        title: "打开笔记";
-        name-filters: ["Text and Markdown (*.txt *.md)"];
+        mode <- open-file;
+        title <- "打开笔记";
+        name-filters <- ["Text and Markdown (*.txt *.md)"];
         accepted(paths) => { root.open-document(self.selected-file); }
         canceled => { root.status = "已取消打开"; }
         failed(message) => { root.status = message; }
     }
 
     save-picker := FileDialog {
-        mode: save-file;
-        title: "保存笔记";
-        file-name: root.path == "" ? "notes.txt" : root.document-name;
-        name-filters: ["Text and Markdown (*.txt *.md)"];
+        mode <- save-file;
+        title <- "保存笔记";
+        file-name <- root.path == "" ? "notes.txt" : root.document-name;
+        name-filters <- ["Text and Markdown (*.txt *.md)"];
         accepted(paths) => { root.save-document(self.selected-file); }
         canceled => { root.status = "已取消保存"; }
         failed(message) => { root.status = message; }
     }
 
     discard := MessageDialog {
-        title: "放弃未保存的修改？";
-        text: root.opening ? "打开另一份笔记会替换当前内容。" : "关闭窗口后将丢失当前修改。";
-        level: warning;
-        buttons: ok-cancel;
+        title <- "放弃未保存的修改？";
+        text <- root.opening ? "打开另一份笔记会替换当前内容。" : "关闭窗口后将丢失当前修改。";
+        level <- warning;
+        buttons <- ok-cancel;
         accepted => { root.discard-confirmed(); }
         rejected => { root.status = "继续编辑"; }
         failed(message) => { root.status = message; }
     }
 
-    Shortcut { sequence: "Primary+O"; enabled: !root.locked; activated => { root.request-open(); } }
-    Shortcut { sequence: "Primary+S"; enabled: !root.locked && root.dirty; activated => { root.request-save(); } }
-    Shortcut { sequence: "Primary+Shift+S"; enabled: !root.locked; activated => { save-picker.open(); } }
+    Shortcut { sequence <- "Primary+O"; enabled <- !root.locked; activated => { root.request-open(); } }
+    Shortcut { sequence <- "Primary+S"; enabled <- !root.locked && root.dirty; activated => { root.request-save(); } }
+    Shortcut { sequence <- "Primary+Shift+S"; enabled <- !root.locked; activated => { save-picker.open(); } }
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 10px;
-        Text { font-size: 20px; text: root.document-name + (root.dirty ? "  ·  未保存" : ""); }
+        padding <- 16px;
+        spacing <- 10px;
+        Text { font-size <- 20px; text <- root.document-name + (root.dirty ? "  ·  未保存" : ""); }
         HorizontalLayout {
-            alignment: start;
-            spacing: 8px;
+            alignment <- start;
+            spacing <- 8px;
             open := Button {
-                text: "打开…";
-                enabled: !root.locked;
+                text <- "打开…";
+                enabled <- !root.locked;
                 clicked => { root.request-open(); }
             }
             save := Button {
-                text: "保存";
-                primary: true;
-                enabled: !root.locked && root.dirty;
+                text <- "保存";
+                primary <- true;
+                enabled <- !root.locked && root.dirty;
                 clicked => { root.request-save(); }
             }
             save-as := Button {
-                text: "另存为…";
-                enabled: !root.locked;
+                text <- "另存为…";
+                enabled <- !root.locked;
                 clicked => { save-picker.open(); }
             }
         }
         editor := TextEdit {
-            accessible-name: "笔记正文";
-            text <=> root.content;
-            placeholder-text: "写下你的笔记…";
-            read-only: root.locked;
-            wrap: word-wrap;
-            padding: 10px;
-            vertical-stretch: 1;
+            accessible-name <- "笔记正文";
+            text <-> root.content;
+            placeholder-text <- "写下你的笔记…";
+            read-only <- root.locked;
+            wrap <- word-wrap;
+            padding <- 10px;
+            vertical-stretch <- 1;
         }
-        status-line := Text { text: root.status; }
+        status-line := Text { text <- root.status; }
     }
 }

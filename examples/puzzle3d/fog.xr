@@ -7,10 +7,10 @@ struct FogActor {
 }
 
 export component SceneFogDemo inherits Window {
-    title: "XRack · 山谷晨雾";
-    width: 600px; height: 422px;
-    resizable: false;
-    background: #1b2e40;
+    title <- "XRack · 山谷晨雾";
+    width <- 600px; height <- 422px;
+    resizable <- false;
+    background <- #1b2e40;
     in-out property <bool> height-fog: true;
     in-out property <bool> depth-fog: false;
     in-out property <bool> light-transmission: false;
@@ -26,7 +26,7 @@ export component SceneFogDemo inherits Window {
         x: 0, y: 0, z: 0, scale-x: 0.37, scale-y: 0.37, scale-z: 0.37,
         yaw: 0, pitch: 0, roll: 0, color: #ffba50, pickable: true,
     };
-    property <[FogActor]> valley: [
+    property <[FogActor]> valley <- [
         FogActor {
             mesh: @mesh-url("models/ridge.png"), y: -1.2, z: -2.3,
             scale-x: 10.3, scale-y: 0.9, scale-z: 13.3,
@@ -42,38 +42,38 @@ export component SceneFogDemo inherits Window {
             color: #99a0b2, ..root.defaults
         },
     ];
-    property <point3d> marker: Point3D.new(-1.65, 1.52, 1.35);
-    property <point2d> size: Point2D.new(600px, 354px);
-    property <projectedpoint3d> projected: Scene3D.project(17, 11, 10, root.size, root.marker);
-    out property <string> picked: Scene3D.pick(root.valley, 17, 11, 10, root.size, root.projected.point);
+    property <point3d> marker <- Point3D.new(-1.65, 1.52, 1.35);
+    property <point2d> size <- Point2D.new(600px, 354px);
+    property <projectedpoint3d> projected <- Scene3D.project(17, 11, 10, root.size, root.marker);
+    out property <string> picked <- Scene3D.pick(root.valley, 17, 11, 10, root.size, root.projected.point);
 
     view := SceneView3D {
-        width: root.size.x; height: root.size.y;
-        model: root.valley;
-        camera-yaw: 17; camera-pitch: 11; camera-distance: 10;
-        scene-background: #405d74;
-        ambient-intensity: 0.33;
-        light-yaw: 32; light-elevation: 52;
-        multisampling: true;
-        cache-rendering: true;
-        fog-color: #89adb2;
-        fog-density: root.density;
-        fog-depth-enabled: root.depth-fog;
-        fog-near: 5; fog-far: 16;
-        fog-depth-curve: root.depth-curve;
-        fog-height-enabled: root.height-fog;
-        fog-height-start: root.reversed ? root.height-end : root.height-start;
-        fog-height-end: root.reversed ? root.height-start : root.height-end;
-        fog-height-curve: root.height-curve;
-        fog-transmit-enabled: root.light-transmission;
-        fog-transmit-curve: 1.6;
+        width <- root.size.x; height <- root.size.y;
+        model <- root.valley;
+        camera-yaw <- 17; camera-pitch <- 11; camera-distance <- 10;
+        scene-background <- #405d74;
+        ambient-intensity <- 0.33;
+        light-yaw <- 32; light-elevation <- 52;
+        multisampling <- true;
+        cache-rendering <- true;
+        fog-color <- #89adb2;
+        fog-density <- root.density;
+        fog-depth-enabled <- root.depth-fog;
+        fog-near <- 5; fog-far <- 16;
+        fog-depth-curve <- root.depth-curve;
+        fog-height-enabled <- root.height-fog;
+        fog-height-start <- root.reversed ? root.height-end : root.height-start;
+        fog-height-end <- root.reversed ? root.height-start : root.height-end;
+        fog-height-curve <- root.height-curve;
+        fog-transmit-enabled <- root.light-transmission;
+        fog-transmit-curve <- 1.6;
     }
     HorizontalLayout {
-        x: 14px; y: 366px; width: 572px; height: 44px; spacing: 8px;
-        height-toggle := CheckBox { width: 96px; text: "高度雾"; checked <=> root.height-fog; }
-        depth-toggle := CheckBox { width: 96px; text: "距离雾"; checked <=> root.depth-fog; }
-        transmit-toggle := CheckBox { width: 96px; text: "亮部透射"; checked <=> root.light-transmission; enabled: root.depth-fog; }
-        reverse-toggle := CheckBox { width: 96px; text: "倒置高度"; checked <=> root.reversed; enabled: root.height-fog; }
-        curve := Slider { width: 145px; minimum: 0.25; maximum: 4; value <=> root.height-curve; }
+        x <- 14px; y <- 366px; width <- 572px; height <- 44px; spacing <- 8px;
+        height-toggle := CheckBox { width <- 96px; text <- "高度雾"; checked <-> root.height-fog; }
+        depth-toggle := CheckBox { width <- 96px; text <- "距离雾"; checked <-> root.depth-fog; }
+        transmit-toggle := CheckBox { width <- 96px; text <- "亮部透射"; checked <-> root.light-transmission; enabled <- root.depth-fog; }
+        reverse-toggle := CheckBox { width <- 96px; text <- "倒置高度"; checked <-> root.reversed; enabled <- root.height-fog; }
+        curve := Slider { width <- 145px; minimum <- 0.25; maximum <- 4; value <-> root.height-curve; }
     }
 }

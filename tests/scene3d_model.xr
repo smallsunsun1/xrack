@@ -9,8 +9,8 @@ export struct Actor3D {
 }
 
 export component SceneModelTest inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
 
     in-out property <[Actor3D]> actors: [
         Actor3D {
@@ -21,47 +21,47 @@ export component SceneModelTest inherits Window {
             group: "puzzle",
         },
     ];
-    out property <string> hit: Scene3D.pick(root.actors, 0, 0, 8,
+    out property <string> hit <- Scene3D.pick(root.actors, 0, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(100px, 100px));
 
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.actors;
-        camera-yaw: 0;
-        camera-pitch: 0;
-        camera-distance: 8;
+        width <- 200px;
+        height <- 200px;
+        model <- root.actors;
+        camera-yaw <- 0;
+        camera-pitch <- 0;
+        camera-distance <- 8;
     }
 }
 
 export component ProjectionReuseScene inherits Window {
-    width: 400px;
-    height: 200px;
+    width <- 400px;
+    height <- 200px;
     in-out property <[Actor3D]> actors: [];
     in-out property <float> heading: 0;
-    out property <hit3d> hit: Scene3D.hit(root.actors, root.heading, 0, 8,
+    out property <hit3d> hit <- Scene3D.hit(root.actors, root.heading, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(100px, 100px));
-    out property <[hit3d]> ray-hits: Scene3D.ray-hit-all(
+    out property <[hit3d]> ray-hits <- Scene3D.ray-hit-all(
         root.actors, Point3D.new(0, 0, 8), Vector3D.new(0, 0, -1), 20 + root.heading);
-    out property <projectedpoint3d> missing-camera: Scene3D.project-camera(
+    out property <projectedpoint3d> missing-camera <- Scene3D.project-camera(
         root.actors, "missing", Point2D.new(200px, 200px), Point3D.new(root.heading, 0, 0));
 
     left := SceneView3D {
-        width: 200px;
-        height: 200px;
-        camera-yaw: root.heading;
-        camera-pitch: 0;
-        camera-distance: 8;
-        model: root.actors;
+        width <- 200px;
+        height <- 200px;
+        camera-yaw <- root.heading;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        model <- root.actors;
     }
     right := SceneView3D {
-        x: 200px;
-        width: 200px;
-        height: 200px;
-        camera-yaw: root.heading + 10;
-        camera-pitch: 0;
-        camera-distance: 8;
-        model: root.actors;
+        x <- 200px;
+        width <- 200px;
+        height <- 200px;
+        camera-yaw <- root.heading + 10;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        model <- root.actors;
     }
 }
 
@@ -75,7 +75,7 @@ struct OrthoExtentActor {
 
 export component OrthoExtentProbe inherits Window {
     in-out property <float> span: 8;
-    property <[OrthoExtentActor]> cameras: [
+    property <[OrthoExtentActor]> cameras <- [
         OrthoExtentActor {
             id: "map", mesh: "", x: 0, y: 0, z: 8,
             scale-x: 1, scale-y: 1, scale-z: 1,
@@ -83,14 +83,14 @@ export component OrthoExtentProbe inherits Window {
             camera-kind: "orthographic", camera-width: root.span, camera-height: 4,
         },
     ];
-    out property <projectedpoint3d> projected: Scene3D.project-camera(
+    out property <projectedpoint3d> projected <- Scene3D.project-camera(
         root.cameras, "map", Point2D.new(200px, 160px), Point3D.new(2, 1, 0));
 }
 
 export component MaterialScene inherits Window {
-    width: 200px;
-    height: 200px;
-    property <[Actor3D]> actors: [
+    width <- 200px;
+    height <- 200px;
+    property <[Actor3D]> actors <- [
         Actor3D {
             id: "mask", mesh: @mesh-url("../examples/puzzle3d/models/exit.gltf"),
             x: 0, y: 0, z: 0,
@@ -104,33 +104,33 @@ export component MaterialScene inherits Window {
             color: #ff3000, group: "screen",
         },
     ];
-    out property <string> left-hit: Scene3D.pick(root.actors, 0, 0, 8,
+    out property <string> left-hit <- Scene3D.pick(root.actors, 0, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(78px, 100px));
-    out property <string> right-hit: Scene3D.pick(root.actors, 0, 0, 8,
+    out property <string> right-hit <- Scene3D.pick(root.actors, 0, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(122px, 100px));
 
-    out property <hit3d> solid-texel: Scene3D.hit(root.actors, 0, 0, 8,
+    out property <hit3d> solid-texel <- Scene3D.hit(root.actors, 0, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(78px, 100px));
-    out property <hit3d> transparent-texel: Scene3D.hit(root.actors, 0, 0, 8,
+    out property <hit3d> transparent-texel <- Scene3D.hit(root.actors, 0, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(122px, 100px));
-    out property <float> world-x: root.solid-texel.position.x;
-    out property <float> normal-z: root.solid-texel.normal.z;
+    out property <float> world-x <- root.solid-texel.position.x;
+    out property <float> normal-z <- root.solid-texel.normal.z;
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.actors;
-        camera-yaw: 0;
-        camera-pitch: 0;
-        camera-distance: 8;
+        width <- 200px;
+        height <- 200px;
+        model <- root.actors;
+        camera-yaw <- 0;
+        camera-pitch <- 0;
+        camera-distance <- 8;
     }
 }
 
 export component BlendedScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <bool> rear: false;
-    property <float> yaw: root.rear ? 180 : 0;
-    property <[Actor3D]> actors: [
+    property <float> yaw <- root.rear ? 180 : 0;
+    property <[Actor3D]> actors <- [
         Actor3D {
             id: "glass", mesh: @mesh-url("../examples/puzzle3d/models/glass.gltf"),
             x: 0, y: 0, z: 0,
@@ -155,29 +155,29 @@ export component BlendedScene inherits Window {
             color: #ffffff00, group: "screen",
         },
     ];
-    out property <string> center-hit: Scene3D.pick(root.actors, root.yaw, 0, 8,
+    out property <string> center-hit <- Scene3D.pick(root.actors, root.yaw, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(100px, 100px));
-    out property <string> left-hit: Scene3D.pick(root.actors, root.yaw, 0, 8,
+    out property <string> left-hit <- Scene3D.pick(root.actors, root.yaw, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(70px, 100px));
 
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.actors;
-        camera-yaw: root.yaw;
-        camera-pitch: 0;
-        camera-distance: 8;
-        light-yaw: root.yaw;
-        light-elevation: 0;
+        width <- 200px;
+        height <- 200px;
+        model <- root.actors;
+        camera-yaw <- root.yaw;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        light-yaw <- root.yaw;
+        light-elevation <- 0;
     }
 }
 
 export component SidedScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <bool> rear: false;
-    property <float> yaw: root.rear ? 180 : 0;
-    property <[Actor3D]> actors: [
+    property <float> yaw <- root.rear ? 180 : 0;
+    property <[Actor3D]> actors <- [
         Actor3D {
             id: "panels", mesh: @mesh-url("scene3d_sided.gltf"),
             x: 0, y: 0, z: 0,
@@ -185,28 +185,28 @@ export component SidedScene inherits Window {
             color: #ffffff, group: "screen",
         },
     ];
-    out property <string> left-hit: Scene3D.pick(root.actors, root.yaw, 0, 8,
+    out property <string> left-hit <- Scene3D.pick(root.actors, root.yaw, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(69px, 100px));
-    out property <string> right-hit: Scene3D.pick(root.actors, root.yaw, 0, 8,
+    out property <string> right-hit <- Scene3D.pick(root.actors, root.yaw, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(131px, 100px));
 
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.actors;
-        camera-yaw: root.yaw;
-        camera-pitch: 0;
-        camera-distance: 8;
-        light-yaw: root.yaw;
-        light-elevation: 0;
+        width <- 200px;
+        height <- 200px;
+        model <- root.actors;
+        camera-yaw <- root.yaw;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        light-yaw <- root.yaw;
+        light-elevation <- 0;
     }
 }
 
 export component PbrScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <int> lamp: 0;
-    property <[Actor3D]> actors: [
+    property <[Actor3D]> actors <- [
         Actor3D {
             id: "materials", mesh: @mesh-url("scene3d_pbr.gltf"),
             x: 0, y: 0, z: 0,
@@ -215,23 +215,23 @@ export component PbrScene inherits Window {
         },
     ];
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.actors;
-        camera-yaw: 0;
-        camera-pitch: 0;
-        camera-distance: 8;
-        light-yaw: root.lamp == 0 ? 0 : root.lamp == 1 ? 62 : 180;
-        light-elevation: 0;
+        width <- 200px;
+        height <- 200px;
+        model <- root.actors;
+        camera-yaw <- 0;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        light-yaw <- root.lamp == 0 ? 0 : root.lamp == 1 ? 62 : 180;
+        light-elevation <- 0;
     }
 }
 
 export component NormalMapScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <bool> rear: false;
-    property <float> yaw: root.rear ? 180 : 0;
-    property <[Actor3D]> actors: [
+    property <float> yaw <- root.rear ? 180 : 0;
+    property <[Actor3D]> actors <- [
         Actor3D {
             id: "tiles", mesh: @mesh-url("scene3d_normal.gltf"),
             x: 0, y: 0, z: 0,
@@ -239,17 +239,17 @@ export component NormalMapScene inherits Window {
             color: #ffffff, group: "surface",
         },
     ];
-    out property <string> top-hit: Scene3D.pick(root.actors, root.yaw, 0, 8,
+    out property <string> top-hit <- Scene3D.pick(root.actors, root.yaw, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(100px, 68px));
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.actors;
-        camera-yaw: root.yaw;
-        camera-pitch: 0;
-        camera-distance: 8;
-        light-yaw: root.yaw;
-        light-elevation: root.rear ? -45 : 45;
+        width <- 200px;
+        height <- 200px;
+        model <- root.actors;
+        camera-yaw <- root.yaw;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        light-yaw <- root.yaw;
+        light-elevation <- root.rear ? -45 : 45;
     }
 }
 
@@ -262,8 +262,8 @@ export struct LightRow {
 }
 
 export component LightsScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <int> mode: 0;
     in-out property <float> point-distance: 2;
     in-out property <float> point-range: 2.6;
@@ -272,7 +272,7 @@ export component LightsScene inherits Window {
         kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0,
         intensity: 0, color: #ffffff, range: 0, inner-angle: 8, outer-angle: 24,
     };
-    property <[LightRow]> lamps: [
+    property <[LightRow]> lamps <- [
         LightRow { color: #ff0000, intensity: root.mode == 1 || root.mode == 4 ? 0.9 : 0, ..root.common-light },
         LightRow {
             kind: "point", x: -1.3, z: root.point-distance, range: root.point-range,
@@ -285,7 +285,7 @@ export component LightsScene inherits Window {
             ..root.common-light
         },
     ];
-    property <[Actor3D]> actors: [
+    property <[Actor3D]> actors <- [
         Actor3D {
             id: "wall", mesh: @mesh-url("scene3d_lighting.gltf"),
             x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
@@ -293,15 +293,15 @@ export component LightsScene inherits Window {
         },
     ];
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.actors;
-        camera-yaw: 0;
-        camera-pitch: 0;
-        camera-distance: 8;
-        lights: root.lamps;
-        ambient-intensity: root.ambient;
-        ambient-color: #80ffff;
+        width <- 200px;
+        height <- 200px;
+        model <- root.actors;
+        camera-yaw <- 0;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        lights <- root.lamps;
+        ambient-intensity <- root.ambient;
+        ambient-color <- #80ffff;
     }
 }
 
@@ -326,18 +326,18 @@ struct ShadowLamp {
 }
 
 export component ShadowScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <bool> enabled: false;
     in-out property <float> orbit: 0;
     in-out property <int> mode: 0;
-    property <ShadowActor> wall: ShadowActor {
+    property <ShadowActor> wall <- ShadowActor {
         id: "wall", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 5, scale-y: 5, scale-z: 0.1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
         casts-shadow: false, receives-shadow: root.mode != 2,
     };
-    property <[ShadowActor]> objects: [
+    property <[ShadowActor]> objects <- [
         root.wall,
         ShadowActor {
             id: "caster",
@@ -352,14 +352,14 @@ export component ShadowScene inherits Window {
             ..root.wall
         },
     ];
-    property <ShadowLamp> main-light: ShadowLamp {
+    property <ShadowLamp> main-light <- ShadowLamp {
         kind: root.mode >= 12 ? "point" : root.mode == 5 ? "spot" : "directional",
         x: -3, y: 0, z: root.mode == 13 ? 6 : 3, yaw: -45, elevation: 0,
         intensity: root.mode == 15 ? 48 : root.mode >= 12 || root.mode == 5 ? 60 : root.mode == 9 ? 1.5 : 2.6,
         color: #ffffff, range: root.mode == 14 ? 1 : 10, inner-angle: 18, outer-angle: 35,
         casts-shadow: root.mode != 4 && root.mode != 16,
     };
-    property <[ShadowLamp]> lamps: [
+    property <[ShadowLamp]> lamps <- [
         root.main-light,
         ShadowLamp {
             kind: "spot", color: #00ff00,
@@ -369,35 +369,35 @@ export component ShadowScene inherits Window {
         },
     ];
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.objects;
-        camera-yaw: root.orbit;
-        camera-pitch: 0;
-        camera-distance: 8;
-        lights: root.lamps;
-        ambient-intensity: 0.15;
-        shadows: root.enabled;
-        shadow-map-size: 256;
+        width <- 200px;
+        height <- 200px;
+        model <- root.objects;
+        camera-yaw <- root.orbit;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        lights <- root.lamps;
+        ambient-intensity <- 0.15;
+        shadows <- root.enabled;
+        shadow-map-size <- 256;
     }
 }
 
 export component PointShadows inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <bool> enabled: false;
     in-out property <int> face: 0;
-    property <int> axis: root.face / 2;
-    property <float> axial-distance: root.face % 2 == 0 ? -4 : 4;
-    property <ShadowLamp> lamp: ShadowLamp {
+    property <int> axis <- root.face / 2;
+    property <float> axial-distance <- root.face % 2 == 0 ? -4 : 4;
+    property <ShadowLamp> lamp <- ShadowLamp {
         kind: "point", color: #ffffff, intensity: 65, range: root.face == 5 ? 0 : 10, casts-shadow: true,
         x: root.axis == 0 ? root.axial-distance : 1.8,
         y: root.axis == 1 ? root.axial-distance : 0,
         z: root.axis == 2 ? root.axial-distance : root.axis == 0 ? 1.8 : 0,
         yaw: 0, elevation: 0, inner-angle: 0, outer-angle: 45,
     };
-    property <[ShadowLamp]> lamps: [root.lamp];
-    property <ShadowActor> receiver: ShadowActor {
+    property <[ShadowLamp]> lamps <- [root.lamp];
+    property <ShadowActor> receiver <- ShadowActor {
         id: "wall", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: root.axis == 0 ? 0.1 : 5,
         scale-y: root.axis == 1 ? 0.1 : 5,
@@ -405,7 +405,7 @@ export component PointShadows inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
         casts-shadow: false, receives-shadow: true,
     };
-    property <[ShadowActor]> objects: [
+    property <[ShadowActor]> objects <- [
         root.receiver,
         ShadowActor {
             id: "caster", x: root.lamp.x * 0.5, y: root.lamp.y * 0.5, z: root.lamp.z * 0.5,
@@ -414,22 +414,22 @@ export component PointShadows inherits Window {
         },
     ];
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.objects;
-        camera-yaw: root.face == 0 ? -90 : root.face == 1 ? 90 : root.face == 4 ? 180 : 0;
-        camera-pitch: root.face == 2 ? -70 : root.face == 3 ? 70 : 0;
-        camera-distance: 8;
-        lights: root.lamps;
-        ambient-intensity: 0.15;
-        shadows: root.enabled;
-        shadow-map-size: 256;
+        width <- 200px;
+        height <- 200px;
+        model <- root.objects;
+        camera-yaw <- root.face == 0 ? -90 : root.face == 1 ? 90 : root.face == 4 ? 180 : 0;
+        camera-pitch <- root.face == 2 ? -70 : root.face == 3 ? 70 : 0;
+        camera-distance <- 8;
+        lights <- root.lamps;
+        ambient-intensity <- 0.15;
+        shadows <- root.enabled;
+        shadow-map-size <- 256;
     }
 }
 
 export component CascadeScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <bool> enabled: false;
     in-out property <float> orbit: 0;
     in-out property <float> coverage: 30;
@@ -440,7 +440,7 @@ export component CascadeScene inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
         casts-shadow: false, receives-shadow: true,
     };
-    property <[ShadowActor]> objects: [
+    property <[ShadowActor]> objects <- [
         ShadowActor { id: "near", x: -1, z: 10, ..root.panel },
         ShadowActor { id: "far", x: 4, z: -8, scale-x: 4, scale-y: 3, ..root.panel },
         // The near caster is outside the camera's frustum, but still blocks the light.
@@ -459,7 +459,7 @@ export component CascadeScene inherits Window {
         kind: "directional", x: 0, y: 0, z: 0, yaw: -45, elevation: 0,
         intensity: 2.6, color: #ffffff, range: 0, inner-angle: 0, outer-angle: 45, casts-shadow: true,
     };
-    property <[ShadowLamp]> lamps: [
+    property <[ShadowLamp]> lamps <- [
         root.sun,
         ShadowLamp {
             kind: "point", x: -4, z: 13.2, intensity: root.punctual-on ? 2 : 0,
@@ -471,26 +471,26 @@ export component CascadeScene inherits Window {
         },
     ];
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.objects;
-        camera-yaw: root.orbit;
-        camera-pitch: 0;
-        camera-distance: 16;
-        lights: root.lamps;
-        ambient-intensity: 0.15;
-        shadows: root.enabled;
-        shadow-map-size: 256;
-        shadow-cascades: 3;
-        shadow-distance: root.coverage;
-        shadow-cascade-blend: 0.2;
-        shadow-split-balance: 0;
+        width <- 200px;
+        height <- 200px;
+        model <- root.objects;
+        camera-yaw <- root.orbit;
+        camera-pitch <- 0;
+        camera-distance <- 16;
+        lights <- root.lamps;
+        ambient-intensity <- 0.15;
+        shadows <- root.enabled;
+        shadow-map-size <- 256;
+        shadow-cascades <- 3;
+        shadow-distance <- root.coverage;
+        shadow-cascade-blend <- 0.2;
+        shadow-split-balance <- 0;
     }
 }
 
 export component EnvironmentScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <bool> enabled: true;
     in-out property <bool> sky: true;
     in-out property <bool> geometry: true;
@@ -499,7 +499,7 @@ export component EnvironmentScene inherits Window {
     in-out property <float> exposure: 1;
     in-out property <float> intensity: 1;
     property <[ShadowLamp]> lamps: [];
-    property <[Actor3D]> models: [
+    property <[Actor3D]> models <- [
         Actor3D {
             id: "panels", mesh: @mesh-url("scene3d_environment.gltf"),
             x: 0, y: 0, z: 0,
@@ -509,20 +509,20 @@ export component EnvironmentScene inherits Window {
     ];
     property <[Actor3D]> empty-model: [];
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.geometry ? root.models : root.empty-model;
-        lights: root.lamps;
-        ambient-intensity: 0;
-        camera-yaw: root.camera;
-        camera-pitch: 0;
-        camera-distance: 8;
-        scene-background: #05070b;
-        environment: root.enabled ? @environment-url("../examples/puzzle3d/models/studio.hdr") : "";
-        environment-yaw: root.yaw;
-        environment-skybox: root.sky;
-        environment-intensity: root.intensity;
-        scene-exposure: root.exposure;
+        width <- 200px;
+        height <- 200px;
+        model <- root.geometry ? root.models : root.empty-model;
+        lights <- root.lamps;
+        ambient-intensity <- 0;
+        camera-yaw <- root.camera;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        scene-background <- #05070b;
+        environment <- root.enabled ? @environment-url("../examples/puzzle3d/models/studio.hdr") : "";
+        environment-yaw <- root.yaw;
+        environment-skybox <- root.sky;
+        environment-intensity <- root.intensity;
+        scene-exposure <- root.exposure;
     }
 }
 
@@ -535,8 +535,8 @@ struct HierarchyActor {
 }
 
 export component HierarchyScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <int> mode: 0;
     in-out property <float> shift: 0;
     in-out property <float> orbit: 0;
@@ -545,7 +545,7 @@ export component HierarchyScene inherits Window {
         x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, pivot-x: 0, color: #ffffff, casts-shadow: false,
     };
-    property <[HierarchyActor]> objects: [
+    property <[HierarchyActor]> objects <- [
         HierarchyActor {
             id: "target", parent: "hinge", mesh: "primitive:box", x: 0.25,
             scale-x: 1.4, scale-y: 1.3, scale-z: 0.5, color: #ff3000,
@@ -565,20 +565,20 @@ export component HierarchyScene inherits Window {
         },
         HierarchyActor { id: root.mode == 4 ? "rig" : "", ..root.defaults },
     ];
-    out property <string> hit: Scene3D.pick(root.objects, root.orbit, 0, 8,
+    out property <string> hit <- Scene3D.pick(root.objects, root.orbit, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(100px, 100px));
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.objects;
-        camera-yaw: root.orbit;
-        camera-pitch: 0;
-        camera-distance: 8;
-        ambient-intensity: 0;
-        light-yaw: 0;
-        light-elevation: 0;
-        shadows: true;
-        shadow-map-size: 256;
+        width <- 200px;
+        height <- 200px;
+        model <- root.objects;
+        camera-yaw <- root.orbit;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        ambient-intensity <- 0;
+        light-yaw <- 0;
+        light-elevation <- 0;
+        shadows <- true;
+        shadow-map-size <- 256;
     }
 }
 
@@ -593,8 +593,8 @@ export struct CameraRow {
 }
 
 export component CameraScene inherits Window {
-    width: root.view-width;
-    height: 200px;
+    width <- root.view-width;
+    height <- 200px;
     in-out property <length> view-width: 200px;
     in-out property <string> active: "perspective";
     in-out property <float> rig-x: 0;
@@ -606,14 +606,14 @@ export component CameraScene inherits Window {
     in-out property <float> far: 40;
     in-out property <float> fov: 45;
     in-out property <bool> shadows: false;
-    property <CameraRow> defaults: CameraRow {
+    property <CameraRow> defaults <- CameraRow {
         id: "", mesh: "", parent: "", visible: true,
         x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
         camera-kind: "", camera-fov: root.fov, camera-height: 8,
         camera-near: root.near, camera-far: root.far, camera-look-at: "",
     };
-    property <[CameraRow]> objects: [
+    property <[CameraRow]> objects <- [
         CameraRow { id: "perspective", camera-kind: "perspective", parent: "rig", z: 8, ..root.defaults },
         CameraRow { id: "map", camera-kind: "orthographic", parent: "rig", z: 8, ..root.defaults },
         CameraRow { id: "angled", camera-kind: "perspective", parent: "rig", x: 4, z: 8, yaw: 45, ..root.defaults },
@@ -625,37 +625,37 @@ export component CameraScene inherits Window {
         CameraRow { id: "rear", mesh: "primitive:box", z: -4, scale-x: 1.8, scale-y: 2, scale-z: 0.2, color: #0000ff, ..root.defaults },
         CameraRow { id: "side", mesh: "primitive:box", x: 2.5, scale-x: 0.9, scale-y: 2, scale-z: 0.9, color: #00ff00, ..root.defaults },
     ];
-    property <point2d> viewport: Point2D.new(root.view-width, 200px);
-    out property <string> center-hit: Scene3D.pick-camera(root.objects, root.active,
+    property <point2d> viewport <- Point2D.new(root.view-width, 200px);
+    out property <string> center-hit <- Scene3D.pick-camera(root.objects, root.active,
         root.viewport, Point2D.new(root.view-width * 0.5, 100px));
-    out property <string> edge-hit: Scene3D.pick-camera(root.objects, root.active,
+    out property <string> edge-hit <- Scene3D.pick-camera(root.objects, root.active,
         root.viewport, Point2D.new(root.view-width * 0.62, 100px));
-    property <point3d> world: Point3D.new(0.65, 0.35, 0);
-    property <point3d> fallback: Point3D.new(-7, -11, -13);
-    out property <projectedpoint3d> projected: Scene3D.project-camera(
+    property <point3d> world <- Point3D.new(0.65, 0.35, 0);
+    property <point3d> fallback <- Point3D.new(-7, -11, -13);
+    out property <projectedpoint3d> projected <- Scene3D.project-camera(
         root.objects, root.active, root.viewport, root.world);
-    out property <point3d> restored: Scene3D.unproject-camera(
+    out property <point3d> restored <- Scene3D.unproject-camera(
         root.objects, root.active, root.viewport, root.projected.point, root.projected.depth, root.fallback);
-    out property <length> screen-x: root.projected.point.x;
-    out property <projectedpoint3d> orbit-project: Scene3D.project(0, 0, 8, root.viewport, root.world);
-    out property <point3d> orbit-unproject: Scene3D.unproject(
+    out property <length> screen-x <- root.projected.point.x;
+    out property <projectedpoint3d> orbit-project <- Scene3D.project(0, 0, 8, root.viewport, root.world);
+    out property <point3d> orbit-unproject <- Scene3D.unproject(
         0, 0, 8, root.viewport, root.orbit-project.point, root.orbit-project.depth, root.fallback);
-    out property <hit3d> camera-contact: Scene3D.hit-camera(root.objects, root.active,
+    out property <hit3d> camera-contact <- Scene3D.hit-camera(root.objects, root.active,
         root.viewport, Point2D.new(root.view-width * 0.5, 100px));
-    out property <hit3d> ray-contact: Scene3D.ray-hit(root.objects,
+    out property <hit3d> ray-contact <- Scene3D.ray-hit(root.objects,
         Point3D.new(0, 0, 8), Vector3D.new(0, 0, -2), 10);
     SceneView3D {
-        width: root.view-width;
-        height: 200px;
-        camera: root.active;
-        model: root.objects;
-        light-yaw: 0;
-        light-elevation: 0;
-        shadows: root.shadows;
-        shadow-cascades: 2;
-        shadow-distance: 28;
-        shadow-map-size: 256;
-        scene-background: #08090a;
+        width <- root.view-width;
+        height <- 200px;
+        camera <- root.active;
+        model <- root.objects;
+        light-yaw <- 0;
+        light-elevation <- 0;
+        shadows <- root.shadows;
+        shadow-cascades <- 2;
+        shadow-distance <- 28;
+        shadow-map-size <- 256;
+        scene-background <- #08090a;
     }
 }
 
@@ -668,8 +668,8 @@ struct MountedLamp {
 }
 
 export component MountedLightScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <float> mount-x: 0;
     in-out property <float> mount-yaw: 0;
     in-out property <int> mode: 0;
@@ -684,7 +684,7 @@ export component MountedLightScene inherits Window {
         camera-kind: "", camera-fov: 45, camera-height: 8, camera-near: 0.1,
         camera-far: 40, camera-look-at: "",
     };
-    property <[CameraRow]> objects: [
+    property <[CameraRow]> objects <- [
         CameraRow { id: "joint", parent: "base", yaw: root.mount-yaw, ..root.defaults },
         CameraRow {
             id: "base", x: root.mount-x, z: 2, scale-x: 2, scale-z: 0.5,
@@ -696,7 +696,7 @@ export component MountedLightScene inherits Window {
             scale-x: 0.45, scale-y: 0.8, scale-z: 0.3, color: #202040, ..root.defaults
         },
     ];
-    property <MountedLamp> moving: MountedLamp {
+    property <MountedLamp> moving <- MountedLamp {
         kind: root.mode == 0 ? "directional" : root.mode == 1 ? "point" : "spot",
         parent: root.parent-id, visible: root.light-visible,
         x: root.mode == 1 ? -0.5 : 0.5, y: 0, z: 0,
@@ -705,7 +705,7 @@ export component MountedLightScene inherits Window {
         range: root.mode == 1 ? 3 : 8, inner-angle: 12, outer-angle: 25,
         casts-shadow: true,
     };
-    property <[MountedLamp]> lights: [
+    property <[MountedLamp]> lights <- [
         MountedLamp {
             kind: "directional", parent: "", visible: root.mode == 3,
             yaw: 0, elevation: 0, color: #ff0000, intensity: 1,
@@ -714,16 +714,16 @@ export component MountedLightScene inherits Window {
         root.moving,
     ];
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.objects;
-        lights: root.lights;
-        camera-yaw: 0;
-        camera-pitch: 0;
-        camera-distance: 8;
-        ambient-intensity: 0;
-        shadows: root.shadows;
-        shadow-map-size: 256;
+        width <- 200px;
+        height <- 200px;
+        model <- root.objects;
+        lights <- root.lights;
+        camera-yaw <- 0;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        ambient-intensity <- 0;
+        shadows <- root.shadows;
+        shadow-map-size <- 256;
     }
 }
 
@@ -737,8 +737,8 @@ struct AnimatedActor {
 }
 
 export component AnimatedScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <string> clip: "Slide";
     in-out property <float> time: 0;
     in-out property <bool> loop: false;
@@ -749,7 +749,7 @@ export component AnimatedScene inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
         casts-shadow: false, animation: "", animation-time: 0, animation-loop: false,
     };
-    property <[AnimatedActor]> actors: [
+    property <[AnimatedActor]> actors <- [
         AnimatedActor {
             id: "mover", mesh: @mesh-url("../examples/puzzle3d/models/animated-panel.glb"),
             color: #ff3000, casts-shadow: true,
@@ -761,25 +761,25 @@ export component AnimatedScene inherits Window {
             color: #2040ff, ..root.base
         },
     ];
-    out property <string> hit: Scene3D.pick(root.actors, root.orbit, 0, 8,
+    out property <string> hit <- Scene3D.pick(root.actors, root.orbit, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(100px, 100px));
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.actors;
-        camera-yaw: root.orbit;
-        camera-pitch: 0;
-        camera-distance: 8;
-        light-yaw: -45;
-        light-elevation: 0;
-        shadows: true;
-        shadow-map-size: 256;
+        width <- 200px;
+        height <- 200px;
+        model <- root.actors;
+        camera-yaw <- root.orbit;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        light-yaw <- -45;
+        light-elevation <- 0;
+        shadows <- true;
+        shadow-map-size <- 256;
     }
 }
 
 export component SkinnedScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <float> time: 0;
     in-out property <float> orbit: 0;
     property <AnimatedActor> base: AnimatedActor {
@@ -788,7 +788,7 @@ export component SkinnedScene inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
         casts-shadow: false, animation: "", animation-time: 0, animation-loop: false,
     };
-    property <[AnimatedActor]> actors: [
+    property <[AnimatedActor]> actors <- [
         AnimatedActor {
             id: "skin", mesh: @mesh-url("../examples/puzzle3d/models/skinned-panel.glb"),
             color: #ff5030, casts-shadow: true,
@@ -799,27 +799,27 @@ export component SkinnedScene inherits Window {
             color: #2040ff, ..root.base
         },
     ];
-    out property <string> center-hit: Scene3D.pick(root.actors, root.orbit, 0, 8,
+    out property <string> center-hit <- Scene3D.pick(root.actors, root.orbit, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(100px, 100px));
-    out property <string> side-hit: Scene3D.pick(root.actors, root.orbit, 0, 8,
+    out property <string> side-hit <- Scene3D.pick(root.actors, root.orbit, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(130px, 100px));
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.actors;
-        camera-yaw: root.orbit;
-        camera-pitch: 0;
-        camera-distance: 8;
-        light-yaw: 45;
-        light-elevation: 0;
-        shadows: true;
-        shadow-map-size: 256;
+        width <- 200px;
+        height <- 200px;
+        model <- root.actors;
+        camera-yaw <- root.orbit;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        light-yaw <- 45;
+        light-elevation <- 0;
+        shadows <- true;
+        shadow-map-size <- 256;
     }
 }
 
 export component MorphScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <string> clip: "";
     in-out property <float> time: 0;
     in-out property <float> orbit: 0;
@@ -829,7 +829,7 @@ export component MorphScene inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
         casts-shadow: false, animation: "", animation-time: 0, animation-loop: false,
     };
-    property <[AnimatedActor]> actors: [
+    property <[AnimatedActor]> actors <- [
         AnimatedActor {
             id: "panel", mesh: @mesh-url("../examples/puzzle3d/models/morph-panel.glb"),
             color: #ff5030, casts-shadow: true,
@@ -840,23 +840,23 @@ export component MorphScene inherits Window {
             color: #2040ff, ..root.base
         },
     ];
-    out property <string> center-hit: Scene3D.pick(root.actors, root.orbit, 0, 8,
+    out property <string> center-hit <- Scene3D.pick(root.actors, root.orbit, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(100px, 100px));
-    out property <string> side-hit: Scene3D.pick(root.actors, root.orbit, 0, 8,
+    out property <string> side-hit <- Scene3D.pick(root.actors, root.orbit, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(175px, 100px));
-    out property <string> upper-hit: Scene3D.pick(root.actors, root.orbit, 0, 8,
+    out property <string> upper-hit <- Scene3D.pick(root.actors, root.orbit, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(122px, 58px));
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.actors;
-        camera-yaw: root.orbit;
-        camera-pitch: 0;
-        camera-distance: 8;
-        light-yaw: 45;
-        light-elevation: 0;
-        shadows: true;
-        shadow-map-size: 256;
+        width <- 200px;
+        height <- 200px;
+        model <- root.actors;
+        camera-yaw <- root.orbit;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        light-yaw <- 45;
+        light-elevation <- 0;
+        shadows <- true;
+        shadow-map-size <- 256;
     }
 }
 
@@ -873,8 +873,8 @@ struct DrivenActor {
 }
 
 export component MorphControlScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <float> time: 0.5;
     in-out property <float> extension: 0;
     property <float> orbit: 0;
@@ -885,7 +885,7 @@ export component MorphControlScene inherits Window {
         casts-shadow: false, animation: "", animation-time: 0, animation-loop: false,
         morph-weights: FacePose { extend: 0, target-0: 0.125 },
     };
-    property <[DrivenActor]> actors: [
+    property <[DrivenActor]> actors <- [
         DrivenActor {
             id: "panel", mesh: @mesh-url("../examples/puzzle3d/models/morph-panel.glb"),
             color: #ff5030, casts-shadow: true,
@@ -904,27 +904,27 @@ export component MorphControlScene inherits Window {
             color: #2040ff, ..root.base
         },
     ];
-    out property <string> center-hit: Scene3D.pick(root.actors, root.orbit, 0, 8,
+    out property <string> center-hit <- Scene3D.pick(root.actors, root.orbit, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(100px, 100px));
-    out property <string> side-hit: Scene3D.pick(root.actors, root.orbit, 0, 8,
+    out property <string> side-hit <- Scene3D.pick(root.actors, root.orbit, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(175px, 100px));
-    out property <string> upper-hit: Scene3D.pick(root.actors, root.orbit, 0, 8,
+    out property <string> upper-hit <- Scene3D.pick(root.actors, root.orbit, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(84px, 58px));
-    out property <string> twin-hit: Scene3D.pick(root.actors, root.orbit, 0, 8,
+    out property <string> twin-hit <- Scene3D.pick(root.actors, root.orbit, 0, 8,
         Point2D.new(200px, 200px), Point2D.new(55px, 142px));
-    out property <hit3d> driven-contact: Scene3D.ray-hit(root.actors,
+    out property <hit3d> driven-contact <- Scene3D.ray-hit(root.actors,
         Point3D.new(2.45, 0, 8), Vector3D.new(0, 0, -1), 10);
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        model: root.actors;
-        camera-yaw: root.orbit;
-        camera-pitch: 0;
-        camera-distance: 8;
-        light-yaw: 45;
-        light-elevation: 0;
-        shadows: true;
-        shadow-map-size: 256;
+        width <- 200px;
+        height <- 200px;
+        model <- root.actors;
+        camera-yaw <- root.orbit;
+        camera-pitch <- 0;
+        camera-distance <- 8;
+        light-yaw <- 45;
+        light-elevation <- 0;
+        shadows <- true;
+        shadow-map-size <- 256;
     }
 }
 
@@ -935,14 +935,14 @@ struct QueryActor {
 }
 
 export component HitListScene inherits Window {
-    width: 300px;
-    height: 180px;
+    width <- 300px;
+    height <- 180px;
     property <QueryActor> cube: QueryActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #ffffff, pickable: true, camera-kind: "", camera-near: 0.1, camera-far: 40,
     };
-    property <[QueryActor]> actors: [
+    property <[QueryActor]> actors <- [
         QueryActor { id: "skip-invalid", mesh: "missing", ..root.cube },
         QueryActor { id: "front", z: 2, ..root.cube },
         QueryActor { id: "rig", mesh: @mesh-url("scene3d_hit_group.glb"), ..root.cube },
@@ -956,21 +956,21 @@ export component HitListScene inherits Window {
         },
     ];
     property <hit3d> miss;
-    property <point2d> viewport: Point2D.new(200px, 200px);
-    property <point2d> pointer: Point2D.new(100px, 100px);
-    out property <[hit3d]> hits: Scene3D.hit-all(root.actors, 0, 0, 8, root.viewport, root.pointer);
-    out property <[hit3d]> clipped: Scene3D.hit-all-camera(root.actors, "camera", root.viewport, root.pointer);
-    out property <[hit3d]> from-world: Scene3D.ray-hit-all(
+    property <point2d> viewport <- Point2D.new(200px, 200px);
+    property <point2d> pointer <- Point2D.new(100px, 100px);
+    out property <[hit3d]> hits <- Scene3D.hit-all(root.actors, 0, 0, 8, root.viewport, root.pointer);
+    out property <[hit3d]> clipped <- Scene3D.hit-all-camera(root.actors, "camera", root.viewport, root.pointer);
+    out property <[hit3d]> from-world <- Scene3D.ray-hit-all(
         root.actors, Point3D.new(0, 0, 8), Vector3D.new(0, 0, -2), 12);
-    out property <[hit3d]> too-short: Scene3D.ray-hit-all(
+    out property <[hit3d]> too-short <- Scene3D.ray-hit-all(
         root.actors, Point3D.new(0, 0, 8), Vector3D.new(0, 0, -2), 2);
-    out property <[hit3d]> invalid-camera: Scene3D.hit-all-camera(
+    out property <[hit3d]> invalid-camera <- Scene3D.hit-all-camera(
         root.actors, "missing", root.viewport, root.pointer);
-    out property <hit3d> selected: Model.at(root.hits, 0, root.miss);
-    out property <hit3d> out-of-range: Model.at(root.hits, -1, root.miss);
-    out property <int> selected-row: root.selected.row-index;
-    out property <int> count: Model.count(root.hits);
-    out property <bool> no-short-hits: Model.is-empty(root.too-short);
+    out property <hit3d> selected <- Model.at(root.hits, 0, root.miss);
+    out property <hit3d> out-of-range <- Model.at(root.hits, -1, root.miss);
+    out property <int> selected-row <- root.selected.row-index;
+    out property <int> count <- Model.count(root.hits);
+    out property <bool> no-short-hits <- Model.is-empty(root.too-short);
     out property <string> visited: "";
     out property <[hit3d]> edited: [];
     callback collect();
@@ -985,34 +985,34 @@ export component HitListScene inherits Window {
     }
     VerticalLayout {
         for hit in root.hits: Text {
-            text: "row " + hit.row-index + " " + hit.object-id;
+            text <- "row " + hit.row-index + " " + hit.object-id;
         }
     }
 }
 
 export component CullScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <bool> cull: true;
     in-out property <[CameraRow]> actors: [];
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        frustum-culling: root.cull;
-        camera: "view";
-        model: root.actors;
-        shadows: false;
-        scene-background: #08090a;
+        width <- 200px;
+        height <- 200px;
+        frustum-culling <- root.cull;
+        camera <- "view";
+        model <- root.actors;
+        shadows <- false;
+        scene-background <- #08090a;
     }
 }
 
 export component CullPoseScene inherits Window {
-    width: 200px;
-    height: 200px;
+    width <- 200px;
+    height <- 200px;
     in-out property <bool> cull: true;
     in-out property <bool> morph: false;
     in-out property <float> time: 0;
-    property <[AnimatedActor]> actors: [AnimatedActor {
+    property <[AnimatedActor]> actors <- [AnimatedActor {
         id: "panel",
         mesh: root.morph ? @mesh-url("../examples/puzzle3d/models/morph-panel.glb")
             : @mesh-url("../examples/puzzle3d/models/skinned-panel.glb"),
@@ -1023,14 +1023,14 @@ export component CullPoseScene inherits Window {
         animation-time: root.time, animation-loop: false,
     }];
     SceneView3D {
-        width: 200px;
-        height: 200px;
-        frustum-culling: root.cull;
-        model: root.actors;
-        camera-yaw: 0;
-        camera-pitch: 0;
-        camera-distance: 2;
-        shadows: false;
-        scene-background: #08090a;
+        width <- 200px;
+        height <- 200px;
+        frustum-culling <- root.cull;
+        model <- root.actors;
+        camera-yaw <- 0;
+        camera-pitch <- 0;
+        camera-distance <- 2;
+        shadows <- false;
+        scene-background <- #08090a;
     }
 }

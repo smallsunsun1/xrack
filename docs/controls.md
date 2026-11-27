@@ -62,8 +62,8 @@ iOS 开启「粗体文本」后，控件会选择可用的较重字重，简体�
 
 ```xr
 Label {
-    text: root.upload-status;
-    accessible-live: polite;
+    text <- root.upload-status;
+    accessible-live <- polite;
 }
 ```
 
@@ -104,7 +104,7 @@ Android 库存示例的 **Open bulletin** 演示轻触链接、长按选词、�
 
 编译器校验字体并把字节嵌入生成的 Rust。同一文件在组件导入链中出现多次时只嵌入一次。窗口使用各自的字体上下文，Rust 的离屏渲染也可以选择 `TextSystem::bundled_only()`。运行 `bazel run //examples/layout:layout -- --bundled-fonts` 可查看内嵌的两款字重和一个使用内嵌字体的输入框。
 
-`TextInput` 和 `LineEdit` 提供单行键盘编辑、选区、IME 预编辑和提交。`text <=> root.query;` 与 `checked <=> root.flag;` 分别把文本输入和复选框与可写属性相连。条件子元素用 `if condition : Element { ... }` 表达，隐藏时保留组件的内部状态。重复元素用 `for item[index] in root.items : Text { ... }` 表达，接受整数计数、`[string]` 和命名记录列表，以匿名、无状态的显示模板生成纵向列表。
+`TextInput` 和 `LineEdit` 提供单行键盘编辑、选区、IME 预编辑和提交。`text <-> root.query;` 与 `checked <-> root.flag;` 分别把文本输入和复选框与可写属性相连。条件子元素用 `if condition : Element { ... }` 表达，隐藏时保留组件的内部状态。重复元素用 `for item[index] in root.items : Text { ... }` 表达，接受整数计数、`[string]` 和命名记录列表，以匿名、无状态的显示模板生成纵向列表。
 
 `TextInput`、`LineEdit`、`TextEdit`、`TextArea`、`SearchField` 和可编辑的 `ComboBox` 默认使用 6 个逻辑像素的内边距。`padding` 设置四边的统一值，`padding-left`、`padding-right`、`padding-top`、`padding-bottom` 可以分别覆盖，方向以屏幕物理边为准。布局会给内边距预留空间。多行换行、选区、光标与输入法定位都在内缩后的区域计算。下拉箭头和搜索按钮保留各自的点击区域。
 
@@ -213,7 +213,7 @@ Android 示例的 **Open dial → Tags** 可用同一字段测试粘贴格式化
 
 `navigation.current-page`、`navigation.depth` 和 `navigation.can-go-back` 是可在绑定及纯回调中读取的实时状态。读取经 `xr.stack_read` 保留在 MLIR 中，源码语义检查会拒绝 `initial-page` 经属性或回调形成的初始化环。一次导航前后的读取各自获取当时的栈状态。
 
-`StackPage.active` 表示页面是否位于栈顶，`stack-index` 返回页面在栈中的零基索引，离栈时返回 `-1`。离开栈顶或移除栈中页面前，`leave-requested(destination, removing)` 可返回 `false` 取消整个导航，并可在处理器里显示确认对话框。栈顶先检查，再按栈顶到栈底的顺序检查其他将被移除的页面。也可声明 `callback can-leave-preview <=> preview.leave-requested;`，由 Rust 的 `on_can_leave_preview` 提供守卫。
+`StackPage.active` 表示页面是否位于栈顶，`stack-index` 返回页面在栈中的零基索引，离栈时返回 `-1`。离开栈顶或移除栈中页面前，`leave-requested(destination, removing)` 可返回 `false` 取消整个导航，并可在处理器里显示确认对话框。栈顶先检查，再按栈顶到栈底的顺序检查其他将被移除的页面。也可声明 `callback can-leave-preview <-> preview.leave-requested;`，由 Rust 的 `on_can_leave_preview` 提供守卫。
 
 导航提交后依次触发旧栈顶的 `deactivated()`、各离栈页面的 `removed()`、新栈顶的 `activated()`，最后通知 `StackView.changed(page, depth)`。这些处理器读取到已提交的栈状态。初始路由通过 `active` 和 `stack-index` 可读，生命周期事件在导航提交时触发。运行 `bazel run //examples/navigation:navigation -- --stack-guard` 体验带未保存草稿的页面。
 
@@ -233,11 +233,11 @@ iOS 也支持从屏幕起始边缘向内滑动，松手后执行同一套返回�
 
 ```xr
 Loader {
-    active: root.show-panel;
-    source: root.panel;
-    asynchronous: true;
+    active <- root.show-panel;
+    source <- root.panel;
+    asynchronous <- true;
     loaded => { self.focus(); }
-    details := Details { query: root.query; }
+    details := Details { query <- root.query; }
     summary := Summary { }
 }
 ```
@@ -264,7 +264,7 @@ Rust AOT 可以通过 `ui.loader_item::<Details>("area")` 取得已挂载候选�
 
 ```xr
 panel := Loader {
-    source-url: root.page-url;
+    source-url <- root.page-url;
     loaded => { self.focus(); }
 }
 ```
@@ -277,8 +277,8 @@ panel := Loader {
 
 ```xr
 component Details inherits VerticalLayout {
-    in-out property <string> title: once "";
-    Text { text: root.title; }
+    in-out property <string> title: "";
+    Text { text <- root.title; }
 }
 
 export component App inherits Window {
@@ -291,7 +291,7 @@ export component App inherits Window {
     VerticalLayout {
         panels := DynamicContainer {}
         open-button := Button {
-            text: "打开详情";
+            text <- "打开详情";
             clicked => { root.show-details(); }
         }
     }
@@ -330,7 +330,7 @@ iOS 开启「开启／关闭标签」后，`Switch` 和 `SwitchDelegate` 的默�
 
 自定义指示器和绑定可以直接读取 `CheckBox.checked`、`CheckBox.check-state` 或 `Switch.checked`。三态复选框只有完全选中时 `checked` 才为真，部分选中可通过 `check-state` 区分。`CheckDelegate` 和 `SwitchDelegate` 也能从当前行读取状态，回调可以观察模型字段写入后的值。
 
-`check-state: expression;` 保留单向绑定，交互通过 `check-state-changed(state)` 报告请求的状态，适合汇总子项选择。`check-state <=> root.state;` 直接写入可写属性，也可绑定表格或树行的 `CheckState` 字段。运行 `bazel run //examples/controls:controls -- --check-state` 体验全选和独立三态循环。
+`check-state <- expression;` 建立单向绑定，交互通过 `check-state-changed(state)` 报告请求的状态，适合汇总子项选择。`check-state <-> root.state;` 直接写入可写属性，也可绑定表格或树行的 `CheckState` 字段。运行 `bazel run //examples/controls:controls -- --check-state` 体验全选和独立三态循环。
 
 `RangeSlider` 使用 `lower-value` 和 `upper-value` 选择一个区间，两端可分别双向绑定到不同的 `float` 属性。Tab 在两个手柄之间移动焦点，方向键按 `step` 调整，Home 和 End 移到当前手柄可达的边界。点击轨道移动最近的手柄。手柄相遇时，向较小值拖动下限，向较大值拖动上限。触摸重合手柄时，沿滑轨移动至少 8 个逻辑像素才选定端点，以免轻微抖动改变拖动方向。横向和纵向都使用 `changed(lower, upper)` 和 `released(lower, upper)` 报告有效区间。外部写入交叉值时，显示的下限收拢到上限，下一次有效交互会写回有序区间。运行 `bazel run //examples/controls:controls` 体验。
 
@@ -373,7 +373,7 @@ zone-wheel := Tumbler {
     model: root.zones;
     text-role: "label";
     value-role: "offset";
-    current-value <=> root.offset;
+    current-value <-> root.offset;
     value-selected(offset) => { root.last-offset = offset; }
 }
 ```
@@ -393,7 +393,7 @@ PathView {
     model: root.entries;
     text-role: "title";
     value-role: "id";
-    current-value <=> root.selected;
+    current-value <-> root.selected;
     path: "M 0 0.86 Q 0.5 -0.46 1 0.86";
     item-width: 118px;
     item-height: 96px;
@@ -437,9 +437,9 @@ PathView {
 
 [Android 延时确认示例](../examples/android/README.md#独立控件回归) 验证滚动区域里的按压进度、提前松手、禁用和确认后复位。
 
-`Button`、`ToolButton` 和 `RoundButton` 可以用 `checkable: true;` 保留选中状态。`checked` 默认为 false，可用 `checked <=> root.pinned;` 双向绑定。用户激活时先写入选中值，再发出 `toggled()` 和 `clicked()`。程序修改绑定值时只更新选中态和无障碍状态。未关联外部绑定的重复项各自保留状态，移动模型行时选中态跟随原行。绑定了 `Action` 的按钮继续使用命令的选中值。运行 `bazel run //examples/controls:controls -- --checkable-buttons`。
+`Button`、`ToolButton` 和 `RoundButton` 可以用 `checkable: true;` 保留选中状态。`checked` 默认为 false，可用 `checked <-> root.pinned;` 双向绑定。用户激活时先写入选中值，再发出 `toggled()` 和 `clicked()`。程序修改绑定值时只更新选中态和无障碍状态。未关联外部绑定的重复项各自保留状态，移动模型行时选中态跟随原行。绑定了 `Action` 的按钮继续使用命令的选中值。运行 `bazel run //examples/controls:controls -- --checkable-buttons`。
 
-可以在表达式中读取具名按钮的 `button.checked`，例如让 `ButtonContent` 中的文字跟随选中态。读取会跟踪实际持有状态的按钮、`Action` 或组，可在回调切换状态后立即使用。命令式修改使用 `toggle()`，或写入 `checked <=>` 所绑定的属性。重复按钮在自身绑定和回调中用 `self.checked` 读当前行，在自定义内容中可直接读 `checked`。重排时选中状态和内容一起跟随原行。给按值选择的组提供显式的 `value`，可以让文字随选中态变化，同时保留稳定的选择值。
+可以在表达式中读取具名按钮的 `button.checked`，例如让 `ButtonContent` 中的文字跟随选中态。读取会跟踪实际持有状态的按钮、`Action` 或组，可在回调切换状态后立即使用。命令式修改使用 `toggle()`，或写入 `checked <->` 所绑定的属性。重复按钮在自身绑定和回调中用 `self.checked` 读当前行，在自定义内容中可直接读 `checked`。重排时选中状态和内容一起跟随原行。给按值选择的组提供显式的 `value`，可以让文字随选中态变化，同时保留稳定的选择值。
 
 `ComboBox` 从 `[string]` 模型选择一项，可绑定 `current-index` 或 `current-value`，用户选择时触发 `selected(string)`。按值绑定取首个匹配项。弹层在窗口顶层绘制，只绘制当前可见行，支持滚轮、方向键、Home、End、PageUp、PageDown、Enter 与 Escape。点击弹层之外会关闭弹层并消费本次点击。
 
@@ -463,7 +463,7 @@ iOS 的 VoiceOver 可从可见选项发起翻页，UIKit 会收到可见的选�
 
 回调中可调用 `choice.open-popup()` 或 `choice.close-popup()`。窗口处理请求时会检查控件的可见性、启用状态和当前模态范围。打开后可绑定只读的 `popup-open` 和 `highlighted-index`，下标从 0 开始，弹层关闭或没有高亮项时为 `-1`。高亮随键盘、鼠标或滚动更新，确认选项时才提交选择。运行 `bazel run //examples/selection -- --popup-control` 查看示例。
 
-`editable: true;` 让 `ComboBox` 的文字区域支持输入、IME、剪贴板和撤销。草稿可用 `edit-text <=> root.draft;` 双向绑定，修改时触发 `edited(string)`。点击箭头或按 F4 可打开列表，列表优先定位到与草稿精确匹配或具有相同前缀的项。关闭列表后按 Enter 提交草稿并触发 `accepted(string)`。精确匹配时更新选项，自定义文本以 `current-index: -1` 表示或写入 `current-value`。运行 `bazel run //examples/selection:selection -- --editable-combo` 体验。
+`editable: true;` 让 `ComboBox` 的文字区域支持输入、IME、剪贴板和撤销。草稿可用 `edit-text <-> root.draft;` 双向绑定，修改时触发 `edited(string)`。点击箭头或按 F4 可打开列表，列表优先定位到与草稿精确匹配或具有相同前缀的项。关闭列表后按 Enter 提交草稿并触发 `accepted(string)`。精确匹配时更新选项，自定义文本以 `current-index: -1` 表示或写入 `current-value`。运行 `bazel run //examples/selection:selection -- --editable-combo` 体验。
 
 `choice.edit-text` 读取编辑草稿，显式清空后返回空字符串。自动编辑框尚未改动时，草稿跟随当前选中的标签。
 
@@ -497,7 +497,7 @@ Android 导航示例的 **Open search** 用定时器模拟乱序结果，覆盖�
 
 `Button`、`ToolButton` 和 `RoundButton` 也可用 `group: group-id;` 加入组。成员使用组件内的固定声明路径，入组自动启用选中态。互斥组使用组的 `current-index` 或 `current-value` 写入选中项。一次新选择先提交选中值，再触发目标的 `toggled()` 和组的 `selected(string)`。点击当前选中按钮仍触发 `clicked()`。方向键移动焦点并改变选择。
 
-`ButtonGroup { exclusive: false; }` 可组合普通按钮、`CheckBox` 和 `Switch`。普通按钮可用 `checked <=> root.flag;` 绑定各自的选中态。全选框用 `check-state <=> options.check-state;` 绑定汇总结果，普通成员各自保留 Tab 停靠点。汇总使用声明中的所有成员，包括隐藏或禁用的选项。`options.set-check-state(CheckState.checked)` 和 `options.set-check-state(CheckState.unchecked)` 分别批量选中和清除，传入部分选中值会保留当前成员状态。批量操作通过各成员的绑定更新属性，成员的用户操作回调由各自的交互触发。运行 `bazel run //examples/controls:controls -- --grouped-buttons` 体验两种分组。
+`ButtonGroup { exclusive: false; }` 可组合普通按钮、`CheckBox` 和 `Switch`。普通按钮可用 `checked <-> root.flag;` 绑定各自的选中态。全选框用 `check-state <-> options.check-state;` 绑定汇总结果，普通成员各自保留 Tab 停靠点。汇总使用声明中的所有成员，包括隐藏或禁用的选项。`options.set-check-state(CheckState.checked)` 和 `options.set-check-state(CheckState.unchecked)` 分别批量选中和清除，传入部分选中值会保留当前成员状态。批量操作通过各成员的绑定更新属性，成员的用户操作回调由各自的交互触发。运行 `bazel run //examples/controls:controls -- --grouped-buttons` 体验两种分组。
 
 [Android 导出选项示例](../examples/android/README.md#独立控件回归) 把自定义全选指示器、三态复选框和可拖动开关放在同一组，演示批量更新与成员交互各自的回调顺序。
 
@@ -525,7 +525,7 @@ iOS 的 VoiceOver 操作列表也可移动标签。水平栏提供左右移动�
 
 Android 导航示例的 **Open cards → Open tabs** 提供模型标签的触摸重排、后台页关闭和 Delete 关闭。设备用例检查重排后保留页面状态，以及关闭后台页后继续操作当前页。 [Android 模型标签页回归](../examples/android/README.md#模型标签页回归)
 
-`TabBar`、`SwipeView` 和 `TabWidget` 也可以通过 `current-value <=> root.selected` 共享同一个字符串业务标识。分别给 `TabButton`、`SwipePage` 和 `Tab` 声明 `value`。标签和页面可以各有自己的展示顺序。插入或重新排列标签时，会重新计算只读的 `current-index`，业务标识和已打开的页面保持稳定。
+`TabBar`、`SwipeView` 和 `TabWidget` 也可以通过 `current-value <-> root.selected` 共享同一个字符串业务标识。分别给 `TabButton`、`SwipePage` 和 `Tab` 声明 `value`。标签和页面可以各有自己的展示顺序。插入或重新排列标签时，会重新计算只读的 `current-index`，业务标识和已打开的页面保持稳定。
 
 在按值模式下，各控件查找第一个可见、启用且值匹配的项。找不到时没有选中项，`current-index` 为 `-1`，保存的 `current-value` 会保留。这样关闭页面时，应用可在同一个回调里选定要转到的文档。用户点击或用键盘、手势选择时，先写回新值，再发出 `changed(index)`。运行 `bazel run //examples/navigation:navigation -- --value-tabs` 试用插入、重排和关闭标签。
 
@@ -539,7 +539,7 @@ iOS 的 `SwipeView` 支持从页内控件发起无障碍翻页。翻页遵循排
 
 ```xr
 SwipeView {
-    current-value <=> root.selected;
+    current-value <-> root.selected;
     for doc in root.documents : SwipePage {
         value: doc.id;
         DocumentEditor { title: doc.title; }
@@ -601,7 +601,7 @@ iOS 日期弹层翻月时，无障碍焦点会跟到当前月的可选日期。�
 
 `open` 和 `color` 支持双向绑定。确认时写回颜色并触发 `accepted(color)`，取消或按 Escape 丢弃草稿并触发 `canceled()`。运行 `bazel run //examples/controls:controls -- --color` 体验带色板的版本。
 
-`FontPickerPopup` 通过 `open` 打开，使用当前窗口渲染器的系统字体和内嵌字体。可选择字体族、逻辑像素字号、1–1000 的字重以及斜体，`preview-text` 自定义预览内容。`font` 支持双向绑定，确认时一次写回整个 `Font` 并触发 `accepted(font)`，取消或按 Escape 丢弃草稿并触发 `canceled()`。用 `Text { font: root.selected; }` 应用选择，或将窗口的 `default-font` 绑定到同一值。单独设置的 `font-family`、`font-size`、`font-weight` 和 `font-italic` 覆盖对应字段。构造示例为 `Font { family: "sans-serif", size: 16px, weight: 400, italic: false }`。运行 `bazel run //examples/controls:controls -- --font-picker` 体验。
+`FontPickerPopup` 通过 `open` 打开，使用当前窗口渲染器的系统字体和内嵌字体。可选择字体族、逻辑像素字号、1–1000 的字重以及斜体，`preview-text` 自定义预览内容。`font` 支持双向绑定，确认时一次写回整个 `Font` 并触发 `accepted(font)`，取消或按 Escape 丢弃草稿并触发 `canceled()`。用 `Text { font <- root.selected; }` 应用选择，或将窗口的 `default-font` 绑定到同一值。单独设置的 `font-family`、`font-size`、`font-weight` 和 `font-italic` 覆盖对应字段。构造示例为 `Font { family: "sans-serif", size: 16px, weight: 400, italic: false }`。运行 `bazel run //examples/controls:controls -- --font-picker` 体验。
 
 颜色和字体弹层在受限高度下滚动编辑内容，确认与取消按钮留在可见操作区，按钮至少为 44×44 逻辑像素。Android 宿主将输入法实际占用区域纳入窗口布局，编辑期间仍可访问操作区。[Android 颜色与字体回归](../examples/android/README.md#颜色与字体回归) 提供手机示例、像素验证和 AOT／解释器对照命令。
 
@@ -647,7 +647,7 @@ iOS 会把仍可移动的分隔线公开为可调节控件。无障碍增减操�
 
 [Android 分栏布局回归](../examples/android/README.md#分栏布局回归) 检查宽于可见分隔线的触摸热区、两层分栏的尺寸约束、RTL 拖动、禁用以及保存恢复。
 
-`handle-hit-size` 设置鼠标和触摸可抓取的宽度，纵向分栏时设置高度。命中尺寸默认等于可见分隔线的尺寸，可设得更大以便触摸操作。命中区域重叠时选最近的可拖动分隔线。`resizing` 是只读布尔属性，鼠标或触摸抓住分隔线时变为 `true`，释放、取消或分隔线失效时恢复为 `false`。键盘仍按步长调整。示例的 `--fill-pane` 模式用 `handle-color: self.resizing ? #ffbf69 : #81a6e1;` 显示拖动反馈。
+`handle-hit-size` 设置鼠标和触摸可抓取的宽度，纵向分栏时设置高度。命中尺寸默认等于可见分隔线的尺寸，可设得更大以便触摸操作。命中区域重叠时选最近的可拖动分隔线。`resizing` 是只读布尔属性，鼠标或触摸抓住分隔线时变为 `true`，释放、取消或分隔线失效时恢复为 `false`。键盘仍按步长调整。示例的 `--fill-pane` 模式用 `handle-color <- self.resizing ? #ffbf69 : #81a6e1;` 显示拖动反馈。
 
 原生辅助技术可聚焦可调整的分隔条，读取其方向、前侧面板尺寸及可调范围，按 8 个逻辑像素步进或设置具体尺寸。分隔条优先使用前侧面板的 `accessible-name`，例如给导航栏面板设置 `accessible-name: "导航"`。辅助技术的调整沿用面板尺寸约束和 `resized()` 回调。
 
@@ -655,14 +655,14 @@ iOS 会把仍可移动的分隔线公开为可调节控件。无障碍增减操�
 
 ```xr
 SplitView {
-    handle-size: 8px;
-    handle-hit-size: 28px;
+    handle-size <- 8px;
+    handle-hit-size <- 28px;
     SplitHandle {
-        background: handle-pressed ? #ffbf69 :
+        background <- handle-pressed ? #ffbf69 :
             handle-hovered ? #58c9c7 : #485e7e;
     }
-    Rectangle { background: #26374e; }
-    Rectangle { background: #304663; }
+    Rectangle { background <- #26374e; }
+    Rectangle { background <- #304663; }
 }
 ```
 
@@ -690,9 +690,9 @@ iOS 和 iPadOS 的菜单项会随系统文本大小调整字号及点击区域�
 
 iOS 和 iPadOS 上，外接键盘的 F1–F12 可触发 `Shortcut`，并进入焦点作用域的按下和释放回调。例如，编辑草稿时也可使用 `F2` 和 `Primary+F12` 执行命令。Application 键和 Shift+F10 可打开当前焦点控件的上下文菜单。[iOS 功能键示例](../examples/ios/README.md#外接键盘功能键)
 
-在组件根部声明命名的 `Action` 后，`Button`、`ToolButton`、`MenuItem` 和虚拟列表中的 `ItemDelegate` 可以通过 `action: command-id;` 共享命令。命令集中声明 `text`、`icon`、`shortcut`、`enabled`、`checkable`、`checked` 和 `activated()`。可勾选命令先切换 `checked` 再执行回调，也可用 `checked <=> root.some-flag;` 关联组件属性。控件可以覆盖显示文本和图标，也可额外限制自身的 `enabled`。同一命令的多个控件共用一个快捷键，按钮单独展示时也可以触发命令。每个组件实例独立持有命令状态。
+在组件根部声明命名的 `Action` 后，`Button`、`ToolButton`、`MenuItem` 和虚拟列表中的 `ItemDelegate` 可以通过 `action: command-id;` 共享命令。命令集中声明 `text`、`icon`、`shortcut`、`enabled`、`checkable`、`checked` 和 `activated()`。可勾选命令先切换 `checked` 再执行回调，也可用 `checked <-> root.some-flag;` 关联组件属性。控件可以覆盖显示文本和图标，也可额外限制自身的 `enabled`。同一命令的多个控件共用一个快捷键，按钮单独展示时也可以触发命令。每个组件实例独立持有命令状态。
 
-`ActionGroup` 可以包含命名的 `Action`，也可以让组件根部的命令用 `group: group-id;` 加入。互斥组默认只勾选 `current-value` 对应的命令。命令的 `value` 在组内唯一，省略时用命令 ID。用 `current-value <=> root.mode;` 和业务状态双向绑定，也可在一个成员上用 `checked: true;` 初始化。再次触发已勾选的命令会继续执行回调并保持选中。组内的普通命令可设 `checkable: false;`。
+`ActionGroup` 可以包含命名的 `Action`，也可以让组件根部的命令用 `group: group-id;` 加入。互斥组默认只勾选 `current-value` 对应的命令。命令的 `value` 在组内唯一，省略时用命令 ID。用 `current-value <-> root.mode;` 和业务状态双向绑定，也可在一个成员上用 `checked: true;` 初始化。再次触发已勾选的命令会继续执行回调并保持选中。组内的普通命令可设 `checkable: false;`。
 
 设置 `exclusive: false;` 后，每个成员独立维护 `checked`。两种组都支持 `enabled`，禁用后菜单、工具栏和快捷键统一停止触发。命令自己的 `activated()` 在状态更新后先执行，随后调用组的 `activated(value)`。运行 `bazel run //examples/menu:menu -- --action-groups` 体验。
 
@@ -747,10 +747,10 @@ let scene = ui.render();
 
 ```xr
 CustomRender {
-    width: 240px;
-    height: 96px;
-    renderer: "level-meter";
-    data: "green";
+    width <- 240px;
+    height <- 96px;
+    renderer <- "level-meter";
+    data <- "green";
 }
 ```
 
@@ -823,7 +823,7 @@ struct ShapeSpec {
 }
 ```
 
-例如 `ShapeSpec { shape: "torus", radius: root.radius, tube-radius: 0.2, segments: 32, rings: 16 }` 在 XY 面生成一个带孔圆环。
+例如 `ShapeSpec { shape: "torus", radius <- root.radius, tube-radius: 0.2, segments: 32, rings: 16 }` 在 XY 面生成一个带孔圆环。
 
 | `shape` | 尺寸参数及默认值 | 材质槽 |
 | --- | --- | --- |
@@ -902,7 +902,7 @@ Bazel 的 `xr_ui_library(assets = [...])` 要声明 OBJ、MTL 和实际使用的
 
 Rust 应用可用 `xrack_scene_import::load_mesh_file(path, options)` 加载本地 OBJ、glTF、GLB 或 PNG 高度图。导入器返回准备好的 `MeshAsset3D` 和它读取的文件集合，工作线程可把资产发送给 UI 线程。Python 的 `xrack.load_mesh_file(path, auto_lod=False, lightmap_uv=False)` 返回同一种资产，可以用 `asyncio.to_thread` 放在后台执行。
 
-在 `.xr` 中声明 `in property <meshasset3d> loaded;`，可在场景记录里用 `mesh-asset: root.loaded`。该行的变换、动画、材质、层和拾取沿用原有设置。自定义 `geometry` 优先，空资产回退到同一行的 `mesh`，可用于加载前的占位。将准备好的资产赋到属性只传递共享句柄。相机或物体变换继续复用 GPU 网格。
+在 `.xr` 中声明 `in property <meshasset3d> loaded;`，可在场景记录里用 `mesh-asset <- root.loaded`。该行的变换、动画、材质、层和拾取沿用原有设置。自定义 `geometry` 优先，空资产回退到同一行的 `mesh`，可用于加载前的占位。将准备好的资产赋到属性只传递共享句柄。相机或物体变换继续复用 GPU 网格。
 
 用 `bazel run //examples/puzzle3d:play_runtime_mesh` 打开系统文件选择器。这个示例会在后台导入，完成后通过弱句柄更新原窗口。导入失败会显示错误并保留上一个模型。也可在命令末尾加 `-- /path/to/model.obj` 指定启动模型。 [运行时加载示例](../examples/puzzle3d/runtime_mesh.xr)
 
@@ -912,11 +912,11 @@ Rust 应用可用 `xrack_scene_import::load_mesh_file(path, options)` 加载本�
 
 ```xr
 importer := MeshLoader3D {
-    source: root.path;
-    active: true;
-    auto-lod: false;
-    lightmap-uv: false;
-    revision: root.import-revision;
+    source <- root.path;
+    active <- true;
+    auto-lod <- false;
+    lightmap-uv <- false;
+    revision <- root.import-revision;
 }
 ```
 
@@ -943,8 +943,8 @@ importer := MeshLoader3D {
 `Scene3D.scene-node(objects, object, selector)` 读取场景中指定 glTF 节点的当前世界坐标。 `object` 是可见模型行的唯一 `id`，`selector` 与资产查询使用相同格式。原点与坐标轴包含当前动画混合、模型行的父级变换和枢轴。传入 `Scene3D.prepare(objects, world)` 时也会跟随插值后的物理位姿。查询复用场景准备时的节点矩阵，可用于读取无网格的挂点。找不到对象或节点、名称不唯一，或节点姿态无效时，`valid` 为 false。
 
 ```xr
-property <scenemodel3d> scene: Scene3D.prepare(root.actors);
-property <meshnode3d> camera-mount: Scene3D.scene-node(root.scene, "dolly", "/Camera rig/Hero");
+property <scenemodel3d> scene <- Scene3D.prepare(root.actors);
+property <meshnode3d> camera-mount <- Scene3D.scene-node(root.scene, "dolly", "/Camera rig/Hero");
 ```
 
 实例表生成的各份摆放继续通过 `Scene3D.instance` 按地址查询。Python 可通过 `SceneModel3D.node` 和 `node_at` 读取场景节点。 [动画挂点示例](../examples/puzzle3d/animation_blend.xr)
@@ -1034,7 +1034,7 @@ struct SurfaceStyle {
 }
 ```
 
-`SurfaceStyle { base-color: #b87648, metalness: 0.65, roughness: root.roughness }` 可以用在内置球体、盒体或导入的 glTF 上。内置模型默认使用白色底色、金属度 0 和粗糙度 0.5。对 glTF，同一记录的因子覆盖对应的各子网格材质，未声明的字段继承原值。原始贴图、UV、法线贴图和场景记录中的 `color` 仍参与着色。若材质记录有 `enabled: bool` 字段，可以设为 `false` 恢复模型原有材质。
+`SurfaceStyle { base-color: #b87648, metalness: 0.65, roughness <- root.roughness }` 可以用在内置球体、盒体或导入的 glTF 上。内置模型默认使用白色底色、金属度 0 和粗糙度 0.5。对 glTF，同一记录的因子覆盖对应的各子网格材质，未声明的字段继承原值。原始贴图、UV、法线贴图和场景记录中的 `color` 仍参与着色。若材质记录有 `enabled: bool` 字段，可以设为 `false` 恢复模型原有材质。
 
 | 字段 | 类型和行为 |
 | --- | --- |
@@ -1231,7 +1231,7 @@ XRack 识别两个常用的自定义实例通道。`_COLOR_0` 和别名 `_COLOR`
 
 #### glTF 材质变体
 
-带有 `KHR_materials_variants` 的模型可以在记录中声明 `material-variant: string`。例如，`mesh: @mesh-url("models/car.glb"), material-variant: root.finish` 可以根据应用状态切换整车涂装。选择值可以是唯一的变体名称或零基索引，例如 `"#0"`。留空、名称有歧义或找不到选择值时，沿用原始材质。变体中没有映射的图元也沿用各自的原始材质。
+带有 `KHR_materials_variants` 的模型可以在记录中声明 `material-variant: string`。例如，`mesh: @mesh-url("models/car.glb"), material-variant <- root.finish` 可以根据应用状态切换整车涂装。选择值可以是唯一的变体名称或零基索引，例如 `"#0"`。留空、名称有歧义或找不到选择值时，沿用原始材质。变体中没有映射的图元也沿用各自的原始材质。
 
 XRack 先应用 glTF 变体，再应用 `material` 和 `material-slots`。槽位名称或索引指向变体选中的 glTF 材质。每个变体使用自己的贴图、UV 和透明规则。着色和拾取共用该规则。布局兼容的材质变体会共用 GPU 顶点缓冲，使用不同 UV 或切线的变体则保留各自的顶点数据。将 `@mesh-url` 写在同一条记录时，VS Code 可以补全变体名称和索引。 [材质变体示例](../examples/puzzle3d/material_variants.xr)
 
@@ -1399,7 +1399,7 @@ struct PanelWeights {
 }
 ```
 
-在使用 `Actor` 的记录字面量中写 `morph-weights: PanelWeights { extend: root.extension, target-0: 0.125 }`。字段 `extend` 对应导出器在 `mesh.extras.targetNames` 里写入的同名目标，`target-0` 对应第一个目标。每个网格按自己的目标顺序解析字段。`target-N` 保留作索引，每个场景对象实例都有自己的权重。同一个目标同时匹配名称和索引时，名称优先。未匹配的字段、超出范围的索引和非有限权重会跳过。模型没有足够明确的目标名时，可用从零开始的 `target-N`。在 VS Code 里悬停 `@mesh-url` 可以查看资源里各网格的索引和导出名称。
+在使用 `Actor` 的记录字面量中写 `morph-weights: PanelWeights { extend <- root.extension, target-0: 0.125 }`。字段 `extend` 对应导出器在 `mesh.extras.targetNames` 里写入的同名目标，`target-0` 对应第一个目标。每个网格按自己的目标顺序解析字段。`target-N` 保留作索引，每个场景对象实例都有自己的权重。同一个目标同时匹配名称和索引时，名称优先。未匹配的字段、超出范围的索引和非有限权重会跳过。模型没有足够明确的目标名时，可用从零开始的 `target-N`。在 VS Code 里悬停 `@mesh-url` 可以查看资源里各网格的索引和导出名称。
 
 手动绑定的目标覆盖动画和初始权重。未绑定的目标继续由片段或初始权重决定，节点动画与蒙皮也可以同时播放。权重 0 表示该目标不参与，1 表示应用该目标的完整增量，也可以用负数或大于 1 的值来外推。 [形变滑块示例](../examples/puzzle3d/animation.xr) 可以暂停后交互调整 `extend`。
 
@@ -1656,9 +1656,9 @@ glTF 的 `KHR_materials_dispersion` 可在体积折射上增加色散。系统�
 
 ```xr
 SceneView3D {
-    scene-effect: @shader-url("effects/hologram.wgsl");
-    scene-effect-depth: true;
-    scene-effect-strength: 0.75;
+    scene-effect <- @shader-url("effects/hologram.wgsl");
+    scene-effect-depth <- true;
+    scene-effect-strength <- 0.75;
 }
 ```
 
@@ -1684,7 +1684,7 @@ SceneView3D {
 struct BlurPass { shader: string, scale: float, parameters: vector3d }
 
 export component FilteredView inherits SceneView3D {
-    scene-effects: [
+    scene-effects <- [
         BlurPass { shader: @shader-url("effects/blur.wgsl"), scale: 0.5, parameters: Vector3D.new(8, 0, 0) },
         BlurPass { shader: @shader-url("effects/blur.wgsl"), scale: 0.5, parameters: Vector3D.new(0, 4, 0) },
         BlurPass { shader: @shader-url("effects/halo.wgsl"), scale: 1, parameters: Vector3D.new(0, 0, 0) }
@@ -1701,7 +1701,7 @@ struct BufferInput { name: string }
 struct Pass { shader: string, input: string, output: string, buffers: [BufferInput] }
 
 export component NamedView inherits SceneView3D {
-    scene-effects: [
+    scene-effects <- [
         Pass { shader: @shader-url("effects/grade.wgsl"), input: "", output: "accent", buffers: [] },
         Pass { shader: @shader-url("effects/blur.wgsl"), input: "accent", output: "soft", buffers: [] },
         Pass {
@@ -1735,7 +1735,7 @@ struct TextureInput { texture: string, item: string, color-space: string, enable
 struct Effect { shader: string, buffers: [TextureInput] }
 
 export component BufferView inherits SceneView3D {
-    scene-effects: [
+    scene-effects <- [
         Effect {
             shader: @shader-url("effects/texture_inputs.wgsl"),
             buffers: [
@@ -1760,8 +1760,8 @@ struct FeedInput { capture: string }
 struct FeedEffect { shader: string, buffers: [FeedInput] }
 
 export component CameraFeedView inherits SceneView3D {
-    scene-captures: [Feed { name: "detail", camera: "side-eye", layers: 2, scale: 0.5 }];
-    scene-effects: [
+    scene-captures <- [Feed { name: "detail", camera: "side-eye", layers: 2, scale: 0.5 }];
+    scene-effects <- [
         FeedEffect {
             shader: @shader-url("effects/scene_capture_display.wgsl"),
             buffers: [FeedInput { capture: "detail" }]
@@ -1796,14 +1796,14 @@ export component CameraFeedView inherits SceneView3D {
 
 ```xr
 SceneView3D {
-    camera: "eye";
-    layer-mask: 1;
-    scene-captures: [
+    camera <- "eye";
+    layer-mask <- 1;
+    scene-captures <- [
         Feed { name: "surface", camera: "eye", layers: 2 },
         Feed { name: "lighting", camera: "eye", layers: 4 },
     ];
-    scene-color-capture: "lighting";
-    scene-depth-capture: "surface";
+    scene-color-capture <- "lighting";
+    scene-depth-capture <- "surface";
 }
 ```
 
@@ -2044,7 +2044,7 @@ struct HistoryInput { name: string, previous-frame: bool }
 struct HistoryPass { shader: string, output: string, history: bool, buffers: [HistoryInput] }
 
 export component TrailView inherits SceneView3D {
-    scene-effects: [
+    scene-effects <- [
         HistoryPass {
             shader: @shader-url("effects/feedback.wgsl"), output: "trail", history: true,
             buffers: [HistoryInput { name: "trail", previous-frame: true }]
@@ -2659,11 +2659,11 @@ WAV。相对路径以声明所在的 `.xr` 文件为准。支持 8、16、24、3
 
 ```xr
 confirmation := SoundEffect {
-    source: "click.wav";
-    volume: 0.35;
+    source <- "click.wav";
+    volume <- 0.35;
 }
 confirm := Button {
-    text: "确认";
+    text <- "确认";
     clicked => { confirmation.play(); }
 }
 ```

@@ -13,8 +13,8 @@ struct CaptureDataInput { capture: string, attachment: string, enabled: bool }
 struct CaptureDataEffect { shader: string, buffers: [CaptureDataInput] }
 
 export component CaptureDataOutputsDemo inherits Window {
-    title: "XRack · 多附件材质数据";
-    width: 240px; height: 142px; background: #000;
+    title <- "XRack · 多附件材质数据";
+    width <- 240px; height <- 142px; background <- #000;
     in-out property <bool> extra: false;
     in-out property <bool> wide: false;
 
@@ -26,11 +26,11 @@ export component CaptureDataOutputsDemo inherits Window {
     };
 
     SceneView3D {
-        x: 12px; y: 8px; width: 216px; height: 88px; camera: "eye";
-        cache-rendering: true;
-        render-overrides: "disable-internal-passes";
-        scene-color-capture: "data";
-        model: [
+        x <- 12px; y <- 8px; width <- 216px; height <- 88px; camera <- "eye";
+        cache-rendering <- true;
+        render-overrides <- "disable-internal-passes";
+        scene-color-capture <- "data";
+        model <- [
             CaptureDataActor { id: "eye", mesh: "", z: 5, camera-kind: "orthographic", ..root.unit },
             CaptureDataActor {
                 id: "block",
@@ -41,7 +41,7 @@ export component CaptureDataOutputsDemo inherits Window {
                 ..root.unit
             },
         ];
-        scene-captures: [
+        scene-captures <- [
             CaptureDataStage {
                 name: "data", camera: "eye", renderables: "opaque", combine-attachments: true,
                 material-data-format: root.wide ? "rgba32f" : "r16f",
@@ -49,7 +49,7 @@ export component CaptureDataOutputsDemo inherits Window {
                 material-data-2-format: root.wide ? "rgba32f" : "r32f",
             },
         ];
-        scene-effects: [
+        scene-effects <- [
             CaptureDataEffect {
                 shader: @shader-url("effects/capture_data_display.wgsl"),
                 buffers: [
@@ -61,11 +61,11 @@ export component CaptureDataOutputsDemo inherits Window {
         ];
     }
     extra := CheckBox {
-        x: 12px; y: 104px; width: 104px; height: 30px;
-        text: "三个附件"; checked <=> root.extra;
+        x <- 12px; y <- 104px; width <- 104px; height <- 30px;
+        text <- "三个附件"; checked <-> root.extra;
     }
     wide := CheckBox {
-        x: 125px; y: 104px; width: 103px; height: 30px;
-        text: "RGBA32F"; checked <=> root.wide;
+        x <- 125px; y <- 104px; width <- 103px; height <- 30px;
+        text <- "RGBA32F"; checked <-> root.wide;
     }
 }

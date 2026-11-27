@@ -1,38 +1,38 @@
 component HitTile inherits Rectangle {
     callback tapped();
     hot := Button {
-        width: 20px; height: 12px;
-        border-radius: 0px;
-        background: #22cc99;
+        width <- 20px; height <- 12px;
+        border-radius <- 0px;
+        background <- #22cc99;
         clicked => { root.tapped(); }
     }
 }
 
 export component TransformProbe inherits Window {
-    width: 90px;
-    height: 62px;
-    background: #223344;
+    width <- 90px;
+    height <- 62px;
+    background <- #223344;
 
     in-out property <length> dx: 5px;
-    in-out property <point2d> point: once Point2D.new(2px, 3px);
+    in-out property <point2d> point: Point2D.new(2px, 3px);
     in property <vector2d> empty-vector;
     in property <transform2d> identity;
-    out property <point2d> mapped: root.project(root.point);
-    out property <length> mapped-x: root.mapped.x;
-    out property <vector2d> displacement:
+    out property <point2d> mapped <- root.project(root.point);
+    out property <length> mapped-x <- root.mapped.x;
+    out property <vector2d> displacement <-
         Transform2D.map-vector(root.visual, Vector2D.new(3px, 4px));
-    out property <length> displacement-y: root.displacement.y;
-    out property <point2d> constant-point: Transform2D.map-point(
+    out property <length> displacement-y <- root.displacement.y;
+    out property <point2d> constant-point <- Transform2D.map-point(
         Transform2D.compose(Transform2D.rotation(90), Transform2D.translation(6px, 8px)),
         Point2D.new(2px, 3px),
     );
-    out property <point2d> pivot-point: Transform2D.map-point(
+    out property <point2d> pivot-point <- Transform2D.map-point(
         Transform2D.around(Transform2D.scale(2, 3), Point2D.new(4px, 5px)),
         Point2D.new(5px, 7px),
     );
     out property <int> clicks: 0;
 
-    property <transform2d> visual: Transform2D.compose(
+    property <transform2d> visual <- Transform2D.compose(
         Transform2D.compose(
             Transform2D.translation(4px, 2px),
             Transform2D.translation(3px, 1px),
@@ -45,12 +45,12 @@ export component TransformProbe inherits Window {
     }
 
     tile := HitTile {
-        x: 40px; y: 20px;
-        width: 20px; height: 12px;
-        transform-rotation: 90;
-        transform-origin-x: 0px;
-        transform-origin-y: 0px;
-        transform: root.visual;
+        x <- 40px; y <- 20px;
+        width <- 20px; height <- 12px;
+        transform-rotation <- 90;
+        transform-origin-x <- 0px;
+        transform-origin-y <- 0px;
+        transform <- root.visual;
         tapped => { root.clicks += 1; }
     }
 }

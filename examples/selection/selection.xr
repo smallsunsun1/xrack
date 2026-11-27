@@ -7,76 +7,76 @@ export component SelectionDemo inherits Window {
     out property <int> edit-count: 0;
     out property <int> underlay-clicks: 0;
 
-    title: "XRack 数字输入与选择";
-    width: 560px;
-    height: 350px;
-    background: #101725;
+    title <- "XRack 数字输入与选择";
+    width <- 560px;
+    height <- 350px;
+    background <- #101725;
 
     Text {
-        x: 24px; y: 20px;
-        text: "XRack 数字输入与选择";
-        font-size: 25px;
-        color: #f0f4ff;
+        x <- 24px; y <- 20px;
+        text <- "XRack 数字输入与选择";
+        font-size <- 25px;
+        color <- #f0f4ff;
     }
     Text {
-        x: 24px; y: 56px;
-        text: "整数提交 · 范围约束 · 可滚动弹层";
-        font-size: 15px;
-        color: #a7b6ce;
+        x <- 24px; y <- 56px;
+        text <- "整数提交 · 范围约束 · 可滚动弹层";
+        font-size <- 15px;
+        color <- #a7b6ce;
     }
 
     Rectangle {
-        x: 24px; y: 92px; width: 248px; height: 118px;
-        background: #1d293d; border-radius: 14px;
-        Text { x: 16px; y: 12px; text: "数量"; color: #e7efff; }
+        x <- 24px; y <- 92px; width <- 248px; height <- 118px;
+        background <- #1d293d; border-radius <- 14px;
+        Text { x <- 16px; y <- 12px; text <- "数量"; color <- #e7efff; }
         quantity-box := SpinBox {
-            x: 16px; y: 42px; width: 216px; height: 36px;
-            minimum: -20;
-            maximum: 99;
-            step-size: 3;
-            wrap: true;
-            read-only: root.locked;
-            value <=> root.quantity;
+            x <- 16px; y <- 42px; width <- 216px; height <- 36px;
+            minimum <- -20;
+            maximum <- 99;
+            step-size <- 3;
+            wrap <- true;
+            read-only <- root.locked;
+            value <-> root.quantity;
             edited(value) => { root.edit-count += 1; }
         }
-        Text { x: 16px; y: 88px; text: "方向键调节 · Enter 提交"; font-size: 13px; color: #a7b6ce; }
+        Text { x <- 16px; y <- 88px; text <- "方向键调节 · Enter 提交"; font-size <- 13px; color <- #a7b6ce; }
     }
     Rectangle {
-        x: 288px; y: 92px; width: 248px; height: 118px;
-        background: #1d293d; border-radius: 14px;
-        Text { x: 16px; y: 12px; text: "工作区"; color: #e7efff; }
+        x <- 288px; y <- 92px; width <- 248px; height <- 118px;
+        background <- #1d293d; border-radius <- 14px;
+        Text { x <- 16px; y <- 12px; text <- "工作区"; color <- #e7efff; }
         workspace-box := ComboBox {
-            x: 16px; y: 42px; width: 216px; height: 36px;
-            enabled: !root.locked;
-            model: root.workspaces;
-            current-index <=> root.choice;
+            x <- 16px; y <- 42px; width <- 216px; height <- 36px;
+            enabled <- !root.locked;
+            model <- root.workspaces;
+            current-index <-> root.choice;
             selected(value) => { root.selected-label = value; }
         }
-        Text { x: 16px; y: 88px; text: "方向键导航 · Escape 关闭"; font-size: 13px; color: #a7b6ce; }
+        Text { x <- 16px; y <- 88px; text <- "方向键导航 · Escape 关闭"; font-size <- 13px; color <- #a7b6ce; }
     }
 
     underlay := Button {
-        x: 288px; y: 222px; width: 248px; height: 36px;
-        background: #314b80;
-        text: "底层按钮";
+        x <- 288px; y <- 222px; width <- 248px; height <- 36px;
+        background <- #314b80;
+        text <- "底层按钮";
         clicked => { root.underlay-clicks += 1; }
     }
     lock-toggle := Switch {
-        x: 24px; y: 224px; width: 248px; height: 30px;
-        text: "锁定输入";
-        checked <=> root.locked;
+        x <- 24px; y <- 224px; width <- 248px; height <- 30px;
+        text <- "锁定输入";
+        checked <-> root.locked;
     }
     Text {
-        x: 24px; y: 281px;
-        text: "数量 " + root.quantity + " · 提交 " + root.edit-count + " 次";
-        font-size: 14px;
-        color: #a7b6ce;
+        x <- 24px; y <- 281px;
+        text <- "数量 " + root.quantity + " · 提交 " + root.edit-count + " 次";
+        font-size <- 14px;
+        color <- #a7b6ce;
     }
     Text {
-        x: 24px; y: 308px;
-        text: "选择：" + root.selected-label + " · 底层按钮 " + root.underlay-clicks + " 次";
-        font-size: 14px;
-        color: #a7b6ce;
+        x <- 24px; y <- 308px;
+        text <- "选择：" + root.selected-label + " · 底层按钮 " + root.underlay-clicks + " 次";
+        font-size <- 14px;
+        color <- #a7b6ce;
     }
 }
 
@@ -84,9 +84,9 @@ export struct WorkspaceAccess { available: bool }
 export struct WorkspaceOption { code: int, title: string, notes: string, access: WorkspaceAccess }
 
 export component RecordComboDemo inherits Window {
-    title: "XRack · 记录下拉框";
-    width: 472px; height: 296px;
-    color-scheme: system;
+    title <- "XRack · 记录下拉框";
+    width <- 472px; height <- 296px;
+    color-scheme <- system;
 
     in-out property <[WorkspaceOption]> options: [
         WorkspaceOption { code: 200, title: "共享工作区", notes: "团队 B", access: WorkspaceAccess { available: true } },
@@ -99,56 +99,56 @@ export component RecordComboDemo inherits Window {
     in-out property <int> code: 200;
     in-out property <bool> editable: false;
     in property <color> option-fill: #20314a;
-    out property <int> option-count: choice.count;
-    out property <int> visible-index: choice.current-index;
-    out property <int> actual-code: choice.current-value;
-    out property <string> actual-label: choice.current-text;
+    out property <int> option-count <- choice.count;
+    out property <int> visible-index <- choice.current-index;
+    out property <int> actual-code <- choice.current-value;
+    out property <string> actual-label <- choice.current-text;
     out property <int> selected-code: -1;
     out property <string> selected-label: "";
     out property <string> accepted-text: "";
     callback reorder;
     callback toggle-archive;
 
-    Text { x: 20px; y: 16px; text: "记录模型与业务编号"; font-size: 22px; }
+    Text { x <- 20px; y <- 16px; text <- "记录模型与业务编号"; font-size <- 22px; }
     choice := ComboBox {
-        x: 20px; y: 62px; width: 258px; height: 38px;
-        accessible-name: "工作区选择";
-        model: root.options;
-        text-role: "title";
-        value-role: "code";
-        enabled-role: "access.available";
-        current-value <=> root.code;
-        editable: root.editable;
-        auto-complete: true;
+        x <- 20px; y <- 62px; width <- 258px; height <- 38px;
+        accessible-name <- "工作区选择";
+        model <- root.options;
+        text-role <- "title";
+        value-role <- "code";
+        enabled-role <- "access.available";
+        current-value <-> root.code;
+        editable <- root.editable;
+        auto-complete <- true;
         ComboContent {
-            background: #2b4659; border-radius: 4px;
+            background <- #2b4659; border-radius <- 4px;
             HorizontalLayout {
-                width: 100%; height: 100%; padding: 6px; spacing: 8px;
+                width <- 100%; height <- 100%; padding <- 6px; spacing <- 8px;
                 Rectangle {
-                    width: 56px; border-radius: 4px; background: #467689;
+                    width <- 56px; border-radius <- 4px; background <- #467689;
                     Label {
-                        width: 100%; height: 100%;
-                        text: "#" + choice.current-value;
-                        color: #ffffff; horizontal-alignment: center;
-                        vertical-alignment: center;
+                        width <- 100%; height <- 100%;
+                        text <- "#" + choice.current-value;
+                        color <- #ffffff; horizontal-alignment <- center;
+                        vertical-alignment <- center;
                     }
                 }
                 selected-caption := Label {
-                    text: choice.current-text; color: #f1f7ff;
-                    vertical-alignment: center;
+                    text <- choice.current-text; color <- #f1f7ff;
+                    vertical-alignment <- center;
                 }
             }
         }
         ComboOption {
-            background: !option-enabled ? #433746
+            background <- !option-enabled ? #433746
                 : option-highlighted ? #246a79
                 : option-selected ? #294c65
                 : option-data.notes == "紧急" ? #9b4d42 : root.option-fill;
             Label {
-                x: 10px; width: 94%; height: 100%;
-                text: (option-index + 1) + " · " + option-text + " · " + option-data.notes;
-                vertical-alignment: center;
-                color: option-enabled ? #f2f9ff : #a7a0ab;
+                x <- 10px; width <- 94%; height <- 100%;
+                text <- (option-index + 1) + " · " + option-text + " · " + option-data.notes;
+                vertical-alignment <- center;
+                color <- option-enabled ? #f2f9ff : #a7a0ab;
             }
         }
         selected(label) => { root.selected-label = label; }
@@ -156,107 +156,107 @@ export component RecordComboDemo inherits Window {
         accepted(text) => { root.accepted-text = text; }
     }
     reorder-options := Button {
-        x: 294px; y: 62px; width: 156px; height: 38px;
-        text: "按编号重排";
+        x <- 294px; y <- 62px; width <- 156px; height <- 38px;
+        text <- "按编号重排";
         clicked => { root.reorder(); }
     }
-    enable-editing := CheckBox { x: 20px; y: 136px; text: "允许编辑"; checked <=> root.editable; }
+    enable-editing := CheckBox { x <- 20px; y <- 136px; text <- "允许编辑"; checked <-> root.editable; }
     toggle-archive := Button {
-        x: 294px; y: 132px; width: 156px; height: 38px;
-        text: "切换 Build archive";
+        x <- 294px; y <- 132px; width <- 156px; height <- 38px;
+        text <- "切换 Build archive";
         clicked => { root.toggle-archive(); }
     }
     current-choice := Text {
-        x: 20px; y: 182px;
-        text: "当前项 · " + root.actual-code + " · " + root.actual-label;
+        x <- 20px; y <- 182px;
+        text <- "当前项 · " + root.actual-code + " · " + root.actual-label;
     }
-    Text { x: 20px; y: 213px; text: "已选择编号 · " + root.selected-code; }
-    Text { x: 20px; y: 246px; text: "已提交文本 · " + root.accepted-text; }
+    Text { x <- 20px; y <- 213px; text <- "已选择编号 · " + root.selected-code; }
+    Text { x <- 20px; y <- 246px; text <- "已提交文本 · " + root.accepted-text; }
 }
 
 export component ComboPopupStyleDemo inherits Window {
-    title: "XRack · 下拉弹层";
-    width: 420px; height: 304px;
+    title <- "XRack · 下拉弹层";
+    width <- 420px; height <- 304px;
     in-out property <bool> rtl: false;
     in-out property <bool> near-edge: false;
     out property <int> selection: 0;
 
     flip-popup := Button {
-        x: 24px; y: 14px; width: 164px; height: 32px;
-        text: root.rtl ? "切到从左到右" : "切到从右到左";
+        x <- 24px; y <- 14px; width <- 164px; height <- 32px;
+        text <- root.rtl ? "切到从左到右" : "切到从右到左";
         clicked => { root.rtl = !root.rtl; }
     }
     move-popup := Button {
-        x: 212px; y: 14px; width: 184px; height: 32px;
-        text: root.near-edge ? "向下展开" : "移到窗口底部";
+        x <- 212px; y <- 14px; width <- 184px; height <- 32px;
+        text <- root.near-edge ? "向下展开" : "移到窗口底部";
         clicked => { root.near-edge = !root.near-edge; }
     }
     popup-choice := ComboBox {
-        x: 94px; y: root.near-edge ? 230px : 64px;
-        width: 222px; height: 38px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
-        current-index <=> root.selection;
-        model: ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota", "Kappa"];
+        x <- 94px; y <- root.near-edge ? 230px : 64px;
+        width <- 222px; height <- 38px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        current-index <-> root.selection;
+        model <- ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota", "Kappa"];
         ComboPopup {
-            width: 308px; max-height: 120px;
-            row-height: 32px; padding: 8px;
-            background: #263953; border-color: #de9f53;
-            border-width: 2px; border-radius: 9px;
-            scroll-indicator: true;
+            width <- 308px; max-height <- 120px;
+            row-height <- 32px; padding <- 8px;
+            background <- #263953; border-color <- #de9f53;
+            border-width <- 2px; border-radius <- 9px;
+            scroll-indicator <- true;
         }
     }
-    popup-status := Label { x: 94px; y: 276px; text: popup-choice.current-text; }
+    popup-status := Label { x <- 94px; y <- 276px; text <- popup-choice.current-text; }
 }
 
 export component ComboPopupControlDemo inherits Window {
-    title: "XRack · 程序控制下拉弹层";
-    width: 440px; height: 282px;
+    title <- "XRack · 程序控制下拉弹层";
+    width <- 440px; height <- 282px;
     in-out property <bool> available: true;
     in-out property <bool> auto-dismiss: false;
-    out property <bool> expanded: choice.popup-open;
-    out property <int> highlight: choice.highlighted-index;
+    out property <bool> expanded <- choice.popup-open;
+    out property <int> highlight <- choice.highlighted-index;
 
     choice := ComboBox {
-        x: 20px; y: 70px; width: 212px; height: 38px;
-        enabled: root.available;
-        model: ["Alpha", "Beta", "Gamma"];
+        x <- 20px; y <- 70px; width <- 212px; height <- 38px;
+        enabled <- root.available;
+        model <- ["Alpha", "Beta", "Gamma"];
     }
     open-choice := Button {
-        x: 20px; y: 18px; width: 116px; height: 34px;
-        text: "打开弹层";
+        x <- 20px; y <- 18px; width <- 116px; height <- 34px;
+        text <- "打开弹层";
         clicked => { choice.open-popup(); }
     }
     close-choice := Button {
-        x: 150px; y: 18px; width: 118px; height: 34px;
-        text: "关闭弹层";
+        x <- 150px; y <- 18px; width <- 118px; height <- 34px;
+        text <- "关闭弹层";
         clicked => { choice.close-popup(); }
     }
     disable-choice := Button {
-        x: 282px; y: 18px; width: 124px; height: 34px;
-        text: root.available ? "禁用" : "启用";
+        x <- 282px; y <- 18px; width <- 124px; height <- 34px;
+        text <- root.available ? "禁用" : "启用";
         clicked => { root.available = !root.available; }
     }
     popup-state := Label {
-        x: 250px; y: 79px;
-        text: root.expanded ? "高亮 " + root.highlight : "弹层关闭";
+        x <- 250px; y <- 79px;
+        text <- root.expanded ? "高亮 " + root.highlight : "弹层关闭";
     }
     auto-dismiss-choice := CheckBox {
-        x: 250px; y: 157px; text: "打开后自动关闭";
-        checked <=> root.auto-dismiss;
+        x <- 250px; y <- 157px; text <- "打开后自动关闭";
+        checked <-> root.auto-dismiss;
     }
     auto-dismiss-timer := Timer {
-        interval: 650;
-        running: root.auto-dismiss && root.expanded;
-        repeat: true;
+        interval <- 650;
+        running <- root.auto-dismiss && root.expanded;
+        repeat <- true;
         triggered => { choice.close-popup(); }
     }
-    committed-choice := Label { x: 250px; y: 114px; text: choice.current-text; }
+    committed-choice := Label { x <- 250px; y <- 114px; text <- choice.current-text; }
 }
 
 export component GroupedRadiosDemo inherits Window {
-    title: "XRack · 分布式单选组";
-    width: 540px; height: 280px;
-    background: #162338;
+    title <- "XRack · 分布式单选组";
+    width <- 540px; height <- 280px;
+    background <- #162338;
     in-out property <string> mode: "balanced";
     in-out property <string> balanced-label: "均衡";
     in-out property <bool> show-audit: true;
@@ -267,47 +267,47 @@ export component GroupedRadiosDemo inherits Window {
     out property <string> last-mode: "";
 
     modes := ButtonGroup {
-        accessible-name: "构建模式";
-        enabled: root.mode-enabled;
-        current-value <=> root.mode;
+        accessible-name <- "构建模式";
+        enabled <- root.mode-enabled;
+        current-value <-> root.mode;
         selected(value) => { root.last-mode = value; }
     }
     VerticalLayout {
-        padding: 18px; spacing: 8px;
-        Label { text: "同一组可以跨列排布"; font-size: 22px; }
+        padding <- 18px; spacing <- 8px;
+        Label { text <- "同一组可以跨列排布"; font-size <- 22px; }
         HorizontalLayout {
-            spacing: 18px;
+            spacing <- 18px;
             VerticalLayout {
-                spacing: 4px;
-                fast := RadioButton { group: modes; value: "fast"; text: "快速"; }
+                spacing <- 4px;
+                fast := RadioButton { group <- modes; value <- "fast"; text <- "快速"; }
                 if root.show-audit : audit := RadioButton {
-                    group: modes; value: "audit"; text: "审计"; enabled: root.can-audit;
+                    group <- modes; value <- "audit"; text <- "审计"; enabled <- root.can-audit;
                 }
             }
             VerticalLayout {
-                spacing: 4px;
-                balanced := RadioButton { group: modes; value: "balanced"; text: root.balanced-label; }
-                Label { text: "选择值与显示标签独立"; }
+                spacing <- 4px;
+                balanced := RadioButton { group <- modes; value <- "balanced"; text <- root.balanced-label; }
+                Label { text <- "选择值与显示标签独立"; }
             }
         }
-        quality-picker := QualityPicker { choice <=> root.quality; show-high: root.show-high; }
+        quality-picker := QualityPicker { choice <-> root.quality; show-high <- root.show-high; }
         HorizontalLayout {
-            spacing: 12px;
-            show-audit-toggle := CheckBox { text: "显示审计"; checked <=> root.show-audit; }
-            allow-audit-toggle := CheckBox { text: "允许审计"; checked <=> root.can-audit; }
+            spacing <- 12px;
+            show-audit-toggle := CheckBox { text <- "显示审计"; checked <-> root.show-audit; }
+            allow-audit-toggle := CheckBox { text <- "允许审计"; checked <-> root.can-audit; }
         }
-        Label { text: "模式 " + root.mode + " · 质量槽位 " + root.quality; }
+        Label { text <- "模式 " + root.mode + " · 质量槽位 " + root.quality; }
     }
 }
 
 component QualityPicker inherits HorizontalLayout {
     in-out property <int> choice: 1;
     in property <bool> show-high: true;
-    quality-options := ButtonGroup { accessible-name: "输出质量"; current-index <=> root.choice; }
-    Label { text: "输出质量"; }
-    low-quality := RadioButton { group: quality-options; text: "标准"; }
-    if root.show-high : high-quality := RadioButton { group: quality-options; text: "高"; }
-    ultra-quality := RadioButton { group: quality-options; text: "超高"; }
+    quality-options := ButtonGroup { accessible-name <- "输出质量"; current-index <-> root.choice; }
+    Label { text <- "输出质量"; }
+    low-quality := RadioButton { group <- quality-options; text <- "标准"; }
+    if root.show-high : high-quality := RadioButton { group <- quality-options; text <- "高"; }
+    ultra-quality := RadioButton { group <- quality-options; text <- "超高"; }
 }
 
 export struct TargetPreset {
@@ -317,8 +317,8 @@ export struct TargetPreset {
 }
 
 export component MixedRadioOptionsDemo inherits Window {
-    title: "XRack · 动态单选组";
-    width: 425px; height: 435px;
+    title <- "XRack · 动态单选组";
+    width <- 425px; height <- 435px;
     in-out property <string> target: "desktop";
     in-out property <bool> show-custom: true;
     in property <[string]> platforms: ["desktop", "mobile"];
@@ -328,36 +328,36 @@ export component MixedRadioOptionsDemo inherits Window {
     ];
     out property <int> selections: 0;
     out property <string> last-selection: "";
-    out property <bool> group-focused: targets.has-focus;
+    out property <bool> group-focused <- targets.has-focus;
 
     VerticalLayout {
-        padding: 18px; spacing: 8px;
+        padding <- 18px; spacing <- 8px;
         targets := RadioGroup {
-            title: "目标平台";
-            current-value <=> root.target;
-            RadioButton { text: "自动"; value: "auto"; }
-            if root.show-custom: RadioButton { text: "自定义"; value: "custom"; }
+            title <- "目标平台";
+            current-value <-> root.target;
+            RadioButton { text <- "自动"; value <- "auto"; }
+            if root.show-custom: RadioButton { text <- "自定义"; value <- "custom"; }
             for platform in root.platforms: RadioButton {
-                text: platform; value: platform;
+                text <- platform; value <- platform;
                 ToggleIndicator {
-                    width: 20px; height: 20px;
-                    Text { text: checked ? "●" : "○"; }
+                    width <- 20px; height <- 20px;
+                    Text { text <- checked ? "●" : "○"; }
                 }
             }
             for preset in root.presets: RadioButton {
-                text: preset.label; value: preset.code; enabled: preset.available;
+                text <- preset.label; value <- preset.code; enabled <- preset.available;
             }
-            RadioButton { text: "离线"; value: "offline"; }
+            RadioButton { text <- "离线"; value <- "offline"; }
             selected(value) => { root.last-selection = value; root.selections += 1; }
         }
-        show := CheckBox { text: "显示自定义选项"; checked <=> root.show-custom; }
+        show := CheckBox { text <- "显示自定义选项"; checked <-> root.show-custom; }
         HorizontalLayout {
-            spacing: 8px;
-            focus-targets := Button { text: "聚焦选项"; clicked => { targets.focus(); } }
-            clear-targets := Shortcut { sequence: "F3"; activated => { targets.clear-focus(); } }
-            focus-status := Label { text: root.group-focused ? "选项组已聚焦" : "选项组未聚焦"; }
+            spacing <- 8px;
+            focus-targets := Button { text <- "聚焦选项"; clicked => { targets.focus(); } }
+            clear-targets := Shortcut { sequence <- "F3"; activated => { targets.clear-focus(); } }
+            focus-status := Label { text <- root.group-focused ? "选项组已聚焦" : "选项组未聚焦"; }
         }
-        target-status := Label { text: root.target + " · 用户选择 " + root.selections + " 次"; }
+        target-status := Label { text <- root.target + " · 用户选择 " + root.selections + " 次"; }
     }
 }
 
@@ -366,89 +366,89 @@ export component EditableChoiceDemo inherits Window {
     in-out property <int> active: 0;
     in-out property <string> active-value: "总部";
     in-out property <string> draft: "总部";
-    out property <string> actual-label: linked.current-text;
-    out property <string> actual-value: linked.current-value;
-    out property <string> actual-draft: linked.edit-text;
-    out property <string> automatic-draft: automatic.edit-text;
+    out property <string> actual-label <- linked.current-text;
+    out property <string> actual-value <- linked.current-value;
+    out property <string> actual-draft <- linked.edit-text;
+    out property <string> automatic-draft <- automatic.edit-text;
     out property <string> last-accepted: "";
     out property <int> edits: 0;
     out property <int> accepts: 0;
     out property <int> selections: 0;
 
-    title: "XRack · 可编辑下拉框";
-    width: 470px;
-    height: 278px;
-    background: #101725;
+    title <- "XRack · 可编辑下拉框";
+    width <- 470px;
+    height <- 278px;
+    background <- #101725;
 
     VerticalLayout {
-        padding: 20px;
-        spacing: 10px;
-        alignment: start;
-        Text { text: "输入名称 · → 补全 · Enter 提交"; font-size: 22px; color: #e7efff; }
+        padding <- 20px;
+        spacing <- 10px;
+        alignment <- start;
+        Text { text <- "输入名称 · → 补全 · Enter 提交"; font-size <- 22px; color <- #e7efff; }
         linked := ComboBox {
-            editable: true;
-            auto-complete: true;
-            height: 38px;
-            model: root.workspaces;
-            current-index <=> root.active;
-            edit-text <=> root.draft;
-            placeholder-text: "选择或输入名称";
+            editable <- true;
+            auto-complete <- true;
+            height <- 38px;
+            model <- root.workspaces;
+            current-index <-> root.active;
+            edit-text <-> root.draft;
+            placeholder-text <- "选择或输入名称";
             edited(value) => { root.edits += 1; }
             selected(value) => { root.selections += 1; }
             accepted(value) => { root.last-accepted = value; root.accepts += 1; }
         }
         edit-status := Text {
-            text: "选中 · " + root.actual-label + "　草稿 · " + root.actual-draft;
-            color: #a7b6ce;
+            text <- "选中 · " + root.actual-label + "　草稿 · " + root.actual-draft;
+            color <- #a7b6ce;
         }
         automatic := ComboBox {
-            editable: true;
-            auto-complete: true;
-            height: 38px;
-            model: root.workspaces;
-            current-value <=> root.active-value;
-            placeholder-text: "尚未选择";
+            editable <- true;
+            auto-complete <- true;
+            height <- 38px;
+            model <- root.workspaces;
+            current-value <-> root.active-value;
+            placeholder-text <- "尚未选择";
         }
-        Text { text: "最近提交 · " + root.last-accepted; color: #acc0db; }
+        Text { text <- "最近提交 · " + root.last-accepted; color <- #acc0db; }
     }
 }
 
 export component ComboValidationDemo inherits Window {
-    title: "XRack · 下拉框输入校验";
-    width: 432px; height: 252px;
+    title <- "XRack · 下拉框输入校验";
+    width <- 432px; height <- 252px;
     in-out property <string> draft: "12,50";
     in-out property <int> selection: 0;
     in-out property <bool> editing: true;
     in-out property <bool> allow-submit: true;
-    out property <bool> valid: amount.acceptable-input;
+    out property <bool> valid <- amount.acceptable-input;
     out property <int> accept-count: 0;
     out property <string> last-accepted: "";
 
-    Label { x: 20px; y: 16px; text: "输入 10 到 25 之间的金额"; font-size: 22px; }
+    Label { x <- 20px; y <- 16px; text <- "输入 10 到 25 之间的金额"; font-size <- 22px; }
     amount := ComboBox {
-        x: 20px; y: 60px; width: 360px; height: 40px;
-        editable: root.editing;
-        model: ["12,50", "18,25", "30,00"];
-        current-index <=> root.selection;
-        edit-text <=> root.draft;
-        input-type: InputType.decimal;
-        decimal-separator: ",";
-        minimum-value: 10.0; maximum-value: 25.0;
-        minimum-length: 2; maximum-length: 5; decimals: 2;
-        submit-when: root.allow-submit;
+        x <- 20px; y <- 60px; width <- 360px; height <- 40px;
+        editable <- root.editing;
+        model <- ["12,50", "18,25", "30,00"];
+        current-index <-> root.selection;
+        edit-text <-> root.draft;
+        input-type <- InputType.decimal;
+        decimal-separator <- ",";
+        minimum-value <- 10.0; maximum-value <- 25.0;
+        minimum-length <- 2; maximum-length <- 5; decimals <- 2;
+        submit-when <- root.allow-submit;
         accepted(text) => { root.last-accepted = text; root.accept-count += 1; }
     }
     permit := CheckBox {
-        x: 20px; y: 117px; text: "允许提交"; checked <=> root.allow-submit;
+        x <- 20px; y <- 117px; text <- "允许提交"; checked <-> root.allow-submit;
     }
     edit-mode := CheckBox {
-        x: 176px; y: 117px; text: "可编辑"; checked <=> root.editing;
+        x <- 176px; y <- 117px; text <- "可编辑"; checked <-> root.editing;
     }
     validation-status := Label {
-        x: 20px; y: 165px;
-        text: root.valid ? "金额有效 · Enter 提交" : "当前草稿不能提交";
+        x <- 20px; y <- 165px;
+        text <- root.valid ? "金额有效 · Enter 提交" : "当前草稿不能提交";
     }
-    accepted-status := Label { x: 20px; y: 205px; text: "已提交 · " + root.last-accepted; }
+    accepted-status := Label { x <- 20px; y <- 205px; text <- "已提交 · " + root.last-accepted; }
 }
 
 struct DeviceChoice {
@@ -457,8 +457,8 @@ struct DeviceChoice {
 }
 
 export component ComboLifecycleDemo inherits Window {
-    title: "XRack · 可编辑下拉框";
-    width: 470px; height: 288px;
+    title <- "XRack · 可编辑下拉框";
+    width <- 470px; height <- 288px;
 
     in-out property <string> draft: "";
     in-out property <string> pattern: "AA-999";
@@ -468,26 +468,26 @@ export component ComboLifecycleDemo inherits Window {
     out property <string> last-draft: "";
     out property <bool> last-acceptable: false;
     out property <int> finishes: 0;
-    out property <bool> valid: device.acceptable-input;
+    out property <bool> valid <- device.acceptable-input;
 
     instruction := Label {
-        x: 20px; y: 18px; width: 430px;
-        text: "输入设备编号，例如 CD456，或从列表选择";
+        x <- 20px; y <- 18px; width <- 430px;
+        text <- "输入设备编号，例如 CD456，或从列表选择";
     }
     device := ComboBox {
-        x: 20px; y: 60px; width: 354px; height: 40px;
-        accessible-name: "设备编号";
-        editable: root.editing;
-        input-mask: root.pattern;
-        model: [
+        x <- 20px; y <- 60px; width <- 354px; height <- 40px;
+        accessible-name <- "设备编号";
+        editable <- root.editing;
+        input-mask <- root.pattern;
+        model <- [
             DeviceChoice { label: "AB-123", id: 11 },
             DeviceChoice { label: "CD-456", id: 22 },
             DeviceChoice { label: "库存归档", id: 33 },
         ];
-        text-role: "label";
-        value-role: "id";
-        current-value <=> root.selection;
-        edit-text <=> root.draft;
+        text-role <- "label";
+        value-role <- "id";
+        current-value <-> root.selection;
+        edit-text <-> root.draft;
         selected(label) => { root.trace += "selected " + label + ";"; }
         value-selected(id) => { root.trace += "value " + id + ";"; }
         accepted(text) => { root.trace += "accept " + text + ";"; }
@@ -499,19 +499,19 @@ export component ComboLifecycleDemo inherits Window {
         }
     }
     other := Button {
-        x: 20px; y: 124px; width: 142px; text: "继续下一项";
+        x <- 20px; y <- 124px; width <- 142px; text <- "继续下一项";
     }
     mode := CheckBox {
-        x: 192px; y: 124px; width: 200px;
-        text: "可编辑";
-        checked <=> root.editing;
+        x <- 192px; y <- 124px; width <- 200px;
+        text <- "可编辑";
+        checked <-> root.editing;
     }
     result := Label {
-        x: 20px; y: 180px; width: 430px;
-        text: root.finishes == 0 ? "尚未结束编辑"
+        x <- 20px; y <- 180px; width <- 430px;
+        text <- root.finishes == 0 ? "尚未结束编辑"
             : (root.last-acceptable ? "通过校验 " : "待补全 ") + root.last-draft;
     }
-    totals := Label { x: 20px; y: 222px; text: "结束编辑 " + root.finishes + " 次"; }
+    totals := Label { x <- 20px; y <- 222px; text <- "结束编辑 " + root.finishes + " 次"; }
 }
 
 struct CatalogEntry {
@@ -521,8 +521,8 @@ struct CatalogEntry {
 }
 
 export component ComboAppendDemo inherits Window {
-    title: "XRack · 新选项";
-    width: 490px; height: 334px;
+    title <- "XRack · 新选项";
+    width <- 490px; height <- 334px;
 
     in-out property <[string]> labels: ["普通", "优先"];
     in-out property <string> label-draft: "";
@@ -544,14 +544,14 @@ export component ComboAppendDemo inherits Window {
     out property <int> entry-after: -9;
     out property <int> typed-selections: 0;
 
-    Label { x: 20px; y: 20px; text: "输入一个新标签，然后按 Enter"; }
+    Label { x <- 20px; y <- 20px; text <- "输入一个新标签，然后按 Enter"; }
     labels-box := ComboBox {
-        x: 20px; y: 56px; width: 330px; height: 38px;
-        editable: true;
-        model: root.labels;
-        current-index <=> root.label-index;
-        edit-text <=> root.label-draft;
-        minimum-length: 2;
+        x <- 20px; y <- 56px; width <- 330px; height <- 38px;
+        editable <- true;
+        model <- root.labels;
+        current-index <-> root.label-index;
+        edit-text <-> root.label-draft;
+        minimum-length <- 2;
         accepted(text) => {
             root.label-before = root.label-index;
             root.labels = root.replace-model && root.label-index < 0
@@ -564,20 +564,20 @@ export component ComboAppendDemo inherits Window {
         editing-finished(text, acceptable) => { root.label-after = root.label-index; }
     }
     label-status := Label {
-        x: 20px; y: 105px;
-        text: "标签索引 " + root.label-index + " · " + labels-box.current-text;
+        x <- 20px; y <- 105px;
+        text <- "标签索引 " + root.label-index + " · " + labels-box.current-text;
     }
-    Label { x: 20px; y: 153px; text: "输入新设备名称，提交时分配业务键"; }
+    Label { x <- 20px; y <- 153px; text <- "输入新设备名称，提交时分配业务键"; }
     entries-box := ComboBox {
-        x: 20px; y: 190px; width: 330px; height: 38px;
-        editable: true;
-        model: root.entries;
-        text-role: "name";
-        value-role: "key";
-        enabled-role: "available";
-        current-value <=> root.entry-key;
-        edit-text <=> root.entry-draft;
-        minimum-length: 2;
+        x <- 20px; y <- 190px; width <- 330px; height <- 38px;
+        editable <- true;
+        model <- root.entries;
+        text-role <- "name";
+        value-role <- "key";
+        enabled-role <- "available";
+        current-value <-> root.entry-key;
+        edit-text <-> root.entry-draft;
+        minimum-length <- 2;
         accepted(text) => {
             root.entry-before = root.entry-key;
             Model.insert(root.entries, entries-box.current-text != text ? Model.count(root.entries) : -1,
@@ -590,15 +590,15 @@ export component ComboAppendDemo inherits Window {
         value-selected(key) => { root.typed-selections += 1; }
     }
     entry-status := Label {
-        x: 20px; y: 241px;
-        text: "设备键 " + root.entry-key + " · " + entries-box.current-text;
+        x <- 20px; y <- 241px;
+        text <- "设备键 " + root.entry-key + " · " + entries-box.current-text;
     }
 }
 
 export component DirectionalChoiceDemo inherits Window {
-    title: "XRack · 下拉与搜索方向";
-    width: 464px; height: 284px;
-    background: #162034;
+    title <- "XRack · 下拉与搜索方向";
+    width <- 464px; height <- 284px;
+    background <- #162034;
 
     in-out property <bool> rtl: true;
     in-out property <string> draft: "Al";
@@ -607,46 +607,46 @@ export component DirectionalChoiceDemo inherits Window {
     out property <string> submitted: "";
 
     flip := Button {
-        x: 20px; y: 18px; width: 165px; height: 32px;
-        text: root.rtl ? "从右到左 · 切换" : "从左到右 · 切换";
+        x <- 20px; y <- 18px; width <- 165px; height <- 32px;
+        text <- root.rtl ? "从右到左 · 切换" : "从左到右 · 切换";
         clicked => { root.rtl = !root.rtl; }
     }
 
     Rectangle {
-        x: 20px; y: 64px; width: 424px; height: 204px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        x <- 20px; y <- 64px; width <- 424px; height <- 204px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         editor := ComboBox {
-            x: 0px; y: 0px; width: 240px; height: 36px;
-            accessible-name: "可编辑下拉框";
-            editable: true; auto-complete: true;
-            model: ["Alpha", "Beta", "שלום", "עולם"];
-            edit-text <=> root.draft;
+            x <- 0px; y <- 0px; width <- 240px; height <- 36px;
+            accessible-name <- "可编辑下拉框";
+            editable <- true; auto-complete <- true;
+            model <- ["Alpha", "Beta", "שלום", "עולם"];
+            edit-text <-> root.draft;
             ComboIndicator {
-                width: 44px; height: 24px;
-                background: #437599; border-radius: 5px;
+                width <- 44px; height <- 24px;
+                background <- #437599; border-radius <- 5px;
                 Label {
-                    text: "⌄"; width: 44px; height: 24px;
-                    horizontal-alignment: center; vertical-alignment: center;
-                    color: #ffffff;
+                    text <- "⌄"; width <- 44px; height <- 24px;
+                    horizontal-alignment <- center; vertical-alignment <- center;
+                    color <- #ffffff;
                 }
             }
         }
         compact := ComboBox {
-            x: 306px; y: 0px; width: 68px; height: 36px;
-            model: ["小", "大"];
-            current-index <=> root.mode;
+            x <- 306px; y <- 0px; width <- 68px; height <- 36px;
+            model <- ["小", "大"];
+            current-index <-> root.mode;
         }
         search := SearchField {
-            x: 0px; y: 65px; width: 240px; height: 36px;
-            accessible-name: "搜索框";
-            text <=> root.query;
-            suggestions: ["report", "repair"];
-            suggestions-for: root.query;
+            x <- 0px; y <- 65px; width <- 240px; height <- 36px;
+            accessible-name <- "搜索框";
+            text <-> root.query;
+            suggestions <- ["report", "repair"];
+            suggestions-for <- root.query;
             accepted(value) => { root.submitted = value; }
         }
         status := Text {
-            x: 0px; y: 174px;
-            text: root.draft + " · " + root.query + " · " + root.submitted;
+            x <- 0px; y <- 174px;
+            text <- root.draft + " · " + root.query + " · " + root.submitted;
         }
     }
 }

@@ -6,18 +6,18 @@ struct PickingActor {
 }
 
 export component FilteredPickingDemo inherits Window {
-    title: "XRack · 候选拾取";
-    width: 600px; height: 420px;
-    resizable: false;
-    background: #182638;
+    title <- "XRack · 候选拾取";
+    width <- 600px; height <- 420px;
+    resizable <- false;
+    background <- #182638;
 
-    in-out property <point2d> pointer: once Point2D.new(269px, 166px);
+    in-out property <point2d> pointer: Point2D.new(269px, 166px);
     in-out property <bool> rear-only: true;
     in-out property <bool> orbit: false;
     in-out property <int> mask: 1;
     in-out property <int> target-row: 2;
     in-out property <[int]> candidates: [2, 1, 2, 3, -1, 1000];
-    property <point2d> view-size: Point2D.new(600px, 332px);
+    property <point2d> view-size <- Point2D.new(600px, 332px);
     property <hit3d> miss;
     property <PickingActor> base: PickingActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
@@ -25,7 +25,7 @@ export component FilteredPickingDemo inherits Window {
         color: #8ab1d1, pickable: true, layers: 1,
         camera-kind: "", camera-height: 5.4, camera-near: 0.1, camera-far: 24,
     };
-    property <[PickingActor]> world: [
+    property <[PickingActor]> world <- [
         PickingActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
         PickingActor {
             id: "front", x: -0.5, z: 1.13, scale-x: 1.14, scale-y: 1.32,
@@ -44,44 +44,44 @@ export component FilteredPickingDemo inherits Window {
             pickable: false, color: #3f576f, ..root.base
         },
     ];
-    property <[int]> rows: root.rear-only ? [2] : root.candidates;
-    out property <[hit3d]> hits: root.orbit
+    property <[int]> rows <- root.rear-only ? [2] : root.candidates;
+    out property <[hit3d]> hits <- root.orbit
         ? Scene3D.hit-subset(root.world, 0, 0, 8, root.view-size, root.pointer, root.rows, root.mask)
         : Scene3D.hit-subset-camera(root.world, "eye", root.view-size, root.pointer, root.rows, root.mask);
-    out property <hit3d> target: root.orbit
+    out property <hit3d> target <- root.orbit
         ? Scene3D.hit-row(root.world, 0, 0, 8, root.view-size, root.pointer, root.target-row, root.mask)
         : Scene3D.hit-row-camera(root.world, "eye", root.view-size, root.pointer, root.target-row, root.mask);
-    property <point3d> origin: Point3D.new(-0.5, 0, 6);
-    property <vector3d> direction: Vector3D.new(0, 0, -1);
-    out property <hit3d> ray-target: Scene3D.ray-hit-row(root.world, root.origin, root.direction, 10, root.target-row, root.mask);
-    out property <[hit3d]> ray-hits: Scene3D.ray-hit-subset(root.world, root.origin, root.direction, 10, root.rows, root.mask);
-    property <hit3d> first: Model.at(root.hits, 0, root.miss);
-    property <string> hit-label: root.first.valid
+    property <point3d> origin <- Point3D.new(-0.5, 0, 6);
+    property <vector3d> direction <- Vector3D.new(0, 0, -1);
+    out property <hit3d> ray-target <- Scene3D.ray-hit-row(root.world, root.origin, root.direction, 10, root.target-row, root.mask);
+    out property <[hit3d]> ray-hits <- Scene3D.ray-hit-subset(root.world, root.origin, root.direction, 10, root.rows, root.mask);
+    property <hit3d> first <- Model.at(root.hits, 0, root.miss);
+    property <string> hit-label <- root.first.valid
         ? (root.first.object-id == "" ? "行 " + root.first.row-index : root.first.object-id)
         : "未命中";
     pick-area := TouchArea {
-        width: 600px; height: 332px;
+        width <- 600px; height <- 332px;
         pointer-event(event) => {
             if event.kind == PointerEventKind.up && event.inside {
                 root.pointer = Point2D.new(event.x, event.y);
             }
         }
         SceneView3D {
-            width: 600px; height: 332px; model: root.world;
-            camera: root.orbit ? "" : "eye"; camera-yaw: 0; camera-pitch: 0; camera-distance: 8;
-            layer-mask: root.mask; selected-object: root.first.object-id;
-            cache-rendering: true; scene-background: #253b53;
+            width <- 600px; height <- 332px; model <- root.world;
+            camera <- root.orbit ? "" : "eye"; camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 8;
+            layer-mask <- root.mask; selected-object <- root.first.object-id;
+            cache-rendering <- true; scene-background <- #253b53;
         }
         Rectangle {
-            x: root.pointer.x - 4px; y: root.pointer.y - 4px; width: 8px; height: 8px;
-            background: #ffd795; border-radius: 4px;
+            x <- root.pointer.x - 4px; y <- root.pointer.y - 4px; width <- 8px; height <- 8px;
+            background <- #ffd795; border-radius <- 4px;
         }
     }
-    Label { x: 14px; y: 338px; width: 560px; height: 32px; text: "最近候选  " + root.hit-label + "    命中数  " + Model.count(root.hits); }
-    filter-toggle := CheckBox { x: 14px; y: 374px; width: 131px; height: 32px; text: "只拾取后方"; checked <=> root.rear-only; }
-    camera-toggle := CheckBox { x: 166px; y: 374px; width: 132px; height: 32px; text: "绕视相机"; checked <=> root.orbit; }
+    Label { x <- 14px; y <- 338px; width <- 560px; height <- 32px; text <- "最近候选  " + root.hit-label + "    命中数  " + Model.count(root.hits); }
+    filter-toggle := CheckBox { x <- 14px; y <- 374px; width <- 131px; height <- 32px; text <- "只拾取后方"; checked <-> root.rear-only; }
+    camera-toggle := CheckBox { x <- 166px; y <- 374px; width <- 132px; height <- 32px; text <- "绕视相机"; checked <-> root.orbit; }
     layer-toggle := CheckBox {
-        x: 320px; y: 374px; width: 200px; height: 32px; text: "包含右侧匿名模型"; checked: root.mask == 3;
+        x <- 320px; y <- 374px; width <- 200px; height <- 32px; text <- "包含右侧匿名模型"; checked <- root.mask == 3;
         toggled => { root.mask = root.mask == 3 ? 1 : 3; }
     }
 }

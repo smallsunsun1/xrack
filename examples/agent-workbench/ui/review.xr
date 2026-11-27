@@ -18,106 +18,106 @@ export component GitCommitContent inherits VerticalLayout {
     callback focus-message();
     focus-message => { git-commit-message-input.focus(); }
 
-    padding: 14px;
-    spacing: 8px;
-    alignment: start;
+    padding <- 14px;
+    spacing <- 8px;
+    alignment <- start;
     git-commit-branch-label := Label {
-        text: root.loading ? @tr("reading-git") :
+        text <- root.loading ? @tr("reading-git") :
             root.detached ? @tr("commit-detached-head", revision: root.branch) :
             root.branch != "" ? @tr("commit-current-branch", branch: root.branch) : "";
-        color: Palette.text;
-        height: 21px;
-        font-size: 13px;
-        font-weight: 650;
-        overflow: elide;
+        color <- Palette.text;
+        height <- 21px;
+        font-size <- 13px;
+        font-weight <- 650;
+        overflow <- elide;
     }
     Label {
-        text: root.done ? @tr("commit-success-files", count: Model.count(root.files)) :
+        text <- root.done ? @tr("commit-success-files", count: Model.count(root.files)) :
             @tr("commit-staged-files", count: Model.count(root.files));
-        visible: !root.loading;
-        color: Palette.muted;
-        height: 19px;
-        font-size: 12px;
+        visible <- !root.loading;
+        color <- Palette.muted;
+        height <- 19px;
+        font-size <- 12px;
     }
     git-commit-file-list := ListView {
-        height: 112px;
-        row-height: 24px;
-        accessible-name: @tr("commit-files-to-review");
-        background: Palette.rail;
+        height <- 112px;
+        row-height <- 24px;
+        accessible-name <- @tr("commit-files-to-review");
+        background <- Palette.rail;
         for file in root.files : HorizontalLayout {
-            padding-left: 8px;
-            padding-right: 8px;
-            cross-axis-alignment: center;
+            padding-left <- 8px;
+            padding-right <- 8px;
+            cross-axis-alignment <- center;
             Label {
-                text: file;
-                overflow: elide;
-                font-size: 11px;
-                font-family: "monospace";
-                color: Palette.text;
+                text <- file;
+                overflow <- elide;
+                font-size <- 11px;
+                font-family <- "monospace";
+                color <- Palette.text;
             }
         }
     }
     git-commit-message-input := TextArea {
-        text <=> root.message;
-        height: 94px;
-        padding: 7px;
-        accessible-name: @tr("commit-message");
-        placeholder-text: @tr("write-commit-message");
-        read-only: root.pending || root.done;
+        text <-> root.message;
+        height <- 94px;
+        padding <- 7px;
+        accessible-name <- @tr("commit-message");
+        placeholder-text <- @tr("write-commit-message");
+        read-only <- root.pending || root.done;
     }
     git-commit-error-label := Label {
-        text: root.error;
-        visible: root.error != "";
-        color: Palette.error;
-        font-size: 12px;
-        height: 40px;
-        wrap: word-wrap;
-        max-lines: 2;
-        overflow: elide;
+        text <- root.error;
+        visible <- root.error != "";
+        color <- Palette.error;
+        font-size <- 12px;
+        height <- 40px;
+        wrap <- word-wrap;
+        max-lines <- 2;
+        overflow <- elide;
     }
     git-commit-success-label := Label {
-        text: root.commit-id == "" ? @tr("commit-created") :
+        text <- root.commit-id == "" ? @tr("commit-created") :
             @tr("commit-created-id", revision: root.commit-id);
-        visible: root.done;
-        height: 26px;
-        color: Palette.success;
-        font-size: 12px;
+        visible <- root.done;
+        height <- 26px;
+        color <- Palette.success;
+        font-size <- 12px;
     }
     HorizontalLayout {
-        height: 33px;
-        spacing: 7px;
-        cross-axis-alignment: center;
+        height <- 33px;
+        spacing <- 7px;
+        cross-axis-alignment <- center;
         refresh-git-commit := Button {
-            text: @tr("reload-staged-changes");
-            visible: !root.done;
-            enabled: !root.loading && !root.pending;
-            flat: true;
-            padding: 5px;
+            text <- @tr("reload-staged-changes");
+            visible <- !root.done;
+            enabled <- !root.loading && !root.pending;
+            flat <- true;
+            padding <- 5px;
             clicked => { root.refresh(); }
         }
-        Rectangle { horizontal-stretch: 1; }
+        Rectangle { horizontal-stretch <- 1; }
         push-committed-branch := Button {
-            text: @tr("git-push");
-            visible: root.done && root.commit-id != "";
-            flat: true;
-            padding: 6px;
+            text <- @tr("git-push");
+            visible <- root.done && root.commit-id != "";
+            flat <- true;
+            padding <- 6px;
             clicked => { root.push(); }
         }
         cancel-git-commit := Button {
-            text: root.done ? @tr("done") : @tr("cancel");
-            primary: root.done;
-            flat: !root.done;
-            enabled: !root.pending;
-            padding: 6px;
+            text <- root.done ? @tr("done") : @tr("cancel");
+            primary <- root.done;
+            flat <- !root.done;
+            enabled <- !root.pending;
+            padding <- 6px;
             clicked => { root.dismiss(); }
         }
         confirm-git-commit-button := Button {
-            text: root.pending ? @tr("committing-staged-changes") : @tr("commit");
-            enabled: root.confirm-enabled;
-            visible: !root.done;
-            primary: true;
-            border-radius: 6px;
-            padding: 6px;
+            text <- root.pending ? @tr("committing-staged-changes") : @tr("commit");
+            enabled <- root.confirm-enabled;
+            visible <- !root.done;
+            primary <- true;
+            border-radius <- 6px;
+            padding <- 6px;
             clicked => { root.confirm(); }
         }
     }
@@ -142,133 +142,133 @@ export component GitPushContent inherits VerticalLayout {
     callback dismiss();
     callback create-pr();
 
-    padding: 14px;
-    alignment: start;
-    spacing: 8px;
+    padding <- 14px;
+    alignment <- start;
+    spacing <- 8px;
     git-push-source-label := Label {
-        text: root.loading ? @tr("reading-git") : root.commit-id == "" ? "" :
+        text <- root.loading ? @tr("reading-git") : root.commit-id == "" ? "" :
             root.source == "" ? @tr("commit-detached-head", revision: root.commit-id) :
             @tr("push-source-branch", branch: root.source, revision: root.commit-id);
-        height: 24px;
-        font-weight: 650;
-        font-size: 13px;
-        color: Palette.text;
-        overflow: elide;
+        height <- 24px;
+        font-weight <- 650;
+        font-size <- 13px;
+        color <- Palette.text;
+        overflow <- elide;
     }
     HorizontalLayout {
-        height: 36px;
-        spacing: 8px;
-        cross-axis-alignment: center;
+        height <- 36px;
+        spacing <- 8px;
+        cross-axis-alignment <- center;
         Label {
-            text: @tr("push-remote");
-            width: 82px;
-            font-size: 12px;
-            color: Palette.muted;
+            text <- @tr("push-remote");
+            width <- 82px;
+            font-size <- 12px;
+            color <- Palette.muted;
         }
         git-push-remote-choice := ComboBox {
-            model: root.remotes;
-            current-value <=> root.remote;
-            accessible-name: @tr("push-remote");
-            height: 34px;
-            horizontal-stretch: 1;
-            enabled: !root.loading && !root.pending && !root.done && Model.count(root.remotes) > 0;
+            model <- root.remotes;
+            current-value <-> root.remote;
+            accessible-name <- @tr("push-remote");
+            height <- 34px;
+            horizontal-stretch <- 1;
+            enabled <- !root.loading && !root.pending && !root.done && Model.count(root.remotes) > 0;
             selected(name) => { root.remote-selected(); }
         }
     }
     git-push-addresses := ScrollView {
-        height: 61px;
-        horizontal-scroll-bar-policy: always-off;
-        accessible-name: @tr("push-addresses");
+        height <- 61px;
+        horizontal-scroll-bar-policy <- always-off;
+        accessible-name <- @tr("push-addresses");
         VerticalLayout {
-            width: 100%;
-            padding: 7px;
-            alignment: start;
+            width <- 100%;
+            padding <- 7px;
+            alignment <- start;
             Label {
-                text: root.address;
-                color: Palette.muted;
-                font-family: "monospace";
-                font-size: 11px;
-                wrap: char-wrap;
+                text <- root.address;
+                color <- Palette.muted;
+                font-family <- "monospace";
+                font-size <- 11px;
+                wrap <- char-wrap;
             }
         }
     }
     HorizontalLayout {
-        height: 36px;
-        spacing: 8px;
-        cross-axis-alignment: center;
+        height <- 36px;
+        spacing <- 8px;
+        cross-axis-alignment <- center;
         Label {
-            text: @tr("push-branch");
-            width: 82px;
-            font-size: 12px;
-            color: Palette.muted;
+            text <- @tr("push-branch");
+            width <- 82px;
+            font-size <- 12px;
+            color <- Palette.muted;
         }
         git-push-target-input := TextInput {
-            text <=> root.target;
-            height: 34px;
-            accessible-name: @tr("push-branch");
-            horizontal-stretch: 1;
-            enabled: !root.loading && !root.pending && !root.done && Model.count(root.remotes) > 0;
+            text <-> root.target;
+            height <- 34px;
+            accessible-name <- @tr("push-branch");
+            horizontal-stretch <- 1;
+            enabled <- !root.loading && !root.pending && !root.done && Model.count(root.remotes) > 0;
         }
     }
     git-push-track-option := CheckBox {
-        text: @tr("push-track-branch");
-        checked <=> root.track;
-        visible: root.source != "";
-        enabled: !root.loading && !root.pending && !root.done && root.remote != "";
-        height: 26px;
+        text <- @tr("push-track-branch");
+        checked <-> root.track;
+        visible <- root.source != "";
+        enabled <- !root.loading && !root.pending && !root.done && root.remote != "";
+        height <- 26px;
     }
     git-push-error-label := Label {
-        text: root.error;
-        visible: root.error != "";
-        color: root.done ? Palette.muted : Palette.error;
-        height: 35px;
-        font-size: 11px;
-        wrap: word-wrap;
-        max-lines: 2;
-        overflow: elide;
+        text <- root.error;
+        visible <- root.error != "";
+        color <- root.done ? Palette.muted : Palette.error;
+        height <- 35px;
+        font-size <- 11px;
+        wrap <- word-wrap;
+        max-lines <- 2;
+        overflow <- elide;
     }
     git-push-success-label := Label {
-        text: @tr("push-finished");
-        visible: root.done;
-        color: Palette.success;
-        height: 23px;
-        font-size: 12px;
+        text <- @tr("push-finished");
+        visible <- root.done;
+        color <- Palette.success;
+        height <- 23px;
+        font-size <- 12px;
     }
     HorizontalLayout {
-        height: 33px;
-        spacing: 7px;
-        cross-axis-alignment: center;
+        height <- 33px;
+        spacing <- 7px;
+        cross-axis-alignment <- center;
         reload-git-push-button := Button {
-            text: @tr("reload-push-target");
-            visible: !root.done;
-            enabled: !root.loading && !root.pending;
-            flat: true;
-            padding: 5px;
+            text <- @tr("reload-push-target");
+            visible <- !root.done;
+            enabled <- !root.loading && !root.pending;
+            flat <- true;
+            padding <- 5px;
             clicked => { root.reload(); }
         }
-        Rectangle { horizontal-stretch: 1; }
+        Rectangle { horizontal-stretch <- 1; }
         create-pr-after-push := Button {
-            text: @tr("create-git-pr");
-            visible: root.done;
-            flat: true;
-            padding: 6px;
+            text <- @tr("create-git-pr");
+            visible <- root.done;
+            flat <- true;
+            padding <- 6px;
             clicked => { root.create-pr(); }
         }
         cancel-git-push := Button {
-            text: root.done ? @tr("done") : @tr("cancel");
-            primary: root.done;
-            flat: !root.done;
-            enabled: !root.pending;
-            padding: 6px;
+            text <- root.done ? @tr("done") : @tr("cancel");
+            primary <- root.done;
+            flat <- !root.done;
+            enabled <- !root.pending;
+            padding <- 6px;
             clicked => { root.dismiss(); }
         }
         confirm-git-push-button := Button {
-            text: root.pending ? @tr("pushing-commit") : @tr("git-push");
-            enabled: root.confirm-enabled;
-            visible: !root.done;
-            primary: true;
-            border-radius: 6px;
-            padding: 6px;
+            text <- root.pending ? @tr("pushing-commit") : @tr("git-push");
+            enabled <- root.confirm-enabled;
+            visible <- !root.done;
+            primary <- true;
+            border-radius <- 6px;
+            padding <- 6px;
             clicked => { root.confirm(); }
         }
     }
@@ -280,35 +280,35 @@ export component ReviewTile inherits Rectangle {
     in property <bool> selected;
     callback choose();
 
-    height: 30px;
+    height <- 30px;
     review-file-action := Button {
-        width: 100%;
-        height: 100%;
-        text: root.file-path;
-        accessible-name: root.file-path;
-        flat: true;
-        padding: 0px;
-        border-radius: 6px;
-        background: self.pressed || root.selected ? Palette.selection : #00000000;
+        width <- 100%;
+        height <- 100%;
+        text <- root.file-path;
+        accessible-name <- root.file-path;
+        flat <- true;
+        padding <- 0px;
+        border-radius <- 6px;
+        background <- self.pressed || root.selected ? Palette.selection : #00000000;
         ButtonContent {
             HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 8px;
-                spacing: 8px;
-                cross-axis-alignment: center;
+                padding-left <- 8px;
+                padding-right <- 8px;
+                spacing <- 8px;
+                cross-axis-alignment <- center;
                 Label {
-                    width: 29px;
-                    text: root.change;
-                    color: root.change == "??" || root.change == "A" ? Palette.success : root.change == "D" ? Palette.error : Palette.accent;
-                    font-family: "monospace";
-                    font-size: 11px;
+                    width <- 29px;
+                    text <- root.change;
+                    color <- root.change == "??" || root.change == "A" ? Palette.success : root.change == "D" ? Palette.error : Palette.accent;
+                    font-family <- "monospace";
+                    font-size <- 11px;
                 }
                 Label {
-                    text: root.file-path;
-                    color: Palette.text;
-                    font-size: 12px;
-                    overflow: elide;
-                    horizontal-stretch: 1;
+                    text <- root.file-path;
+                    color <- Palette.text;
+                    font-size <- 12px;
+                    overflow <- elide;
+                    horizontal-stretch <- 1;
                 }
             }
         }
@@ -324,49 +324,49 @@ export component StagedReviewNoteTile inherits Rectangle {
     callback edit();
     callback remove();
 
-    height: 58px;
+    height <- 58px;
     HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 6px;
-        spacing: 4px;
-        cross-axis-alignment: center;
+        padding-left <- 8px;
+        padding-right <- 6px;
+        spacing <- 4px;
+        cross-axis-alignment <- center;
         VerticalLayout {
-            min-width: 0px;
-            horizontal-stretch: 1;
-            alignment: center;
-            spacing: 3px;
+            min-width <- 0px;
+            horizontal-stretch <- 1;
+            alignment <- center;
+            spacing <- 3px;
             Label {
-                text: root.reference;
-                color: Palette.text;
-                font-weight: 650;
-                font-size: 12px;
-                overflow: elide;
+                text <- root.reference;
+                color <- Palette.text;
+                font-weight <- 650;
+                font-size <- 12px;
+                overflow <- elide;
             }
             Label {
-                text: root.body;
-                color: Palette.muted;
-                font-size: 11px;
-                wrap: word-wrap;
-                max-lines: 2;
-                overflow: elide;
+                text <- root.body;
+                color <- Palette.muted;
+                font-size <- 11px;
+                wrap <- word-wrap;
+                max-lines <- 2;
+                overflow <- elide;
             }
         }
         edit-staged-note := Button {
-            text: @tr("edit");
-            accessible-name: (@tr("edit-comment") + " ") + root.reference;
-            enabled: root.can-edit;
-            height: 27px;
-            padding: 4px;
-            flat: true;
+            text <- @tr("edit");
+            accessible-name <- (@tr("edit-comment") + " ") + root.reference;
+            enabled <- root.can-edit;
+            height <- 27px;
+            padding <- 4px;
+            flat <- true;
             clicked => { root.edit(); }
         }
         remove-staged-note := Button {
-            text: @tr("remove");
-            accessible-name: (@tr("remove-comment") + " ") + root.reference;
-            enabled: root.can-remove;
-            height: 27px;
-            padding: 4px;
-            flat: true;
+            text <- @tr("remove");
+            accessible-name <- (@tr("remove-comment") + " ") + root.reference;
+            enabled <- root.can-remove;
+            height <- 27px;
+            padding <- 4px;
+            flat <- true;
             clicked => { root.remove(); }
         }
     }
@@ -377,51 +377,51 @@ export component ReviewCodeText inherits Rectangle {
     in property <string> kind;
     in property <bool> match-marked;
     in property <styled-text> match-body;
-    private property <color> code-color: root.kind == "add" ? Palette.success :
+    private property <color> code-color <- root.kind == "add" ? Palette.success :
         root.kind == "remove" ? Palette.error :
         root.kind == "meta" || root.kind == "hunk" ? Palette.muted : Palette.text;
 
-    height: 23px;
-    min-width: 0px;
-    horizontal-stretch: 1;
-    clip: true;
+    height <- 23px;
+    min-width <- 0px;
+    horizontal-stretch <- 1;
+    clip <- true;
     if root.match-marked : StyledText {
-        width: 100%;
-        height: 100%;
-        text: root.match-body;
-        font-family: "monospace";
-        font-size: 11px;
-        color: root.code-color;
-        vertical-alignment: center;
-        overflow: elide;
+        width <- 100%;
+        height <- 100%;
+        text <- root.match-body;
+        font-family <- "monospace";
+        font-size <- 11px;
+        color <- root.code-color;
+        vertical-alignment <- center;
+        overflow <- elide;
     }
     if !root.match-marked : Label {
-        width: 100%;
-        height: 100%;
-        text: (root.kind == "add" ? "+ " : root.kind == "remove" ? "− " :
+        width <- 100%;
+        height <- 100%;
+        text <- (root.kind == "add" ? "+ " : root.kind == "remove" ? "− " :
             root.kind == "context" ? "  " : "") + root.content;
-        font-family: "monospace";
-        font-size: 11px;
-        overflow: elide;
-        color: root.code-color;
+        font-family <- "monospace";
+        font-size <- 11px;
+        overflow <- elide;
+        color <- root.code-color;
     }
 }
 
 export component ReviewEditLineButton inherits Button {
     in property <int> line;
     callback edit();
-    text: @tr("edit");
-    accessible-name: (@tr("edit-new-line") + " ") + root.line;
-    width: 26px;
-    height: 23px;
-    padding: 3px;
-    flat: true;
+    text <- @tr("edit");
+    accessible-name <- (@tr("edit-new-line") + " ") + root.line;
+    width <- 26px;
+    height <- 23px;
+    padding <- 3px;
+    flat <- true;
     ButtonContent {
         CenteredWorkbenchIcon {
-            shape: "M4 16 L15 5 L19 9 L8 20 H4 Z M13 7 L17 11";
+            shape <- "M4 16 L15 5 L19 9 L8 20 H4 Z M13 7 L17 11";
         }
     }
-    Tooltip { text: @tr("edit-this-line-in-the-workspace"); }
+    Tooltip { text <- @tr("edit-this-line-in-the-workspace"); }
     clicked => { root.edit(); }
 }
 
@@ -439,38 +439,38 @@ export component ReviewSideCell inherits Rectangle {
     callback comment();
     callback edit();
 
-    height: 23px;
-    min-width: 0px;
-    preferred-width: 0px;
-    horizontal-stretch: 1;
-    background: root.active || root.match-current ? Palette.selection :
+    height <- 23px;
+    min-width <- 0px;
+    preferred-width <- 0px;
+    horizontal-stretch <- 1;
+    background <- root.active || root.match-current ? Palette.selection :
         root.number <= 0 ? Palette.canvas :
         root.kind == "remove" ? Palette.diff-removed :
         root.kind == "add" ? Palette.diff-added : Palette.surface;
     HorizontalLayout {
-        spacing: 0px;
-        cross-axis-alignment: center;
+        spacing <- 0px;
+        cross-axis-alignment <- center;
         split-line-gutter := Button {
-            text: root.number > 0 ? "" + root.number : "";
-            accessible-name: root.number <= 0 ? "" :
+            text <- root.number > 0 ? "" + root.number : "";
+            accessible-name <- root.number <= 0 ? "" :
                 (root.old ? (@tr("comment-on-old-line") + " ") : (@tr("comment-on-new-line") + " ")) + root.number;
-            width: 45px;
-            height: 23px;
-            padding: 3px;
-            enabled: root.can-comment && root.number > 0;
-            flat: true;
-            font-size: 10px;
+            width <- 45px;
+            height <- 23px;
+            padding <- 3px;
+            enabled <- root.can-comment && root.number > 0;
+            flat <- true;
+            font-size <- 10px;
             clicked => { root.comment(); }
         }
         ReviewCodeText {
-            visible: root.number > 0;
-            content: root.content;
-            kind: root.kind;
-            match-marked: root.match-marked;
-            match-body: root.match-body;
+            visible <- root.number > 0;
+            content <- root.content;
+            kind <- root.kind;
+            match-marked <- root.match-marked;
+            match-body <- root.match-body;
         }
         if root.can-edit && root.number > 0 : ReviewEditLineButton {
-            line: root.number;
+            line <- root.number;
             edit => { root.edit(); }
         }
     }
@@ -495,80 +495,80 @@ export component ReviewLineTile inherits Rectangle {
     callback revert-hunk();
     callback edit();
 
-    height: 23px;
-    background: root.active || root.match-current ? Palette.selection :
+    height <- 23px;
+    background <- root.active || root.match-current ? Palette.selection :
         root.kind == "add" ? Palette.diff-added : root.kind == "remove" ? Palette.diff-removed :
         root.kind == "hunk" ? Palette.diff-section : Palette.surface;
     HorizontalLayout {
-        spacing: 0px;
-        cross-axis-alignment: center;
+        spacing <- 0px;
+        cross-axis-alignment <- center;
         line-gutter := Button {
-            text: @tr("comment");
-            accessible-name: root.new-line > 0 ? (@tr("comment-on-new-line") + " ") + root.new-line :
+            text <- @tr("comment");
+            accessible-name <- root.new-line > 0 ? (@tr("comment-on-new-line") + " ") + root.new-line :
                 root.old-line > 0 ? (@tr("comment-on-old-line") + " ") + root.old-line : @tr("diff-header");
-            width: 78px;
-            height: 23px;
-            padding: 0px;
-            enabled: root.can-comment && (root.old-line > 0 || root.new-line > 0);
-            flat: true;
-            background: self.pressed ? Palette.selection : #00000000;
+            width <- 78px;
+            height <- 23px;
+            padding <- 0px;
+            enabled <- root.can-comment && (root.old-line > 0 || root.new-line > 0);
+            flat <- true;
+            background <- self.pressed ? Palette.selection : #00000000;
             ButtonContent {
                 HorizontalLayout {
-                    spacing: 0px;
-                    padding-left: 3px;
-                    padding-right: 3px;
-                    cross-axis-alignment: center;
+                    spacing <- 0px;
+                    padding-left <- 3px;
+                    padding-right <- 3px;
+                    cross-axis-alignment <- center;
                     Label {
-                        width: 34px;
-                        text: root.old-line > 0 ? "" + root.old-line : "";
-                        horizontal-alignment: right;
-                        font-family: "monospace";
-                        font-size: 10px;
-                        color: Palette.muted;
+                        width <- 34px;
+                        text <- root.old-line > 0 ? "" + root.old-line : "";
+                        horizontal-alignment <- right;
+                        font-family <- "monospace";
+                        font-size <- 10px;
+                        color <- Palette.muted;
                     }
                     Label {
-                        width: 34px;
-                        text: root.new-line > 0 ? "" + root.new-line : "";
-                        horizontal-alignment: right;
-                        font-family: "monospace";
-                        font-size: 10px;
-                        color: Palette.muted;
+                        width <- 34px;
+                        text <- root.new-line > 0 ? "" + root.new-line : "";
+                        horizontal-alignment <- right;
+                        font-family <- "monospace";
+                        font-size <- 10px;
+                        color <- Palette.muted;
                     }
                 }
             }
             clicked => { root.comment(); }
         }
-        Rectangle { width: 1px; background: Palette.border; }
+        Rectangle { width <- 1px; background <- Palette.border; }
         code-line := ReviewCodeText {
-            content: root.content;
-            kind: root.kind;
-            match-marked: root.match-marked;
-            match-body: root.match-body;
+            content <- root.content;
+            kind <- root.kind;
+            match-marked <- root.match-marked;
+            match-body <- root.match-body;
         }
         if root.can-edit && root.new-line > 0 : ReviewEditLineButton {
-            line: root.new-line;
+            line <- root.new-line;
             edit => { root.edit(); }
         }
         hunk-index-action := Button {
-            text: root.hunk-action;
-            accessible-name: root.hunk-action + " · " + root.content;
-            height: 22px;
-            padding: 3px;
-            font-size: 11px;
-            flat: true;
-            visible: root.hunk-action != "";
-            enabled: root.hunk-action-enabled;
+            text <- root.hunk-action;
+            accessible-name <- root.hunk-action + " · " + root.content;
+            height <- 22px;
+            padding <- 3px;
+            font-size <- 11px;
+            flat <- true;
+            visible <- root.hunk-action != "";
+            enabled <- root.hunk-action-enabled;
             clicked => { root.update-hunk(); }
         }
         hunk-revert-action := Button {
-            text: @tr("revert-hunk");
-            accessible-name: (@tr("preview-hunk-revert") + " ") + root.content;
-            height: 22px;
-            padding: 3px;
-            font-size: 11px;
-            flat: true;
-            visible: root.can-revert;
-            enabled: root.hunk-action-enabled;
+            text <- @tr("revert-hunk");
+            accessible-name <- (@tr("preview-hunk-revert") + " ") + root.content;
+            height <- 22px;
+            padding <- 3px;
+            font-size <- 11px;
+            flat <- true;
+            visible <- root.can-revert;
+            enabled <- root.hunk-action-enabled;
             clicked => { root.revert-hunk(); }
         }
     }
@@ -583,69 +583,69 @@ export component ReviewRevertContent inherits VerticalLayout {
     in property <styled-text> review-revert-preview;
     in property <bool> switching;
 
-    alignment: start;
-    padding: 12px;
-    spacing: 8px;
+    alignment <- start;
+    padding <- 12px;
+    spacing <- 8px;
     Label {
-        text: root.review-revert-path;
-        height: 20px;
-        overflow: elide;
-        font-family: "monospace";
-        font-size: 12px;
-        color: Palette.text;
+        text <- root.review-revert-path;
+        height <- 20px;
+        overflow <- elide;
+        font-family <- "monospace";
+        font-size <- 12px;
+        color <- Palette.text;
     }
     Label {
-        text: @tr("these-unstaged-changes-will-be-restored-to-the-git-index-version");
-        height: 20px;
-        color: Palette.muted;
-        font-size: 12px;
+        text <- @tr("these-unstaged-changes-will-be-restored-to-the-git-index-version");
+        height <- 20px;
+        color <- Palette.muted;
+        font-size <- 12px;
     }
     review-revert-preview-scroll := ScrollView {
-        height: 172px;
-        horizontal-scroll-bar-policy: always-off;
-        accessible-name: @tr("patch-to-revert");
+        height <- 172px;
+        horizontal-scroll-bar-policy <- always-off;
+        accessible-name <- @tr("patch-to-revert");
         VerticalLayout {
-            width: 100%;
-            alignment: start;
-            padding: 6px;
+            width <- 100%;
+            alignment <- start;
+            padding <- 6px;
             StyledText {
-                text: root.review-revert-preview;
-                font-family: "monospace";
-                font-size: 11px;
-                wrap: char-wrap;
-                vertical-alignment: top;
-                selectable: true;
+                text <- root.review-revert-preview;
+                font-family <- "monospace";
+                font-size <- 11px;
+                wrap <- char-wrap;
+                vertical-alignment <- top;
+                selectable <- true;
             }
         }
     }
     Label {
-        text: root.review-revert-error;
-        visible: root.review-revert-error != "";
-        height: 28px;
-        wrap: word-wrap;
-        color: Palette.error;
-        font-size: 11px;
+        text <- root.review-revert-error;
+        visible <- root.review-revert-error != "";
+        height <- 28px;
+        wrap <- word-wrap;
+        color <- Palette.error;
+        font-size <- 11px;
     }
     HorizontalLayout {
-        height: 33px;
-        alignment: end;
-        spacing: 8px;
+        height <- 33px;
+        alignment <- end;
+        spacing <- 8px;
         cancel-review-revert := Button {
-            text: @tr("cancel");
-            height: 33px;
-            padding: 6px;
-            flat: true;
+            text <- @tr("cancel");
+            height <- 33px;
+            padding <- 6px;
+            flat <- true;
             clicked => { root.review-revert-open = false; }
         }
         confirm-review-revert-button := Button {
-            text: @tr("confirm-revert");
-            height: 33px;
-            padding: 6px;
-            flat: true;
-            border-color: Palette.error;
-            border-width: 1px;
-            border-radius: 6px;
-            enabled: root.review-revert-error == "" && !root.switching && !root.review-index-busy;
+            text <- @tr("confirm-revert");
+            height <- 33px;
+            padding <- 6px;
+            flat <- true;
+            border-color <- Palette.error;
+            border-width <- 1px;
+            border-radius <- 6px;
+            enabled <- root.review-revert-error == "" && !root.switching && !root.review-index-busy;
             clicked => { root.confirm-review-revert(); }
         }
     }
@@ -664,54 +664,54 @@ export component ReviewLineEditContent inherits VerticalLayout {
     in-out property <string> review-line-edit-text;
     callback save-review-line-edit();
 
-    alignment: start;
-    padding: 12px;
-    spacing: 8px;
+    alignment <- start;
+    padding <- 12px;
+    spacing <- 8px;
     Label {
-        text: root.review-line-edit-location;
-        overflow: elide;
-        font-size: 12px;
-        font-family: "monospace";
-        color: Palette.muted;
-        height: 20px;
+        text <- root.review-line-edit-location;
+        overflow <- elide;
+        font-size <- 12px;
+        font-family <- "monospace";
+        color <- Palette.muted;
+        height <- 20px;
     }
     review-line-edit-input := TextArea {
-        height: 112px;
-        accessible-name: @tr("workspace-line-text");
-        text <=> root.review-line-edit-text;
-        read-only: !root.review-line-edit-ready || root.review-line-edit-busy;
-        font-family: "monospace";
-        font-size: 12px;
-        padding: 8px;
-        wrap: char-wrap;
+        height <- 112px;
+        accessible-name <- @tr("workspace-line-text");
+        text <-> root.review-line-edit-text;
+        read-only <- !root.review-line-edit-ready || root.review-line-edit-busy;
+        font-family <- "monospace";
+        font-size <- 12px;
+        padding <- 8px;
+        wrap <- char-wrap;
     }
     Label {
-        text: root.review-line-edit-error != "" ? root.review-line-edit-error :
+        text <- root.review-line-edit-error != "" ? root.review-line-edit-error :
             root.review-line-edit-busy ? root.review-line-edit-ready ? @tr("saving-file-state") : @tr("reading-source-file") : "";
-        visible: root.review-line-edit-busy || root.review-line-edit-error != "";
-        height: root.review-line-edit-error != "" ? 40px : 20px;
-        wrap: word-wrap;
-        font-size: 11px;
-        color: root.review-line-edit-error != "" ? Palette.error : Palette.muted;
+        visible <- root.review-line-edit-busy || root.review-line-edit-error != "";
+        height <- root.review-line-edit-error != "" ? 40px : 20px;
+        wrap <- word-wrap;
+        font-size <- 11px;
+        color <- root.review-line-edit-error != "" ? Palette.error : Palette.muted;
     }
     HorizontalLayout {
-        height: 33px;
-        alignment: end;
-        spacing: 7px;
+        height <- 33px;
+        alignment <- end;
+        spacing <- 7px;
         cancel-review-line-edit := Button {
-            text: root.review-line-edit-dirty ? @tr("discard-changes") : @tr("cancel");
-            height: 33px;
-            padding: 6px;
-            flat: true;
-            enabled: !root.review-line-edit-busy;
+            text <- root.review-line-edit-dirty ? @tr("discard-changes") : @tr("cancel");
+            height <- 33px;
+            padding <- 6px;
+            flat <- true;
+            enabled <- !root.review-line-edit-busy;
             clicked => { root.review-line-edit-open = false; }
         }
         save-review-line-edit-button := Button {
-            text: @tr("save-to-workspace");
-            height: 33px;
-            padding: 6px;
-            primary: true;
-            enabled: root.can-save-review-line;
+            text <- @tr("save-to-workspace");
+            height <- 33px;
+            padding <- 6px;
+            primary <- true;
+            enabled <- root.can-save-review-line;
             clicked => { root.save-review-line-edit(); }
         }
     }

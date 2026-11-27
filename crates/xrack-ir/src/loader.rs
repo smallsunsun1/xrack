@@ -99,6 +99,7 @@ fn elaborate_loader(members: &mut Vec<Member>, span: Span) -> Result<(), Diagnos
         };
         ordinary_members.push(property(LOADER_SOURCE, Type::String, "private", url));
         ordinary_members.push(Member::Binding(Binding {
+            initial: false,
             name: "source-url".into(),
             value: read(LOADER_SOURCE, span),
             span,

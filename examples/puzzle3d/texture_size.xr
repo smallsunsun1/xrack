@@ -6,11 +6,11 @@ struct TextureActor {
 }
 
 export component TextureSizeDemo inherits Window {
-    title: "XRack · 视口纹理尺寸";
-    width: 480px;
-    height: 302px;
-    resizable: false;
-    background: #141d29;
+    title <- "XRack · 视口纹理尺寸";
+    width <- 480px;
+    height <- 302px;
+    resizable <- false;
+    background <- #141d29;
 
     in-out property <int> pixels-wide: 0;
     in-out property <int> pixels-high: 0;
@@ -20,15 +20,15 @@ export component TextureSizeDemo inherits Window {
     in-out property <bool> msaa: false;
     in-out property <bool> square-camera: false;
     in-out property <bool> effects: false;
-    in-out property <point2d> cursor: once Point2D.new(240px, 120px);
+    in-out property <point2d> cursor: Point2D.new(240px, 120px);
 
-    property <point2d> viewport-size: Point2D.new(root.view-width * 1px, 240px);
+    property <point2d> viewport-size <- Point2D.new(root.view-width * 1px, 240px);
     property <TextureActor> plain: TextureActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
     };
-    property <[TextureActor]> scene: [
+    property <[TextureActor]> scene <- [
         TextureActor {
             id: "token", mesh: "primitive:sphere", color: #edaf4d,
             scale-x: 1.6, scale-y: 1.6, scale-z: 1.6, ..root.plain
@@ -48,51 +48,51 @@ export component TextureSizeDemo inherits Window {
         },
         TextureActor { id: "lens", mesh: @mesh-url("models/camera-rig.gltf"), ..root.plain },
     ];
-    out property <projectedpoint3d> marker: root.square-camera
+    out property <projectedpoint3d> marker <- root.square-camera
         ? Scene3D.project-camera(root.scene, "lens/Hero", root.viewport-size, Point3D.new(0, 0, 0))
         : Scene3D.project(0, 0, 8, root.viewport-size, Point3D.new(0, 0, 0));
-    out property <string> picked: root.square-camera
+    out property <string> picked <- root.square-camera
         ? Scene3D.pick-camera(root.scene, "lens/Hero", root.viewport-size, root.cursor)
         : Scene3D.pick(root.scene, 0, 0, 8, root.viewport-size, root.cursor);
 
     SceneView3D {
-        x: (480 - root.view-width) * 0.5 * 1px;
-        width: root.view-width * 1px;
-        height: 240px;
-        model: root.scene;
-        camera: root.square-camera ? "lens/Hero" : "";
-        camera-yaw: 0; camera-pitch: 0; camera-distance: 8;
-        scene-background: #263449;
-        texture-width: root.pixels-wide;
-        texture-height: root.pixels-high;
-        render-scale: root.quality;
-        supersampling: root.ssaa;
-        multisampling: root.msaa;
-        shadows: true;
-        shadow-map-size: 512;
-        shadow-bias: 0.012;
-        ambient-occlusion: root.effects;
-        scene-hdr: root.effects;
-        bloom: root.effects;
-        bloom-threshold: 0.6;
-        depth-of-field: root.effects;
-        dof-focus-distance: 8;
-        dof-blur-radius: 16px;
+        x <- (480 - root.view-width) * 0.5 * 1px;
+        width <- root.view-width * 1px;
+        height <- 240px;
+        model <- root.scene;
+        camera <- root.square-camera ? "lens/Hero" : "";
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 8;
+        scene-background <- #263449;
+        texture-width <- root.pixels-wide;
+        texture-height <- root.pixels-high;
+        render-scale <- root.quality;
+        supersampling <- root.ssaa;
+        multisampling <- root.msaa;
+        shadows <- true;
+        shadow-map-size <- 512;
+        shadow-bias <- 0.012;
+        ambient-occlusion <- root.effects;
+        scene-hdr <- root.effects;
+        bloom <- root.effects;
+        bloom-threshold <- 0.6;
+        depth-of-field <- root.effects;
+        dof-focus-distance <- 8;
+        dof-blur-radius <- 16px;
     }
     HorizontalLayout {
-        x: 12px; y: 248px; width: 456px; height: 42px; spacing: 8px;
+        x <- 12px; y <- 248px; width <- 456px; height <- 42px; spacing <- 8px;
         automatic := Button {
-            width: 82px; text: "自动";
+            width <- 82px; text <- "自动";
             clicked => { root.pixels-wide = 0; root.pixels-high = 0; root.quality = 1; }
         }
         half := Button {
-            width: 98px; text: "半分辨率";
+            width <- 98px; text <- "半分辨率";
             clicked => { root.pixels-wide = 0; root.pixels-high = 0; root.quality = 0.5; }
         }
         fixed := Button {
-            width: 104px; text: "192 × 96";
+            width <- 104px; text <- "192 × 96";
             clicked => { root.pixels-wide = 192; root.pixels-high = 96; }
         }
-        width-slider := Slider { minimum: 260; maximum: 480; value <=> root.view-width; }
+        width-slider := Slider { minimum <- 260; maximum <- 480; value <-> root.view-width; }
     }
 }

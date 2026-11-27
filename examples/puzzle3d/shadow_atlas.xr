@@ -12,8 +12,8 @@ struct Lamp {
 }
 
 export component ShadowAtlasDemo inherits Window {
-    title: "XRack · 阴影图分配";
-    width: 408px; height: 352px; resizable: false; background: #182438;
+    title <- "XRack · 阴影图分配";
+    width <- 408px; height <- 352px; resizable <- false; background <- #182438;
 
     in-out property <bool> mixed: false;
     in-out property <bool> depth16: false;
@@ -34,12 +34,12 @@ export component ShadowAtlasDemo inherits Window {
         shadow-map-size: 0, shadow-filter: "pcf8", shadow-radius: 7, shadow-map-precision: "inherit",
     };
     view := SceneView3D {
-        width: 408px; height: 216px;
-        scene-background: #25354d; ambient-intensity: 0.08;
-        camera-distance: 7.7; camera-pitch: 0; camera-yaw: 0;
-        cache-rendering: true; shadows: root.shadows; shadow-map-size: 512;
-        shadow-map-precision: root.depth16 ? "depth16" : "depth32";
-        model: [
+        width <- 408px; height <- 216px;
+        scene-background <- #25354d; ambient-intensity <- 0.08;
+        camera-distance <- 7.7; camera-pitch <- 0; camera-yaw <- 0;
+        cache-rendering <- true; shadows <- root.shadows; shadow-map-size <- 512;
+        shadow-map-precision <- root.depth16 ? "depth16" : "depth32";
+        model <- [
             root.wall,
             Actor {
                 id: "left", x: -1.2, y: 0.15, z: 1.8,
@@ -52,7 +52,7 @@ export component ShadowAtlasDemo inherits Window {
                 color: #a6b9d4, casts-shadow: true, receives-shadow: false, ..root.wall
             },
         ];
-        lights: [
+        lights <- [
             root.red,
             Lamp {
                 yaw: 37, color: #00ff00,
@@ -71,30 +71,30 @@ export component ShadowAtlasDemo inherits Window {
     }
 
     mixed-toggle := CheckBox {
-        x: 10px; y: 226px; width: 174px; height: 32px;
-        text: "混合分辨率"; checked: root.mixed; toggled => { root.mixed = !root.mixed; }
+        x <- 10px; y <- 226px; width <- 174px; height <- 32px;
+        text <- "混合分辨率"; checked <- root.mixed; toggled => { root.mixed = !root.mixed; }
     }
     precision-toggle := CheckBox {
-        x: 206px; y: 226px; width: 188px; height: 32px;
-        text: "16 位深度"; checked: root.depth16; toggled => { root.depth16 = !root.depth16; }
+        x <- 206px; y <- 226px; width <- 188px; height <- 32px;
+        text <- "16 位深度"; checked <- root.depth16; toggled => { root.depth16 = !root.depth16; }
     }
     green-toggle := CheckBox {
-        x: 10px; y: 266px; width: 174px; height: 32px;
-        text: "绿灯 256 像素"; enabled: root.mixed; checked: root.larger-green;
+        x <- 10px; y <- 266px; width <- 174px; height <- 32px;
+        text <- "绿灯 256 像素"; enabled <- root.mixed; checked <- root.larger-green;
         toggled => { root.larger-green = !root.larger-green; }
     }
     point-toggle := CheckBox {
-        x: 206px; y: 266px; width: 188px; height: 32px;
-        text: "蓝灯用点光"; checked: root.point; toggled => { root.point = !root.point; }
+        x <- 206px; y <- 266px; width <- 188px; height <- 32px;
+        text <- "蓝灯用点光"; checked <- root.point; toggled => { root.point = !root.point; }
     }
     green-depth-toggle := CheckBox {
-        x: 10px; y: 306px; width: 174px; height: 32px;
-        text: "绿灯单独用 16 位"; checked: root.green-precision == "depth16";
+        x <- 10px; y <- 306px; width <- 174px; height <- 32px;
+        text <- "绿灯单独用 16 位"; checked <- root.green-precision == "depth16";
         toggled => { root.green-precision = root.green-precision == "depth16" ? "inherit" : "depth16"; }
     }
     blue-depth-toggle := CheckBox {
-        x: 206px; y: 306px; width: 188px; height: 32px;
-        text: "蓝灯单独用 16 位"; checked: root.blue-precision == "depth16";
+        x <- 206px; y <- 306px; width <- 188px; height <- 32px;
+        text <- "蓝灯单独用 16 位"; checked <- root.blue-precision == "depth16";
         toggled => { root.blue-precision = root.blue-precision == "depth16" ? "inherit" : "depth16"; }
     }
 }

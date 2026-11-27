@@ -29,11 +29,11 @@ struct MountedField {
 }
 
 export component AnimationBlendDemo inherits Window {
-    title: "XRack · 动画混合";
-    width: 580px;
-    height: 418px;
-    resizable: false;
-    background: #141d29;
+    title <- "XRack · 动画混合";
+    width <- 580px;
+    height <- 418px;
+    resizable <- false;
+    background <- #141d29;
 
     in-out property <float> blend: 0.5;
     in-out property <float> from-time: 1;
@@ -52,11 +52,11 @@ export component AnimationBlendDemo inherits Window {
     in-out property <string> field-kind: "gravity";
     in-out property <string> field-node: "#1";
     in-out property <string> field-group: "sparks";
-    in-out property <[BlendLayer]> movement-layers: once [
+    in-out property <[BlendLayer]> movement-layers: [
         BlendLayer { clip: "Turn", time: 1, looping: false, weight: root.layer-weight, root-node: "#1", mode: "override" },
     ];
-    property <point2d> viewport-size: Point2D.new(580px, 244px);
-    property <BlendActor> defaults: BlendActor {
+    property <point2d> viewport-size <- Point2D.new(580px, 244px);
+    property <BlendActor> defaults <- BlendActor {
         id: "", parent: "", parent-node: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
@@ -64,7 +64,7 @@ export component AnimationBlendDemo inherits Window {
         animation-to: "", animation-to-time: root.to-time, animation-to-loop: root.to-loop,
         animation-blend: root.blend, animation-layers: [],
     };
-    property <[BlendActor]> actors: [
+    property <[BlendActor]> actors <- [
         BlendActor { id: "mount", mesh: "", x: 0.5, y: 0.25, scale-x: 2, ..root.defaults },
         BlendActor {
             id: "movement", mesh: @mesh-url("models/animated-panel.glb"), x: -5.5,
@@ -104,27 +104,27 @@ export component AnimationBlendDemo inherits Window {
             color: #f5e987, ..root.defaults
         },
     ];
-    property <scenemodel3d> scene: Scene3D.prepare(root.actors);
-    out property <meshnode3d> dolly-node: Scene3D.scene-node(root.scene, "dolly", "/Camera rig/Hero");
-    out property <meshnode3d> moving-node: Scene3D.scene-node(root.scene, "movement", 1);
-    out property <point3d> badge-center: Scene3D.map-position(
+    property <scenemodel3d> scene <- Scene3D.prepare(root.actors);
+    out property <meshnode3d> dolly-node <- Scene3D.scene-node(root.scene, "dolly", "/Camera rig/Hero");
+    out property <meshnode3d> moving-node <- Scene3D.scene-node(root.scene, "movement", 1);
+    out property <point3d> badge-center <- Scene3D.map-position(
         root.actors, "badge", "", Point3D.new(0, 0, 0), Point3D.new(100, 100, 100));
-    out property <vector3d> badge-right: Scene3D.map-direction(
+    out property <vector3d> badge-right <- Scene3D.map-direction(
         root.scene, "badge", "", Vector3D.new(1, 0, 0), Vector3D.new(0, 0, 0));
-    out property <hit3d> badge-hit: Scene3D.ray-hit(root.scene,
+    out property <hit3d> badge-hit <- Scene3D.ray-hit(root.scene,
         Point3D.new(root.badge-center.x, root.badge-center.y, root.badge-center.z + 2),
         Vector3D.new(0, 0, -1), 3);
-    out property <projectedpoint3d> dolly: Scene3D.project-camera(root.scene, "dolly/Hero",
+    out property <projectedpoint3d> dolly <- Scene3D.project-camera(root.scene, "dolly/Hero",
         root.viewport-size, Point3D.new(0, 0, 0));
-    in-out property <point2d> cursor: once Point2D.new(180px, 122px);
-    out property <string> picked: Scene3D.pick(root.scene, 0, 0, 9,
+    in-out property <point2d> cursor: Point2D.new(180px, 122px);
+    out property <string> picked <- Scene3D.pick(root.scene, 0, 0, 9,
         root.viewport-size, root.cursor);
 
     SceneView3D {
-        width: 580px; height: 244px;
-        model: root.scene;
-        particle-time: root.spark-time;
-        particle-emitters: [
+        width <- 580px; height <- 244px;
+        model <- root.scene;
+        particle-time <- root.spark-time;
+        particle-emitters <- [
             MountedSpark {
                 parent: "movement", parent-node: root.spark-node, particle-group: "sparks",
                 position: Point3D.new(0.65, 0.58, 0.85),
@@ -135,7 +135,7 @@ export component AnimationBlendDemo inherits Window {
                 particle-casts-shadow: true,
             },
         ];
-        particle-affectors: [
+        particle-affectors <- [
             MountedField {
                 affector-kind: root.field-kind, particle-group: root.field-group,
                 parent: "movement", parent-node: root.field-node,
@@ -145,42 +145,42 @@ export component AnimationBlendDemo inherits Window {
                 enabled: root.field-active,
             },
         ];
-        camera-yaw: 0; camera-pitch: 0; camera-distance: 9;
-        light-yaw: -37; light-elevation: 28;
-        shadows: true; shadow-map-size: 512; shadow-bias: 0.006;
-        scene-background: #26364a;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 9;
+        light-yaw <- -37; light-elevation <- 28;
+        shadows <- true; shadow-map-size <- 512; shadow-bias <- 0.006;
+        scene-background <- #26364a;
     }
     Label {
-        x: 14px; y: 388px; width: 552px; height: 22px;
-        text: "相机挂点  " + root.dolly-node.name + "  世界 x = " + root.dolly-node.origin.x;
+        x <- 14px; y <- 388px; width <- 552px; height <- 22px;
+        text <- "相机挂点  " + root.dolly-node.name + "  世界 x = " + root.dolly-node.origin.x;
     }
     VerticalLayout {
-        x: 14px; y: 246px; width: 552px; height: 138px; spacing: 6px;
+        x <- 14px; y <- 246px; width <- 552px; height <- 138px; spacing <- 6px;
         HorizontalLayout {
-            height: 42px; spacing: 8px;
-            from := Button { text: "原片段"; width: 80px; clicked => { root.blend = 0; } }
-            to := Button { text: "目标片段"; width: 96px; clicked => { root.blend = 1; } }
-            blend-slider := Slider { minimum: 0; maximum: 1; value <=> root.blend; }
+            height <- 42px; spacing <- 8px;
+            from := Button { text <- "原片段"; width <- 80px; clicked => { root.blend = 0; } }
+            to := Button { text <- "目标片段"; width <- 96px; clicked => { root.blend = 1; } }
+            blend-slider := Slider { minimum <- 0; maximum <- 1; value <-> root.blend; }
         }
         HorizontalLayout {
-            height: 42px; spacing: 10px;
-            Text { text: "原时间"; color: #edf3ff; }
-            from-slider := Slider { minimum: 0; maximum: 1; width: 204px; value <=> root.from-time; }
-            Text { text: "目标时间"; color: #edf3ff; }
-            to-slider := Slider { minimum: 0; maximum: 1; width: 188px; value <=> root.to-time; }
+            height <- 42px; spacing <- 10px;
+            Text { text <- "原时间"; color <- #edf3ff; }
+            from-slider := Slider { minimum <- 0; maximum <- 1; width <- 204px; value <-> root.from-time; }
+            Text { text <- "目标时间"; color <- #edf3ff; }
+            to-slider := Slider { minimum <- 0; maximum <- 1; width <- 188px; value <-> root.to-time; }
         }
         HorizontalLayout {
-            height: 42px; spacing: 10px;
-            Text { text: "叠加权重"; width: 80px; color: #edf3ff; }
-            layer-slider := Slider { minimum: 0; maximum: 1; value <=> root.layer-weight; }
+            height <- 42px; spacing <- 10px;
+            Text { text <- "叠加权重"; width <- 80px; color <- #edf3ff; }
+            layer-slider := Slider { minimum <- 0; maximum <- 1; value <-> root.layer-weight; }
             field-toggle := Button {
-                text: root.field-active ? "关闭力场" : "挂点力场";
-                width: 102px;
+                text <- root.field-active ? "关闭力场" : "挂点力场";
+                width <- 102px;
                 clicked => { root.field-active = !root.field-active; }
             }
             sparks-toggle := Button {
-                text: root.sparks ? "关闭粒子" : "挂点粒子";
-                width: 112px;
+                text <- root.sparks ? "关闭粒子" : "挂点粒子";
+                width <- 112px;
                 clicked => { root.sparks = !root.sparks; }
             }
         }
@@ -208,8 +208,8 @@ struct ClipStage {
 }
 
 export component ParticleClipDemo inherits Window {
-    title: "XRack · glTF 动画发射";
-    width: 624px; height: 428px; background: #182333;
+    title <- "XRack · glTF 动画发射";
+    width <- 624px; height <- 428px; background <- #182333;
     in-out property <float> time: 1.65;
     in-out property <string> clip: "Slide";
     in-out property <string> node-selector: "#1";
@@ -223,25 +223,25 @@ export component ParticleClipDemo inherits Window {
         ClipBurst { time: 0.5, count: 3, duration: 0.5 },
     ];
     in-out property <meshasset3d> runtime-asset;
-    property <string> compiled-mesh: @mesh-url("models/animated-panel.glb");
+    property <string> compiled-mesh <- @mesh-url("models/animated-panel.glb");
     property <meshasset3d> empty-asset;
 
     clock := FrameAnimation {
-        running <=> root.playing;
+        running <-> root.playing;
         triggered(delta, elapsed, frame) => {
             root.time = root.time + delta;
             if root.time > 2.8 { root.time = 0; }
         }
     }
-    property <ClipStage> base: ClipStage {
+    property <ClipStage> base <- ClipStage {
         id: "", mesh: "", mesh-asset: root.empty-asset, x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
         animation: "", animation-time: 0, animation-loop: false, camera-kind: "", camera-height: 6,
     };
     SceneView3D {
-        width: 624px; height: 284px;
-        camera: "eye"; particle-time: root.time; scene-background: #101a2c;
-        model: [
+        width <- 624px; height <- 284px;
+        camera <- "eye"; particle-time <- root.time; scene-background <- #101a2c;
+        model <- [
             ClipStage { id: "eye", camera-kind: "orthographic", z: 10, ..root.base },
             ClipStage {
                 id: "panel", mesh: root.compiled-mesh, mesh-asset: root.runtime-asset,
@@ -250,7 +250,7 @@ export component ParticleClipDemo inherits Window {
                 color: #487cba, ..root.base
             },
         ];
-        particle-emitters: [
+        particle-emitters <- [
             ClipSpark {
                 position: Point3D.new(0.28, 0, 0.9), size: 0.20, lifetime: 4, color: #ff42ea,
                 velocity: Vector3D.new(0.5, 0.25, 0), rate: root.rate, fade-out: 0,
@@ -265,34 +265,34 @@ export component ParticleClipDemo inherits Window {
             },
         ];
     }
-    Label { x: 18px; y: 294px; width: 62px; height: 34px; text: "时间"; }
+    Label { x <- 18px; y <- 294px; width <- 62px; height <- 34px; text <- "时间"; }
     clip-time := Slider {
-        x: 82px; y: 294px; width: 522px; height: 34px;
-        minimum: 0; maximum: 2.8; value <=> root.time;
+        x <- 82px; y <- 294px; width <- 522px; height <- 34px;
+        minimum <- 0; maximum <- 2.8; value <-> root.time;
     }
     playback := Button {
-        x: 18px; y: 344px; width: 100px; height: 34px;
-        text: root.playing ? "暂停" : "播放";
+        x <- 18px; y <- 344px; width <- 100px; height <- 34px;
+        text <- root.playing ? "暂停" : "播放";
         clicked => { root.playing = !root.playing; }
     }
     slide-key := Button {
-        x: 130px; y: 344px; width: 100px; height: 34px; text: "平移";
+        x <- 130px; y <- 344px; width <- 100px; height <- 34px; text <- "平移";
         clicked => { root.clip = "Slide"; }
     }
     step-key := Button {
-        x: 242px; y: 344px; width: 100px; height: 34px; text: "阶跃";
+        x <- 242px; y <- 344px; width <- 100px; height <- 34px; text <- "阶跃";
         clicked => { root.clip = "Step"; }
     }
     turn-key := Button {
-        x: 354px; y: 344px; width: 100px; height: 34px; text: "转向";
+        x <- 354px; y <- 344px; width <- 100px; height <- 34px; text <- "转向";
         clicked => { root.clip = "Turn"; }
     }
     loop-choice := CheckBox {
-        x: 466px; y: 344px; width: 138px; height: 34px;
-        text: "循环出生"; checked <=> root.loop-births;
+        x <- 466px; y <- 344px; width <- 138px; height <- 34px;
+        text <- "循环出生"; checked <-> root.loop-births;
     }
     burst-choice := CheckBox {
-        x: 18px; y: 380px; width: 250px; height: 34px;
-        text: "定时爆发（0.25s / 0.5–1s）"; checked <=> root.scheduled;
+        x <- 18px; y <- 380px; width <- 250px; height <- 34px;
+        text <- "定时爆发（0.25s / 0.5–1s）"; checked <-> root.scheduled;
     }
 }

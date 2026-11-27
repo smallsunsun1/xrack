@@ -8,62 +8,62 @@ export component ReviewReportDialog inherits Dialog {
     in property <string> review-source-title;
     callback open-review-source(href: string);
 
-    title: root.review-source-open ? @tr("review-location") : @tr("code-review-report");
-    open <=> root.review-report-open;
-    width: 642px;
-    height: root.review-source-open ? 470px : 390px;
+    title <- root.review-source-open ? @tr("review-location") : @tr("code-review-report");
+    open <-> root.review-report-open;
+    width <- 642px;
+    height <- root.review-source-open ? 470px : 390px;
     VerticalLayout {
-        padding: 14px;
-        spacing: 9px;
+        padding <- 14px;
+        spacing <- 9px;
         Label {
-            visible: root.review-source-open;
-            text: root.review-source-title;
-            color: Palette.accent;
-            font-size: 12px;
-            overflow: elide;
+            visible <- root.review-source-open;
+            text <- root.review-source-title;
+            color <- Palette.accent;
+            font-size <- 12px;
+            overflow <- elide;
         }
         review-report-scroll := ScrollView {
-            visible: !root.review-source-open;
-            vertical-stretch: 1;
-            horizontal-scroll-bar-policy: always-off;
+            visible <- !root.review-source-open;
+            vertical-stretch <- 1;
+            horizontal-scroll-bar-policy <- always-off;
             review-report-text := StyledText {
-                width: 100%;
-                text: root.review-report-document;
-                color: Palette.text;
-                selectable: true;
-                vertical-alignment: top;
-                wrap: char-wrap;
+                width <- 100%;
+                text <- root.review-report-document;
+                color <- Palette.text;
+                selectable <- true;
+                vertical-alignment <- top;
+                wrap <- char-wrap;
                 link-activated(href) => { root.open-review-source(href); }
             }
         }
         review-source-scroll := ScrollView {
-            visible: root.review-source-open;
-            vertical-stretch: 1;
-            horizontal-scroll-bar-policy: always-off;
+            visible <- root.review-source-open;
+            vertical-stretch <- 1;
+            horizontal-scroll-bar-policy <- always-off;
             StyledText {
-                width: 100%;
-                text: root.review-source-document;
-                color: Palette.text;
-                selectable: true;
-                vertical-alignment: top;
-                wrap: char-wrap;
+                width <- 100%;
+                text <- root.review-source-document;
+                color <- Palette.text;
+                selectable <- true;
+                vertical-alignment <- top;
+                wrap <- char-wrap;
             }
         }
         HorizontalLayout {
-            alignment: end;
-            height: 34px;
-            spacing: 8px;
+            alignment <- end;
+            height <- 34px;
+            spacing <- 8px;
             back-to-review-report := Button {
-                visible: root.review-source-open;
-                text: @tr("back-to-report");
-                flat: true;
-                padding: 6px;
+                visible <- root.review-source-open;
+                text <- @tr("back-to-report");
+                flat <- true;
+                padding <- 6px;
                 clicked => { root.review-source-open = false; }
             }
             close-review-report := Button {
-                text: @tr("close");
-                padding: 6px;
-                flat: true;
+                text <- @tr("close");
+                padding <- 6px;
+                flat <- true;
                 clicked => { root.review-report-open = false; }
             }
         }

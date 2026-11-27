@@ -114,8 +114,8 @@ struct Collider { shape: string }
 struct Body { id: string, body-kind: string, position: point3d, shapes: [Collider] }
 
 export component App inherits Window {
-    in-out property <physicsworld3d> world: once Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
-    in-out property <physicsworld3d> other: once Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    in-out property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    in-out property <physicsworld3d> other: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
     in-out property <int> body: 0;
     out property <float> drop: 0;
     out property <[int]> entered;
@@ -138,9 +138,9 @@ export component App inherits Window {
     out property <int> ccd-change: 0;
     out property <bool> report-change: false;
     SceneView3D {
-        physics-world: root.world;
-        physics-debug: root.mode-changed;
-        physics-debug-body: root.body;
+        physics-world <- root.world;
+        physics-debug <- root.mode-changed;
+        physics-debug-body <- root.body;
     }
     callback authored();
     authored() => {

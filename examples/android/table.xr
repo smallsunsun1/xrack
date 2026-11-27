@@ -31,69 +31,69 @@ component InspectionDirectory inherits Rectangle {
     private property <bool> inserted: false;
 
     VerticalLayout {
-        spacing: 8px;
+        spacing <- 8px;
         HorizontalLayout {
-            spacing: 12px;
+            spacing <- 12px;
             tree-selection := Text {
-                text: "Selected " + Model.at(directory.selected-keys, 0, -1);
-                font-size: 16px; color: #173047;
+                text <- "Selected " + Model.at(directory.selected-keys, 0, -1);
+                font-size <- 16px; color <- #173047;
             }
-            tree-cursor := Text { text: "Cursor " + root.cursor; font-size: 16px; color: #173047; }
+            tree-cursor := Text { text <- "Cursor " + root.cursor; font-size <- 16px; color <- #173047; }
         }
         HorizontalLayout {
-            spacing: 12px;
-            tree-expanded := Text { text: "Expanded " + root.expansions; font-size: 16px; color: #173047; }
-            tree-collapsed := Text { text: "Collapsed " + root.collapses; font-size: 16px; color: #173047; }
+            spacing <- 12px;
+            tree-expanded := Text { text <- "Expanded " + root.expansions; font-size <- 16px; color <- #173047; }
+            tree-collapsed := Text { text <- "Collapsed " + root.collapses; font-size <- 16px; color <- #173047; }
         }
-        tree-changes := Text { text: "Changes " + root.selections; font-size: 16px; color: #173047; }
+        tree-changes := Text { text <- "Changes " + root.selections; font-size <- 16px; color <- #173047; }
         directory := TreeView {
-            accessible-name: "Inspection folders";
-            height: 302px;
-            row-height: 46px;
-            indentation: 44px;
-            layout-direction: root.mirror ? right-to-left : left-to-right;
-            filter-field: "label";
-            filter-text: root.archive-filter ? "old notes" : "";
-            current-key <=> root.cursor;
-            multi-select: true;
+            accessible-name <- "Inspection folders";
+            height <- 302px;
+            row-height <- 46px;
+            indentation <- 44px;
+            layout-direction <- root.mirror ? right-to-left : left-to-right;
+            filter-field <- "label";
+            filter-text <- root.archive-filter ? "old notes" : "";
+            current-key <-> root.cursor;
+            multi-select <- true;
             expanded(key) => { root.expansions += 1; }
             collapsed(key) => { root.collapses += 1; }
             selection-changed(count) => { root.selections += 1; }
             for entry in root.records : TreeRow {
-                key: entry.key;
-                parent-key: entry.parent;
+                key <- entry.key;
+                parent-key <- entry.parent;
                 TreeDisclosure {
-                    background: directory.is-expanded(entry.key) ? #23756b : #375cb7;
-                    border-radius: 5px;
+                    background <- directory.is-expanded(entry.key) ? #23756b : #375cb7;
+                    border-radius <- 5px;
                     Text {
-                        width: 100%; height: 100%;
-                        text: directory.is-expanded(entry.key) ? "−" : "+";
-                        color: #ffffff;
-                        font-size: 12px;
-                        horizontal-alignment: center; vertical-alignment: center;
+                        width <- 100%; height <- 100%;
+                        text <- directory.is-expanded(entry.key) ? "−" : "+";
+                        color <- #ffffff;
+                        font-size <- 12px;
+                        horizontal-alignment <- center; vertical-alignment <- center;
                     }
                 }
-                TreeCell { text: entry.label; }
+                TreeCell { text <- entry.label; }
             }
         }
         HorizontalLayout {
-            height: 44px;
-            spacing: 8px;
+            height <- 44px;
+            spacing <- 8px;
             filter-archive := Button {
-                text: root.archive-filter ? "Show all" : "Find old notes";
-                horizontal-stretch: 1;
+                text <- root.archive-filter ? "Show all" : "Find old notes";
+                horizontal-stretch <- 1;
                 clicked => { root.archive-filter = !root.archive-filter; }
             }
             mirror-tree := Button {
-                text: root.mirror ? "Restore direction" : "Mirror tree";
-                horizontal-stretch: 1;
+                text <- root.mirror ? "Restore direction" : "Mirror tree";
+                horizontal-stretch <- 1;
                 clicked => { root.mirror = !root.mirror; }
             }
         }
         insert-report := Button {
-            text: root.inserted ? "Report inserted" : "Insert report";
-            height: 44px;
-            enabled: !root.inserted;
+            text <- root.inserted ? "Report inserted" : "Insert report";
+            height <- 44px;
+            enabled <- !root.inserted;
             clicked => {
                 Model.insert(root.records, 2, ArchiveEntry { key: 23, parent: 20, label: "Fresh notes" });
                 root.inserted = true;
@@ -109,89 +109,89 @@ component InspectionSplit inherits Rectangle {
     private property <string> saved-rows: "";
 
     columns := SplitView {
-        y: 8px; width: 306px; height: 248px;
-        enabled: !root.locked;
-        layout-direction: root.mirror ? right-to-left : left-to-right;
-        handle-size: 8px;
-        handle-hit-size: 36px;
+        y <- 8px; width <- 306px; height <- 248px;
+        enabled <- !root.locked;
+        layout-direction <- root.mirror ? right-to-left : left-to-right;
+        handle-size <- 8px;
+        handle-hit-size <- 36px;
         SplitHandle {
-            background: handle-pressed ? #e28734 : #4e70ad;
-            border-radius: 3px;
+            background <- handle-pressed ? #e28734 : #4e70ad;
+            border-radius <- 3px;
         }
         browse := Rectangle {
-            min-width: 80px; preferred-width: 112px; max-width: 166px;
-            background: #e6eef8;
+            min-width <- 80px; preferred-width <- 112px; max-width <- 166px;
+            background <- #e6eef8;
             Text {
-                width: 100%; height: 100%; text: "Browse"; color: #173047;
-                font-size: 17px; horizontal-alignment: center; vertical-alignment: center;
+                width <- 100%; height <- 100%; text <- "Browse"; color <- #173047;
+                font-size <- 17px; horizontal-alignment <- center; vertical-alignment <- center;
             }
         }
         rows := SplitView {
-            orientation: vertical;
-            min-width: 120px; preferred-width: 186px;
-            handle-size: 8px;
-            handle-hit-size: 36px;
-            handle-color: self.resizing ? #e28734 : #4e70ad;
+            orientation <- vertical;
+            min-width <- 120px; preferred-width <- 186px;
+            handle-size <- 8px;
+            handle-hit-size <- 36px;
+            handle-color <- self.resizing ? #e28734 : #4e70ad;
             edit-pane := Rectangle {
-                min-height: 64px; preferred-height: 120px;
-                background: #e2f2e9;
+                min-height <- 64px; preferred-height <- 120px;
+                background <- #e2f2e9;
                 Text {
-                    width: 100%; height: 100%; text: "Edit"; color: #173047;
-                    font-size: 17px; horizontal-alignment: center; vertical-alignment: center;
+                    width <- 100%; height <- 100%; text <- "Edit"; color <- #173047;
+                    font-size <- 17px; horizontal-alignment <- center; vertical-alignment <- center;
                 }
             }
             result-pane := Rectangle {
-                min-height: 64px; preferred-height: 120px;
-                background: #f4eddd;
+                min-height <- 64px; preferred-height <- 120px;
+                background <- #f4eddd;
                 Text {
-                    width: 100%; height: 100%; text: "Result"; color: #173047;
-                    font-size: 17px; horizontal-alignment: center; vertical-alignment: center;
+                    width <- 100%; height <- 100%; text <- "Result"; color <- #173047;
+                    font-size <- 17px; horizontal-alignment <- center; vertical-alignment <- center;
                 }
             }
         }
     }
 
     split-width := Text {
-        y: 270px; width: 157px; height: 24px;
-        text: "Browse width " + Math.round(browse.layout-width / 1px);
-        font-size: 16px; color: #173047;
+        y <- 270px; width <- 157px; height <- 24px;
+        text <- "Browse width " + Math.round(browse.layout-width / 1px);
+        font-size <- 16px; color <- #173047;
     }
     split-height := Text {
-        x: 163px; y: 270px; width: 143px; height: 24px;
-        text: "Edit height " + Math.round(edit-pane.layout-height / 1px);
-        font-size: 16px; color: #173047;
+        x <- 163px; y <- 270px; width <- 143px; height <- 24px;
+        text <- "Edit height " + Math.round(edit-pane.layout-height / 1px);
+        font-size <- 16px; color <- #173047;
     }
     split-mode := Text {
-        y: 299px;
-        text: columns.resizing ? "Resizing columns" : rows.resizing ? "Resizing rows" : "Split idle";
-        font-size: 17px; color: #173047;
+        y <- 299px;
+        text <- columns.resizing ? "Resizing columns" : rows.resizing ? "Resizing rows" : "Split idle";
+        font-size <- 17px; color <- #173047;
     }
     save-split := Button {
-        y: 335px; width: 144px; height: 44px;
-        text: root.saved-columns == "" ? "Save split" : "Split saved";
+        y <- 335px; width <- 144px; height <- 44px;
+        text <- root.saved-columns == "" ? "Save split" : "Split saved";
         clicked => {
             root.saved-columns = columns.save-state();
             root.saved-rows = rows.save-state();
         }
     }
     restore-split := Button {
-        x: 156px; y: 335px; width: 150px; height: 44px;
-        text: "Restore split";
-        enabled: root.saved-columns != "" && root.saved-rows != "";
+        x <- 156px; y <- 335px; width <- 150px; height <- 44px;
+        text <- "Restore split";
+        enabled <- root.saved-columns != "" && root.saved-rows != "";
         clicked => {
             columns.restore-state(root.saved-columns);
             rows.restore-state(root.saved-rows);
         }
     }
     mirror-split := CheckBox {
-        y: 384px; width: 144px; height: 44px;
-        text: root.mirror ? "Restore sides" : "Mirror panes";
-        checked <=> root.mirror;
+        y <- 384px; width <- 144px; height <- 44px;
+        text <- root.mirror ? "Restore sides" : "Mirror panes";
+        checked <-> root.mirror;
     }
     lock-split := CheckBox {
-        x: 156px; y: 384px; width: 150px; height: 44px;
-        text: root.locked ? "Unlock split" : "Lock split";
-        checked <=> root.locked;
+        x <- 156px; y <- 384px; width <- 150px; height <- 44px;
+        text <- root.locked ? "Unlock split" : "Lock split";
+        checked <-> root.locked;
     }
 }
 
@@ -207,12 +207,12 @@ component InspectionTransfer inherits Rectangle {
     private property <string> result: "No transfer yet";
 
     card-source := DragArea {
-        width: 306px; height: 56px;
-        visible: root.card-present;
-        data: "Card A";
-        drag-key: "inspection";
-        allow-copy: true;
-        allow-move: true;
+        width <- 306px; height <- 56px;
+        visible <- root.card-present;
+        data <- "Card A";
+        drag-key <- "inspection";
+        allow-copy <- true;
+        allow-move <- true;
         drag-started() => { root.starts += 1; root.received = ""; }
         drag-finished(action) => {
             root.finishes += 1;
@@ -223,15 +223,15 @@ component InspectionTransfer inherits Rectangle {
             root.card-present = action != DragAction.move;
         }
         drag-card := Button {
-            width: 100%; height: 100%;
-            text: "Card A";
+            width <- 100%; height <- 100%;
+            text <- "Card A";
             clicked => { root.taps += 1; }
         }
     }
     copy-bay := DropArea {
-        y: 84px; width: 146px; height: 86px;
-        keys: ["inspection"];
-        drop-action: copy;
+        y <- 84px; width <- 146px; height <- 86px;
+        keys <- ["inspection"];
+        drop-action <- copy;
         entered(data, action) => { root.hover = "Over copy"; }
         exited() => { root.hover = "No target"; }
         dropped(data, action) => {
@@ -239,23 +239,23 @@ component InspectionTransfer inherits Rectangle {
             root.drops += 1;
         }
         Rectangle {
-            width: 100%; height: 100%; border-radius: 9px;
-            background: root.hover == "Over copy" ? #c4e8d6 : #e6eef8;
+            width <- 100%; height <- 100%; border-radius <- 9px;
+            background <- root.hover == "Over copy" ? #c4e8d6 : #e6eef8;
             Text {
-                width: 100%; height: 100%; text: "Copy bay";
-                horizontal-alignment: center; vertical-alignment: center; color: #173047;
+                width <- 100%; height <- 100%; text <- "Copy bay";
+                horizontal-alignment <- center; vertical-alignment <- center; color <- #173047;
             }
         }
         unrelated-target := DropArea {
-            x: 14px; y: 18px; width: 118px; height: 50px;
-            keys: ["unrelated"];
+            x <- 14px; y <- 18px; width <- 118px; height <- 50px;
+            keys <- ["unrelated"];
             dropped(data, action) => { root.received = "Wrong target"; }
         }
     }
     archive-bay := DropArea {
-        x: 158px; y: 84px; width: 148px; height: 86px;
-        keys: ["inspection"];
-        drop-action: move;
+        x <- 158px; y <- 84px; width <- 148px; height <- 86px;
+        keys <- ["inspection"];
+        drop-action <- move;
         entered(data, action) => { root.hover = "Over archive"; }
         exited() => { root.hover = "No target"; }
         dropped(data, action) => {
@@ -263,33 +263,33 @@ component InspectionTransfer inherits Rectangle {
             root.drops += 1;
         }
         Rectangle {
-            width: 100%; height: 100%; border-radius: 9px;
-            background: root.hover == "Over archive" ? #c4e8d6 : #e2f2e9;
+            width <- 100%; height <- 100%; border-radius <- 9px;
+            background <- root.hover == "Over archive" ? #c4e8d6 : #e2f2e9;
             Text {
-                width: 100%; height: 100%; text: "Archive bay";
-                horizontal-alignment: center; vertical-alignment: center; color: #173047;
+                width <- 100%; height <- 100%; text <- "Archive bay";
+                horizontal-alignment <- center; vertical-alignment <- center; color <- #173047;
             }
         }
     }
     other-bay := DropArea {
-        y: 182px; width: 306px; height: 52px;
-        keys: ["unrelated"];
+        y <- 182px; width <- 306px; height <- 52px;
+        keys <- ["unrelated"];
         dropped(data, action) => { root.received = "Wrong target"; }
         Rectangle {
-            width: 100%; height: 100%; background: #f4eddd; border-radius: 9px;
+            width <- 100%; height <- 100%; background <- #f4eddd; border-radius <- 9px;
             Text {
-                width: 100%; height: 100%; text: "Other bay";
-                horizontal-alignment: center; vertical-alignment: center; color: #173047;
+                width <- 100%; height <- 100%; text <- "Other bay";
+                horizontal-alignment <- center; vertical-alignment <- center; color <- #173047;
             }
         }
     }
-    transfer-hover := Text { y: 248px; text: root.hover; font-size: 17px; color: #173047; }
-    transfer-result := Text { y: 279px; text: root.result; font-size: 17px; color: #173047; }
-    transfer-taps := Text { x: 162px; y: 248px; text: "Taps " + root.taps; font-size: 17px; color: #173047; }
-    transfer-starts := Text { y: 318px; text: "Starts " + root.starts; font-size: 17px; color: #173047; }
-    transfer-finishes := Text { x: 162px; y: 318px; text: "Finishes " + root.finishes; font-size: 17px; color: #173047; }
-    transfer-drops := Text { y: 350px; text: "Drops " + root.drops; font-size: 17px; color: #173047; }
-    transfer-cancels := Text { x: 162px; y: 350px; text: "Cancels " + root.cancels; font-size: 17px; color: #173047; }
+    transfer-hover := Text { y <- 248px; text <- root.hover; font-size <- 17px; color <- #173047; }
+    transfer-result := Text { y <- 279px; text <- root.result; font-size <- 17px; color <- #173047; }
+    transfer-taps := Text { x <- 162px; y <- 248px; text <- "Taps " + root.taps; font-size <- 17px; color <- #173047; }
+    transfer-starts := Text { y <- 318px; text <- "Starts " + root.starts; font-size <- 17px; color <- #173047; }
+    transfer-finishes := Text { x <- 162px; y <- 318px; text <- "Finishes " + root.finishes; font-size <- 17px; color <- #173047; }
+    transfer-drops := Text { y <- 350px; text <- "Drops " + root.drops; font-size <- 17px; color <- #173047; }
+    transfer-cancels := Text { x <- 162px; y <- 350px; text <- "Cancels " + root.cancels; font-size <- 17px; color <- #173047; }
 }
 
 component InspectionCanvas inherits Rectangle {
@@ -299,77 +299,77 @@ component InspectionCanvas inherits Rectangle {
     private property <int> taps: 0;
 
     map-view := Flickable {
-        width: 248px; height: 192px;
-        content-width: 496px; content-height: 384px;
-        content-x <=> root.offset-x;
-        content-y <=> root.offset-y;
-        interactive: !root.pan-locked;
+        width <- 248px; height <- 192px;
+        content-width <- 496px; content-height <- 384px;
+        content-x <-> root.offset-x;
+        content-y <-> root.offset-y;
+        interactive <- !root.pan-locked;
         Rectangle {
-            width: 496px; height: 384px; background: #e7eef5;
-            Rectangle { x: 302px; y: 12px; width: 182px; height: 144px; background: #ffe6c4; border-radius: 10px; }
-            Rectangle { x: 12px; y: 228px; width: 182px; height: 144px; background: #d5e3f7; border-radius: 10px; }
+            width <- 496px; height <- 384px; background <- #e7eef5;
+            Rectangle { x <- 302px; y <- 12px; width <- 182px; height <- 144px; background <- #ffe6c4; border-radius <- 10px; }
+            Rectangle { x <- 12px; y <- 228px; width <- 182px; height <- 144px; background <- #d5e3f7; border-radius <- 10px; }
             Rectangle {
-                x: 302px; y: 228px; width: 182px; height: 144px;
-                background: #cdece4; border-radius: 10px;
+                x <- 302px; y <- 228px; width <- 182px; height <- 144px;
+                background <- #cdece4; border-radius <- 10px;
                 Text {
-                    width: 100%; height: 100%; text: "Far corner";
-                    horizontal-alignment: center; vertical-alignment: center;
-                    color: #173047; font-size: 17px;
+                    width <- 100%; height <- 100%; text <- "Far corner";
+                    horizontal-alignment <- center; vertical-alignment <- center;
+                    color <- #173047; font-size <- 17px;
                 }
             }
             map-tile := Button {
-                x: 66px; y: 73px; width: 134px; height: 44px;
-                text: "Inspect tile";
+                x <- 66px; y <- 73px; width <- 134px; height <- 44px;
+                text <- "Inspect tile";
                 clicked => { root.taps += 1; }
             }
         }
     }
     map-horizontal := ScrollBar {
-        target: map-view; orientation: horizontal;
-        y: 200px; width: 248px; height: 28px;
-        accessible-name: "Canvas horizontal position";
-        ScrollTrack { background: #dde6ec; border-radius: 8px; }
+        target <- map-view; orientation <- horizontal;
+        y <- 200px; width <- 248px; height <- 28px;
+        accessible-name <- "Canvas horizontal position";
+        ScrollTrack { background <- #dde6ec; border-radius <- 8px; }
         ScrollThumb {
-            background: map-horizontal.pressed ? #246357 : #176f62;
-            border-radius: 8px;
+            background <- map-horizontal.pressed ? #246357 : #176f62;
+            border-radius <- 8px;
             Text {
-                width: 100%; height: 100%; text: "Across";
-                horizontal-alignment: center; vertical-alignment: center;
-                color: #ffffff; font-size: 13px;
+                width <- 100%; height <- 100%; text <- "Across";
+                horizontal-alignment <- center; vertical-alignment <- center;
+                color <- #ffffff; font-size <- 13px;
             }
         }
     }
     map-vertical := ScrollBar {
-        target: map-view;
-        x: 256px; width: 42px; height: 192px;
-        accessible-name: "Canvas vertical position";
-        ScrollTrack { background: #dde6ec; border-radius: 8px; }
+        target <- map-view;
+        x <- 256px; width <- 42px; height <- 192px;
+        accessible-name <- "Canvas vertical position";
+        ScrollTrack { background <- #dde6ec; border-radius <- 8px; }
         ScrollThumb {
-            background: map-vertical.pressed ? #246357 : #176f62;
-            border-radius: 8px;
+            background <- map-vertical.pressed ? #246357 : #176f62;
+            border-radius <- 8px;
             Text {
-                width: 100%; height: 100%; text: "Down";
-                horizontal-alignment: center; vertical-alignment: center;
-                color: #ffffff; font-size: 13px;
+                width <- 100%; height <- 100%; text <- "Down";
+                horizontal-alignment <- center; vertical-alignment <- center;
+                color <- #ffffff; font-size <- 13px;
             }
         }
     }
-    map-x := Text { y: 244px; text: "Offset X " + Math.round(-root.offset-x / 1px); color: #173047; font-size: 17px; }
-    map-y := Text { x: 155px; y: 244px; text: "Offset Y " + Math.round(-root.offset-y / 1px); color: #173047; font-size: 17px; }
+    map-x := Text { y <- 244px; text <- "Offset X " + Math.round(-root.offset-x / 1px); color <- #173047; font-size <- 17px; }
+    map-y := Text { x <- 155px; y <- 244px; text <- "Offset Y " + Math.round(-root.offset-y / 1px); color <- #173047; font-size <- 17px; }
     map-motion := Text {
-        y: 274px;
-        text: map-view.dragging ? "Canvas dragging" : (map-view.flicking ? "Canvas coasting" : "Canvas idle");
-        color: #173047; font-size: 17px;
+        y <- 274px;
+        text <- map-view.dragging ? "Canvas dragging" : (map-view.flicking ? "Canvas coasting" : "Canvas idle");
+        color <- #173047; font-size <- 17px;
     }
-    map-taps := Text { x: 200px; y: 274px; text: "Taps " + root.taps; color: #173047; font-size: 17px; }
+    map-taps := Text { x <- 200px; y <- 274px; text <- "Taps " + root.taps; color <- #173047; font-size <- 17px; }
     reset-map := Button {
-        x: 155px; y: 308px; width: 143px; height: 44px; text: "Reset canvas";
+        x <- 155px; y <- 308px; width <- 143px; height <- 44px; text <- "Reset canvas";
         clicked => { map-view.scroll-to(0px, 0px); }
     }
     lock-map := CheckBox {
-        y: 308px; width: 130px; height: 44px;
-        text: root.pan-locked ? "Unlock pan" : "Lock pan";
-        checked <=> root.pan-locked;
+        y <- 308px; width <- 130px; height <- 44px;
+        text <- root.pan-locked ? "Unlock pan" : "Lock pan";
+        checked <-> root.pan-locked;
     }
 }
 
@@ -379,32 +379,32 @@ component InspectionRefresh inherits Rectangle {
     private property <int> updates: 0;
 
     refresh-status := Text {
-        text: root.loading ? "Loading readings" : "Readings ready";
-        color: #173047; font-size: 17px;
+        text <- root.loading ? "Loading readings" : "Readings ready";
+        color <- #173047; font-size <- 17px;
     }
     refresh-requests := Text {
-        x: 182px; text: "Requests " + root.requests;
-        color: #173047; font-size: 17px;
+        x <- 182px; text <- "Requests " + root.requests;
+        color <- #173047; font-size <- 17px;
     }
     refresh-feed := ListView {
-        y: 36px; width: 298px; height: 222px;
-        row-height: 48px;
-        accessible-name: "Recent inspection readings";
-        pull-to-refresh: true;
-        refreshing: root.loading;
+        y <- 36px; width <- 298px; height <- 222px;
+        row-height <- 48px;
+        accessible-name <- "Recent inspection readings";
+        pull-to-refresh <- true;
+        refreshing <- root.loading;
         refresh-requested() => {
             root.requests += 1;
             root.loading = true;
         }
         for reading in ["Revision " + root.updates, "Valve reading", "Seal reading"] : Rectangle {
-            background: #edf3f8;
-            Text { x: 12px; y: 13px; text: reading; color: #173047; font-size: 17px; }
+            background <- #edf3f8;
+            Text { x <- 12px; y <- 13px; text <- reading; color <- #173047; font-size <- 17px; }
         }
     }
     finish-refresh := Button {
-        y: 270px; width: 150px; height: 44px;
-        text: "Deliver result";
-        enabled: root.loading;
+        y <- 270px; width <- 150px; height <- 44px;
+        text <- "Deliver result";
+        enabled <- root.loading;
         clicked => {
             root.updates += 1;
             root.loading = false;
@@ -423,15 +423,15 @@ component CatalogTile inherits Rectangle {
     in property <bool> current;
     private property <bool> pinned: false;
 
-    background: root.current ? #d1ede5 : #ebf1f7;
-    border-radius: 8px;
-    accessible-name: root.label;
-    Text { x: 10px; y: 8px; text: root.label; color: #173047; font-size: 17px; }
+    background <- root.current ? #d1ede5 : #ebf1f7;
+    border-radius <- 8px;
+    accessible-name <- root.label;
+    Text { x <- 10px; y <- 8px; text <- root.label; color <- #173047; font-size <- 17px; }
     pin-part := CheckBox {
-        x: 8px; y: 46px; width: 128px; height: 34px;
-        text: (root.pinned ? "Unpin " : "Pin ") + root.label;
-        font-size: 13px;
-        checked <=> root.pinned;
+        x <- 8px; y <- 46px; width <- 128px; height <- 34px;
+        text <- (root.pinned ? "Unpin " : "Pin ") + root.label;
+        font-size <- 13px;
+        checked <-> root.pinned;
     }
 }
 
@@ -457,27 +457,27 @@ component PartsCatalog inherits Rectangle {
     private property <bool> relocated: false;
     private property <bool> valve-hidden: false;
 
-    catalog-key := Text { text: "Key " + root.current-key; color: #173047; font-size: 16px; }
-    catalog-index := Text { x: 96px; text: "Index " + catalog.selected-view-index; color: #173047; font-size: 16px; }
-    catalog-choices := Text { x: 198px; text: "Choices " + root.choices; color: #173047; font-size: 16px; }
+    catalog-key := Text { text <- "Key " + root.current-key; color <- #173047; font-size <- 16px; }
+    catalog-index := Text { x <- 96px; text <- "Index " + catalog.selected-view-index; color <- #173047; font-size <- 16px; }
+    catalog-choices := Text { x <- 198px; text <- "Choices " + root.choices; color <- #173047; font-size <- 16px; }
     catalog := GridView {
-        y: 32px; width: 298px; height: 226px;
-        cell-width: 144px; cell-height: 88px; spacing: 8px;
-        accessible-name: "Inventory parts";
-        row-key-field: "key";
-        row-visible-field: "shown";
-        current-key <=> root.current-key;
-        follow-current: false;
+        y <- 32px; width <- 298px; height <- 226px;
+        cell-width <- 144px; cell-height <- 88px; spacing <- 8px;
+        accessible-name <- "Inventory parts";
+        row-key-field <- "key";
+        row-visible-field <- "shown";
+        current-key <-> root.current-key;
+        follow-current <- false;
         changed(index) => { root.choices += 1; }
         for part in root.parts : CatalogTile {
-            label: part.name;
-            current: root.current-key == part.key;
+            label <- part.name;
+            current <- root.current-key == part.key;
         }
     }
     move-valve := Button {
-        y: 280px; width: 142px; height: 44px;
-        text: root.relocated ? "Valve moved" : "Move Valve";
-        enabled: !root.relocated;
+        y <- 280px; width <- 142px; height <- 44px;
+        text <- root.relocated ? "Valve moved" : "Move Valve";
+        enabled <- !root.relocated;
         clicked => {
             Model.move(root.parts, 1, 10);
             root.relocated = true;
@@ -485,9 +485,9 @@ component PartsCatalog inherits Rectangle {
         }
     }
     toggle-valve := Button {
-        x: 156px; y: 280px; width: 142px; height: 44px;
-        text: root.valve-hidden ? "Show Valve" : "Hide Valve";
-        enabled: root.relocated;
+        x <- 156px; y <- 280px; width <- 142px; height <- 44px;
+        text <- root.valve-hidden ? "Show Valve" : "Hide Valve";
+        enabled <- root.relocated;
         clicked => {
             root.valve-hidden = !root.valve-hidden;
             Model.set(root.parts, 10, CatalogPart { key: 20, name: "Valve", shown: !root.valve-hidden });
@@ -521,43 +521,43 @@ component InspectionLog inherits Rectangle {
     private property <bool> bracket-hidden: false;
     private property <int> scrolls: 0;
 
-    log-count := Text { text: "Entries " + log.row-count; color: #173047; font-size: 17px; }
-    log-scrolls := Text { x: 160px; text: "Scrolls " + root.scrolls; color: #173047; font-size: 17px; }
+    log-count := Text { text <- "Entries " + log.row-count; color <- #173047; font-size <- 17px; }
+    log-scrolls := Text { x <- 160px; text <- "Scrolls " + root.scrolls; color <- #173047; font-size <- 17px; }
     log := ListView {
-        y: 32px; width: 298px; height: 228px;
-        row-height: 44px;
-        section-field: "phase"; section-height: 34px;
-        row-visible-field: "shown";
-        sticky-section-headers: true;
-        preserve-scroll-anchor: true;
-        accessible-name: "Inspection entries";
+        y <- 32px; width <- 298px; height <- 228px;
+        row-height <- 44px;
+        section-field <- "phase"; section-height <- 34px;
+        row-visible-field <- "shown";
+        sticky-section-headers <- true;
+        preserve-scroll-anchor <- true;
+        accessible-name <- "Inspection entries";
         scrolled() => { root.scrolls += 1; }
         SectionHeader {
-            accessible-name: section-label + " " + section-count;
-            background: section-pinned ? #176f62 : #385894;
+            accessible-name <- section-label + " " + section-count;
+            background <- section-pinned ? #176f62 : #385894;
             Text {
-                x: 10px; y: 6px;
-                text: section-label + " " + section-count + (section-pinned ? " pinned" : "");
-                color: #ffffff; font-size: 17px;
+                x <- 10px; y <- 6px;
+                text <- section-label + " " + section-count + (section-pinned ? " pinned" : "");
+                color <- #ffffff; font-size <- 17px;
             }
         }
         for entry[source] in root.entries : Rectangle {
-            background: source % 2 == 0 ? #eaf1f7 : #f5f8fb;
-            Text { x: 10px; y: 10px; text: entry.title; color: #173047; font-size: 17px; }
+            background <- source % 2 == 0 ? #eaf1f7 : #f5f8fb;
+            Text { x <- 10px; y <- 10px; text <- entry.title; color <- #173047; font-size <- 17px; }
         }
     }
     add-intake := Button {
-        y: 282px; width: 142px; height: 44px;
-        text: root.inserted ? "Intake added" : "Insert intake";
-        enabled: !root.inserted;
+        y <- 282px; width <- 142px; height <- 44px;
+        text <- root.inserted ? "Intake added" : "Insert intake";
+        enabled <- !root.inserted;
         clicked => {
             Model.insert(root.entries, 0, InspectionEntry { title: "Rush intake", phase: "Intake", shown: true });
             root.inserted = true;
         }
     }
     filter-bracket := Button {
-        x: 156px; y: 282px; width: 142px; height: 44px;
-        text: root.bracket-hidden ? "Show bracket" : "Hide bracket";
+        x <- 156px; y <- 282px; width <- 142px; height <- 44px;
+        text <- root.bracket-hidden ? "Show bracket" : "Hide bracket";
         clicked => {
             root.bracket-hidden = !root.bracket-hidden;
             Model.set(root.entries, root.inserted ? 1 : 0, InspectionEntry {
@@ -574,16 +574,16 @@ component CalibrationNotes inherits Rectangle {
     private property <string> pasted: "";
 
     Rectangle {
-        width: 298px; height: 126px;
-        background: #eaf1f7; border-radius: 8px; clip: true;
+        width <- 298px; height <- 126px;
+        background <- #eaf1f7; border-radius <- 8px; clip <- true;
         bulletin := StyledText {
-            x: 12px; y: 10px; width: 274px; height: 106px;
-            text: @markdown("**Calibration**  \n[Procedure](#procedure)  \n[Limits](#limits)");
-            font-size: 20px; color: #173047; link-color: #3051b3;
-            selectable: true;
-            persistent-selection: true;
-            max-lines: root.compact ? 1 : 5;
-            overflow: elide;
+            x <- 12px; y <- 10px; width <- 274px; height <- 106px;
+            text <- @markdown("**Calibration**  \n[Procedure](#procedure)  \n[Limits](#limits)");
+            font-size <- 20px; color <- #173047; link-color <- #3051b3;
+            selectable <- true;
+            persistent-selection <- true;
+            max-lines <- root.compact ? 1 : 5;
+            overflow <- elide;
             link-activated(destination) => {
                 root.target = destination;
                 root.activations += 1;
@@ -591,43 +591,43 @@ component CalibrationNotes inherits Rectangle {
         }
     }
     compact-bulletin := CheckBox {
-        y: 142px; width: 180px; height: 44px;
-        text: root.compact ? "Show full text" : "Compact text";
-        checked <=> root.compact;
+        y <- 142px; width <- 180px; height <- 44px;
+        text <- root.compact ? "Show full text" : "Compact text";
+        checked <-> root.compact;
     }
     bulletin-links := Text {
-        x: 209px; y: 153px;
-        text: "Links " + root.activations;
-        color: #173047; font-size: 17px;
+        x <- 209px; y <- 153px;
+        text <- "Links " + root.activations;
+        color <- #173047; font-size <- 17px;
     }
     bulletin-target := Text {
-        y: 194px;
-        text: root.target == "" ? "No link opened" : "Target " + root.target;
-        color: #173047; font-size: 17px;
+        y <- 194px;
+        text <- root.target == "" ? "No link opened" : "Target " + root.target;
+        color <- #173047; font-size <- 17px;
     }
     bulletin-selection := Text {
-        y: 224px; width: 298px; height: 24px; overflow: elide;
-        text: bulletin.selected-text == "" ? "No selection" : "Selected " + bulletin.selected-text;
-        color: #173047; font-size: 17px;
+        y <- 224px; width <- 298px; height <- 24px; overflow <- elide;
+        text <- bulletin.selected-text == "" ? "No selection" : "Selected " + bulletin.selected-text;
+        color <- #173047; font-size <- 17px;
     }
     bulletin-paste := LineEdit {
-        y: 260px; width: 298px; height: 44px;
-        placeholder-text: "Paste copied word";
-        text <=> root.pasted;
+        y <- 260px; width <- 298px; height <- 44px;
+        placeholder-text <- "Paste copied word";
+        text <-> root.pasted;
     }
     Text {
-        y: 316px; width: 298px; height: 24px; overflow: elide;
-        text: root.pasted == "" ? "Clipboard check" : "Pasted " + root.pasted;
-        color: #173047; font-size: 17px;
+        y <- 316px; width <- 298px; height <- 24px; overflow <- elide;
+        text <- root.pasted == "" ? "Clipboard check" : "Pasted " + root.pasted;
+        color <- #173047; font-size <- 17px;
     }
 }
 
 export component MobileTable inherits Window {
-    title: "XRack Inventory";
-    width: 390px;
-    height: 740px;
-    color-scheme: light;
-    background: #f3f7fb;
+    title <- "XRack Inventory";
+    width <- 390px;
+    height <- 740px;
+    color-scheme <- light;
+    background <- #f3f7fb;
 
     private property <[StockItem]> stock: [
         StockItem { id: 10, name: "Pump", units: 12, zone: "North plant", status: "Ready" },
@@ -640,11 +640,11 @@ export component MobileTable inherits Window {
         StockItem { id: 80, name: "Sensor", units: 15, zone: "West aisle", status: "Ready" },
         StockItem { id: 90, name: "Bearing", units: 11, zone: "North plant", status: "Reserve" },
     ];
-    private property <StockItem> first-item: Model.at(root.stock, 0, StockItem {
+    private property <StockItem> first-item <- Model.at(root.stock, 0, StockItem {
         id: 0, name: "", units: 0, zone: "", status: "",
     });
-    private property <StockItem> third-item: Model.at(root.stock, 2, root.first-item);
-    private property <StockItem> fourth-item: Model.at(root.stock, 3, root.first-item);
+    private property <StockItem> third-item <- Model.at(root.stock, 2, root.first-item);
+    private property <StockItem> fourth-item <- Model.at(root.stock, 3, root.first-item);
     private property <bool> tree-open: false;
     private property <bool> split-open: false;
     private property <bool> transfer-open: false;
@@ -654,156 +654,156 @@ export component MobileTable inherits Window {
     private property <bool> bulletin-open: false;
     private property <bool> refresh-open: false;
 
-    Text { x: 24px; y: 16px; text: "XRack Inventory"; font-size: 25px; font-weight: 700; color: #173047; }
+    Text { x <- 24px; y <- 16px; text <- "XRack Inventory"; font-size <- 25px; font-weight <- 700; color <- #173047; }
     Text {
-        x: 250px; y: 24px;
-        text: root.window-active ? "Window active" : "Window inactive";
-        font-size: 14px; color: #50685c;
+        x <- 250px; y <- 24px;
+        text <- root.window-active ? "Window active" : "Window inactive";
+        font-size <- 14px; color <- #50685c;
     }
-    selection-label := Text { x: 24px; y: 60px; text: "Cells " + inventory.selection-count; font-size: 17px; color: #173047; }
+    selection-label := Text { x <- 24px; y <- 60px; text <- "Cells " + inventory.selection-count; font-size <- 17px; color <- #173047; }
     mode-label := Text {
-        x: 189px; y: 60px;
-        text: inventory.selection-dragging ? "Selecting" : "Selection idle";
-        font-size: 17px; color: #173047;
+        x <- 189px; y <- 60px;
+        text <- inventory.selection-dragging ? "Selecting" : "Selection idle";
+        font-size <- 17px; color <- #173047;
     }
     inventory := StandardTableView {
-        x: 24px; y: 94px; width: 342px; height: 224px;
-        accessible-name: "Inventory table";
-        model: root.stock;
-        row-key-field: "id";
-        row-height: 44px;
-        header-height: 34px;
-        frozen-columns: 1;
-        selection-target: cells;
-        multi-select: true;
-        drag-select: true;
-        selection-gesture: press-and-hold;
-        selection-hold-interval: 500;
-        copyable: true;
-        pasteable: true;
-        TableColumn { title: "Part"; field: "name"; width: 112px; editable: true; }
-        TableColumn { title: "Units"; field: "units"; width: 84px; editable: true; }
-        TableColumn { title: "Zone"; field: "zone"; width: 140px; }
-        TableColumn { title: "Status"; field: "status"; width: 104px; }
-        SelectionStartHandle { width: 14px; height: 16px; background: #db7b1a; border-radius: 4px; }
-        SelectionEndHandle { width: 14px; height: 16px; background: #137d6d; border-radius: 4px; }
+        x <- 24px; y <- 94px; width <- 342px; height <- 224px;
+        accessible-name <- "Inventory table";
+        model <- root.stock;
+        row-key-field <- "id";
+        row-height <- 44px;
+        header-height <- 34px;
+        frozen-columns <- 1;
+        selection-target <- cells;
+        multi-select <- true;
+        drag-select <- true;
+        selection-gesture <- press-and-hold;
+        selection-hold-interval <- 500;
+        copyable <- true;
+        pasteable <- true;
+        TableColumn { title <- "Part"; field <- "name"; width <- 112px; editable <- true; }
+        TableColumn { title <- "Units"; field <- "units"; width <- 84px; editable <- true; }
+        TableColumn { title <- "Zone"; field <- "zone"; width <- 140px; }
+        TableColumn { title <- "Status"; field <- "status"; width <- 104px; }
+        SelectionStartHandle { width <- 14px; height <- 16px; background <- #db7b1a; border-radius <- 4px; }
+        SelectionEndHandle { width <- 14px; height <- 16px; background <- #137d6d; border-radius <- 4px; }
     }
     home-view := Button {
-        x: 24px; y: 336px; width: 143px; height: 44px;
-        text: "Reset view";
+        x <- 24px; y <- 336px; width <- 143px; height <- 44px;
+        text <- "Reset view";
         clicked => { inventory.clear-selection(); inventory.scroll-to(0px, 0px); }
     }
     edit-pump := Button {
-        x: 190px; y: 336px; width: 176px; height: 44px;
-        text: "Edit pump units";
+        x <- 190px; y <- 336px; width <- 176px; height <- 44px;
+        text <- "Edit pump units";
         clicked => { inventory.position-view-at-cell(0, 1, contain, contain); inventory.edit-cell(0, 1); }
     }
     units-label := Text {
-        x: 24px; y: 395px;
-        text: "Pump units " + root.first-item.units;
-        font-size: 17px; color: #173047;
+        x <- 24px; y <- 395px;
+        text <- "Pump units " + root.first-item.units;
+        font-size <- 17px; color <- #173047;
     }
     clipboard-label := Text {
-        x: 24px; y: 429px;
-        text: root.third-item.name == "Pump" && root.third-item.units == 12 &&
+        x <- 24px; y <- 429px;
+        text <- root.third-item.name == "Pump" && root.third-item.units == 12 &&
             root.fourth-item.name == "Valve" && root.fourth-item.units == 8 ?
             "Pasted range matches" : "Paste range into Gasket";
-        font-size: 17px; color: #173047;
+        font-size <- 17px; color <- #173047;
     }
     open-tree := Button {
-        x: 24px; y: 470px; width: 184px; height: 44px;
-        text: "Open directory";
+        x <- 24px; y <- 470px; width <- 184px; height <- 44px;
+        text <- "Open directory";
         clicked => { root.tree-open = true; }
     }
     open-split := Button {
-        x: 220px; y: 470px; width: 146px; height: 44px;
-        text: "Open split";
+        x <- 220px; y <- 470px; width <- 146px; height <- 44px;
+        text <- "Open split";
         clicked => { root.split-open = true; }
     }
     open-transfer := Button {
-        x: 24px; y: 525px; width: 184px; height: 44px;
-        text: "Open transfer";
+        x <- 24px; y <- 525px; width <- 184px; height <- 44px;
+        text <- "Open transfer";
         clicked => { root.transfer-open = true; }
     }
     open-canvas := Button {
-        x: 220px; y: 525px; width: 146px; height: 44px;
-        text: "Open canvas";
+        x <- 220px; y <- 525px; width <- 146px; height <- 44px;
+        text <- "Open canvas";
         clicked => { root.canvas-open = true; }
     }
     open-catalog := Button {
-        x: 24px; y: 580px; width: 184px; height: 44px;
-        text: "Open catalog";
+        x <- 24px; y <- 580px; width <- 184px; height <- 44px;
+        text <- "Open catalog";
         clicked => { root.catalog-open = true; }
     }
     open-log := Button {
-        x: 220px; y: 580px; width: 146px; height: 44px;
-        text: "Open log";
+        x <- 220px; y <- 580px; width <- 146px; height <- 44px;
+        text <- "Open log";
         clicked => { root.log-open = true; }
     }
     open-bulletin := Button {
-        x: 24px; y: 635px; width: 184px; height: 44px;
-        text: "Open bulletin";
+        x <- 24px; y <- 635px; width <- 184px; height <- 44px;
+        text <- "Open bulletin";
         clicked => { root.bulletin-open = true; }
     }
     open-refresh := Button {
-        x: 220px; y: 635px; width: 146px; height: 44px;
-        text: "Open refresh";
+        x <- 220px; y <- 635px; width <- 146px; height <- 44px;
+        text <- "Open refresh";
         clicked => { root.refresh-open = true; }
     }
     Dialog {
-        open <=> root.tree-open;
-        title: "Inspection directory";
-        width: 350px; height: 586px;
-        background: #ffffff; color: #173047;
-        InspectionDirectory { width: 100%; height: 506px; }
+        open <-> root.tree-open;
+        title <- "Inspection directory";
+        width <- 350px; height <- 586px;
+        background <- #ffffff; color <- #173047;
+        InspectionDirectory { width <- 100%; height <- 506px; }
     }
     Dialog {
-        open <=> root.split-open;
-        title: "Split workspace";
-        width: 338px; height: 520px;
-        background: #ffffff; color: #173047;
-        InspectionSplit { width: 100%; height: 436px; }
+        open <-> root.split-open;
+        title <- "Split workspace";
+        width <- 338px; height <- 520px;
+        background <- #ffffff; color <- #173047;
+        InspectionSplit { width <- 100%; height <- 436px; }
     }
     Dialog {
-        open <=> root.transfer-open;
-        title: "Inspection transfer";
-        width: 338px; height: 474px;
-        background: #ffffff; color: #173047;
-        InspectionTransfer { width: 100%; height: 390px; }
+        open <-> root.transfer-open;
+        title <- "Inspection transfer";
+        width <- 338px; height <- 474px;
+        background <- #ffffff; color <- #173047;
+        InspectionTransfer { width <- 100%; height <- 390px; }
     }
     Dialog {
-        open <=> root.canvas-open;
-        title: "Inspection canvas";
-        width: 338px; height: 436px;
-        background: #ffffff; color: #173047;
-        InspectionCanvas { width: 100%; height: 352px; }
+        open <-> root.canvas-open;
+        title <- "Inspection canvas";
+        width <- 338px; height <- 436px;
+        background <- #ffffff; color <- #173047;
+        InspectionCanvas { width <- 100%; height <- 352px; }
     }
     Dialog {
-        open <=> root.catalog-open;
-        title: "Parts catalog";
-        width: 338px; height: 408px;
-        background: #ffffff; color: #173047;
-        PartsCatalog { width: 100%; height: 324px; }
+        open <-> root.catalog-open;
+        title <- "Parts catalog";
+        width <- 338px; height <- 408px;
+        background <- #ffffff; color <- #173047;
+        PartsCatalog { width <- 100%; height <- 324px; }
     }
     Dialog {
-        open <=> root.log-open;
-        title: "Inspection log";
-        width: 338px; height: 410px;
-        background: #ffffff; color: #173047;
-        InspectionLog { width: 100%; height: 326px; }
+        open <-> root.log-open;
+        title <- "Inspection log";
+        width <- 338px; height <- 410px;
+        background <- #ffffff; color <- #173047;
+        InspectionLog { width <- 100%; height <- 326px; }
     }
     Dialog {
-        open <=> root.bulletin-open;
-        title: "Calibration notes";
-        width: 338px; height: 424px;
-        background: #ffffff; color: #173047;
-        CalibrationNotes { width: 100%; height: 340px; }
+        open <-> root.bulletin-open;
+        title <- "Calibration notes";
+        width <- 338px; height <- 424px;
+        background <- #ffffff; color <- #173047;
+        CalibrationNotes { width <- 100%; height <- 340px; }
     }
     Dialog {
-        open <=> root.refresh-open;
-        title: "Inspection readings";
-        width: 338px; height: 398px;
-        background: #ffffff; color: #173047;
-        InspectionRefresh { width: 100%; height: 314px; }
+        open <-> root.refresh-open;
+        title <- "Inspection readings";
+        width <- 338px; height <- 398px;
+        background <- #ffffff; color <- #173047;
+        InspectionRefresh { width <- 100%; height <- 314px; }
     }
 }

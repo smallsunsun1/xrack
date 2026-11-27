@@ -19,9 +19,9 @@ struct PrimitiveEmitter {
 }
 
 export component PrimitiveMeshesDemo inherits Window {
-    title: "XRack · 3D 基础图元";
-    width: 650px; height: 434px;
-    resizable: false; background: #162435;
+    title <- "XRack · 3D 基础图元";
+    width <- 650px; height <- 434px;
+    resizable <- false; background <- #162435;
     in-out property <bool> overhead: false;
     in-out property <bool> warm-cap: true;
     in-out property <bool> cutout: false;
@@ -31,7 +31,7 @@ export component PrimitiveMeshesDemo inherits Window {
         enabled: false, base-color: #ffffff, base-color-map: "",
         alpha-mode: "opaque", alpha-cutoff: 0.5, roughness: 0.52,
     };
-    property <PrimitiveActor> base: PrimitiveActor {
+    property <PrimitiveActor> base <- PrimitiveActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #ffffff, material: root.neutral,
@@ -39,7 +39,7 @@ export component PrimitiveMeshesDemo inherits Window {
         pickable: true, collidable: true, casts-shadow: true,
         camera-kind: "", camera-height: 5.55, camera-look-at: "",
     };
-    property <[PrimitiveActor]> world: [
+    property <[PrimitiveActor]> world <- [
         PrimitiveActor { id: "center", mesh: "", ..root.base },
         PrimitiveActor {
             id: "eye", mesh: "", y: root.overhead ? 5.2 : 2.4, z: 8,
@@ -84,7 +84,7 @@ export component PrimitiveMeshesDemo inherits Window {
         },
     ];
     property <[PrimitiveEmitter]> no-emission;
-    property <[PrimitiveEmitter]> sparks: root.particles ? [
+    property <[PrimitiveEmitter]> sparks <- root.particles ? [
         PrimitiveEmitter {
             position: Point3D.new(2.45, -1.03, 0.22), color: #ffd68d,
             size: 0.11, lifetime: 4, bursts: [ParticleBurst { time: 0, count: 24 }], fade-out: 0,
@@ -93,33 +93,33 @@ export component PrimitiveMeshesDemo inherits Window {
             particle-model: "primitive:cylinder",
         }
     ] : root.no-emission;
-    property <vector3d> forward: Vector3D.new(0, 0, -1);
-    out property <hit3d> rectangle-hit: Scene3D.ray-hit(root.world, Point3D.new(-2.5, 0.17, 6), root.forward, 12.0);
-    out property <hit3d> cylinder-hit: Scene3D.ray-hit(root.world, Point3D.new(0, 0.12, 6), root.forward, 12.0);
-    out property <hit3d> cone-hit: Scene3D.ray-hit(root.world, Point3D.new(2.45, 0.1, 6), root.forward, 12.0);
-    out property <hit3d> cap-hit: Scene3D.ray-hit(root.world, Point3D.new(0, 4.0, 0.15), Vector3D.new(0,-1,0), 5.0);
-    out property <hit3d> sweep: Scene3D.sphere-cast(root.world, Point3D.new(-1.16, 0.12, 0.15),
+    property <vector3d> forward <- Vector3D.new(0, 0, -1);
+    out property <hit3d> rectangle-hit <- Scene3D.ray-hit(root.world, Point3D.new(-2.5, 0.17, 6), root.forward, 12.0);
+    out property <hit3d> cylinder-hit <- Scene3D.ray-hit(root.world, Point3D.new(0, 0.12, 6), root.forward, 12.0);
+    out property <hit3d> cone-hit <- Scene3D.ray-hit(root.world, Point3D.new(2.45, 0.1, 6), root.forward, 12.0);
+    out property <hit3d> cap-hit <- Scene3D.ray-hit(root.world, Point3D.new(0, 4.0, 0.15), Vector3D.new(0,-1,0), 5.0);
+    out property <hit3d> sweep <- Scene3D.sphere-cast(root.world, Point3D.new(-1.16, 0.12, 0.15),
         Vector3D.new(1,0,0), 4.0, 0.20);
-    out property <hit3d> inside-cylinder: Scene3D.sphere-cast(
+    out property <hit3d> inside-cylinder <- Scene3D.sphere-cast(
         root.world, Point3D.new(0, 0.12, 0.15), root.forward, 4.0, 0.03);
-    out property <hit3d> inside-cone: Scene3D.sphere-cast(
+    out property <hit3d> inside-cone <- Scene3D.sphere-cast(
         root.world, Point3D.new(2.45, 0.0, 0.22), root.forward, 4.0, 0.03);
-    out property <hit3d> sweep-rectangle: Scene3D.sphere-cast(
+    out property <hit3d> sweep-rectangle <- Scene3D.sphere-cast(
         root.world, Point3D.new(-2.5, 0.17, 1.5), root.forward, 4.0, 0.20);
 
 
     SceneView3D {
-        width: 650px; height: 328px; model: root.world; camera: "eye";
-        scene-background: #263b55; ambient-intensity: 0.50;
-        light-yaw: -30; light-elevation: 49; scene-hdr: true;
-        shadows: true; shadow-map-size: 512; cache-rendering: true;
-        particle-emitters: root.sparks; particle-time: 0.5;
+        width <- 650px; height <- 328px; model <- root.world; camera <- "eye";
+        scene-background <- #263b55; ambient-intensity <- 0.50;
+        light-yaw <- -30; light-elevation <- 49; scene-hdr <- true;
+        shadows <- true; shadow-map-size <- 512; cache-rendering <- true;
+        particle-emitters <- root.sparks; particle-time <- 0.5;
     }
-    Label { x: 103px; y: 331px; width: 141px; height: 32px; text: "矩形 · XY 平面"; horizontal-alignment: center; }
-    Label { x: 250px; y: 331px; width: 150px; height: 32px; text: "圆柱 · 独立顶盖"; horizontal-alignment: center; }
-    Label { x: 411px; y: 331px; width: 148px; height: 32px; text: "圆锥 · 底面原点"; horizontal-alignment: center; }
-    overhead-toggle := CheckBox { x: 14px; y: 382px; width: 132px; height: 34px; text: "高视角"; checked <=> root.overhead; }
-    cap-toggle := CheckBox { x: 161px; y: 382px; width: 145px; height: 34px; text: "暖色顶盖"; checked <=> root.warm-cap; }
-    mask-toggle := CheckBox { x: 310px; y: 382px; width: 153px; height: 34px; text: "裁切矩形"; checked <=> root.cutout; }
-    particle-toggle := CheckBox { x: 468px; y: 382px; width: 162px; height: 34px; text: "图元粒子"; checked <=> root.particles; }
+    Label { x <- 103px; y <- 331px; width <- 141px; height <- 32px; text <- "矩形 · XY 平面"; horizontal-alignment <- center; }
+    Label { x <- 250px; y <- 331px; width <- 150px; height <- 32px; text <- "圆柱 · 独立顶盖"; horizontal-alignment <- center; }
+    Label { x <- 411px; y <- 331px; width <- 148px; height <- 32px; text <- "圆锥 · 底面原点"; horizontal-alignment <- center; }
+    overhead-toggle := CheckBox { x <- 14px; y <- 382px; width <- 132px; height <- 34px; text <- "高视角"; checked <-> root.overhead; }
+    cap-toggle := CheckBox { x <- 161px; y <- 382px; width <- 145px; height <- 34px; text <- "暖色顶盖"; checked <-> root.warm-cap; }
+    mask-toggle := CheckBox { x <- 310px; y <- 382px; width <- 153px; height <- 34px; text <- "裁切矩形"; checked <-> root.cutout; }
+    particle-toggle := CheckBox { x <- 468px; y <- 382px; width <- 162px; height <- 34px; text <- "图元粒子"; checked <-> root.particles; }
 }

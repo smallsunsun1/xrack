@@ -9,9 +9,9 @@ struct DataActor {
 }
 
 export component InstanceDataDemo inherits Window {
-    title: "XRack · Instance data";
-    width: 600px; height: 356px;
-    background: #172538;
+    title <- "XRack · Instance data";
+    width <- 600px; height <- 356px;
+    background <- #172538;
     in-out property <float> phase: 0;
     in-out property <bool> shadow: false;
     in-out property <bool> temporal: false;
@@ -24,7 +24,7 @@ export component InstanceDataDemo inherits Window {
         visible: true, material: InstanceStyle { material-shader: "", shader-displacement: 0, unlit: false },
         casts-shadow: true, camera-kind: "", camera-height: 6,
     };
-    property <[DataActor]> world: [
+    property <[DataActor]> world <- [
         DataActor { id: "eye", z: 10, camera-kind: "orthographic", ..root.base },
         DataActor {
             id: "tile", mesh: "primitive:box", instance-template: true,
@@ -47,17 +47,17 @@ export component InstanceDataDemo inherits Window {
             casts-shadow: false, visible: root.shadow, ..root.base },
     ];
     SceneView3D {
-        width: 600px; height: 300px; camera: "eye"; model: root.world;
-        scene-background: #263b54; scene-tone-map: none;
-        shadows: root.shadow; shadow-map-size: 256;
-        light-yaw: -26; light-elevation: 48; ambient-intensity: 0.26;
-        ambient-occlusion: root.shadow;
-        temporal-aa: root.temporal; temporal-aa-mode: "motion-vectors";
+        width <- 600px; height <- 300px; camera <- "eye"; model <- root.world;
+        scene-background <- #263b54; scene-tone-map <- none;
+        shadows <- root.shadow; shadow-map-size <- 256;
+        light-yaw <- -26; light-elevation <- 48; ambient-intensity <- 0.26;
+        ambient-occlusion <- root.shadow;
+        temporal-aa <- root.temporal; temporal-aa-mode <- "motion-vectors";
     }
     HorizontalLayout {
-        x: 12px; y: 311px; width: 576px; height: 34px; spacing: 12px;
-        phase-slider := Slider { width: 295px; minimum: 0; maximum: 1; value <=> root.phase; }
-        shadow-switch := CheckBox { width: 130px; text: "Shadows"; checked <=> root.shadow; }
-        taa-switch := CheckBox { width: 110px; text: "TAA"; checked <=> root.temporal; }
+        x <- 12px; y <- 311px; width <- 576px; height <- 34px; spacing <- 12px;
+        phase-slider := Slider { width <- 295px; minimum <- 0; maximum <- 1; value <-> root.phase; }
+        shadow-switch := CheckBox { width <- 130px; text <- "Shadows"; checked <-> root.shadow; }
+        taa-switch := CheckBox { width <- 110px; text <- "TAA"; checked <-> root.temporal; }
     }
 }

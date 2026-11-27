@@ -11,9 +11,9 @@ struct CullActor {
 }
 
 export component MaterialCullDemo inherits Window {
-    title: "XRack · Material face culling";
-    width: 600px; height: 372px;
-    background: #192330;
+    title <- "XRack · Material face culling";
+    width <- 600px; height <- 372px;
+    background <- #192330;
 
     in-out property <string> mode: "back";
     in-out property <bool> rear: false;
@@ -24,19 +24,19 @@ export component MaterialCullDemo inherits Window {
     in-out property <bool> perspective: false;
     in-out property <bool> mirror-y: false;
 
-    property <string> camera-name: root.rear ? "rear" : "front";
+    property <string> camera-name <- root.rear ? "rear" : "front";
     property <CullFinish> flat: CullFinish {
         base-color: #536787, unlit: true, cull-mode: "back",
         depth-draw-mode: "opaque-only",
     };
-    property <CullActor> base: CullActor {
+    property <CullActor> base <- CullActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, camera-kind: "", camera-height: 4, visible: true, material: root.flat,
         material-slots: CullSlots { main: CullSlot { enabled: false, slot: "#default", cull-mode: "back" } },
         casts-shadow: false,
     };
-    property <[CullActor]> world: [
+    property <[CullActor]> world <- [
         CullActor { id: "front", mesh: "", z: 8,
             camera-kind: root.perspective ? "perspective" : "orthographic", ..root.base },
         CullActor { id: "rear", mesh: "", z: -8, yaw: 180,
@@ -57,27 +57,27 @@ export component MaterialCullDemo inherits Window {
             material: CullFinish { unlit: false, ..root.flat }, ..root.base
         }
     ];
-    property <length> left: root.perspective ? 240px : 200px;
-    property <length> right: root.perspective ? 360px : 400px;
-    property <point2d> area: Point2D.new(600px, 320px);
-    out property <hit3d> left-hit: Scene3D.hit-camera(
+    property <length> left <- root.perspective ? 240px : 200px;
+    property <length> right <- root.perspective ? 360px : 400px;
+    property <point2d> area <- Point2D.new(600px, 320px);
+    out property <hit3d> left-hit <- Scene3D.hit-camera(
         root.world, root.camera-name, root.area, Point2D.new(root.left, 160px));
-    out property <hit3d> right-hit: Scene3D.hit-camera(
+    out property <hit3d> right-hit <- Scene3D.hit-camera(
         root.world, root.camera-name, root.area, Point2D.new(root.right, 160px));
-    out property <[int]> all-rows: Scene3D.pick-in-rect-camera(
+    out property <[int]> all-rows <- Scene3D.pick-in-rect-camera(
         root.world, root.camera-name, root.area, Point2D.new(0px, 0px), root.area);
-    out property <[int]> partial-rows: Scene3D.pick-in-rect-camera(
+    out property <[int]> partial-rows <- Scene3D.pick-in-rect-camera(
         root.world, root.camera-name, root.area, Point2D.new(root.left - 8px, 150px), Point2D.new(root.left + 8px, 170px));
 
     SceneView3D {
-        width: 600px; height: 320px; model: root.world; camera: root.camera-name;
-        shadows: root.shadows; shadow-map-size: 256; light-yaw: -45; light-elevation: 20;
-        temporal-aa: root.motion; temporal-aa-mode: "motion-vectors"; scene-background: #22334b;
+        width <- 600px; height <- 320px; model <- root.world; camera <- root.camera-name;
+        shadows <- root.shadows; shadow-map-size <- 256; light-yaw <- -45; light-elevation <- 20;
+        temporal-aa <- root.motion; temporal-aa-mode <- "motion-vectors"; scene-background <- #22334b;
     }
     cull-button := Button {
-        x: 12px; y: 334px; width: 165px; height: 30px; text: root.mode;
+        x <- 12px; y <- 334px; width <- 165px; height <- 30px; text <- root.mode;
         clicked => { root.mode = root.mode == "back" ? "front" : root.mode == "front" ? "none" : "back"; }
     }
-    rear-toggle := CheckBox { x: 210px; y: 334px; width: 160px; text: "Rear camera"; checked <=> root.rear; }
-    depth-toggle := CheckBox { x: 400px; y: 334px; width: 174px; text: "Depth prepass"; checked <=> root.prepass; }
+    rear-toggle := CheckBox { x <- 210px; y <- 334px; width <- 160px; text <- "Rear camera"; checked <-> root.rear; }
+    depth-toggle := CheckBox { x <- 400px; y <- 334px; width <- 174px; text <- "Depth prepass"; checked <-> root.prepass; }
 }

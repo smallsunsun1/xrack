@@ -8,23 +8,23 @@ struct FieldPass {
 }
 
 export component EffectBufferFormatsDemo inherits Window {
-    title: "XRack · 后处理纹理格式";
-    width: 480px; height: 344px; resizable: false;
-    background: #172332;
+    title <- "XRack · 后处理纹理格式";
+    width <- 480px; height <- 344px; resizable <- false;
+    background <- #172332;
 
     in-out property <string> buffer-format: "r8";
     in-out property <bool> linear-filter: false;
     in-out property <bool> precision-check: false;
     in-out property <string> addressing: "clamp";
 
-    property <vector3d> format-parameters: Vector3D.new(root.precision-check ? 1 : 0, 0, 0);
+    property <vector3d> format-parameters <- Vector3D.new(root.precision-check ? 1 : 0, 0, 0);
 
     SceneView3D {
-        width: 480px; height: 240px;
-        cache-rendering: true;
-        scene-background: #00000000;
-        scene-tone-map: none;
-        scene-effects: [
+        width <- 480px; height <- 240px;
+        cache-rendering <- true;
+        scene-background <- #00000000;
+        scene-tone-map <- none;
+        scene-effects <- [
             FieldPass {
                 shader: @shader-url("effects/format_field.wgsl"), output: "field",
                 output-format: root.buffer-format, scale: 0.25, buffers: [],
@@ -46,24 +46,24 @@ export component EffectBufferFormatsDemo inherits Window {
         ];
     }
     filtering := CheckBox {
-        x: 16px; y: 257px; width: 133px; height: 36px;
-        text: "左侧线性采样"; checked <=> root.linear-filter;
+        x <- 16px; y <- 257px; width <- 133px; height <- 36px;
+        text <- "左侧线性采样"; checked <-> root.linear-filter;
     }
     address-mode := Button {
-        x: 157px; y: 257px; width: 149px; height: 36px;
-        text: "寻址 " + root.addressing;
+        x <- 157px; y <- 257px; width <- 149px; height <- 36px;
+        text <- "寻址 " + root.addressing;
         clicked => {
             root.addressing = root.addressing == "clamp" ? "repeat"
                 : root.addressing == "repeat" ? "mirror" : "clamp";
         }
     }
     precision := CheckBox {
-        x: 16px; y: 300px; width: 195px; height: 30px;
-        text: "放大精度差异"; checked <=> root.precision-check;
+        x <- 16px; y <- 300px; width <- 195px; height <- 30px;
+        text <- "放大精度差异"; checked <-> root.precision-check;
     }
     texture-format := Button {
-        x: 314px; y: 257px; width: 150px; height: 36px;
-        text: "格式 " + root.buffer-format;
+        x <- 314px; y <- 257px; width <- 150px; height <- 36px;
+        text <- "格式 " + root.buffer-format;
         clicked => {
             root.buffer-format = root.buffer-format == "r8" ? "r16"
                 : root.buffer-format == "r16" ? "r16f"

@@ -7,10 +7,10 @@ struct TerrainActor {
 }
 
 export component HeightfieldDemo inherits Window {
-    title: "XRack · 高度图地形";
-    width: 600px; height: 422px;
-    resizable: false;
-    background: #17283b;
+    title <- "XRack · 高度图地形";
+    width <- 600px; height <- 422px;
+    resizable <- false;
+    background <- #17283b;
     in-out property <bool> flat: false;
     in-out property <float> marker-x: -0.6;
     in-out property <float> marker-z: 0.2;
@@ -22,7 +22,7 @@ export component HeightfieldDemo inherits Window {
         x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, casts-shadow: true,
     };
-    property <[TerrainActor]> surface: [
+    property <[TerrainActor]> surface <- [
         TerrainActor {
             id: "ridge", mesh: @mesh-url("models/ridge.png", lightmap-uv, auto-lod),
             scale-x: 7.2, scale-y: root.flat ? 0.1 : 2.4, scale-z: 5.6,
@@ -30,9 +30,9 @@ export component HeightfieldDemo inherits Window {
             ..root.defaults
         },
     ];
-    out property <hit3d> contact: Scene3D.ray-hit(
+    out property <hit3d> contact <- Scene3D.ray-hit(
         root.surface, Point3D.new(root.marker-x, 6, root.marker-z), Vector3D.new(0, -1, 0), 10);
-    property <[TerrainActor]> actors: [
+    property <[TerrainActor]> actors <- [
         Model.at(root.surface, 0, root.defaults),
         TerrainActor {
             id: "marker", mesh: "primitive:box",
@@ -43,7 +43,7 @@ export component HeightfieldDemo inherits Window {
         },
     ];
     terrain-input := TouchArea {
-        width: 600px; height: 355px;
+        width <- 600px; height <- 355px;
         pointer-event(event) => {
             if event.kind == PointerEventKind.up && event.inside {
                 let candidate = Scene3D.hit(
@@ -56,20 +56,20 @@ export component HeightfieldDemo inherits Window {
             }
         }
         SceneView3D {
-            width: 600px; height: 355px;
-            model: root.actors;
-            camera-yaw: root.azimuth; camera-pitch: root.inclination; camera-distance: root.distance;
-            scene-background: #21364c;
-            ambient-intensity: 0.3;
-            light-yaw: -35; light-elevation: 43;
-            shadows: true; shadow-map-size: 1024; shadow-bias: 0.002;
-            multisampling: true;
+            width <- 600px; height <- 355px;
+            model <- root.actors;
+            camera-yaw <- root.azimuth; camera-pitch <- root.inclination; camera-distance <- root.distance;
+            scene-background <- #21364c;
+            ambient-intensity <- 0.3;
+            light-yaw <- -35; light-elevation <- 43;
+            shadows <- true; shadow-map-size <- 1024; shadow-bias <- 0.002;
+            multisampling <- true;
         }
     }
     HorizontalLayout {
-        x: 18px; y: 369px; width: 564px; height: 36px; spacing: 12px;
-        flatten := CheckBox { width: 112px; text: "压平地形"; checked <=> root.flat; }
-        Text { width: 120px; text: "高度 " + Math.round(root.contact.position.y * 100) + " cm"; color: #edf4fc; }
-        azimuth := Slider { width: 230px; minimum: -70; maximum: 70; value <=> root.azimuth; }
+        x <- 18px; y <- 369px; width <- 564px; height <- 36px; spacing <- 12px;
+        flatten := CheckBox { width <- 112px; text <- "压平地形"; checked <-> root.flat; }
+        Text { width <- 120px; text <- "高度 " + Math.round(root.contact.position.y * 100) + " cm"; color <- #edf4fc; }
+        azimuth := Slider { width <- 230px; minimum <- -70; maximum <- 70; value <-> root.azimuth; }
     }
 }

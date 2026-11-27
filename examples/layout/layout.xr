@@ -3,15 +3,15 @@ component Tile inherits Rectangle {
     in property <string> detail;
     in property <color> tint: #364d76;
 
-    background: root.tint;
-    border-radius: 14px;
+    background <- root.tint;
+    border-radius <- 14px;
 
     VerticalLayout {
-        padding: 14px;
-        spacing: 7px;
-        alignment: center;
-        Text { text: root.caption; font-size: 18px; color: #ffffff; }
-        Text { text: root.detail; font-size: 13px; color: #e2eaff; }
+        padding <- 14px;
+        spacing <- 7px;
+        alignment <- center;
+        Text { text <- root.caption; font-size <- 18px; color <- #ffffff; }
+        Text { text <- root.detail; font-size <- 13px; color <- #e2eaff; }
     }
 }
 
@@ -19,99 +19,99 @@ export component LayoutDemo inherits Window {
     in-out property <bool> centered: false;
     out property <int> canvas-activations: 0;
 
-    title: "XRack 约束布局";
-    width: 620px;
-    height: 590px;
-    background: #101725;
+    title <- "XRack 约束布局";
+    width <- 620px;
+    height <- 590px;
+    background <- #101725;
 
     VerticalLayout {
-        padding: 22px;
-        padding-left: 24px;
-        padding-right: 24px;
-        spacing: 14px;
-        alignment: start;
+        padding <- 22px;
+        padding-left <- 24px;
+        padding-right <- 24px;
+        spacing <- 14px;
+        alignment <- start;
 
-        Text { text: "XRack 约束布局"; font-size: 26px; color: #f0f4ff; }
-        Text { text: "调整窗口宽度，观察伸缩比例和最大宽度"; font-size: 15px; color: #a7b6ce; }
+        Text { text <- "XRack 约束布局"; font-size <- 26px; color <- #f0f4ff; }
+        Text { text <- "调整窗口宽度，观察伸缩比例和最大宽度"; font-size <- 15px; color <- #a7b6ce; }
 
         row := HorizontalLayout {
-            height: 144px;
-            padding-left: 8px;
-            padding-right: 12px;
-            spacing: 12px;
-            alignment: root.centered ? LayoutAlignment.center : LayoutAlignment.stretch;
-            cross-axis-alignment: center;
+            height <- 144px;
+            padding-left <- 8px;
+            padding-right <- 12px;
+            spacing <- 12px;
+            alignment <- root.centered ? LayoutAlignment.center : LayoutAlignment.stretch;
+            cross-axis-alignment <- center;
 
             fixed := Tile {
-                width: 128px;
-                height: 120px;
-                caption: "固定";
-                detail: "128px";
-                tint: #314b80;
+                width <- 128px;
+                height <- 120px;
+                caption <- "固定";
+                detail <- "128px";
+                tint <- #314b80;
             }
             capped := Tile {
-                min-width: 92px;
-                preferred-width: 124px;
-                max-width: 150px;
-                horizontal-stretch: 1;
-                height: 104px;
-                cross-axis-self-alignment: end;
-                caption: "上限";
-                detail: "最大 150px";
-                tint: #513b86;
+                min-width <- 92px;
+                preferred-width <- 124px;
+                max-width <- 150px;
+                horizontal-stretch <- 1;
+                height <- 104px;
+                cross-axis-self-alignment <- end;
+                caption <- "上限";
+                detail <- "最大 150px";
+                tint <- #513b86;
             }
             elastic := Tile {
-                min-width: 110px;
-                preferred-width: 140px;
-                horizontal-stretch: 2;
-                height: 120px;
-                caption: "弹性";
-                detail: "伸缩权重 2";
-                tint: #14665c;
+                min-width <- 110px;
+                preferred-width <- 140px;
+                horizontal-stretch <- 2;
+                height <- 120px;
+                caption <- "弹性";
+                detail <- "伸缩权重 2";
+                tint <- #14665c;
             }
         }
 
         toggle := Button {
-            height: 38px;
-            padding: 6px;
-            background: #273a5b;
-            font-size: 15px;
-            text: root.centered ? "居中 · 点击切换为伸缩" : "伸缩 · 点击切换为居中";
+            height <- 38px;
+            padding <- 6px;
+            background <- #273a5b;
+            font-size <- 15px;
+            text <- root.centered ? "居中 · 点击切换为伸缩" : "伸缩 · 点击切换为居中";
             clicked() => { root.centered = !root.centered; }
         }
 
         Text {
-            text: "二维滚动区 · 中键拖动 · 点击次数 " + root.canvas-activations;
-            font-size: 17px;
-            color: #c5d3eb;
+            text <- "二维滚动区 · 中键拖动 · 点击次数 " + root.canvas-activations;
+            font-size <- 17px;
+            color <- #c5d3eb;
         }
         canvas := ScrollView {
-            height: 220px;
-            content-width: 880px;
-            content-height: 340px;
+            height <- 220px;
+            content-width <- 880px;
+            content-height <- 340px;
             Rectangle {
-                width: 100%; height: 100%;
-                background: #1c293e;
+                width <- 100%; height <- 100%;
+                background <- #1c293e;
                 upper-left := Tile {
-                    x: 18px; y: 18px; width: 240px; height: 148px;
-                    caption: "左上";
-                    detail: "拖动滚动条浏览画布";
+                    x <- 18px; y <- 18px; width <- 240px; height <- 148px;
+                    caption <- "左上";
+                    detail <- "拖动滚动条浏览画布";
                 }
                 upper-right := Tile {
-                    x: 552px; y: 18px; width: 300px; height: 148px;
-                    caption: "右上";
-                    detail: "横向滚动后显示";
-                    tint: #513b86;
+                    x <- 552px; y <- 18px; width <- 300px; height <- 148px;
+                    caption <- "右上";
+                    detail <- "横向滚动后显示";
+                    tint <- #513b86;
                 }
                 lower-left := Tile {
-                    x: 18px; y: 198px; width: 240px; height: 114px;
-                    caption: "左下";
-                    detail: "纵向滚动后显示";
-                    tint: #14665c;
+                    x <- 18px; y <- 198px; width <- 240px; height <- 114px;
+                    caption <- "左下";
+                    detail <- "纵向滚动后显示";
+                    tint <- #14665c;
                 }
                 canvas-action := Button {
-                    x: 664px; y: 240px; width: 188px; height: 46px;
-                    text: "点击右下角";
+                    x <- 664px; y <- 240px; width <- 188px; height <- 46px;
+                    text <- "点击右下角";
                     clicked() => { root.canvas-activations += 1; }
                 }
             }
@@ -122,173 +122,173 @@ export component LayoutDemo inherits Window {
 export component FlowDemo inherits Window {
     out property <string> selected: "请选择命令";
 
-    title: "XRack · 换行布局";
-    width: 570px;
-    height: 260px;
-    background: #101725;
+    title <- "XRack · 换行布局";
+    width <- 570px;
+    height <- 260px;
+    background <- #101725;
 
     VerticalLayout {
-        padding: 20px;
-        spacing: 14px;
-        alignment: start;
+        padding <- 20px;
+        spacing <- 14px;
+        alignment <- start;
 
-        Text { text: "缩小窗口，观察按钮换行"; font-size: 22px; color: #edf3ff; }
+        Text { text <- "缩小窗口，观察按钮换行"; font-size <- 22px; color <- #edf3ff; }
         commands := FlowLayout {
-            horizontal-spacing: 8px;
-            vertical-spacing: 12px;
-            cross-axis-alignment: center;
+            horizontal-spacing <- 8px;
+            vertical-spacing <- 12px;
+            cross-axis-alignment <- center;
 
             open := Button {
-                text: "打开文件";
-                width: 140px; height: 38px;
-                background: #314b80;
+                text <- "打开文件";
+                width <- 140px; height <- 38px;
+                background <- #314b80;
                 clicked() => { root.selected = "已打开"; }
             }
             save := Button {
-                text: "保存草稿";
-                width: 145px; height: 44px;
-                background: #14665c;
+                text <- "保存草稿";
+                width <- 145px; height <- 44px;
+                background <- #14665c;
                 clicked() => { root.selected = "已保存"; }
             }
             export-button := Button {
-                text: "导出预览";
-                width: 158px; height: 38px;
-                background: #513b86;
+                text <- "导出预览";
+                width <- 158px; height <- 38px;
+                background <- #513b86;
                 clicked() => { root.selected = "已导出"; }
             }
         }
-        status := Text { text: root.selected; color: #acc0db; }
+        status := Text { text <- root.selected; color <- #acc0db; }
     }
 }
 export component FlexDemo inherits Window {
-    title: "XRack · FlexboxLayout";
-    width: 740px; height: 390px;
-    background: #101725;
-    in-out property <FlexboxLayoutDirection> direction: once row;
-    in-out property <FlexboxLayoutWrap> wrapping: once wrap;
+    title <- "XRack · FlexboxLayout";
+    width <- 740px; height <- 390px;
+    background <- #101725;
+    in-out property <FlexboxLayoutDirection> direction: row;
+    in-out property <FlexboxLayoutWrap> wrapping: wrap;
     out property <string> status: "请选择命令";
 
     VerticalLayout {
-        padding: 20px; spacing: 12px; alignment: start;
-        Text { text: "调整窗口宽度，观察命令伸缩和换行"; font-size: 22px; }
+        padding <- 20px; spacing <- 12px; alignment <- start;
+        Text { text <- "调整窗口宽度，观察命令伸缩和换行"; font-size <- 22px; }
         HorizontalLayout {
-            alignment: start; spacing: 8px;
+            alignment <- start; spacing <- 8px;
             change-direction := Button {
-                text: "换方向";
+                text <- "换方向";
                 clicked() => { root.direction = root.direction == FlexboxLayoutDirection.row ? FlexboxLayoutDirection.row-reverse
                     : root.direction == FlexboxLayoutDirection.row-reverse ? FlexboxLayoutDirection.column
                     : root.direction == FlexboxLayoutDirection.column ? FlexboxLayoutDirection.column-reverse : FlexboxLayoutDirection.row; }
             }
             change-wrap := Button {
-                text: "换行模式";
+                text <- "换行模式";
                 clicked() => { root.wrapping = root.wrapping == FlexboxLayoutWrap.wrap ? FlexboxLayoutWrap.no-wrap
                     : root.wrapping == FlexboxLayoutWrap.no-wrap ? FlexboxLayoutWrap.wrap-reverse : FlexboxLayoutWrap.wrap; }
             }
         }
         flex-commands := FlexboxLayout {
-            height: 192px;
-            flex-direction: root.direction;
-            flex-wrap: root.wrapping;
-            alignment: stretch;
-            cross-axis-alignment: center;
-            cross-axis-line-alignment: space-between;
-            spacing-horizontal: 10px;
-            spacing-vertical: 14px;
+            height <- 192px;
+            flex-direction <- root.direction;
+            flex-wrap <- root.wrapping;
+            alignment <- stretch;
+            cross-axis-alignment <- center;
+            cross-axis-line-alignment <- space-between;
+            spacing-horizontal <- 10px;
+            spacing-vertical <- 14px;
             flex-open := Button {
-                text: "打开文件"; preferred-width: 150px; min-width: 100px; max-width: 180px; height: 40px;
-                horizontal-stretch: 1;
-                background: #314b80;
+                text <- "打开文件"; preferred-width <- 150px; min-width <- 100px; max-width <- 180px; height <- 40px;
+                horizontal-stretch <- 1;
+                background <- #314b80;
                 clicked() => { root.status = "已打开"; }
             }
             flex-save := Button {
-                text: "保存草稿"; preferred-width: 160px; min-width: 100px; height: 48px;
-                horizontal-stretch: 2; layout-order: -1;
-                background: #14665c;
+                text <- "保存草稿"; preferred-width <- 160px; min-width <- 100px; height <- 48px;
+                horizontal-stretch <- 2; layout-order <- -1;
+                background <- #14665c;
                 clicked() => { root.status = "已保存"; }
             }
             flex-export := Button {
-                text: "导出预览"; preferred-width: 180px; min-width: 120px; max-width: 220px; height: 42px;
-                horizontal-stretch: 1;
-                background: #513b86;
+                text <- "导出预览"; preferred-width <- 180px; min-width <- 120px; max-width <- 220px; height <- 42px;
+                horizontal-stretch <- 1;
+                background <- #513b86;
                 clicked() => { root.status = "已导出"; }
             }
             flex-options := Button {
-                text: "设置"; preferred-width: 120px; min-width: 90px; height: 40px;
-                horizontal-stretch: 0;
-                background: #384966;
+                text <- "设置"; preferred-width <- 120px; min-width <- 90px; height <- 40px;
+                horizontal-stretch <- 0;
+                background <- #384966;
                 clicked() => { root.status = "已打开设置"; }
             }
         }
-        Text { text: root.status; color: #acc0db; }
+        Text { text <- root.status; color <- #acc0db; }
     }
 }
 export component LabelsDemo inherits Window {
-    title: "XRack · 标签排版";
-    width: 520px; height: 310px;
-    background: #101725;
+    title <- "XRack · 标签排版";
+    width <- 520px; height <- 310px;
+    background <- #101725;
     in-out property <bool> elided: true;
 
     VerticalLayout {
-        padding: 20px; spacing: 14px; alignment: start;
-        Text { text: "缩窄窗口，查看标签排版"; font-size: 21px; }
+        padding <- 20px; spacing <- 14px; alignment <- start;
+        Text { text <- "缩窄窗口，查看标签排版"; font-size <- 21px; }
         Rectangle {
-            height: 52px;
-            background: #263750;
+            height <- 52px;
+            background <- #263750;
             job-title := Label {
-                width: 100%; height: 100%; font-size: 18px;
-                text: "发布任务 👩‍💻 构建、签名并推送到测试环境，等待最后一轮验证";
-                overflow: root.elided ? TextOverflow.elide : TextOverflow.clip;
-                vertical-alignment: center;
+                width <- 100%; height <- 100%; font-size <- 18px;
+                text <- "发布任务 👩‍💻 构建、签名并推送到测试环境，等待最后一轮验证";
+                overflow <- root.elided ? TextOverflow.elide : TextOverflow.clip;
+                vertical-alignment <- center;
             }
         }
         Rectangle {
-            height: 90px;
-            background: #214a48;
+            height <- 90px;
+            background <- #214a48;
             description := Text {
-                width: 100%; height: 100%; font-size: 17px;
-                text: "这里的摘要最多显示两行。调整窗口宽度时，行数和截断位置一起变化。";
-                wrap: word-wrap; overflow: elide; max-lines: 2;
-                horizontal-alignment: center;
-                vertical-alignment: bottom;
+                width <- 100%; height <- 100%; font-size <- 17px;
+                text <- "这里的摘要最多显示两行。调整窗口宽度时，行数和截断位置一起变化。";
+                wrap <- word-wrap; overflow <- elide; max-lines <- 2;
+                horizontal-alignment <- center;
+                vertical-alignment <- bottom;
             }
         }
-        Label { text: "مرحبا بالعالم"; horizontal-alignment: start; font-size: 18px; }
-        toggle-overflow := Button { text: "切换省略"; clicked() => { root.elided = !root.elided; } }
+        Label { text <- "مرحبا بالعالم"; horizontal-alignment <- start; font-size <- 18px; }
+        toggle-overflow := Button { text <- "切换省略"; clicked() => { root.elided = !root.elided; } }
     }
 }
 
 export component FontsDemo inherits Window {
-    title: "XRack · 字体与排版";
-    width: 500px; height: 390px;
-    background: #101725;
+    title <- "XRack · 字体与排版";
+    width <- 500px; height <- 390px;
+    background <- #101725;
     in-out property <bool> mono: false;
     in-out property <bool> large: false;
-    default-font-family: root.mono ? "monospace" : "";
-    default-font-size: root.large ? 26px : 18px;
-    default-font-weight: 400;
+    default-font-family <- root.mono ? "monospace" : "";
+    default-font-size <- root.large ? 26px : 18px;
+    default-font-weight <- 400;
 
     VerticalLayout {
-        padding: 20px; spacing: 10px; alignment: start; cross-axis-alignment: start;
-        sample := Label { text: "WWWW iiiii · 字体"; }
+        padding <- 20px; spacing <- 10px; alignment <- start; cross-axis-alignment <- start;
+        sample := Label { text <- "WWWW iiiii · 字体"; }
         override-sample := Label {
-            text: "Bold italic · fixed size";
-            font-family: "monospace"; font-size: 16px;
-            font-weight: 700; font-italic: true;
+            text <- "Bold italic · fixed size";
+            font-family <- "monospace"; font-size <- 16px;
+            font-weight <- 700; font-italic <- true;
         }
-        entry := LineEdit { width: 360px; text: "WWWWiiii"; }
+        entry := LineEdit { width <- 360px; text <- "WWWWiiii"; }
         paragraph := TextArea {
-            width: 156px; height: 88px;
-            text: "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii";
-            wrap: char-wrap;
+            width <- 156px; height <- 88px;
+            text <- "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii";
+            wrap <- char-wrap;
         }
         HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             toggle-font := Button {
-                text: "切换等宽字体";
+                text <- "切换等宽字体";
                 clicked() => { root.mono = !root.mono; }
             }
             toggle-size := Button {
-                text: "切换字号";
+                text <- "切换字号";
                 clicked() => { root.large = !root.large; }
             }
         }
@@ -296,29 +296,29 @@ export component FontsDemo inherits Window {
 }
 
 export component AnimationsDemo inherits Window {
-    title: "XRack · 控件过渡";
-    width: 546px; height: 288px;
-    background: #141d2c;
+    title <- "XRack · 控件过渡";
+    width <- 546px; height <- 288px;
+    background <- #141d2c;
     in-out property <bool> expanded: false;
     in-out property <bool> motion: true;
     in-out property <int> changes: 0;
 
-    Label { x: 24px; y: 18px; text: "同一目标，不同过渡时间线"; font-size: 20px; }
-    Label { x: 24px; y: 57px; text: "线性 · 600ms"; }
+    Label { x <- 24px; y <- 18px; text <- "同一目标，不同过渡时间线"; font-size <- 20px; }
+    Label { x <- 24px; y <- 57px; text <- "线性 · 600ms"; }
     linear := Rectangle {
-        x: 24px; y: 84px; height: 27px;
-        width: root.expanded ? 320px : 80px;
-        accessible-name: "线性进度条";
-        background: #3a6fa4;
+        x <- 24px; y <- 84px; height <- 27px;
+        width <- root.expanded ? 320px : 80px;
+        accessible-name <- "线性进度条";
+        background <- #3a6fa4;
         animate width { duration: 600ms; enabled: root.motion; }
     }
-    Label { x: 24px; y: 122px; text: "缓动 · 先等待 120ms"; }
+    Label { x <- 24px; y <- 122px; text <- "缓动 · 先等待 120ms"; }
     eased := Rectangle {
-        x: root.expanded ? 64px : 24px;
-        y: 149px; height: 27px;
-        width: root.expanded ? 320px : 80px;
-        accessible-name: "缓动进度条";
-        background: root.expanded ? @linear-gradient(90deg, #b82c69, #dc805a) : @linear-gradient(0deg, #316b78, #54bdab);
+        x <- root.expanded ? 64px : 24px;
+        y <- 149px; height <- 27px;
+        width <- root.expanded ? 320px : 80px;
+        accessible-name <- "缓动进度条";
+        background <- root.expanded ? @linear-gradient(90deg, #b82c69, #dc805a) : @linear-gradient(0deg, #316b78, #54bdab);
         animate x, width, background {
             duration: 600ms;
             delay: 120ms;
@@ -327,43 +327,43 @@ export component AnimationsDemo inherits Window {
         }
     }
     toggle := Button {
-        x: 24px; y: 202px; width: 112px; height: 38px;
-        text: "反转目标";
+        x <- 24px; y <- 202px; width <- 112px; height <- 38px;
+        text <- "反转目标";
         clicked() => { root.expanded = !root.expanded; }
     }
     motion := CheckBox {
-        x: 151px; y: 202px; width: 126px; height: 38px;
-        text: "播放过渡";
-        checked <=> root.motion;
+        x <- 151px; y <- 202px; width <- 126px; height <- 38px;
+        text <- "播放过渡";
+        checked <-> root.motion;
     }
     change-label := Button {
-        x: 296px; y: 202px; width: 174px; height: 38px;
-        text: "只更新计数";
+        x <- 296px; y <- 202px; width <- 174px; height <- 38px;
+        text <- "只更新计数";
         clicked() => { root.changes = root.changes + 1; }
     }
-    Label { x: 24px; y: 253px; text: "独立状态更新 " + root.changes + " 次"; }
+    Label { x <- 24px; y <- 253px; text <- "独立状态更新 " + root.changes + " 次"; }
 }
 
 export component StatesDemo inherits Window {
-    title: "XRack · 声明式状态";
-    width: 518px; height: 234px;
-    background: #141d2c;
+    title <- "XRack · 声明式状态";
+    width <- 518px; height <- 234px;
+    background <- #141d2c;
     in-out property <int> level: 0;
     in-out property <length> baseline: 96px;
     pure callback base-width() -> length;
     base-width() => { root.baseline }
 
     tile := Rectangle {
-        x: 24px; y: 60px; height: 54px;
-        width: root.base-width();
-        background: #3a6fa4;
-        accessible-name: "状态指示块";
-        border-radius: 6px;
+        x <- 24px; y <- 60px; height <- 54px;
+        width <- root.base-width();
+        background <- #3a6fa4;
+        accessible-name <- "状态指示块";
+        border-radius <- 6px;
     }
-    caption := Label { x: 24px; y: 24px; text: "正常"; font-size: 20px; }
+    caption := Label { x <- 24px; y <- 24px; text <- "正常"; font-size <- 20px; }
     badge := Rectangle {
-        x: 340px; y: 60px; width: 16px; height: 16px;
-        visible: false; background: #e97c71; border-radius: 8px;
+        x <- 340px; y <- 60px; width <- 16px; height <- 16px;
+        visible <- false; background <- #e97c71; border-radius <- 8px;
     }
     states [
         alarm when root.level >= 2: {
@@ -386,13 +386,13 @@ export component StatesDemo inherits Window {
             }
         }
     ]
-    normal := Button { x: 24px; y: 150px; width: 116px; height: 42px; text: "正常"; clicked() => { root.level = 0; } }
-    warning := Button { x: 151px; y: 150px; width: 116px; height: 42px; text: "预警"; clicked() => { root.level = 1; } }
-    critical := Button { x: 278px; y: 150px; width: 116px; height: 42px; text: "告警"; clicked() => { root.level = 2; } }
+    normal := Button { x <- 24px; y <- 150px; width <- 116px; height <- 42px; text <- "正常"; clicked() => { root.level = 0; } }
+    warning := Button { x <- 151px; y <- 150px; width <- 116px; height <- 42px; text <- "预警"; clicked() => { root.level = 1; } }
+    critical := Button { x <- 278px; y <- 150px; width <- 116px; height <- 42px; text <- "告警"; clicked() => { root.level = 2; } }
     status-leds := VerticalLayout {
-        x: 428px; y: 150px; width: 16px; height: 42px; alignment: start;
+        x <- 428px; y <- 150px; width <- 16px; height <- 42px; alignment <- start;
         for index in 3 : Rectangle {
-            width: 12px; height: 12px; background: #314051; border-radius: 6px;
+            width <- 12px; height <- 12px; background <- #314051; border-radius <- 6px;
             states [ lit when index == root.level: { background: #9adcb7; } ]
         }
     }
@@ -401,28 +401,28 @@ export component StatesDemo inherits Window {
 component StatusBadge inherits Rectangle {
     in-out property <string> caption: "就绪";
     in property <brush> tint: #3a6fa4;
-    height: 42px;
-    border-radius: 6px;
-    background: root.tint;
-    badge-text := Label { x: 10px; y: 12px; text: root.caption; }
+    height <- 42px;
+    border-radius <- 6px;
+    background <- root.tint;
+    badge-text := Label { x <- 10px; y <- 12px; text <- root.caption; }
 }
 
 component StatusFrame inherits Rectangle {
-    in-out property <string> caption <=> badge.caption;
+    in-out property <string> caption <-> badge.caption;
     in property <brush> tint: #3a6fa4;
-    height: 48px;
-    badge := StatusBadge { width: 100%; tint: root.tint; }
+    height <- 48px;
+    badge := StatusBadge { width <- 100%; tint <- root.tint; }
 }
 
 enum StatusCaption { Follow, Custom(string) }
 
 export component ComponentStatesDemo inherits Window {
-    title: "XRack · 跨组件状态";
-    width: 520px; height: 306px;
-    background: #141d2c;
+    title <- "XRack · 跨组件状态";
+    width <- 520px; height <- 306px;
+    background <- #141d2c;
     in-out property <bool> warning: false;
     in-out property <string> baseline: "一切正常";
-    out property <string> effective-caption: banner.caption;
+    out property <string> effective-caption <- banner.caption;
     pure callback warning-active(bool) -> bool;
     warning-active(active) => { active }
     pure callback normal-caption(string) -> string;
@@ -431,14 +431,14 @@ export component ComponentStatesDemo inherits Window {
     callback set-banner(string);
     set-banner(text) => { root.caption-mode = StatusCaption::Custom(text); }
 
-    banner := StatusFrame { x: 24px; y: 32px; width: 200px; caption: match root.caption-mode {
+    banner := StatusFrame { x <- 24px; y <- 32px; width <- 200px; caption <- match root.caption-mode {
         Follow => root.normal-caption(root.baseline), Custom(text) => text,
     }; }
-    status := Label { x: 24px; y: 88px; text: root.effective-caption; }
+    status := Label { x <- 24px; y <- 88px; text <- root.effective-caption; }
     toggle := CheckBox {
-        x: 24px; y: 116px; width: 172px; height: 38px;
-        text: "显示预警";
-        checked <=> root.warning;
+        x <- 24px; y <- 116px; width <- 172px; height <- 38px;
+        text <- "显示预警";
+        checked <-> root.warning;
     }
     states [ attention when root.warning-active(root.warning): {
         banner.caption: "需要检查";
@@ -448,9 +448,9 @@ export component ComponentStatesDemo inherits Window {
         in-out { animate banner.width { duration: 260ms; } }
     } ]
     queue := ListView {
-        x: 24px; y: 166px; width: 310px; height: 120px; row-height: 38px;
+        x <- 24px; y <- 166px; width <- 310px; height <- 120px; row-height <- 38px;
         for item[index] in ["监控", "存储", "网络"] : StatusBadge {
-            caption: item;
+            caption <- item;
             states [ attention when root.warning && index == 1: {
                 caption: item + " · 待检查";
                 tint: #ba4b5d;
@@ -460,14 +460,14 @@ export component ComponentStatesDemo inherits Window {
 }
 
 export component FramelessDemo inherits Window {
-    title: "XRack · 自定义标题栏";
-    width: 540px; height: 320px;
-    min-width: 400px; min-height: 260px;
-    max-width: 960px; max-height: 640px;
-    background: #141d2c;
-    no-frame: root.frameless;
-    resize-border-width: 8px;
-    resizable: root.can-resize;
+    title <- "XRack · 自定义标题栏";
+    width <- 540px; height <- 320px;
+    min-width <- 400px; min-height <- 260px;
+    max-width <- 960px; max-height <- 640px;
+    background <- #141d2c;
+    no-frame <- root.frameless;
+    resize-border-width <- 8px;
+    resizable <- root.can-resize;
     in-out property <bool> frameless: true;
     in-out property <bool> can-resize: true;
     in-out property <bool> can-move: true;
@@ -475,145 +475,145 @@ export component FramelessDemo inherits Window {
     out property <int> header-clicks: 0;
 
     title-area := WindowMoveArea {
-        height: 56px;
-        enabled: root.can-move;
-        Rectangle { background: #223650; }
+        height <- 56px;
+        enabled <- root.can-move;
+        Rectangle { background <- #223650; }
         HorizontalLayout {
-            padding: 10px; spacing: 8px;
-            Label { text: "XRack 标题栏"; font-size: 19px; horizontal-stretch: 1; }
+            padding <- 10px; spacing <- 8px;
+            Label { text <- "XRack 标题栏"; font-size <- 19px; horizontal-stretch <- 1; }
             header-action := Button {
-                width: 76px;
-                text: "计数";
+                width <- 76px;
+                text <- "计数";
                 clicked => { root.header-clicks += 1; }
             }
-            minimize-window := Button { width: 38px; text: "−"; accessible-name: "最小化窗口"; clicked => { root.minimize(); } }
+            minimize-window := Button { width <- 38px; text <- "−"; accessible-name <- "最小化窗口"; clicked => { root.minimize(); } }
             maximize-window := Button {
-                width: 38px;
-                text: root.maximized ? "❐" : "□";
-                accessible-name: root.maximized ? "还原窗口" : "最大化窗口";
+                width <- 38px;
+                text <- root.maximized ? "❐" : "□";
+                accessible-name <- root.maximized ? "还原窗口" : "最大化窗口";
                 clicked => { root.toggle-maximized(); }
             }
-            close-window := Button { width: 68px; text: "关闭"; clicked => { root.close(); } }
+            close-window := Button { width <- 68px; text <- "关闭"; clicked => { root.close(); } }
         }
     }
     VerticalLayout {
-        x: 18px; y: 72px; width: 360px; height: 176px;
-        spacing: 8px;
+        x <- 18px; y <- 72px; width <- 360px; height <- 176px;
+        spacing <- 8px;
         HorizontalLayout {
-            spacing: 12px;
-            CheckBox { text: "自定义边框"; checked <=> root.frameless; }
-            CheckBox { text: "允许边缘缩放"; checked <=> root.can-resize; }
+            spacing <- 12px;
+            CheckBox { text <- "自定义边框"; checked <-> root.frameless; }
+            CheckBox { text <- "允许边缘缩放"; checked <-> root.can-resize; }
         }
-        CheckBox { text: "允许标题栏拖动"; checked <=> root.can-move; }
+        CheckBox { text <- "允许标题栏拖动"; checked <-> root.can-move; }
         HorizontalLayout {
-            spacing: 8px;
-            open-dialog := Button { text: "打开模态层"; clicked => { root.modal = true; } }
+            spacing <- 8px;
+            open-dialog := Button { text <- "打开模态层"; clicked => { root.modal = true; } }
             toggle-full-screen := Button {
-                text: root.full-screen ? "退出全屏" : "进入全屏";
+                text <- root.full-screen ? "退出全屏" : "进入全屏";
                 clicked => { root.toggle-full-screen(); }
             }
-            restore-window := Button { text: "还原"; clicked => { root.restore(); } }
+            restore-window := Button { text <- "还原"; clicked => { root.restore(); } }
         }
-        Label { text: "标题栏按钮已点击 " + root.header-clicks + " 次"; }
+        Label { text <- "标题栏按钮已点击 " + root.header-clicks + " 次"; }
         window-status := Label {
-            text: (root.full-screen ? "全屏" : root.maximized ? "最大化" : root.minimized ? "最小化" : "普通")
+            text <- (root.full-screen ? "全屏" : root.maximized ? "最大化" : root.minimized ? "最小化" : "普通")
                 + (root.window-active ? " · 当前窗口" : " · 非活动")
                 + (root.minimized-known ? "" : " · 宿主未报告最小化状态");
         }
     }
     dialog := Dialog {
-        width: 280px; height: 132px;
-        title: "模态层";
-        open <=> root.modal;
-        dismiss-dialog := Button { x: 24px; y: 52px; text: "返回"; clicked => { root.modal = false; } }
+        width <- 280px; height <- 132px;
+        title <- "模态层";
+        open <-> root.modal;
+        dismiss-dialog := Button { x <- 24px; y <- 52px; text <- "返回"; clicked => { root.modal = false; } }
     }
 }
 
 component EditorPane inherits FocusScope {
-    width: 218px; height: 148px;
-    background: root.focus-within ? #355372 : #26364e;
+    width <- 218px; height <- 148px;
+    background <- root.focus-within ? #355372 : #26364e;
     in property <string> name;
     in property <bool> query-enabled: true;
-    out property <bool> active: root.focus-within;
+    out property <bool> active <- root.focus-within;
     out property <int> visits: 0;
-    out property <FocusReason> last-focus-reason: once programmatic;
+    out property <FocusReason> last-focus-reason: programmatic;
     callback enter-pane();
     callback clear-pane();
     enter-pane() => { root.focus(); }
     clear-pane() => { root.clear-focus(); }
-    initial-focus: query;
+    initial-focus <- query;
     focus-within-changed(focused, reason) => {
         root.visits = focused ? root.visits + 1 : root.visits;
         root.last-focus-reason = reason;
     }
-    Label { x: 12px; y: 9px; text: root.name; }
+    Label { x <- 12px; y <- 9px; text <- root.name; }
     notes := LineEdit {
-        x: 12px; y: 43px; width: 194px; height: 34px;
-        accessible-name: root.name + " 备注";
-        placeholder-text: "备注";
-        background: self.has-focus ? #203a52 : #19293c;
+        x <- 12px; y <- 43px; width <- 194px; height <- 34px;
+        accessible-name <- root.name + " 备注";
+        placeholder-text <- "备注";
+        background <- self.has-focus ? #203a52 : #19293c;
     }
     query := LineEdit {
-        x: 12px; y: 87px; width: 194px; height: 34px;
-        accessible-name: root.name + " 查询";
-        enabled: root.query-enabled;
-        placeholder-text: "查询";
-        background: self.has-focus ? #203a52 : #19293c;
+        x <- 12px; y <- 87px; width <- 194px; height <- 34px;
+        accessible-name <- root.name + " 查询";
+        enabled <- root.query-enabled;
+        placeholder-text <- "查询";
+        background <- self.has-focus ? #203a52 : #19293c;
     }
-    clear-shortcut := Shortcut { sequence: "Escape"; focus-within: true; activated() => { root.clear-focus(); } }
+    clear-shortcut := Shortcut { sequence <- "Escape"; focus-within <- true; activated() => { root.clear-focus(); } }
 }
 
 export component FocusScopesDemo inherits Window {
-    title: "XRack · 焦点作用域";
-    width: 492px; height: 272px;
-    background: #141d2c;
+    title <- "XRack · 焦点作用域";
+    width <- 492px; height <- 272px;
+    background <- #141d2c;
     in-out property <bool> left-query-enabled: true;
     in-out property <bool> left-visible: true;
-    out property <bool> left-active: left.active;
-    out property <bool> right-active: right.active;
-    out property <int> left-visits: left.visits;
-    out property <int> right-visits: right.visits;
-    out property <FocusReason> right-focus-reason: right.last-focus-reason;
+    out property <bool> left-active <- left.active;
+    out property <bool> right-active <- right.active;
+    out property <int> left-visits <- left.visits;
+    out property <int> right-visits <- right.visits;
+    out property <FocusReason> right-focus-reason <- right.last-focus-reason;
     callback clear-left();
     clear-left() => { left.clear-pane(); }
 
     left := EditorPane {
-        x: 18px; y: 18px; name: "左侧";
-        query-enabled: root.left-query-enabled;
-        visible: root.left-visible;
+        x <- 18px; y <- 18px; name <- "左侧";
+        query-enabled <- root.left-query-enabled;
+        visible <- root.left-visible;
     }
-    right := EditorPane { x: 254px; y: 18px; name: "右侧"; }
+    right := EditorPane { x <- 254px; y <- 18px; name <- "右侧"; }
     jump-left := Button {
-        x: 18px; y: 186px; width: 150px; height: 38px; text: "进入左侧";
+        x <- 18px; y <- 186px; width <- 150px; height <- 38px; text <- "进入左侧";
         clicked() => { left.enter-pane(); }
     }
     jump-right := Button {
-        x: 179px; y: 186px; width: 150px; height: 38px; text: "进入右侧";
+        x <- 179px; y <- 186px; width <- 150px; height <- 38px; text <- "进入右侧";
         clicked() => { right.enter-pane(); }
     }
     disable-left := Button {
-        x: 340px; y: 186px; width: 134px; height: 38px; text: "禁用查询";
+        x <- 340px; y <- 186px; width <- 134px; height <- 38px; text <- "禁用查询";
         clicked() => { root.left-query-enabled = false; left.enter-pane(); }
     }
     Label {
-        x: 18px; y: 241px;
-        text: root.left-active ? "左区有焦点" : root.right-active ? "右区有焦点" : "编辑区无焦点";
+        x <- 18px; y <- 241px;
+        text <- root.left-active ? "左区有焦点" : root.right-active ? "右区有焦点" : "编辑区无焦点";
     }
 }
 
 export component ScopedKeysDemo inherits Window {
-    title: "XRack · 键盘事件路由";
-    width: 512px; height: 254px;
-    background: #141d2c;
+    title <- "XRack · 键盘事件路由";
+    width <- 512px; height <- 254px;
+    background <- #141d2c;
     in-out property <bool> block-x: true;
     in-out property <string> text: "";
     in-out property <string> trace: "";
     out property <int> accepted-releases: 0;
 
     outer := FocusScope {
-        x: 24px; y: 20px; width: 464px; height: 138px;
-        background: #25334a;
-        initial-focus: inner;
+        x <- 24px; y <- 20px; width <- 464px; height <- 138px;
+        background <- #25334a;
+        initial-focus <- inner;
         capture-key-pressed(event) => {
             root.trace = root.trace + "外层捕获 ";
             event.modifiers.primary && event.key == "k" ? EventResult.accept : EventResult.reject
@@ -627,8 +627,8 @@ export component ScopedKeysDemo inherits Window {
             event.key == "F2" ? accept : reject
         }
         inner := FocusScope {
-            x: 12px; y: 12px; width: 440px; height: 110px;
-            initial-focus: field;
+            x <- 12px; y <- 12px; width <- 440px; height <- 110px;
+            initial-focus <- field;
             capture-key-pressed(event) => {
                 root.trace = root.trace + "内层捕获 ";
                 event.text == "x" && root.block-x ? accept : reject
@@ -643,67 +643,67 @@ export component ScopedKeysDemo inherits Window {
                 reject
             }
             field := LineEdit {
-                x: 12px; y: 12px; width: 400px; height: 36px;
-                text <=> root.text;
-                placeholder-text: "输入 a，尝试 x 和 F2";
-                accessible-name: "键盘路由输入框";
+                x <- 12px; y <- 12px; width <- 400px; height <- 36px;
+                text <-> root.text;
+                placeholder-text <- "输入 a，尝试 x 和 F2";
+                accessible-name <- "键盘路由输入框";
             }
         }
     }
     enable-block := CheckBox {
-        x: 24px; y: 174px; width: 190px; height: 36px;
-        text: "拦截 x";
-        checked <=> root.block-x;
+        x <- 24px; y <- 174px; width <- 190px; height <- 36px;
+        text <- "拦截 x";
+        checked <-> root.block-x;
     }
     start-typing := Button {
-        x: 258px; y: 174px; width: 210px; height: 36px;
-        text: "聚焦输入框";
+        x <- 258px; y <- 174px; width <- 210px; height <- 36px;
+        text <- "聚焦输入框";
         clicked() => { root.trace = ""; outer.focus(); }
     }
     status := Label {
-        x: 24px; y: 220px; width: 464px;
-        text: root.trace;
-        overflow: elide;
+        x <- 24px; y <- 220px; width <- 464px;
+        text <- root.trace;
+        overflow <- elide;
     }
 }
 
 export component StyledTextDemo inherits Window {
-    title: "XRack · 富文本";
-    width: 460px; height: 268px;
-    background: #141d2c;
-    in-out property <styled-text> body: once @markdown("# 发布说明\n\n**粗体**、*斜体*、[`xrackc`](#compiler) 和 ~~已弃用~~。\n\n**مرحبا** بكم في XRack · [阅读手册](#manual)");
+    title <- "XRack · 富文本";
+    width <- 460px; height <- 268px;
+    background <- #141d2c;
+    in-out property <styled-text> body: @markdown("# 发布说明\n\n**粗体**、*斜体*、[`xrackc`](#compiler) 和 ~~已弃用~~。\n\n**مرحبا** بكم في XRack · [阅读手册](#manual)");
     in-out property <bool> compact: false;
     in-out property <bool> links-enabled: true;
     in-out property <bool> selectable: false;
-    out property <string> selected: body-label.selected-text;
+    out property <string> selected <- body-label.selected-text;
     out property <string> last-link: "";
 
     Label {
-        x: 24px; y: 20px; text: "带内联样式的文字";
-        font-size: 15px; color: #acc1d9;
+        x <- 24px; y <- 20px; text <- "带内联样式的文字";
+        font-size <- 15px; color <- #acc1d9;
     }
     body-label := StyledText {
-        x: 24px; y: 52px; width: 412px;
-        font-size: 22px;
-        color: #e8f2ff;
-        link-color: #84d8ff;
-        enabled: root.links-enabled;
-        selectable: root.selectable;
-        max-lines: root.compact ? 2 : 5;
-        overflow: elide;
-        text: root.body;
+        x <- 24px; y <- 52px; width <- 412px;
+        font-size <- 22px;
+        color <- #e8f2ff;
+        link-color <- #84d8ff;
+        enabled <- root.links-enabled;
+        selectable <- root.selectable;
+        max-lines <- root.compact ? 2 : 5;
+        overflow <- elide;
+        text <- root.body;
         link-activated(target) => { root.last-link = target; }
     }
     Label {
-        x: 24px; y: 212px; width: 412px; overflow: elide;
-        text: root.last-link == ""
+        x <- 24px; y <- 212px; width <- 412px; overflow <- elide;
+        text <- root.last-link == ""
             ? (root.selectable ? "拖选文字，用系统复制快捷键复制，点按链接打开" : "用 Tab 和 Enter 打开链接")
             : "已激活 " + root.last-link;
     }
     CheckBox {
-        x: 24px; y: 236px; width: 412px; height: 30px;
-        text: "只显示两行";
-        checked <=> root.compact;
+        x <- 24px; y <- 236px; width <- 412px; height <- 30px;
+        text <- "只显示两行";
+        checked <-> root.compact;
     }
 }
 
@@ -713,79 +713,79 @@ export component RepeatedLinkDemo inherits Window {
 
     VerticalLayout {
         for filename in root.filenames : StyledText {
-            text: @markdown("[源码](#source)");
+            text <- @markdown("[源码](#source)");
             link-activated(target) => { root.last-link = filename + target; }
         }
     }
 }
 
 export component CompositingDemo inherits Window {
-    title: "XRack · 叠放与整组透明度";
-    width: 460px; height: 292px;
-    background: #101725;
+    title <- "XRack · 叠放与整组透明度";
+    width <- 460px; height <- 292px;
+    background <- #101725;
     in-out property <float> fade: 0.5;
     in-out property <float> first-layer: 2.0;
     in-out property <float> first-opacity: 1.0;
     out property <int> first-clicks: 0;
     out property <int> second-clicks: 0;
 
-    Label { x: 24px; y: 22px; text: "整组淡出"; color: #e8f2ff; }
-    Label { x: 240px; y: 22px; text: "绘制与命中共用叠放顺序"; color: #e8f2ff; }
+    Label { x <- 24px; y <- 22px; text <- "整组淡出"; color <- #e8f2ff; }
+    Label { x <- 240px; y <- 22px; text <- "绘制与命中共用叠放顺序"; color <- #e8f2ff; }
     composite := Rectangle {
-        x: 24px; y: 56px; width: 172px; height: 124px;
-        background: #ff0000;
-        opacity: root.fade;
+        x <- 24px; y <- 56px; width <- 172px; height <- 124px;
+        background <- #ff0000;
+        opacity <- root.fade;
         Rectangle {
-            x: 42px; y: 24px; width: 90px; height: 78px;
-            background: #0000ff;
+            x <- 42px; y <- 24px; width <- 90px; height <- 78px;
+            background <- #0000ff;
             Rectangle {
-                x: 31px; y: 20px; width: 44px; height: 42px;
-                opacity: 0.5; background: #00ff00;
+                x <- 31px; y <- 20px; width <- 44px; height <- 42px;
+                opacity <- 0.5; background <- #00ff00;
             }
         }
     }
     stage := Rectangle {
-        x: 240px; y: 56px; width: 184px; height: 124px;
-        background: #263653;
+        x <- 240px; y <- 56px; width <- 184px; height <- 124px;
+        background <- #263653;
         first := Button {
-            x: 10px; y: 12px; width: 132px; height: 68px;
-            z: root.first-layer;
-            opacity: root.first-opacity;
-            background: #39d6bc; color: #102132; text: "第一项";
+            x <- 10px; y <- 12px; width <- 132px; height <- 68px;
+            z <- root.first-layer;
+            opacity <- root.first-opacity;
+            background <- #39d6bc; color <- #102132; text <- "第一项";
             clicked() => { root.first-clicks = root.first-clicks + 1; }
         }
         second := Button {
-            x: 42px; y: 30px; width: 132px; height: 68px;
-            z: 1.0;
-            background: #ffd177; color: #102132; text: "第二项";
+            x <- 42px; y <- 30px; width <- 132px; height <- 68px;
+            z <- 1.0;
+            background <- #ffd177; color <- #102132; text <- "第二项";
             clicked() => { root.second-clicks = root.second-clicks + 1; }
         }
     }
     Slider {
-        x: 24px; y: 201px; width: 172px; height: 28px;
-        minimum: 0.0; maximum: 1.0;
-        value <=> root.fade;
-        accessible-name: "整组透明度";
+        x <- 24px; y <- 201px; width <- 172px; height <- 28px;
+        minimum <- 0.0; maximum <- 1.0;
+        value <-> root.fade;
+        accessible-name <- "整组透明度";
     }
     swap-order := Button {
-        x: 240px; y: 198px; width: 184px; height: 31px; text: "交换叠放顺序";
+        x <- 240px; y <- 198px; width <- 184px; height <- 31px; text <- "交换叠放顺序";
         clicked() => { root.first-layer = root.first-layer > 1.0 ? 0.0 : 2.0; }
     }
     toggle-first := Button {
-        x: 240px; y: 237px; width: 184px; height: 31px; text: "切换第一项透明度";
+        x <- 240px; y <- 237px; width <- 184px; height <- 31px; text <- "切换第一项透明度";
         clicked() => { root.first-opacity = root.first-opacity == 0.0 ? 1.0 : 0.0; }
     }
     Label {
-        x: 24px; y: 242px; width: 184px;
-        color: #a7b6ce;
-        text: "第一项 " + root.first-clicks + " · 第二项 " + root.second-clicks;
+        x <- 24px; y <- 242px; width <- 184px;
+        color <- #a7b6ce;
+        text <- "第一项 " + root.first-clicks + " · 第二项 " + root.second-clicks;
     }
 }
 
 export component RectangleShadowDemo inherits Window {
-    title: "XRack · 矩形阴影";
-    width: 460px; height: 268px;
-    background: #101725;
+    title <- "XRack · 矩形阴影";
+    width <- 460px; height <- 268px;
+    background <- #101725;
     in-out property <length> blur: 0px;
     in-out property <length> inset-blur: 0px;
     in-out property <length> inset-spread: 0px;
@@ -796,142 +796,142 @@ export component RectangleShadowDemo inherits Window {
     in-out property <brush> surface: #e0e8ff;
     out property <int> clicks: 0;
 
-    Label { x: 24px; y: 20px; text: "外阴影 · 随父容器裁剪"; color: #e8f2ff; }
-    Label { x: 238px; y: 20px; text: "内阴影 · 沿圆角收边"; color: #e8f2ff; }
+    Label { x <- 24px; y <- 20px; text <- "外阴影 · 随父容器裁剪"; color <- #e8f2ff; }
+    Label { x <- 238px; y <- 20px; text <- "内阴影 · 沿圆角收边"; color <- #e8f2ff; }
     Rectangle {
-        x: 24px; y: 56px; width: 184px; height: 116px; background: #263653;
+        x <- 24px; y <- 56px; width <- 184px; height <- 116px; background <- #263653;
         card := Rectangle {
-            x: 24px; y: 16px; width: 116px; height: 72px;
-            background: root.surface;
-            border-width: root.outline;
-            border-color: #a7b6ce;
-            border-radius: 5px;
-            opacity: root.card-alpha;
-            drop-shadow-color: #39d6bc;
-            drop-shadow-offset-x: root.shift;
-            drop-shadow-offset-y: 16px;
-            drop-shadow-spread: root.spread;
-            drop-shadow-blur: root.blur;
+            x <- 24px; y <- 16px; width <- 116px; height <- 72px;
+            background <- root.surface;
+            border-width <- root.outline;
+            border-color <- #a7b6ce;
+            border-radius <- 5px;
+            opacity <- root.card-alpha;
+            drop-shadow-color <- #39d6bc;
+            drop-shadow-offset-x <- root.shift;
+            drop-shadow-offset-y <- 16px;
+            drop-shadow-spread <- root.spread;
+            drop-shadow-blur <- root.blur;
             hit-card := TouchArea {
-                width: 100%; height: 100%;
+                width <- 100%; height <- 100%;
                 clicked() => { root.clicks = root.clicks + 1; }
-                accessible-name: "点击卡片";
+                accessible-name <- "点击卡片";
             }
         }
     }
     Rectangle {
-        x: 238px; y: 56px; width: 184px; height: 116px; background: #263653;
+        x <- 238px; y <- 56px; width <- 184px; height <- 116px; background <- #263653;
         Rectangle {
-            x: 24px; y: 16px; width: 116px; height: 72px;
-            background: #e0e8ff;
-            border-radius: 18px;
-            inner-shadow-color: #203056;
-            inner-shadow-offset-x: 13px;
-            inner-shadow-offset-y: 10px;
-            inner-shadow-blur: root.inset-blur;
-            inner-shadow-spread: root.inset-spread;
+            x <- 24px; y <- 16px; width <- 116px; height <- 72px;
+            background <- #e0e8ff;
+            border-radius <- 18px;
+            inner-shadow-color <- #203056;
+            inner-shadow-offset-x <- 13px;
+            inner-shadow-offset-y <- 10px;
+            inner-shadow-blur <- root.inset-blur;
+            inner-shadow-spread <- root.inset-spread;
         }
     }
     soften := Button {
-        x: 24px; y: 187px; width: 184px; height: 30px;
-        text: root.blur == 0px ? "柔化阴影" : "恢复硬边";
+        x <- 24px; y <- 187px; width <- 184px; height <- 30px;
+        text <- root.blur == 0px ? "柔化阴影" : "恢复硬边";
         clicked() => {
             root.blur = root.blur == 0px ? 12px : 0px;
             root.inset-blur = root.blur;
         }
     }
     shift-shadow := Button {
-        x: 238px; y: 187px; width: 184px; height: 30px;
-        text: "切换偏移";
+        x <- 238px; y <- 187px; width <- 184px; height <- 30px;
+        text <- "切换偏移";
         clicked() => { root.shift = root.shift == 16px ? 48px : 16px; }
     }
     Label {
-        x: 24px; y: 231px; text: "卡片点击次数 " + root.clicks;
-        color: #a7b6ce;
+        x <- 24px; y <- 231px; text <- "卡片点击次数 " + root.clicks;
+        color <- #a7b6ce;
     }
 }
 
 export component ClippingDemo inherits Window {
-    title: "XRack · 圆角裁剪与溢出";
-    width: 468px; height: 264px;
-    background: #101725;
+    title <- "XRack · 圆角裁剪与溢出";
+    width <- 468px; height <- 264px;
+    background <- #101725;
     in-out property <bool> clipped: true;
     in-out property <float> fade: 1.0;
     out property <int> hits: 0;
 
     Label {
-        x: 24px; y: 20px;
-        text: root.clipped ? "沿边框内侧裁剪" : "允许子项溢出";
-        color: #e8f2ff; font-size: 19px;
+        x <- 24px; y <- 20px;
+        text <- root.clipped ? "沿边框内侧裁剪" : "允许子项溢出";
+        color <- #e8f2ff; font-size <- 19px;
     }
     clipper := Rectangle {
-        x: 48px; y: 60px; width: 132px; height: 110px;
-        background: #263653;
-        border-color: #778dab; border-width: 8px;
-        border-top-left-radius: 36px;
-        border-top-right-radius: 20px;
-        border-bottom-left-radius: 18px;
-        border-bottom-right-radius: 28px;
-        clip: root.clipped;
-        opacity: root.fade;
+        x <- 48px; y <- 60px; width <- 132px; height <- 110px;
+        background <- #263653;
+        border-color <- #778dab; border-width <- 8px;
+        border-top-left-radius <- 36px;
+        border-top-right-radius <- 20px;
+        border-bottom-left-radius <- 18px;
+        border-bottom-right-radius <- 28px;
+        clip <- root.clipped;
+        opacity <- root.fade;
         spill := Button {
-            x: 96px; y: 32px; width: 96px; height: 44px;
-            border-radius: 0px;
-            background: #39d6bc; color: #102132;
-            accessible-name: "跨出边框的按钮";
+            x <- 96px; y <- 32px; width <- 96px; height <- 44px;
+            border-radius <- 0px;
+            background <- #39d6bc; color <- #102132;
+            accessible-name <- "跨出边框的按钮";
             clicked() => { root.hits = root.hits + 1; }
         }
         corner := Button {
-            x: 9px; y: 9px; width: 6px; height: 6px; z: 1;
-            border-radius: 0px;
-            background: #ffd177;
-            accessible-name: "圆角内的标记";
+            x <- 9px; y <- 9px; width <- 6px; height <- 6px; z <- 1;
+            border-radius <- 0px;
+            background <- #ffd177;
+            accessible-name <- "圆角内的标记";
             clicked() => { root.hits = root.hits + 10; }
         }
     }
-    Label { x: 280px; y: 20px; text: "未声明 clip 的矩形"; color: #e8f2ff; }
+    Label { x <- 280px; y <- 20px; text <- "未声明 clip 的矩形"; color <- #e8f2ff; }
     Rectangle {
-        x: 280px; y: 60px; width: 132px; height: 110px;
-        background: #263653;
-        border-color: #778dab; border-width: 8px;
-        border-radius: 18px;
+        x <- 280px; y <- 60px; width <- 132px; height <- 110px;
+        background <- #263653;
+        border-color <- #778dab; border-width <- 8px;
+        border-radius <- 18px;
         Rectangle {
-            x: 96px; y: 32px; width: 96px; height: 44px;
-            background: #7c93f7;
+            x <- 96px; y <- 32px; width <- 96px; height <- 44px;
+            background <- #7c93f7;
         }
     }
     toggle-clip := Button {
-        x: 24px; y: 192px; width: 200px; height: 31px;
-        text: "切换裁剪 / 溢出";
+        x <- 24px; y <- 192px; width <- 200px; height <- 31px;
+        text <- "切换裁剪 / 溢出";
         clicked() => { root.clipped = !root.clipped; }
     }
     toggle-fade := Button {
-        x: 244px; y: 192px; width: 200px; height: 31px;
-        text: "切换整组透明度";
+        x <- 244px; y <- 192px; width <- 200px; height <- 31px;
+        text <- "切换整组透明度";
         clicked() => { root.fade = root.fade == 1.0 ? 0.5 : 1.0; }
     }
-    Label { x: 24px; y: 233px; color: #a7b6ce; text: "点击计数 " + root.hits; }
+    Label { x <- 24px; y <- 233px; color <- #a7b6ce; text <- "点击计数 " + root.hits; }
 }
 
 export component FlickableDemo inherits Window {
-    width: 360px;
-    height: 280px;
-    title: "XRack · Flickable canvas";
-    background: #192438;
+    width <- 360px;
+    height <- 280px;
+    title <- "XRack · Flickable canvas";
+    background <- #192438;
     in-out property <bool> pan-enabled: true;
     in-out property <bool> shift-content: true;
-    in property <FlickBoundsBehavior> edge-behavior: once FlickBoundsBehavior.drag-and-overshoot-bounds;
-    in property <FlickDirection> pan-direction: once FlickDirection.both;
+    in property <FlickBoundsBehavior> edge-behavior: FlickBoundsBehavior.drag-and-overshoot-bounds;
+    in property <FlickDirection> pan-direction: FlickDirection.both;
     in-out property <length> x-offset: 0px;
     in-out property <length> y-offset: 0px;
     out property <int> flicks: 0;
     out property <int> taps: 0;
-    out property <bool> dragging: canvas.dragging;
-    out property <bool> flicking: canvas.flicking;
-    out property <bool> moving: canvas.moving;
-    out property <bool> rebounding: canvas.rebounding;
-    out property <length> overshoot-x: canvas.horizontal-overshoot;
-    out property <length> overshoot-y: canvas.vertical-overshoot;
+    out property <bool> dragging <- canvas.dragging;
+    out property <bool> flicking <- canvas.flicking;
+    out property <bool> moving <- canvas.moving;
+    out property <bool> rebounding <- canvas.rebounding;
+    out property <length> overshoot-x <- canvas.horizontal-overshoot;
+    out property <length> overshoot-y <- canvas.vertical-overshoot;
     callback stop();
     stop() => { canvas.cancel-flick(); }
     callback reset();
@@ -940,80 +940,80 @@ export component FlickableDemo inherits Window {
     return-to-edge() => { canvas.return-to-bounds(); }
 
     canvas := Flickable {
-        x: 16px; y: 16px; width: 268px; height: 196px;
-        content-width: 536px;
-        content-x <=> root.x-offset;
-        content-y <=> root.y-offset;
-        interactive: root.pan-enabled;
-        flick-direction: root.pan-direction;
-        bounds-behavior: root.edge-behavior;
-        bounds-movement: root.shift-content ? FlickBoundsMovement.follow-bounds-behavior : FlickBoundsMovement.stop-at-bounds;
+        x <- 16px; y <- 16px; width <- 268px; height <- 196px;
+        content-width <- 536px;
+        content-x <-> root.x-offset;
+        content-y <-> root.y-offset;
+        interactive <- root.pan-enabled;
+        flick-direction <- root.pan-direction;
+        bounds-behavior <- root.edge-behavior;
+        bounds-movement <- root.shift-content ? FlickBoundsMovement.follow-bounds-behavior : FlickBoundsMovement.stop-at-bounds;
         flicked() => { root.flicks += 1; }
-        Rectangle { width: 536px; height: 392px; background: #25334c; }
-        Rectangle { x: 110px; y: 40px; width: 100px; height: 72px; background: #77d6b3; }
-        Rectangle { x: 365px; y: 40px; width: 100px; height: 72px; background: #f0b667; }
-        Rectangle { x: 110px; y: 252px; width: 100px; height: 72px; background: #8ab3fc; }
-        tap := Button { x: 8px; y: 8px; text: "Tap"; clicked() => { root.taps += 1; } }
+        Rectangle { width <- 536px; height <- 392px; background <- #25334c; }
+        Rectangle { x <- 110px; y <- 40px; width <- 100px; height <- 72px; background <- #77d6b3; }
+        Rectangle { x <- 365px; y <- 40px; width <- 100px; height <- 72px; background <- #f0b667; }
+        Rectangle { x <- 110px; y <- 252px; width <- 100px; height <- 72px; background <- #8ab3fc; }
+        tap := Button { x <- 8px; y <- 8px; text <- "Tap"; clicked() => { root.taps += 1; } }
     }
     ScrollBar {
-        target: canvas; orientation: horizontal;
-        x: 16px; y: 222px; width: 268px; height: 12px;
-        accessible-name: "Canvas horizontal position";
+        target <- canvas; orientation <- horizontal;
+        x <- 16px; y <- 222px; width <- 268px; height <- 12px;
+        accessible-name <- "Canvas horizontal position";
     }
-    ScrollIndicator { target: canvas; x: 304px; y: 16px; width: 8px; height: 196px; }
-    CheckBox { x: 16px; y: 244px; width: 110px; height: 26px; text: "Pan"; checked <=> root.pan-enabled; }
-    CheckBox { x: 232px; y: 244px; width: 110px; height: 26px; text: "Elastic content"; checked <=> root.shift-content; }
-    Text { x: 132px; y: 248px; color: #e5edff; text: canvas.rebounding ? "Rebound" : (canvas.flicking ? "Flicking" : (canvas.dragging ? "Dragging" : "Idle")); }
+    ScrollIndicator { target <- canvas; x <- 304px; y <- 16px; width <- 8px; height <- 196px; }
+    CheckBox { x <- 16px; y <- 244px; width <- 110px; height <- 26px; text <- "Pan"; checked <-> root.pan-enabled; }
+    CheckBox { x <- 232px; y <- 244px; width <- 110px; height <- 26px; text <- "Elastic content"; checked <-> root.shift-content; }
+    Text { x <- 132px; y <- 248px; color <- #e5edff; text <- canvas.rebounding ? "Rebound" : (canvas.flicking ? "Flicking" : (canvas.dragging ? "Dragging" : "Idle")); }
 }
 
 export component SwipeGestureDemo inherits Window {
-    width: 360px;
-    height: 280px;
-    title: "XRack · Directional swipe";
-    background: #192438;
+    width <- 360px;
+    height <- 280px;
+    title <- "XRack · Directional swipe";
+    background <- #192438;
     in property <bool> gestures-enabled: true;
     out property <length> shift: 0px;
     out property <int> swipes: 0;
     out property <int> taps: 0;
     out property <int> cancellations: 0;
-    out property <bool> swiping: swipe.swiping;
-    out property <length> scroll-y: view.content-y;
+    out property <bool> swiping <- swipe.swiping;
+    out property <length> scroll-y <- view.content-y;
     callback cancel-swipe();
     cancel-swipe() => { swipe.cancel(); }
 
     view := ScrollView {
-        x: 16px; y: 16px; width: 328px; height: 220px;
-        content-height: 440px;
-        mouse-drag-pan-enabled: true;
+        x <- 16px; y <- 16px; width <- 328px; height <- 220px;
+        content-height <- 440px;
+        mouse-drag-pan-enabled <- true;
         swipe := SwipeGestureHandler {
-            width: 100%; height: 440px;
-            enabled: root.gestures-enabled;
-            handle-swipe-left: true;
-            handle-swipe-right: true;
+            width <- 100%; height <- 440px;
+            enabled <- root.gestures-enabled;
+            handle-swipe-left <- true;
+            handle-swipe-right <- true;
             swiped() => {
                 root.shift += self.current-x - self.pressed-x;
                 root.swipes += 1;
             }
             cancelled() => { root.cancellations += 1; }
 
-            Rectangle { width: 100%; height: 440px; background: #25334c; }
+            Rectangle { width <- 100%; height <- 440px; background <- #25334c; }
             card := Rectangle {
-                x: 80px + root.shift + (swipe.swiping ? swipe.current-x - swipe.pressed-x : 0px);
-                y: 64px; width: 112px; height: 74px;
-                border-radius: 8px; background: #77d6b3;
+                x <- 80px + root.shift + (swipe.swiping ? swipe.current-x - swipe.pressed-x : 0px);
+                y <- 64px; width <- 112px; height <- 74px;
+                border-radius <- 8px; background <- #77d6b3;
             }
-            tap := Button { x: 12px; y: 12px; text: "Tap"; clicked() => { root.taps += 1; } }
-            Text { x: 24px; y: 284px; color: #e5edff; text: "Vertical scrolling"; }
+            tap := Button { x <- 12px; y <- 12px; text <- "Tap"; clicked() => { root.taps += 1; } }
+            Text { x <- 24px; y <- 284px; color <- #e5edff; text <- "Vertical scrolling"; }
         }
     }
-    Text { x: 16px; y: 244px; color: #e5edff; text: "Drag sideways to move the card"; }
+    Text { x <- 16px; y <- 244px; color <- #e5edff; text <- "Drag sideways to move the card"; }
 }
 
 export component ScaleRotateDemo inherits Window {
-    width: 360px;
-    height: 280px;
-    title: "XRack · Pinch and rotate";
-    background: #192438;
+    width <- 360px;
+    height <- 280px;
+    title <- "XRack · Pinch and rotate";
+    background <- #192438;
     in property <bool> gestures-enabled: true;
     out property <float> zoom: 1;
     out property <float> angle: 0;
@@ -1021,15 +1021,15 @@ export component ScaleRotateDemo inherits Window {
     out property <int> starts: 0;
     out property <int> ends: 0;
     out property <int> cancellations: 0;
-    out property <bool> recognizing: gesture.active;
-    out property <length> gesture-center-x: gesture.center-x;
-    out property <length> gesture-center-y: gesture.center-y;
+    out property <bool> recognizing <- gesture.active;
+    out property <length> gesture-center-x <- gesture.center-x;
+    out property <length> gesture-center-y <- gesture.center-y;
     property <float> initial-zoom: 1;
     property <float> initial-angle: 0;
 
     gesture := ScaleRotateGestureHandler {
-        x: 16px; y: 16px; width: 328px; height: 220px;
-        enabled: root.gestures-enabled;
+        x <- 16px; y <- 16px; width <- 328px; height <- 220px;
+        enabled <- root.gestures-enabled;
         started() => {
             root.initial-zoom = root.zoom;
             root.initial-angle = root.angle;
@@ -1042,135 +1042,135 @@ export component ScaleRotateDemo inherits Window {
         ended() => { root.ends += 1; }
         cancelled() => { root.cancellations += 1; }
         Rectangle {
-            width: 100%; height: 100%; clip: true; background: #25334c;
+            width <- 100%; height <- 100%; clip <- true; background <- #25334c;
             artwork := Rectangle {
-                x: 124px; y: 70px; width: 80px; height: 80px;
-                background: #77d6b3;
-                transform-scale-x: root.zoom;
-                transform-scale-y: root.zoom;
-                transform-rotation: root.angle;
-                Rectangle { x: 10px; y: 10px; width: 20px; height: 20px; background: #f0b667; }
+                x <- 124px; y <- 70px; width <- 80px; height <- 80px;
+                background <- #77d6b3;
+                transform-scale-x <- root.zoom;
+                transform-scale-y <- root.zoom;
+                transform-rotation <- root.angle;
+                Rectangle { x <- 10px; y <- 10px; width <- 20px; height <- 20px; background <- #f0b667; }
             }
             tap := Button {
-                x: 12px; y: 12px; text: "Tap";
+                x <- 12px; y <- 12px; text <- "Tap";
                 clicked() => { root.taps += 1; }
             }
         }
     }
     Text {
-        x: 16px; y: 244px; color: #e5edff;
-        text: gesture.active ? "Gesture active" : "Pinch or rotate with two fingers";
+        x <- 16px; y <- 244px; color <- #e5edff;
+        text <- gesture.active ? "Gesture active" : "Pinch or rotate with two fingers";
     }
 }
 
 export component TransformDemo inherits Window {
-    title: "XRack · 视觉变换";
-    width: 460px; height: 286px;
-    background: #101725;
+    title <- "XRack · 视觉变换";
+    width <- 460px; height <- 286px;
+    background <- #101725;
     in-out property <float> angle: 90.0;
     in-out property <float> scale-factor: 1.0;
     in-out property <float> amount: 0.0;
     out property <int> clicks: 0;
 
-    Label { x: 24px; y: 18px; text: "旋转子树，点击跟随图形"; color: #e8f2ff; }
+    Label { x <- 24px; y <- 18px; text <- "旋转子树，点击跟随图形"; color <- #e8f2ff; }
     Rectangle {
-        x: 24px; y: 54px; width: 412px; height: 162px;
-        background: #263653;
+        x <- 24px; y <- 54px; width <- 412px; height <- 162px;
+        background <- #263653;
         tile := Rectangle {
-            x: 86px; y: 26px; width: 88px; height: 56px;
-            background: #203052; border-radius: 16px; clip: true;
-            transform-rotation: root.angle;
-            transform-scale: root.scale-factor;
-            transform-origin-x: 0px; transform-origin-y: 0px;
+            x <- 86px; y <- 26px; width <- 88px; height <- 56px;
+            background <- #203052; border-radius <- 16px; clip <- true;
+            transform-rotation <- root.angle;
+            transform-scale <- root.scale-factor;
+            transform-origin-x <- 0px; transform-origin-y <- 0px;
             hot := Button {
-                x: 8px; y: 8px; width: 44px; height: 26px;
-                background: #39d6bc; border-radius: 0px;
-                accessible-name: "跟随变换的按钮";
+                x <- 8px; y <- 8px; width <- 44px; height <- 26px;
+                background <- #39d6bc; border-radius <- 0px;
+                accessible-name <- "跟随变换的按钮";
                 clicked() => { root.clicks = root.clicks + 1; }
             }
             Rectangle {
-                x: 0px; y: 0px; width: 3px; height: 3px; background: #ff3060;
+                x <- 0px; y <- 0px; width <- 3px; height <- 3px; background <- #ff3060;
             }
             Rectangle {
-                x: 56px; y: 13px; width: 20px; height: 20px;
-                transform-scale-x: -1.0;
-                Rectangle { x: 0px; y: 0px; width: 8px; height: 20px; background: #ffd177; }
+                x <- 56px; y <- 13px; width <- 20px; height <- 20px;
+                transform-scale-x <- -1.0;
+                Rectangle { x <- 0px; y <- 0px; width <- 8px; height <- 20px; background <- #ffd177; }
             }
         }
         ruler := Slider {
-            x: 274px; y: 26px; width: 118px; height: 28px;
-            transform-rotation: 90.0;
-            transform-origin-x: 0px; transform-origin-y: 0px;
-            minimum: 0.0; maximum: 1.0;
-            value <=> root.amount;
-            accessible-name: "旋转后的滑块";
+            x <- 274px; y <- 26px; width <- 118px; height <- 28px;
+            transform-rotation <- 90.0;
+            transform-origin-x <- 0px; transform-origin-y <- 0px;
+            minimum <- 0.0; maximum <- 1.0;
+            value <-> root.amount;
+            accessible-name <- "旋转后的滑块";
         }
     }
     turn := Button {
-        x: 24px; y: 232px; width: 160px; height: 32px; text: "切换旋转";
+        x <- 24px; y <- 232px; width <- 160px; height <- 32px; text <- "切换旋转";
         clicked() => { root.angle = root.angle == 90.0 ? 0.0 : 90.0; }
     }
     zoom := Button {
-        x: 200px; y: 232px; width: 112px; height: 32px; text: "切换缩放";
+        x <- 200px; y <- 232px; width <- 112px; height <- 32px; text <- "切换缩放";
         clicked() => { root.scale-factor = root.scale-factor == 1.0 ? 0.75 : 1.0; }
     }
-    Label { x: 327px; y: 240px; text: "点击 " + root.clicks; color: #a7b6ce; }
+    Label { x <- 327px; y <- 240px; text <- "点击 " + root.clicks; color <- #a7b6ce; }
 }
 export component GeometryDemo inherits Window {
-    title: "XRack · 实际布局几何";
-    width: 500px; height: 290px;
-    background: #182331;
+    title <- "XRack · 实际布局几何";
+    width <- 500px; height <- 290px;
+    background <- #182331;
     in property <bool> show-panel: true;
     in property <bool> rotated: false;
-    out property <bool> panel-ready: panel.layout-ready;
-    out property <length> panel-x: panel.layout-x;
-    out property <length> panel-width: panel.layout-width;
-    out property <length> panel-window-width: panel.window-bounds-width;
-    out property <length> component-width: panel.measured-width;
-    out property <length> tip-width: details.layout-width;
-    out property <bool> tip-ready: details.layout-ready;
+    out property <bool> panel-ready <- panel.layout-ready;
+    out property <length> panel-x <- panel.layout-x;
+    out property <length> panel-width <- panel.layout-width;
+    out property <length> panel-window-width <- panel.window-bounds-width;
+    out property <length> component-width <- panel.measured-width;
+    out property <length> tip-width <- details.layout-width;
+    out property <bool> tip-ready <- details.layout-ready;
     callback show-details;
     show-details => { details.show(); }
 
     VerticalLayout {
-        padding: 20px; spacing: 12px;
+        padding <- 20px; spacing <- 12px;
         HorizontalLayout {
-            width: 100%; height: 80px; spacing: 8px;
+            width <- 100%; height <- 80px; spacing <- 8px;
             if root.show-panel : panel := GeometryPanel {
-                transform-rotation: root.rotated ? 90 : 0;
+                transform-rotation <- root.rotated ? 90 : 0;
             }
-            Rectangle { width: 72px; height: 54px; background: #40547c; }
+            Rectangle { width <- 72px; height <- 54px; background <- #40547c; }
         }
         status := Text {
-            width: 420px; height: 28px;
-            text: root.panel-ready
+            width <- 420px; height <- 28px;
+            text <- root.panel-ready
                 ? "布局宽度 " + (root.panel-width / 1px) + " · 窗口宽度 " + (root.panel-window-width / 1px)
                 : "面板未布局";
         }
         trigger := Button {
-            text: "显示按面板宽度布局的浮层";
+            text <- "显示按面板宽度布局的浮层";
             clicked => { root.show-details(); }
             details := PopupWindow {
-                width: panel.layout-width;
-                height: 36px;
-                background: #35516b;
-                Text { text: "浮层宽度来自已排版的面板"; }
+                width <- panel.layout-width;
+                height <- 36px;
+                background <- #35516b;
+                Text { text <- "浮层宽度来自已排版的面板"; }
             }
         }
     }
 }
 
 component GeometryPanel inherits Rectangle {
-    height: 54px;
-    horizontal-stretch: 1;
-    background: #16857d;
-    out property <length> measured-width: root.layout-width;
+    height <- 54px;
+    horizontal-stretch <- 1;
+    background <- #16857d;
+    out property <length> measured-width <- root.layout-width;
 }
 
 export component WheelDemo inherits Window {
-    title: "XRack · 滚轮缩放";
-    width: 460px; height: 300px;
-    background: #182331;
+    title <- "XRack · 滚轮缩放";
+    width <- 460px; height <- 300px;
+    background <- #182331;
     in property <bool> zoom-enabled: true;
     out property <float> zoom: 1.0;
     out property <length> pan-x: 0px;
@@ -1188,17 +1188,17 @@ export component WheelDemo inherits Window {
         root.pan-y = active ? y - (y - root.pan-y) * (scale / root.zoom) : root.pan-y;
         root.zoom = active ? scale : root.zoom;
     }
-    Text { x: 16px; y: 12px; text: "Ctrl + 滚轮缩放画布 · 普通滚轮滚动"; font-size: 18px; }
+    Text { x <- 16px; y <- 12px; text <- "Ctrl + 滚轮缩放画布 · 普通滚轮滚动"; font-size <- 18px; }
     viewport := ScrollView {
-        x: 16px; y: 44px; width: 428px; height: 210px;
-        content-height: 380px;
+        x <- 16px; y <- 44px; width <- 428px; height <- 210px;
+        content-height <- 380px;
         outer-wheel := WheelHandler {
-            width: 428px; height: 380px;
+            width <- 428px; height <- 380px;
             wheel(event) => { root.outer-events += 1; reject }
             zoom-wheel := WheelHandler {
-                x: 16px; y: 16px; width: 388px; height: 154px;
-                orientation: vertical;
-                enabled: root.zoom-enabled;
+                x <- 16px; y <- 16px; width <- 388px; height <- 154px;
+                orientation <- vertical;
+                enabled <- root.zoom-enabled;
                 wheel(event) => {
                     root.inner-events += 1;
                     root.last-x = event.x;
@@ -1210,36 +1210,36 @@ export component WheelDemo inherits Window {
                     event.modifiers.control ? accept : reject
                 }
                 Rectangle {
-                    width: 388px; height: 154px;
-                    background: #25374c; clip: true;
+                    width <- 388px; height <- 154px;
+                    background <- #25374c; clip <- true;
                     zoomed := Rectangle {
-                        x: root.pan-x; y: root.pan-y;
-                        width: 388px; height: 154px;
-                        transform-origin-x: 0px; transform-origin-y: 0px;
-                        transform-scale: root.zoom;
-                        Rectangle { x: 42px; y: 25px; width: 110px; height: 95px; background: #4969df; border-radius: 10px; }
-                        Rectangle { x: 192px; y: 43px; width: 140px; height: 75px; background: #3d907c; border-radius: 10px; }
+                        x <- root.pan-x; y <- root.pan-y;
+                        width <- 388px; height <- 154px;
+                        transform-origin-x <- 0px; transform-origin-y <- 0px;
+                        transform-scale <- root.zoom;
+                        Rectangle { x <- 42px; y <- 25px; width <- 110px; height <- 95px; background <- #4969df; border-radius <- 10px; }
+                        Rectangle { x <- 192px; y <- 43px; width <- 140px; height <- 75px; background <- #3d907c; border-radius <- 10px; }
                     }
                 }
             }
-            Text { x: 16px; y: 224px; text: "画布之外的内容"; }
+            Text { x <- 16px; y <- 224px; text <- "画布之外的内容"; }
         }
     }
-    Text { x: 16px; y: 267px; text: "缩放 " + root.zoom + "×"; color: #acc0db; }
+    Text { x <- 16px; y <- 267px; text <- "缩放 " + root.zoom + "×"; color <- #acc0db; }
 }
 
 export component HoverDemo inherits Window {
-    title: "XRack · 悬停与点击";
-    width: 420px; height: 240px;
-    background: #182331;
+    title <- "XRack · 悬停与点击";
+    width <- 420px; height <- 240px;
+    background <- #182331;
     in property <bool> block-inner: false;
     in property <bool> inner-enabled: true;
     in property <length> inner-offset: 0px;
     in-out property <bool> preview-open: false;
-    out property <bool> area-hovered: area.hovered;
-    out property <bool> button-hovered: button-area.hovered;
-    out property <length> position-x: area.hover-x;
-    out property <length> position-y: area.hover-y;
+    out property <bool> area-hovered <- area.hovered;
+    out property <bool> button-hovered <- button-area.hovered;
+    out property <length> position-x <- area.hover-x;
+    out property <length> position-y <- area.hover-y;
     out property <int> area-entries: 0;
     out property <int> area-exits: 0;
     out property <int> button-entries: 0;
@@ -1248,72 +1248,72 @@ export component HoverDemo inherits Window {
     out property <bool> both-on-entry: false;
     out property <int> clicks: 0;
 
-    Text { x: 16px; y: 12px; text: "移动光标查看悬停 · 点击打开预览"; font-size: 18px; }
+    Text { x <- 16px; y <- 12px; text <- "移动光标查看悬停 · 点击打开预览"; font-size <- 18px; }
     area := HoverHandler {
-        x: 16px; y: 44px; width: 388px; height: 178px;
-        cursor-shape: crosshair;
+        x <- 16px; y <- 44px; width <- 388px; height <- 178px;
+        cursor-shape <- crosshair;
         entered() => { root.area-entries += 1; root.both-on-entry = button-area.hovered; }
         exited() => { root.area-exits += 1; }
         Rectangle {
-            width: 388px; height: 178px; clip: true; border-radius: 10px;
-            background: area.hovered ? #25446a : #25374c;
+            width <- 388px; height <- 178px; clip <- true; border-radius <- 10px;
+            background <- area.hovered ? #25446a : #25374c;
             button-area := HoverHandler {
-                x: 26px + root.inner-offset; y: 64px; width: 154px; height: 46px;
-                cursor-shape: pointer;
-                enabled: root.inner-enabled;
-                blocking: root.block-inner;
+                x <- 26px + root.inner-offset; y <- 64px; width <- 154px; height <- 46px;
+                cursor-shape <- pointer;
+                enabled <- root.inner-enabled;
+                blocking <- root.block-inner;
                 entered() => { root.button-entries += 1; }
                 moved() => { root.button-moves += 1; }
                 exited() => { root.button-exits += 1; }
                 preview := Button {
-                    width: 154px; height: 46px;
-                    text: "打开预览";
-                    background: button-area.hovered ? #4969df : #344c80;
+                    width <- 154px; height <- 46px;
+                    text <- "打开预览";
+                    background <- button-area.hovered ? #4969df : #344c80;
                     clicked() => { root.clicks += 1; root.preview-open = true; }
                 }
             }
             Rectangle {
-                x: area.hover-x - 3px; y: area.hover-y - 3px;
-                width: 6px; height: 6px; border-radius: 3px;
-                visible: area.hovered; background: #9cdbbd;
+                x <- area.hover-x - 3px; y <- area.hover-y - 3px;
+                width <- 6px; height <- 6px; border-radius <- 3px;
+                visible <- area.hovered; background <- #9cdbbd;
             }
         }
     }
     preview-dialog := Dialog {
-        open <=> root.preview-open;
-        title: "预览";
-        width: 220px; height: 110px;
-        Text { x: 16px; y: 12px; text: "按钮点击已收到"; }
+        open <-> root.preview-open;
+        title <- "预览";
+        width <- 220px; height <- 110px;
+        Text { x <- 16px; y <- 12px; text <- "按钮点击已收到"; }
     }
 }
 
 export component PointerDemo inherits Window {
-    title: "XRack · 指针事件";
-    width: 420px; height: 270px;
-    background: #182331;
+    title <- "XRack · 指针事件";
+    width <- 420px; height <- 270px;
+    background <- #182331;
     in property <bool> area-enabled: true;
     in property <int> hold-interval: 800;
-    out property <PointerEventKind> phase: once cancel;
-    out property <PointerButton> last-button: once primary;
+    out property <PointerEventKind> phase: cancel;
+    out property <PointerButton> last-button: primary;
     out property <length> pointer-x: 0px;
     out property <length> pointer-y: 0px;
     out property <bool> inside: false;
     out property <bool> touch: false;
     out property <int> last-finger-id: 0;
-    out property <int> active-touches: area.active-touch-count;
-    out property <[TouchPoint]> touches: area.touch-points;
+    out property <int> active-touches <- area.active-touch-count;
+    out property <[TouchPoint]> touches <- area.touch-points;
     out property <bool> shift-held: false;
     out property <int> events: 0;
     out property <int> clicks: 0;
     out property <int> double-clicks: 0;
     out property <int> moves: 0;
-    out property <bool> pressed: area.pressed;
-    out property <bool> contains-press: area.contains-press;
-    out property <bool> has-hover: area.has-hover;
-    out property <length> mouse-x: area.mouse-x;
-    out property <length> mouse-y: area.mouse-y;
-    out property <length> pressed-x: area.pressed-x;
-    out property <length> pressed-y: area.pressed-y;
+    out property <bool> pressed <- area.pressed;
+    out property <bool> contains-press <- area.contains-press;
+    out property <bool> has-hover <- area.has-hover;
+    out property <length> mouse-x <- area.mouse-x;
+    out property <length> mouse-y <- area.mouse-y;
+    out property <length> pressed-x <- area.pressed-x;
+    out property <length> pressed-y <- area.pressed-y;
     out property <bool> pressed-in-event: false;
     out property <bool> click-saw-up: false;
     out property <int> holds: 0;
@@ -1324,21 +1324,21 @@ export component PointerDemo inherits Window {
     out property <length> wheel-y: 0px;
     out property <bool> wheel-tint: false;
 
-    Text { x: 16px; y: 12px; text: "长按标记 · Ctrl + 滚轮切换底色"; font-size: 18px; }
+    Text { x <- 16px; y <- 12px; text <- "长按标记 · Ctrl + 滚轮切换底色"; font-size <- 18px; }
     viewport := ScrollView {
-        x: 16px; y: 48px; width: 388px; height: 170px;
-        content-height: 360px;
+        x <- 16px; y <- 48px; width <- 388px; height <- 170px;
+        content-height <- 360px;
         outer-wheel := WheelHandler {
-            width: 388px; height: 360px;
+            width <- 388px; height <- 360px;
             wheel(event) => {
                 root.outer-wheel-events += 1;
                 event.modifiers.shift ? accept : reject
             }
             area := TouchArea {
-                x: 16px; y: 16px; width: 340px; height: 104px;
-                enabled: root.area-enabled;
-                multi-touch: true;
-                press-and-hold-interval: root.hold-interval;
+                x <- 16px; y <- 16px; width <- 340px; height <- 104px;
+                enabled <- root.area-enabled;
+                multi-touch <- true;
+                press-and-hold-interval <- root.hold-interval;
                 pointer-event(event) => {
                     root.phase = event.kind;
                     root.last-button = event.button;
@@ -1370,50 +1370,50 @@ export component PointerDemo inherits Window {
                     event.modifiers.control ? accept : reject
                 }
                 Rectangle {
-                    width: 340px; height: 104px; clip: true; border-radius: 10px;
-                    background: root.active-touches > 1 ? #3a5676
+                    width <- 340px; height <- 104px; clip <- true; border-radius <- 10px;
+                    background <- root.active-touches > 1 ? #3a5676
                         : root.hold-highlight ? #604277
                         : root.wheel-tint ? #325449
                         : area.contains-press ? #25446a : area.has-hover ? #2c425b : #25374c;
                     Rectangle {
-                        x: area.mouse-x - 5px; y: area.mouse-y - 5px;
-                        width: 10px; height: 10px; border-radius: 5px;
-                        visible: root.active-touches == 0 && (area.contains-press || area.has-hover);
-                        background: #9cdbbd;
+                        x <- area.mouse-x - 5px; y <- area.mouse-y - 5px;
+                        width <- 10px; height <- 10px; border-radius <- 5px;
+                        visible <- root.active-touches == 0 && (area.contains-press || area.has-hover);
+                        background <- #9cdbbd;
                     }
                     for point in area.touch-points : Rectangle {
-                        x: point.x - 6px; y: point.y - 6px;
-                        width: 12px; height: 12px; border-radius: 6px;
-                        visible: point.inside;
-                        background: #f6ce83;
+                        x <- point.x - 6px; y <- point.y - 6px;
+                        width <- 12px; height <- 12px; border-radius <- 6px;
+                        visible <- point.inside;
+                        background <- #f6ce83;
                     }
                 }
             }
-            Text { x: 16px; y: 155px; text: "继续滚动以接管触摸手势"; }
+            Text { x <- 16px; y <- 155px; text <- "继续滚动以接管触摸手势"; }
         }
     }
     Text {
-        x: 16px; y: 232px; color: #acc0db;
-        text: root.hold-highlight ? "已长按"
+        x <- 16px; y <- 232px; color <- #acc0db;
+        text <- root.hold-highlight ? "已长按"
             : root.phase == PointerEventKind.down ? "已按下"
             : root.phase == PointerEventKind.move ? "正在移动"
             : root.phase == PointerEventKind.up ? (root.double-clicks > 0 ? "双击完成" : "已释放")
             : root.events > 0 ? "已取消" : "等待输入";
     }
     Text {
-        x: 184px; y: 232px; color: #acc0db;
-        text: "触点 " + root.active-touches + " · 最近 ID " + root.last-finger-id;
+        x <- 184px; y <- 232px; color <- #acc0db;
+        text <- "触点 " + root.active-touches + " · 最近 ID " + root.last-finger-id;
     }
 }
 
 export component PointerPassThroughDemo inherits Window {
-    title: "XRack · 输入穿透";
-    width: 420px; height: 210px;
-    background: #182331;
+    title <- "XRack · 输入穿透";
+    width <- 420px; height <- 210px;
+    background <- #182331;
     in-out property <bool> overlay-enabled: true;
     in-out property <bool> secondary-only: false;
-    out property <bool> overlay-hovered: overlay.has-hover;
-    out property <bool> lower-hovered: lower-hover.hovered;
+    out property <bool> overlay-hovered <- overlay.has-hover;
+    out property <bool> lower-hovered <- lower-hover.hovered;
     out property <int> overlay-clicks: 0;
     out property <int> lower-clicks: 0;
     out property <int> child-clicks: 0;
@@ -1422,29 +1422,29 @@ export component PointerPassThroughDemo inherits Window {
     out property <int> secondary-releases: 0;
 
     enable-overlay := CheckBox {
-        x: 16px; y: 16px; width: 208px; height: 32px;
-        text: "启用上层触控区";
-        checked <=> root.overlay-enabled;
+        x <- 16px; y <- 16px; width <- 208px; height <- 32px;
+        text <- "启用上层触控区";
+        checked <-> root.overlay-enabled;
     }
     lower-hover := HoverHandler {
-        x: 16px; y: 68px; width: 388px; height: 72px;
+        x <- 16px; y <- 68px; width <- 388px; height <- 72px;
         lower-wheel := WheelHandler {
-            width: 388px; height: 72px;
+            width <- 388px; height <- 72px;
             wheel(event) => { root.lower-wheel-events += 1; accept }
             lower-button := Button {
-                width: 388px; height: 72px;
-                text: "底层按钮 · " + root.lower-clicks;
+                width <- 388px; height <- 72px;
+                text <- "底层按钮 · " + root.lower-clicks;
                 clicked() => { root.lower-clicks += 1; }
             }
         }
     }
     overlay := TouchArea {
-        x: 16px; y: 68px; width: 388px; height: 72px;
-        z: 1;
-        enabled: root.overlay-enabled;
-        accepted-buttons: root.secondary-only ? [secondary] : [primary, secondary, middle];
-        cursor-shape: grab;
-        accessible-name: "上层触控区";
+        x <- 16px; y <- 68px; width <- 388px; height <- 72px;
+        z <- 1;
+        enabled <- root.overlay-enabled;
+        accepted-buttons <- root.secondary-only ? [secondary] : [primary, secondary, middle];
+        cursor-shape <- grab;
+        accessible-name <- "上层触控区";
         clicked() => { root.overlay-clicks += 1; }
         pointer-event(event) => {
             root.secondary-releases += event.button == PointerButton.secondary
@@ -1452,97 +1452,97 @@ export component PointerPassThroughDemo inherits Window {
         }
         scroll-event(event) => { root.overlay-wheel-events += 1; accept }
         Rectangle {
-            width: 388px; height: 72px;
-            border-radius: 8px; border-width: 2px;
-            border-color: root.overlay-enabled ? #81b5f3 : #9cdbbd;
+            width <- 388px; height <- 72px;
+            border-radius <- 8px; border-width <- 2px;
+            border-color <- root.overlay-enabled ? #81b5f3 : #9cdbbd;
         }
         child-button := Button {
-            x: 270px; y: 18px; width: 104px; height: 36px;
-            text: "子按钮 · " + root.child-clicks;
+            x <- 270px; y <- 18px; width <- 104px; height <- 36px;
+            text <- "子按钮 · " + root.child-clicks;
             clicked() => { root.child-clicks += 1; }
         }
     }
     Text {
-        x: 16px; y: 163px; color: #acc0db;
-        text: "上层点击 " + root.overlay-clicks + " · 右键 " + root.secondary-releases
+        x <- 16px; y <- 163px; color <- #acc0db;
+        text <- "上层点击 " + root.overlay-clicks + " · 右键 " + root.secondary-releases
             + " · 滚轮 " + root.overlay-wheel-events + " / " + root.lower-wheel-events;
     }
     only-secondary := CheckBox {
-        x: 224px; y: 16px; width: 180px; height: 32px;
-        text: "上层仅接收右键";
-        checked <=> root.secondary-only;
+        x <- 224px; y <- 16px; width <- 180px; height <- 32px;
+        text <- "上层仅接收右键";
+        checked <-> root.secondary-only;
     }
 }
 
 component DirectionExamplePair inherits HorizontalLayout {
-    alignment: start;
-    spacing: 8px;
-    physical-first := Label { text: "L"; width: 24px; }
-    physical-second := Label { text: "R"; width: 24px; }
+    alignment <- start;
+    spacing <- 8px;
+    physical-first := Label { text <- "L"; width <- 24px; }
+    physical-second := Label { text <- "R"; width <- 24px; }
 }
 
 export component LayoutDirectionDemo inherits Window {
-    title: "XRack · 双向布局";
-    width: 560px; height: 380px;
-    background: #182331;
-    in-out property <LayoutDirection> direction: once right-to-left;
+    title <- "XRack · 双向布局";
+    width <- 560px; height <- 380px;
+    background <- #182331;
+    in-out property <LayoutDirection> direction: right-to-left;
     in-out property <int> grid-index: 0;
     out property <int> presses: 0;
-    layout-direction: root.direction;
+    layout-direction <- root.direction;
 
     toggle-direction := Button {
-        x: 18px; y: 12px; width: 168px; height: 32px;
-        text: root.direction == LayoutDirection.right-to-left ? "切换到 LTR" : "切换到 RTL";
+        x <- 18px; y <- 12px; width <- 168px; height <- 32px;
+        text <- root.direction == LayoutDirection.right-to-left ? "切换到 LTR" : "切换到 RTL";
         clicked => {
             root.direction = root.direction == LayoutDirection.right-to-left
                 ? LayoutDirection.left-to-right : LayoutDirection.right-to-left;
         }
     }
     ordinary := HorizontalLayout {
-        x: 18px; y: 62px; width: 200px; height: 40px;
-        padding-left: 11px; padding-right: 23px;
-        spacing: 7px; alignment: start;
-        first := Button { text: "一"; width: 48px; clicked => { root.presses += 1; } }
-        second := Button { text: "二"; width: 48px; clicked => { root.presses += 10; } }
+        x <- 18px; y <- 62px; width <- 200px; height <- 40px;
+        padding-left <- 11px; padding-right <- 23px;
+        spacing <- 7px; alignment <- start;
+        first := Button { text <- "一"; width <- 48px; clicked => { root.presses += 1; } }
+        second := Button { text <- "二"; width <- 48px; clicked => { root.presses += 10; } }
     }
     vertical := VerticalLayout {
-        x: 240px; y: 62px; width: 150px; height: 40px;
-        padding-left: 11px; padding-right: 23px; cross-axis-alignment: start;
-        item := Button { text: "首项"; width: 50px; }
+        x <- 240px; y <- 62px; width <- 150px; height <- 40px;
+        padding-left <- 11px; padding-right <- 23px; cross-axis-alignment <- start;
+        item := Button { text <- "首项"; width <- 50px; }
     }
     fixed := DirectionExamplePair {
-        x: 416px; y: 62px; width: 120px; height: 40px;
-        layout-direction: left-to-right;
+        x <- 416px; y <- 62px; width <- 120px; height <- 40px;
+        layout-direction <- left-to-right;
     }
     tracks := GridLayout {
-        x: 18px; y: 124px; width: 170px; height: 34px;
+        x <- 18px; y <- 124px; width <- 170px; height <- 34px;
         Row {
-            col-zero := Button { text: "列 0"; }
-            col-one := Button { text: "列 1"; }
+            col-zero := Button { text <- "列 0"; }
+            col-one := Button { text <- "列 1"; }
         }
     }
     flow := FlowLayout {
-        x: 205px; y: 124px; width: 157px; height: 72px;
-        horizontal-spacing: 7px; vertical-spacing: 4px;
-        flow-one := Label { text: "一"; width: 64px; height: 27px; }
-        flow-two := Label { text: "二"; width: 64px; height: 27px; }
-        flow-three := Label { text: "三"; width: 64px; height: 27px; }
+        x <- 205px; y <- 124px; width <- 157px; height <- 72px;
+        horizontal-spacing <- 7px; vertical-spacing <- 4px;
+        flow-one := Label { text <- "一"; width <- 64px; height <- 27px; }
+        flow-two := Label { text <- "二"; width <- 64px; height <- 27px; }
+        flow-three := Label { text <- "三"; width <- 64px; height <- 27px; }
     }
     flex := FlexboxLayout {
-        x: 376px; y: 124px; width: 160px; height: 40px;
-        flex-direction: row-reverse;
-        alignment: start; spacing-horizontal: 6px;
-        flex-one := Label { text: "A"; width: 34px; }
-        flex-two := Label { text: "B"; width: 34px; }
+        x <- 376px; y <- 124px; width <- 160px; height <- 40px;
+        flex-direction <- row-reverse;
+        alignment <- start; spacing-horizontal <- 6px;
+        flex-one := Label { text <- "A"; width <- 34px; }
+        flex-two := Label { text <- "B"; width <- 34px; }
     }
     grid := GridView {
-        x: 18px; y: 216px; width: 310px; height: 150px;
-        cell-width: 88px; cell-height: 33px; spacing: 6px;
-        current-index <=> root.grid-index;
-        for index in 18 : ItemDelegate { text: "记录 " + index; }
+        x <- 18px; y <- 216px; width <- 310px; height <- 150px;
+        cell-width <- 88px; cell-height <- 33px; spacing <- 6px;
+        current-index <-> root.grid-index;
+        for index in 18 : ItemDelegate { text <- "记录 " + index; }
     }
     selected-cell := Label {
-        x: 351px; y: 234px; width: 181px;
-        text: "当前索引 " + root.grid-index;
+        x <- 351px; y <- 234px; width <- 181px;
+        text <- "当前索引 " + root.grid-index;
     }
 }

@@ -12,9 +12,9 @@ struct DepthActor {
 }
 
 export component MaterialDepthDemo inherits Window {
-    title: "XRack · Material depth";
-    width: 600px; height: 372px;
-    background: #192330;
+    title <- "XRack · Material depth";
+    width <- 600px; height <- 372px;
+    background <- #192330;
 
     in-out property <string> mode: "opaque-only";
     in-out property <bool> blended: true;
@@ -29,16 +29,16 @@ export component MaterialDepthDemo inherits Window {
         source: "", wrap-u: "clamp", wrap-v: "clamp", min-filter: "nearest",
         mag-filter: "nearest", mip-filter: "none",
     };
-    property <DepthMaterial> flat: DepthMaterial {
+    property <DepthMaterial> flat <- DepthMaterial {
         base-color: #526681, base-color-map: root.no-map, alpha-mode: "opaque", alpha-cutoff: 0.75,
         depth-draw-mode: "opaque-only", unlit: true, transmission: 0.0, roughness: 0.25,
     };
-    property <DepthActor> base: DepthActor {
+    property <DepthActor> base <- DepthActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, camera-kind: "", camera-height: 4, material: root.flat, casts-shadow: false,
     };
-    property <[DepthActor]> world: [
+    property <[DepthActor]> world <- [
         DepthActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
         DepthActor {
             id: "stripes", yaw: 42, scale-x: 4, scale-y: 3, casts-shadow: true,
@@ -62,28 +62,28 @@ export component MaterialDepthDemo inherits Window {
             material: DepthMaterial { unlit: !root.shadows, ..root.flat }, ..root.base
         }
     ];
-    out property <string> upper-hit: Scene3D.pick-camera(
+    out property <string> upper-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(600px, 320px), Point2D.new(220px, 88px));
-    out property <string> center-hit: Scene3D.pick-camera(
+    out property <string> center-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(600px, 320px), Point2D.new(220px, 160px));
-    out property <string> lower-hit: Scene3D.pick-camera(
+    out property <string> lower-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(600px, 320px), Point2D.new(220px, 232px));
 
     SceneView3D {
-        width: 600px; height: 320px; model: root.world; camera: "eye";
-        multisampling: root.smooth; order-independent-transparency: root.weighted;
-        depth-prepass: root.prepass;
-        shadows: root.shadows; shadow-map-size: 256; light-yaw: -50; light-elevation: 15;
-        ambient-intensity: 0.2; scene-background: #22334b;
+        width <- 600px; height <- 320px; model <- root.world; camera <- "eye";
+        multisampling <- root.smooth; order-independent-transparency <- root.weighted;
+        depth-prepass <- root.prepass;
+        shadows <- root.shadows; shadow-map-size <- 256; light-yaw <- -50; light-elevation <- 15;
+        ambient-intensity <- 0.2; scene-background <- #22334b;
     }
     depth-button := Button {
-        x: 12px; y: 334px; width: 162px; height: 30px; text: root.mode;
+        x <- 12px; y <- 334px; width <- 162px; height <- 30px; text <- root.mode;
         clicked => {
             root.mode = root.mode == "opaque-only" ? "always" :
                 root.mode == "always" ? "never" : root.mode == "never" ? "opaque-prepass" : "opaque-only";
         }
     }
-    blend-toggle := CheckBox { x: 186px; y: 334px; width: 122px; text: "Alpha blend"; checked <=> root.blended; }
-    shadow-toggle := CheckBox { x: 318px; y: 334px; width: 98px; text: "Shadows"; checked <=> root.shadows; }
-    prepass-toggle := CheckBox { x: 431px; y: 334px; width: 157px; text: "Depth prepass"; checked <=> root.prepass; }
+    blend-toggle := CheckBox { x <- 186px; y <- 334px; width <- 122px; text <- "Alpha blend"; checked <-> root.blended; }
+    shadow-toggle := CheckBox { x <- 318px; y <- 334px; width <- 98px; text <- "Shadows"; checked <-> root.shadows; }
+    prepass-toggle := CheckBox { x <- 431px; y <- 334px; width <- 157px; text <- "Depth prepass"; checked <-> root.prepass; }
 }

@@ -190,7 +190,7 @@ def XR_PropertyOp : XR_Op<"property"> {
   let hasVerifier = 1;
 }
 def XR_BindOp : XR_Op<"bind"> {
-  let arguments = (ins XR_Value:$input, StrAttr:$name);
+  let arguments = (ins XR_Value:$input, StrAttr:$name, OptionalAttr<StrAttr>:$initial);
 }
 def XR_ActionRefOp : XR_Op<"action_ref", [HasParent<"ElementOp">]> {
   let arguments = (ins StrAttr:$owner);
@@ -264,7 +264,7 @@ def XR_RowLinkOp : XR_Op<"row_link", [HasParent<"ElementOp">]> {
   let hasVerifier = 1;
 }
 def XR_LayoutBindOp : XR_Op<"layout_bind", [HasParent<"InstanceOp">]> {
-  let arguments = (ins XR_Value:$input, StrAttr:$name);
+  let arguments = (ins XR_Value:$input, StrAttr:$name, OptionalAttr<StrAttr>:$initial);
   let hasVerifier = 1;
 }
 def XR_AssignOp : XR_Op<"assign"> {

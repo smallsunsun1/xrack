@@ -38,32 +38,32 @@ struct Actor {
 
 export component App inherits Window {
     in property <[Actor]> objects: [];
-    in property <point3d> origin: once Point3D.new(0, 1, 0);
+    in property <point3d> origin: Point3D.new(0, 1, 0);
     in property <float> capsule-segment: 1;
-    out property <hit3d> low: Scene3D.capsule-cast(root.objects, root.origin, Vector3D.new(1, 0, 0), 6, 0.4, 0, 1);
-    out property <hit3d> high: Scene3D.capsule-cast(root.objects, root.origin, Vector3D.new(1, 0, 0), 6, 0.4, root.capsule-segment);
-    out property <point3d> still: Scene3D.capsule-slide(root.objects, root.origin, Vector3D.new(0, 0, 0), 0.4, root.capsule-segment);
-    out property <[hit3d]> stationary: Scene3D.capsule-trigger-crossings(
+    out property <hit3d> low <- Scene3D.capsule-cast(root.objects, root.origin, Vector3D.new(1, 0, 0), 6, 0.4, 0, 1);
+    out property <hit3d> high <- Scene3D.capsule-cast(root.objects, root.origin, Vector3D.new(1, 0, 0), 6, 0.4, root.capsule-segment);
+    out property <point3d> still <- Scene3D.capsule-slide(root.objects, root.origin, Vector3D.new(0, 0, 0), 0.4, root.capsule-segment);
+    out property <[hit3d]> stationary <- Scene3D.capsule-trigger-crossings(
         [Actor { id: "zone", mesh: "primitive:box", x: 0, y: 0, z: 0,
             scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #ffffff }],
         Point3D.new(1, 0, 0), Point3D.new(1, 0, 0), 0.4, 1);
-    out property <[hit3d]> reactive-stationary: Scene3D.capsule-trigger-crossings(
+    out property <[hit3d]> reactive-stationary <- Scene3D.capsule-trigger-crossings(
         root.objects, Point3D.new(1, 0, 0), Point3D.new(1, 0, 0), 0.4, root.capsule-segment);
-    out property <walkresult3d> movement: Scene3D.capsule-walk-result(
+    out property <walkresult3d> movement <- Scene3D.capsule-walk-result(
         root.objects, root.origin, Vector3D.new(3, 0, 0), 0.4, root.capsule-segment, 0.3, 0.3, 45, 1);
-    out property <walkresult3d> stationary-walk: Scene3D.capsule-walk-result(
+    out property <walkresult3d> stationary-walk <- Scene3D.capsule-walk-result(
         [Actor { id: "zone", mesh: "primitive:box", x: 0, y: 0, z: 0,
             scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #ffffff }],
         Point3D.new(1, 0, 0), Vector3D.new(0, 0, 0), 0.4, 1, 0.3, 0.3, 45, 0);
-    out property <walkresult3d> standing: Scene3D.capsule-walk-result(
+    out property <walkresult3d> standing <- Scene3D.capsule-walk-result(
         [Actor { id: "floor", mesh: "primitive:box", x: 0, y: -0.5, z: 0,
             scale-x: 4, scale-y: 1, scale-z: 4, yaw: 0, pitch: 0, roll: 0, color: #ffffff }],
         Point3D.new(0, 0.4, 0), Vector3D.new(0, 0, 0), 0.4, 0, 0, 0, 45);
-    out property <bool> supported: root.standing.grounded;
-    out property <walkresult3d> reported: Scene3D.capsule-walk-with-contacts(
+    out property <bool> supported <- root.standing.grounded;
+    out property <walkresult3d> reported <- Scene3D.capsule-walk-with-contacts(
         root.objects, root.origin, Vector3D.new(5, 0, 0), 0.4, root.capsule-segment, 0.3, 0.3, 45, 1);
-    out property <[hit3d]> reported-hits: root.reported.contacts;
-    out property <hit3d> reported-support: root.reported.support;
+    out property <[hit3d]> reported-hits <- root.reported.contacts;
+    out property <hit3d> reported-support <- root.reported.support;
     pure function endpoint-only() -> point3d {
         let motion = Scene3D.capsule-walk-with-contacts(
             root.objects, root.origin, Vector3D.new(4, 0, 0), 0.4, root.capsule-segment, 0.3, 0.3, 45);

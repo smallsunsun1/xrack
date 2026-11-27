@@ -19,8 +19,8 @@ struct OpticalLamp {
 }
 
 export component MaterialOpticsDemo inherits Window {
-    title: "XRack · Optical materials";
-    width: 600px; height: 372px; background: #192330;
+    title <- "XRack · Optical materials";
+    width <- 600px; height <- 372px; background <- #192330;
 
     in-out property <string> look: "glass";
     in-out property <float> thickness: 0.0;
@@ -36,11 +36,11 @@ export component MaterialOpticsDemo inherits Window {
     in-out property <bool> inherit: false;
     in-out property <float> depth-scale: 1.0;
 
-    property <string> swatch: @texture-url("models/channel-swatch.png");
+    property <string> swatch <- @texture-url("models/channel-swatch.png");
     property <OpticsSampler> no-map: OpticsSampler {
         source: "", min-filter: "linear", mag-filter: "linear", mip-filter: "linear",
     };
-    property <OpticalFinish> flat: OpticalFinish {
+    property <OpticalFinish> flat <- OpticalFinish {
         enabled: true, unlit: true, base-color: #fff, metalness: 0, roughness: 0.5,
         transmission: 0, index-of-refraction: 1.5, thickness: 0,
         thickness-map: "", thickness-channel: "g",
@@ -49,12 +49,12 @@ export component MaterialOpticsDemo inherits Window {
         specular-color-map: root.no-map, specular-channel: "a",
         occlusion-amount: 1, occlusion-map: "", occlusion-channel: "b",
     };
-    property <OpticalActor> base: OpticalActor {
+    property <OpticalActor> base <- OpticalActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, camera-kind: "", camera-height: 4, material: root.flat,
     };
-    property <[OpticalActor]> world: [
+    property <[OpticalActor]> world <- [
         OpticalActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
         OpticalActor {
             id: "glass",
@@ -91,7 +91,7 @@ export component MaterialOpticsDemo inherits Window {
         }
     ];
     property <[OpticalLamp]> none;
-    property <[OpticalLamp]> lights: root.look == "highlights" ? [
+    property <[OpticalLamp]> lights <- root.look == "highlights" ? [
         OpticalLamp {
             kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0, intensity: 3.0,
             color: #fff, range: 1, inner-angle: 0, outer-angle: 20,
@@ -99,19 +99,19 @@ export component MaterialOpticsDemo inherits Window {
     ] : root.none;
 
     SceneView3D {
-        width: 600px; height: 320px; model: root.world; camera: "eye";
-        lights: root.lights; ambient-intensity: 0.6; scene-background: #22334b;
+        width <- 600px; height <- 320px; model <- root.world; camera <- "eye";
+        lights <- root.lights; ambient-intensity <- 0.6; scene-background <- #22334b;
     }
     thickness-button := Button {
-        x: 12px; y: 334px; width: 135px; height: 30px; text: root.thickness == 0 ? "Thin" : "Thick";
+        x <- 12px; y <- 334px; width <- 135px; height <- 30px; text <- root.thickness == 0 ? "Thin" : "Thick";
         clicked => { root.thickness = root.thickness == 0 ? 1.6 : 0; }
     }
     looks := Button {
-        x: 161px; y: 334px; width: 130px; height: 30px; text: root.look;
+        x <- 161px; y <- 334px; width <- 130px; height <- 30px; text <- root.look;
         clicked => {
             root.look = root.look == "glass" ? "highlights" : root.look == "highlights" ? "occlusion" : "glass";
         }
     }
-    CheckBox { x: 305px; y: 334px; width: 135px; text: "Maps"; checked <=> root.mapped; }
-    CheckBox { x: 449px; y: 334px; width: 147px; text: "Striped wall"; checked <=> root.patterned; }
+    CheckBox { x <- 305px; y <- 334px; width <- 135px; text <- "Maps"; checked <-> root.mapped; }
+    CheckBox { x <- 449px; y <- 334px; width <- 147px; text <- "Striped wall"; checked <-> root.patterned; }
 }

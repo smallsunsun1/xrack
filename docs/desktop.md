@@ -46,7 +46,7 @@ bazel run --config=media //examples/voice:voice
 
 顶层 `.xr` `Window` 可实现 `close-requested() => { … }`，返回 `true` 允许关闭，返回 `false` 保留窗口。标题栏、Rust 的 `DesktopWindow::close()` 和 `.xr` 的 `root.close()` 都经过这个处理器。`root.close()` 在当前回调结束后提交关闭请求。处理器可先拒绝，再打开 `MessageDialog`，由确认回调清除未保存标记并重新请求关闭。运行 `bazel run //examples/form:form -- --close-guard` 体验。
 
-在根 `Window` 下声明命名的 `SecondaryWindow`，并在其中放一个继承 `Window` 的组件实例。`visible <=> root.show-inspector;` 把显示状态和父组件同步，`show()`、`hide()` 控制显示，`close()` 提交子窗口的关闭请求。子窗口批准关闭后会将 `visible` 写回 `false`。隐藏会释放原生窗口并保留子组件实例，重新显示时可继续编辑。父窗口退出时，宿主先释放它拥有的辅助窗口。运行 `bazel run //examples/counter:counter -- --secondary` 体验。
+在根 `Window` 下声明命名的 `SecondaryWindow`，并在其中放一个继承 `Window` 的组件实例。`visible <-> root.show-inspector;` 把显示状态和父组件同步，`show()`、`hide()` 控制显示，`close()` 提交子窗口的关闭请求。子窗口批准关闭后会将 `visible` 写回 `false`。隐藏会释放原生窗口并保留子组件实例，重新显示时可继续编辑。父窗口退出时，宿主先释放它拥有的辅助窗口。运行 `bazel run //examples/counter:counter -- --secondary` 体验。
 
 每个窗口维护自己的焦点、编辑状态、计时器、原生对话框和本地任务。共享的响应式模型变化后，宿主在同一轮事件中刷新依赖失效的窗口，并合并各窗口的唤醒时间。兼容的 surface 复用 GPU 设备。运行 `bazel run //examples/counter:counter -- --windows` 可验证独立计数、共享状态、异步更新、动态开窗和关闭。
 

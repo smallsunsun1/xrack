@@ -19,9 +19,9 @@ struct TexturedActor {
 }
 
 export component AuthoredTextureDemo inherits Window {
-    title: "XRack · 材质贴图";
-    width: 644px; height: 478px;
-    resizable: false; background: #182535;
+    title <- "XRack · 材质贴图";
+    width <- 644px; height <- 478px;
+    resizable <- false; background <- #182535;
 
     in-out property <float> repeat: 1.5;
     in-out property <float> rotation: 0;
@@ -33,7 +33,7 @@ export component AuthoredTextureDemo inherits Window {
     in-out property <bool> offset-pivot: false;
     in-out property <bool> flip-u: false;
     in-out property <bool> flip-v: false;
-    property <SurfaceMap> tiles: SurfaceMap {
+    property <SurfaceMap> tiles <- SurfaceMap {
         source: @texture-url("models/focus-grid.png"),
         wrap-u: root.wrap, wrap-v: root.wrap,
         min-filter: "linear", mag-filter: "nearest", mip-filter: "linear",
@@ -42,7 +42,7 @@ export component AuthoredTextureDemo inherits Window {
         uv-pivot-u: root.offset-pivot ? 0.7 : 0, uv-pivot-v: root.offset-pivot ? 0.5 : 0,
         uv-flip-u: root.flip-u, uv-flip-v: root.flip-v,
     };
-    property <TexturedStyle> left: TexturedStyle {
+    property <TexturedStyle> left <- TexturedStyle {
         enabled: true, base-color: root.cutout ? #b39bf0 : #7fbdde,
         metalness: 0.05, roughness: root.roughness,
         base-color-map: root.cutout ? SurfaceMap {
@@ -54,20 +54,20 @@ export component AuthoredTextureDemo inherits Window {
         alpha-mode: root.cutout ? "mask" : "opaque", alpha-cutoff: 0.5,
         unlit: false, cull-mode: "back",
     };
-    property <TexturedStyle> right: TexturedStyle {
+    property <TexturedStyle> right <- TexturedStyle {
         base-color: #efa868, alpha-mode: "opaque", cull-mode: "none",
         base-color-map: SurfaceMap { ..root.tiles },
         normal-map: root.bump ? @texture-url("models/coat-normal.png") : "",
         metallic-roughness-map: @texture-url("models/coat-channels.png"),
         normal-strength: 0.8, metalness: 0.55, ..root.left
     };
-    property <TexturedActor> base: TexturedActor {
+    property <TexturedActor> base <- TexturedActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, material: TexturedStyle { enabled: false, ..root.left },
         casts-shadow: true, camera-kind: "", camera-height: 6.2,
     };
-    property <[TexturedActor]> world: [
+    property <[TexturedActor]> world <- [
         TexturedActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
         TexturedActor {
             id: "backdrop", z: -2.15, scale-x: 16, scale-y: 9, scale-z: 0.08,
@@ -86,30 +86,30 @@ export component AuthoredTextureDemo inherits Window {
             material: root.right, ..root.base
         },
     ];
-    out property <string> picked: Scene3D.pick-camera(
+    out property <string> picked <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(644px, 321px), Point2D.new(217px, 153px));
     SceneView3D {
-        width: 644px; height: 321px; model: root.world; camera: "eye";
-        scene-background: #253b52; scene-hdr: true;
-        shadows: true; shadow-map-size: 512; shadow-bias: 0.0028;
-        light-yaw: -35; light-elevation: 37; ambient-intensity: 0.34;
-        cache-rendering: true;
+        width <- 644px; height <- 321px; model <- root.world; camera <- "eye";
+        scene-background <- #253b52; scene-hdr <- true;
+        shadows <- true; shadow-map-size <- 512; shadow-bias <- 0.0028;
+        light-yaw <- -35; light-elevation <- 37; ambient-intensity <- 0.34;
+        cache-rendering <- true;
     }
-    Label { x: 14px; y: 327px; width: 53px; height: 34px; text: "平铺"; }
-    tile-slider := Slider { x: 64px; y: 328px; width: 160px; height: 32px; minimum: 0.55; maximum: 5; value <=> root.repeat; }
-    Label { x: 234px; y: 327px; width: 53px; height: 34px; text: "旋转"; }
-    turn-slider := Slider { x: 284px; y: 328px; width: 135px; height: 32px; minimum: 0; maximum: 180; value <=> root.rotation; }
-    Label { x: 429px; y: 327px; width: 55px; height: 34px; text: "粗糙度"; }
-    rough-slider := Slider { x: 486px; y: 328px; width: 142px; height: 32px; minimum: 0.04; maximum: 1; value <=> root.roughness; }
-    mask-toggle := CheckBox { x: 14px; y: 375px; width: 139px; height: 36px; text: "底色裁切"; checked <=> root.cutout; }
-    normal-toggle := CheckBox { x: 153px; y: 375px; width: 124px; height: 36px; text: "法线贴图"; checked <=> root.bump; }
-    mesh-toggle := CheckBox { x: 285px; y: 375px; width: 139px; height: 36px; text: "用 glTF UV"; checked <=> root.imported; }
+    Label { x <- 14px; y <- 327px; width <- 53px; height <- 34px; text <- "平铺"; }
+    tile-slider := Slider { x <- 64px; y <- 328px; width <- 160px; height <- 32px; minimum <- 0.55; maximum <- 5; value <-> root.repeat; }
+    Label { x <- 234px; y <- 327px; width <- 53px; height <- 34px; text <- "旋转"; }
+    turn-slider := Slider { x <- 284px; y <- 328px; width <- 135px; height <- 32px; minimum <- 0; maximum <- 180; value <-> root.rotation; }
+    Label { x <- 429px; y <- 327px; width <- 55px; height <- 34px; text <- "粗糙度"; }
+    rough-slider := Slider { x <- 486px; y <- 328px; width <- 142px; height <- 32px; minimum <- 0.04; maximum <- 1; value <-> root.roughness; }
+    mask-toggle := CheckBox { x <- 14px; y <- 375px; width <- 139px; height <- 36px; text <- "底色裁切"; checked <-> root.cutout; }
+    normal-toggle := CheckBox { x <- 153px; y <- 375px; width <- 124px; height <- 36px; text <- "法线贴图"; checked <-> root.bump; }
+    mesh-toggle := CheckBox { x <- 285px; y <- 375px; width <- 139px; height <- 36px; text <- "用 glTF UV"; checked <-> root.imported; }
     wrap-toggle := Button {
-        x: 447px; y: 374px; width: 181px; height: 36px;
-        text: root.wrap == "repeat" ? "重复寻址" : root.wrap == "mirror" ? "镜像寻址" : "边缘延伸";
+        x <- 447px; y <- 374px; width <- 181px; height <- 36px;
+        text <- root.wrap == "repeat" ? "重复寻址" : root.wrap == "mirror" ? "镜像寻址" : "边缘延伸";
         clicked => { root.wrap = root.wrap == "repeat" ? "mirror" : root.wrap == "mirror" ? "clamp" : "repeat"; }
     }
-    pivot-toggle := CheckBox { x: 14px; y: 420px; width: 139px; height: 36px; text: "偏心旋转"; checked <=> root.offset-pivot; }
-    flip-u-toggle := CheckBox { x: 153px; y: 420px; width: 124px; height: 36px; text: "水平翻转"; checked <=> root.flip-u; }
-    flip-v-toggle := CheckBox { x: 285px; y: 420px; width: 139px; height: 36px; text: "垂直翻转"; checked <=> root.flip-v; }
+    pivot-toggle := CheckBox { x <- 14px; y <- 420px; width <- 139px; height <- 36px; text <- "偏心旋转"; checked <-> root.offset-pivot; }
+    flip-u-toggle := CheckBox { x <- 153px; y <- 420px; width <- 124px; height <- 36px; text <- "水平翻转"; checked <-> root.flip-u; }
+    flip-v-toggle := CheckBox { x <- 285px; y <- 420px; width <- 139px; height <- 36px; text <- "垂直翻转"; checked <-> root.flip-v; }
 }

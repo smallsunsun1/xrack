@@ -14,14 +14,14 @@ fn reload_keeps_in_flight_host_state_and_does_not_restart_named_one_shot() {
 
     let source = r#"
         export component App inherits Window {
-            title: "Before";
-            in-out property <string> query: once "XRack";
-            in-out property <[string]> results: once [];
-            out property <string> heading: "Count " + Model.count(root.results);
-            in-out property <bool> startup-running: once true;
+            title <- "Before";
+            in-out property <string> query: "XRack";
+            in-out property <[string]> results: [];
+            out property <string> heading <- "Count " + Model.count(root.results);
+            in-out property <bool> startup-running: true;
             callback search(string);
             startup := Timer {
-                interval: 1; running <=> root.startup-running; repeat: false;
+                interval <- 1; running <-> root.startup-running; repeat <- false;
                 triggered => { root.search(root.query); }
             }
         }
@@ -105,10 +105,10 @@ fn reload_preserves_edited_list_literals_and_their_row_identities() {
     let source = r#"
         export struct Entry { count: int }
         export component App inherits Window {
-            in-out property <[Entry]> events: once [];
-            in-out property <[Entry]> untouched: once [Entry { count: 1 }];
+            in-out property <[Entry]> events: [];
+            in-out property <[Entry]> untouched: [Entry { count: 1 }];
             property <[Entry]> internal: [Entry { count: 2 }];
-            in-out property <[Entry]> derived: once root.internal;
+            in-out property <[Entry]> derived: root.internal;
             callback append();
             append => {
                 Model.append(root.events, Entry { count: 3 });
@@ -157,13 +157,13 @@ fn reload_preserves_edited_list_literals_and_their_row_identities() {
 fn execute_mlir_bindings_and_callbacks_after_releasing_module() {
     let source = r#"
         export component Counter inherits Window {
-            in-out property <int> count: once 0;
-            out property <int> doubled: count * 2;
+            in-out property <int> count: 0;
+            out property <int> doubled <- count * 2;
             callback increment(step: int);
             increment(step) => { root.count += step; }
             VerticalBox {
-                Text { text: "" + root.doubled; }
-                add := Button { text: "Add"; clicked => { root.increment(2); } }
+                Text { text <- "" + root.doubled; }
+                add := Button { text <- "Add"; clicked => { root.increment(2); } }
             }
         }
     "#;
@@ -198,8 +198,8 @@ fn hoisted_translation_tracks_locale_and_arguments() {
         r#"
         translations "catalog.toml";
         export component App inherits Window {
-            in-out property <int> count: once 1;
-            for row in 3 : Text { text: @tr("label", count: root.count); }
+            in-out property <int> count: 1;
+            for row in 3 : Text { text <- @tr("label", count: root.count); }
         }
         "#,
     )
@@ -246,20 +246,20 @@ fn visual_caches_stay_lazy_and_use_the_component_or_row_scope() {
     let module = compile(
         r#"
         export component App inherits Window {
-            in-out property <int> count: once 1;
-            in-out property <string> prefix: once "A";
-            in-out property <bool> show: once false;
-            in-out property <[string]> items: once ["one", "two"];
+            in-out property <int> count: 1;
+            in-out property <string> prefix: "A";
+            in-out property <bool> show: false;
+            in-out property <[string]> items: ["one", "two"];
             pure callback describe() -> string;
-            out property <string> caption: root.describe();
-            Text { text: "Count " + root.count; }
-            Text { text: "Count " + root.count; }
+            out property <string> caption <- root.describe();
+            Text { text <- "Count " + root.count; }
+            Text { text <- "Count " + root.count; }
             for item in root.items : VerticalLayout {
-                Text { text: "Item " + item; }
-                Text { text: "Item " + item; }
-                Text { text: "Prefix " + root.prefix; }
-                Text { text: root.show ? ("Caption " + root.caption + ": ") + item : item; }
-                for inner in 1 : Text { text: "Prefix " + root.prefix; }
+                Text { text <- "Item " + item; }
+                Text { text <- "Item " + item; }
+                Text { text <- "Prefix " + root.prefix; }
+                Text { text <- root.show ? ("Caption " + root.caption + ": ") + item : item; }
+                for inner in 1 : Text { text <- "Prefix " + root.prefix; }
             }
         }
     "#,
@@ -383,15 +383,15 @@ fn child_instances_write_back_to_their_own_parent_input() {
     let module = compile(
         r#"
         component Field inherits LineEdit {
-            in-out property <string> value: once "";
-            text <=> root.value;
+            in-out property <string> value: "";
+            text <-> root.value;
         }
         export component App inherits Window {
-            in-out property <string> left: once "first";
-            in-out property <string> right: once "second";
+            in-out property <string> left: "first";
+            in-out property <string> right: "second";
             VerticalBox {
-                Field { value <=> root.left; }
-                Field { value <=> root.right; }
+                Field { value <-> root.left; }
+                Field { value <-> root.right; }
             }
         }
     "#,
@@ -422,13 +422,13 @@ fn inactive_branch_stays_lazy_and_errors_do_not_poison_other_exports() {
     let module = compile(
         r#"
         export component App inherits Window {
-            in property <bool> ready: once false;
-            in property <int> denominator: once 0;
-            out property <int> result: ready ? 10 / denominator : 7;
+            in property <bool> ready: false;
+            in property <int> denominator: 0;
+            out property <int> result <- ready ? 10 / denominator : 7;
         }
         export component Extra inherits Window {
-            in property <int> denominator: once 0;
-            Text { text: "" + (10 / root.denominator); }
+            in property <int> denominator: 0;
+            Text { text <- "" + (10 / root.denominator); }
         }
     "#,
     )
@@ -453,14 +453,14 @@ fn state_overrides_are_ordered_and_restore_live_component_inputs() {
     let module = compile(
         r#"
         component Badge inherits Rectangle {
-            in-out property <string> caption: once "Default";
-            Text { text: root.caption; }
+            in-out property <string> caption: "Default";
+            Text { text <- root.caption; }
         }
         export component App inherits Window {
-            in-out property <string> caption: once "Ready";
-            in-out property <bool> warning: once false;
-            in-out property <bool> urgent: once false;
-            badge := Badge { caption: root.caption; width: 100px; }
+            in-out property <string> caption: "Ready";
+            in-out property <bool> warning: false;
+            in-out property <bool> urgent: false;
+            badge := Badge { caption <- root.caption; width <- 100px; }
             states [
                 warning when root.warning: {
                     badge.caption: "Warning";
@@ -506,11 +506,11 @@ fn selected_combo_item_updates_binding_before_running_handler() {
     let module = compile(
         r#"
         export component App inherits Window {
-            in-out property <string> choice: once "one";
-            out property <string> observed: once "";
+            in-out property <string> choice: "one";
+            out property <string> observed: "";
             picker := ComboBox {
-                model: ["one", "two"];
-                current-value <=> root.choice;
+                model <- ["one", "two"];
+                current-value <-> root.choice;
                 selected(label) => { root.observed = label + "/" + root.choice; }
             }
         }
@@ -537,15 +537,15 @@ fn spin_control_uses_runtime_wrapping_and_read_only_rules() {
     let module = compile(
         r#"
         export component App inherits Window {
-            in-out property <int> count: once 5;
-            in-out property <bool> locked: once false;
-            out property <int> observed: once -1;
+            in-out property <int> count: 5;
+            in-out property <bool> locked: false;
+            out property <int> observed: -1;
             spin := SpinBox {
-                minimum: 0;
-                maximum: 5;
-                wrap: true;
-                value <=> root.count;
-                read-only: root.locked;
+                minimum <- 0;
+                maximum <- 5;
+                wrap <- true;
+                value <-> root.count;
+                read-only <- root.locked;
                 edited(next) => { root.observed = next; }
             }
         }
@@ -571,14 +571,14 @@ fn virtual_delegate_retains_local_state_and_rejects_replaced_rows() {
         r#"
         component CounterRow inherits Button {
             in property <string> label;
-            property <int> clicks: once 0;
-            text: root.label + ":" + root.clicks;
+            property <int> clicks: 0;
+            text <- root.label + ":" + root.clicks;
             clicked => { root.clicks += 1; }
         }
         export component App inherits Window {
-            in-out property <[string]> items: once ["A", "B", "C"];
+            in-out property <[string]> items: ["A", "B", "C"];
             ListView {
-                for item[index] in root.items : CounterRow { label: index + " " + item; }
+                for item[index] in root.items : CounterRow { label <- index + " " + item; }
             }
         }
     "#,
@@ -646,16 +646,16 @@ fn two_way_link_follows_forwarded_input_through_nested_aliases() {
         r#"
         component Entry inherits LineEdit {
             in-out property <string> value;
-            text <=> root.value;
+            text <-> root.value;
         }
         component Wrapper inherits Rectangle {
-            in-out property <string> forwarded <=> field.value;
-            property <string> stored: once "internal";
-            field := Entry { value <=> root.stored; }
+            in-out property <string> forwarded <-> field.value;
+            property <string> stored: "internal";
+            field := Entry { value <-> root.stored; }
         }
         export component App inherits Window {
-            in-out property <string> value: once "parent";
-            Wrapper { forwarded <=> root.value; }
+            in-out property <string> value: "parent";
+            Wrapper { forwarded <-> root.value; }
         }
     "#,
     )
@@ -684,16 +684,16 @@ fn record_row_links_update_only_the_live_nested_field() {
         struct Flags { enabled: bool, retained: int }
         struct Entry { label: string, flags: Flags }
         export component App inherits Window {
-            in-out property <[Entry]> records: once [
+            in-out property <[Entry]> records: [
                 Entry { label: "one", flags: Flags { enabled: false, retained: 8 } },
                 Entry { label: "two", flags: Flags { enabled: false, retained: 9 } }
             ];
-            out property <int> edits: once 0;
+            out property <int> edits: 0;
             ListView {
-                row-height: 32px;
+                row-height <- 32px;
                 for entry in root.records : CheckDelegate {
-                    text: entry.label;
-                    checked <=> entry.flags.enabled;
+                    text <- entry.label;
+                    checked <-> entry.flags.enabled;
                     toggled => { root.edits += 1; }
                 }
             }
@@ -756,12 +756,12 @@ fn record_field_forwards_to_the_editable_component_input() {
         struct Entry { label: string }
         component Editor inherits LineEdit {
             in-out property <string> label;
-            text <=> root.label;
+            text <-> root.label;
         }
         export component App inherits Window {
-            in-out property <[Entry]> records: once [Entry { label: "before" }];
+            in-out property <[Entry]> records: [Entry { label: "before" }];
             ListView {
-                for entry in root.records : Editor { label <=> entry.label; }
+                for entry in root.records : Editor { label <-> entry.label; }
             }
         }
     "#,
@@ -799,21 +799,21 @@ fn custom_clipboard_parser_replays_only_changed_nested_fields() {
 
         component Cell inherits LineEdit {
             in-out property <Details> details;
-            text: root.details.label;
+            text <- root.details.label;
         }
 
         export component App inherits Window {
-            in-out property <[PasteEntry]> records: once [
+            in-out property <[PasteEntry]> records: [
                 PasteEntry { details: Details { label: "original", enabled: false } },
                 PasteEntry { details: Details { label: "second", enabled: false } },
             ];
             view := TableView {
-                pasteable: true;
-                TableColumn { title: "Name"; }
+                pasteable <- true;
+                TableColumn { title <- "Name"; }
                 for entry in root.records : TableRow {
                     Cell {
-                        details <=> entry.details;
-                        clipboard-target: "details";
+                        details <-> entry.details;
+                        clipboard-target <- "details";
                         clipboard-paste(text) => {
                             PasteResult {
                                 accepted: text != "reject",
@@ -870,12 +870,12 @@ fn custom_clipboard_parser_replays_only_changed_nested_fields() {
 fn string_table_paste_replays_by_row_identity_after_reordering() {
     let source = r#"
         export component App inherits Window {
-            in-out property <[string]> entries: once ["alpha", "beta"];
+            in-out property <[string]> entries: ["alpha", "beta"];
             sheet := TableView {
-                pasteable: true;
-                edit-on-tab: true;
-                TableColumn { title: "Entry"; }
-                for entry in root.entries : TableRow { TableCell { text <=> entry; } }
+                pasteable <- true;
+                edit-on-tab <- true;
+                TableColumn { title <- "Entry"; }
+                for entry in root.entries : TableRow { TableCell { text <-> entry; } }
             }
         }
     "#;
@@ -912,15 +912,15 @@ fn timer_immediate_and_completed_ticks_observe_running_in_the_right_order() {
 
     let source = r#"
         export component App inherits Window {
-            out property <string> events: once "";
-            in-out property <bool> pending: once true;
+            out property <string> events: "";
+            in-out property <bool> pending: true;
             pulse := Timer {
-                interval: 100;
-                running <=> root.pending;
-                triggered-on-start: true;
+                interval <- 100;
+                running <-> root.pending;
+                triggered-on-start <- true;
                 triggered() => { root.events = root.events + (root.pending ? "R" : "S"); }
             }
-            Text { text: root.events; }
+            Text { text <- root.events; }
         }
     "#;
     let module = compile(source).optimize().unwrap();
@@ -958,10 +958,10 @@ fn tumbler_literal_model_keeps_its_identity_between_render_and_selection() {
     let module = compile(
         r#"
         export component App inherits Window {
-            in-out property <int> selected: once 0;
+            in-out property <int> selected: 0;
             Tumbler {
-                model: ["a", "b", "c"];
-                current-index <=> root.selected;
+                model <- ["a", "b", "c"];
+                current-index <-> root.selected;
             }
         }
     "#,

@@ -43,7 +43,7 @@ fn record_update_base_must_follow_the_explicit_fields() {
         ("User { .. }", false),
     ] {
         let source = format!(
-            "struct User {{ name: string }} component App inherits Window {{ property <User> current: {value}; }}"
+            "struct User {{ name: string }} component App inherits Window {{ property <User> current <- {value}; }}"
         );
         assert_eq!(parse(&source).is_ok(), valid, "{value}");
     }
@@ -75,11 +75,14 @@ fn properties_distinguish_storage_formulas_and_initializers() {
 
     let source = r#"component Demo inherits Window {
         in property <string> source;
-        property <string> live: root.source;
-        property <string> draft: once root.source;
+        property <string> live <- root.source;
+        property <string> draft: root.source;
         property <int> count: 1 + 2;
     }"#;
     assert!(parse(&source.replace("count: 1 + 2", "count = 1 + 2")).is_err());
+    assert!(parse(&source.replace("count: 1 + 2", "count: once 1 + 2")).is_err());
+    assert!(parse(&source.replace("draft: root.source", "draft <=> root.source")).is_err());
+    assert!(parse("component Demo inherits Window { property <bool> less <- 1<-2; }").is_ok());
     let doc = parse(source).unwrap();
     let modes: Vec<_> = doc.components[0]
         .members

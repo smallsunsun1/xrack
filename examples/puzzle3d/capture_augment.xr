@@ -13,8 +13,8 @@ struct AugmentInput { capture: string, attachment: string, enabled: bool }
 struct AugmentEffect { shader: string, buffers: [AugmentInput] }
 
 export component CaptureAugmentDemo inherits Window {
-    title: "XRack · 捕获材质扩展";
-    width: 250px; height: 178px; background: #000;
+    title <- "XRack · 捕获材质扩展";
+    width <- 250px; height <- 178px; background <- #000;
     in-out property <bool> augment: false;
     in-out property <bool> model-shader: true;
     in-out property <bool> read-data: true;
@@ -28,11 +28,11 @@ export component CaptureAugmentDemo inherits Window {
         material: AugmentMaterial { material-shader: "", unlit: true },
     };
     SceneView3D {
-        x: 8px; y: 8px; width: 234px; height: 84px; camera: "eye";
-        cache-rendering: true;
-        render-overrides: "disable-internal-passes";
-        scene-color-capture: "surface";
-        model: [
+        x <- 8px; y <- 8px; width <- 234px; height <- 84px; camera <- "eye";
+        cache-rendering <- true;
+        render-overrides <- "disable-internal-passes";
+        scene-color-capture <- "surface";
+        model <- [
             AugmentActor { id: "eye", mesh: "", z: 5, camera-kind: "orthographic", ..root.unit },
             AugmentActor {
                 id: "block",
@@ -43,7 +43,7 @@ export component CaptureAugmentDemo inherits Window {
                 ..root.unit
             },
         ];
-        scene-captures: [
+        scene-captures <- [
             AugmentCapture {
                 name: "surface", camera: "eye", renderables: "opaque", combine-attachments: true,
                 augment-shader: root.augment ? @material-shader-url("effects/augment_capture.wgsl") : "",
@@ -55,7 +55,7 @@ export component CaptureAugmentDemo inherits Window {
                 augment-parameters: Vector3D.new(0.25, 0.125, 0.0625),
             },
         ];
-        scene-effects: [
+        scene-effects <- [
             AugmentEffect {
                 shader: @shader-url("effects/augment_display.wgsl"),
                 buffers: [
@@ -66,23 +66,23 @@ export component CaptureAugmentDemo inherits Window {
         ];
     }
     augment := CheckBox {
-        x: 8px; y: 101px; width: 69px; height: 29px;
-        text: "扩展"; checked <=> root.augment;
+        x <- 8px; y <- 101px; width <- 69px; height <- 29px;
+        text <- "扩展"; checked <-> root.augment;
     }
     model-shader := CheckBox {
-        x: 85px; y: 101px; width: 76px; height: 29px;
-        text: "原材质"; checked <=> root.model-shader;
+        x <- 85px; y <- 101px; width <- 76px; height <- 29px;
+        text <- "原材质"; checked <-> root.model-shader;
     }
     read-data := CheckBox {
-        x: 170px; y: 101px; width: 74px; height: 29px;
-        text: "读附件"; checked <=> root.read-data;
+        x <- 170px; y <- 101px; width <- 74px; height <- 29px;
+        text <- "读附件"; checked <-> root.read-data;
     }
     gain := Slider {
-        x: 8px; y: 140px; width: 139px; height: 25px;
-        minimum: 0; maximum: 1; value <=> root.gain;
+        x <- 8px; y <- 140px; width <- 139px; height <- 25px;
+        minimum <- 0; maximum <- 1; value <-> root.gain;
     }
     compare := CheckBox {
-        x: 154px; y: 138px; width: 92px; height: 29px;
-        text: "两个捕获"; checked <=> root.compare;
+        x <- 154px; y <- 138px; width <- 92px; height <- 29px;
+        text <- "两个捕获"; checked <-> root.compare;
     }
 }

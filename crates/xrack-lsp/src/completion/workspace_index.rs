@@ -1495,7 +1495,7 @@ mod tests {
     const LEAF: &str = "export component Leaf inherits Rectangle { in property <int> value; }";
     const BRIDGE: &str =
         "import { Leaf } from \"leaf.xr\"; export component Bridge inherits Leaf {}";
-    const APP: &str = "import { Bridge } from \"bridge.xr\"; component App inherits Window { Bridge { value: 7; } }";
+    const APP: &str = "import { Bridge } from \"bridge.xr\"; component App inherits Window { Bridge { value <- 7; } }";
     const OTHER: &str = "component Other inherits Window { property <int> value; }";
 
     fn references(index: &mut Index, uri: &str, text: &str, name: &str) -> Vec<Value> {
@@ -1639,7 +1639,7 @@ mod tests {
         let roots = BTreeSet::from([root.clone()]);
         let leaf = root.join("leaf.xr");
         let app = root.join("app.xr");
-        let saved_app = "import { Leaf } from \"leaf.xr\"; component App inherits Window { Leaf { value: 7; } }";
+        let saved_app = "import { Leaf } from \"leaf.xr\"; component App inherits Window { Leaf { value <- 7; } }";
         fs::write(&leaf, LEAF).unwrap();
         fs::write(&app, saved_app).unwrap();
         let mut index = Index::default();

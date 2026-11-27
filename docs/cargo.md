@@ -28,17 +28,17 @@ xrack-build = "=0.9.0"
 
 ```xr
 export component App inherits Window {
-    title: "Hello XRack";
-    width: 320px;
-    height: 160px;
-    in-out property <int> count: once 0;
+    title <- "Hello XRack";
+    width <- 320px;
+    height <- 160px;
+    in-out property <int> count: 0;
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 12px;
-        Label { text: "Count: " + root.count; }
+        padding <- 16px;
+        spacing <- 12px;
+        Label { text <- "Count: " + root.count; }
         increment := Button {
-            text: "Add one";
+            text <- "Add one";
             clicked() => { root.count += 1; }
         }
     }

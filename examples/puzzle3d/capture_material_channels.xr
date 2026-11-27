@@ -17,9 +17,9 @@ struct SurfaceActor {
 }
 
 export component CaptureMaterialChannelsDemo inherits Window {
-    title: "XRack · 延迟光照";
-    width: 540px; height: 372px; resizable: false;
-    background: #172437;
+    title <- "XRack · 延迟光照";
+    width <- 540px; height <- 372px; resizable <- false;
+    background <- #172437;
     in-out property <float> light-x: -2;
     in-out property <float> metalness: 0.25;
     in-out property <bool> emission-only: false;
@@ -30,33 +30,33 @@ export component CaptureMaterialChannelsDemo inherits Window {
     property <SurfaceInput> emission-input: SurfaceInput {
         capture: "surface", attachment: "emissive-occlusion", filter: "nearest",
     };
-    property <SurfaceFinish> stock: SurfaceFinish {
+    property <SurfaceFinish> stock <- SurfaceFinish {
         unlit: false, base-color: #df9852, metalness: 0.8, roughness: 0.26,
         occlusion-map: "", occlusion-channel: "a", occlusion-amount: 1,
         material-shader: "", shader-parameters: Vector3D.new(0, 0, 0), shader-textures: [],
     };
-    property <SurfaceFinish> swatch: SurfaceFinish {
+    property <SurfaceFinish> swatch <- SurfaceFinish {
         occlusion-map: @texture-url("models/channel-swatch.png"),
         material-shader: @material-shader-url("effects/capture_surface_swatch.wgsl"),
         shader-parameters: Vector3D.new(root.metalness, 0, 0),
         ..root.stock
     };
     property <[SurfaceInput]> empty-inputs: [];
-    property <SurfaceFinish> inspector: SurfaceFinish {
+    property <SurfaceFinish> inspector <- SurfaceFinish {
         unlit: true, material-shader: @material-shader-url("effects/capture_surface_inspector.wgsl"),
         shader-textures: root.emission-only ? root.empty-inputs : [root.base-input, root.emission-input],
         ..root.stock
     };
-    property <SurfaceActor> actor: SurfaceActor {
+    property <SurfaceActor> actor <- SurfaceActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff, layers: 2,
         camera-kind: "", camera-height: 4, camera-near: 1, camera-far: 12, material: root.stock,
     };
 
     SceneView3D {
-        width: 540px; height: 300px; camera: "eye"; layer-mask: 1; cache-rendering: true;
-        scene-background: #23384f; scene-tone-map: none;
-        model: [
+        width <- 540px; height <- 300px; camera <- "eye"; layer-mask <- 1; cache-rendering <- true;
+        scene-background <- #23384f; scene-tone-map <- none;
+        model <- [
             SurfaceActor { id: "eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.actor },
             SurfaceActor {
                 id: "swatch", x: -1.45, scale-x: 2.35, scale-y: 2.55, material: root.swatch, ..root.actor
@@ -75,8 +75,8 @@ export component CaptureMaterialChannelsDemo inherits Window {
                 ..root.actor
             },
         ];
-        scene-captures: [SurfaceFeed { name: "surface", camera: "eye", layers: 2, scale: 0.5 }];
-        scene-effects: [
+        scene-captures <- [SurfaceFeed { name: "surface", camera: "eye", layers: 2, scale: 0.5 }];
+        scene-effects <- [
             SurfacePass {
                 shader: @shader-url("effects/capture_surface_light.wgsl"),
                 parameters: Vector3D.new(root.light-x, 1.25, 2.0),
@@ -89,15 +89,15 @@ export component CaptureMaterialChannelsDemo inherits Window {
         ];
     }
     move-light := Button {
-        x: 17px; y: 322px; width: 149px; height: 32px;
-        text: "移动点光源"; clicked => { root.light-x = -root.light-x; }
+        x <- 17px; y <- 322px; width <- 149px; height <- 32px;
+        text <- "移动点光源"; clicked => { root.light-x = -root.light-x; }
     }
     toggle-metalness := Button {
-        x: 187px; y: 322px; width: 152px; height: 32px;
-        text: "切换金属度"; clicked => { root.metalness = root.metalness == 0.25 ? 0.8 : 0.25; }
+        x <- 187px; y <- 322px; width <- 152px; height <- 32px;
+        text <- "切换金属度"; clicked => { root.metalness = root.metalness == 0.25 ? 0.8 : 0.25; }
     }
     CheckBox {
-        x: 357px; y: 322px; width: 163px; height: 32px;
-        text: "只显示发光"; checked <=> root.emission-only;
+        x <- 357px; y <- 322px; width <- 163px; height <- 32px;
+        text <- "只显示发光"; checked <-> root.emission-only;
     }
 }

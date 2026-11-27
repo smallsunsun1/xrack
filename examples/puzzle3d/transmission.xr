@@ -15,10 +15,10 @@ struct TransmissionLamp {
 }
 
 export component TransmissionDemo inherits Window {
-    title: "XRack · 薄壁透射";
-    width: 480px;
-    height: 294px;
-    background: #141d29;
+    title <- "XRack · 薄壁透射";
+    width <- 480px;
+    height <- 294px;
+    background <- #141d29;
 
     in-out property <bool> clear-glass: true;
     in-out property <bool> frost: true;
@@ -33,7 +33,7 @@ export component TransmissionDemo inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
         camera-kind: "", camera-height: 6,
     };
-    property <[TransmissionObject]> scene: [
+    property <[TransmissionObject]> scene <- [
         TransmissionObject {
             id: "wall", mesh: @mesh-url("models/transmission-wall.gltf"),
             z: -1, scale-x: 5.6, scale-y: 2.65, ..root.defaults
@@ -57,23 +57,23 @@ export component TransmissionDemo inherits Window {
     property <[TransmissionLamp]> lights;
 
     SceneView3D {
-        width: 480px;
-        height: 240px;
-        model: root.scene;
-        camera: "eye";
-        lights: root.lights;
-        ambient-intensity: 0.12;
-        scene-background: #172333;
-        scene-hdr: root.hdr;
-        multisampling: root.msaa;
-        supersampling: root.aa-scale;
-        order-independent-transparency: root.weighted;
+        width <- 480px;
+        height <- 240px;
+        model <- root.scene;
+        camera <- "eye";
+        lights <- root.lights;
+        ambient-intensity <- 0.12;
+        scene-background <- #172333;
+        scene-hdr <- root.hdr;
+        multisampling <- root.msaa;
+        supersampling <- root.aa-scale;
+        order-independent-transparency <- root.weighted;
     }
     HorizontalLayout {
-        x: 14px; y: 243px; width: 452px; height: 47px; spacing: 12px;
-        clear-toggle := CheckBox { text: "透射贴图"; width: 106px; checked <=> root.clear-glass; }
-        frost-toggle := CheckBox { text: "磨砂遮罩"; width: 106px; checked <=> root.frost; }
-        overlay-toggle := CheckBox { text: "透明层"; width: 95px; checked <=> root.overlay; }
-        hdr-toggle := CheckBox { text: "HDR"; width: 70px; checked <=> root.hdr; }
+        x <- 14px; y <- 243px; width <- 452px; height <- 47px; spacing <- 12px;
+        clear-toggle := CheckBox { text <- "透射贴图"; width <- 106px; checked <-> root.clear-glass; }
+        frost-toggle := CheckBox { text <- "磨砂遮罩"; width <- 106px; checked <-> root.frost; }
+        overlay-toggle := CheckBox { text <- "透明层"; width <- 95px; checked <-> root.overlay; }
+        hdr-toggle := CheckBox { text <- "HDR"; width <- 70px; checked <-> root.hdr; }
     }
 }

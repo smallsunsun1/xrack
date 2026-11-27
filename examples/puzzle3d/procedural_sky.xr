@@ -16,8 +16,8 @@ struct Light {
 }
 
 export component ProceduralSkyDemo inherits Window {
-    title: "XRack · 程序化天空";
-    width: 420px; height: 256px; resizable: false; background: #1b2636;
+    title <- "XRack · 程序化天空";
+    width <- 420px; height <- 256px; resizable <- false; background <- #1b2636;
     in-out property <bool> procedural: true;
     in-out property <bool> evening: false;
     in-out property <bool> backdrop: true;
@@ -34,22 +34,22 @@ export component ProceduralSkyDemo inherits Window {
         camera-kind: "",
     };
     view := SceneView3D {
-        width: 420px; height: 202px; camera: "eye";
-        cache-rendering: true; ambient-intensity: 0;
-        scene-background: #253348;
-        lights: [Light {
+        width <- 420px; height <- 202px; camera <- "eye";
+        cache-rendering <- true; ambient-intensity <- 0;
+        scene-background <- #253348;
+        lights <- [Light {
             kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0,
             intensity: 0, color: #ffffff, range: 0, inner-angle: 0, outer-angle: 0,
         }];
-        model: [
+        model <- [
             Actor { id: "eye", mesh: "", x: 0, y: 0.12, z: 6.3, camera-kind: "perspective", ..root.unit },
             Actor { id: "matte", x: -1.30, ..root.unit },
             Actor {
                 id: "metal", x: 1.30, material: Surface { metalness: 1, roughness: 0.18 }, ..root.unit
             },
         ];
-        environment: @environment-url("models/studio.hdr");
-        environment-sky: Sky {
+        environment <- @environment-url("models/studio.hdr");
+        environment-sky <- Sky {
             enabled: root.procedural,
             sky-top-color: root.evening ? #462461 : #2b66b6,
             sky-horizon-color: root.evening ? #ee813b : #bbdbff,
@@ -58,15 +58,15 @@ export component ProceduralSkyDemo inherits Window {
             sun-latitude: root.latitude, sun-longitude: 180, sun-energy: root.sun-energy,
             sun-angle-min: 2.5, sun-angle-max: 6.5, resolution: root.resolution,
         };
-        environment-skybox: root.backdrop;
-        environment-yaw: root.turn;
-        environment-intensity: root.energy;
+        environment-skybox <- root.backdrop;
+        environment-yaw <- root.turn;
+        environment-intensity <- root.energy;
     }
-    sky-toggle := CheckBox { x: 10px; y: 212px; width: 102px; height: 34px; text: "程序天空"; checked <=> root.procedural; }
-    evening-toggle := CheckBox { x: 124px; y: 212px; width: 73px; height: 34px; text: "暮色"; checked <=> root.evening; }
-    backdrop-toggle := CheckBox { x: 209px; y: 212px; width: 104px; height: 34px; text: "显示天空"; checked <=> root.backdrop; }
+    sky-toggle := CheckBox { x <- 10px; y <- 212px; width <- 102px; height <- 34px; text <- "程序天空"; checked <-> root.procedural; }
+    evening-toggle := CheckBox { x <- 124px; y <- 212px; width <- 73px; height <- 34px; text <- "暮色"; checked <-> root.evening; }
+    backdrop-toggle := CheckBox { x <- 209px; y <- 212px; width <- 104px; height <- 34px; text <- "显示天空"; checked <-> root.backdrop; }
     move-sun := Button {
-        x: 320px; y: 212px; width: 90px; height: 34px; text: "移动太阳";
+        x <- 320px; y <- 212px; width <- 90px; height <- 34px; text <- "移动太阳";
         clicked => { root.latitude = root.latitude < 16 ? 21 : 9; }
     }
 }

@@ -497,7 +497,7 @@ fn source_links(text: &str, workspace: &Workspace<'_>) -> Vec<(Range<usize>, Str
             return None;
         };
         let (extensions, delimiter) = scene_asset_extensions(&tokens, index)?;
-        if open.text != delimiter || !token.quoted() {
+        if !delimiter.contains(&open.text) || !token.quoted() {
             return None;
         }
         let spelling: String = serde_json::from_str(token.text).ok()?;
@@ -535,29 +535,29 @@ pub(crate) fn document_links(text: &str, workspace: &Workspace<'_>) -> Value {
 fn scene_asset_extensions(
     tokens: &[Token<'_>],
     index: usize,
-) -> Option<(&'static [&'static str], &'static str)> {
+) -> Option<(&'static [&'static str], &'static [&'static str])> {
     match tokens.get(index)?.text {
-        "@mesh-url" => Some((MESH_SOURCE_EXTENSIONS, "(")),
-        "@environment-url" => Some((&["hdr"], "(")),
-        "@instance-table-url" => Some((&["xml", "bin"], "(")),
-        "@shader-url" | "@material-shader-url" => Some((&["wgsl"], "(")),
-        "@texture-url" => Some((&["png", "jpg", "jpeg"], "(")),
+        "@mesh-url" => Some((MESH_SOURCE_EXTENSIONS, &["("])),
+        "@environment-url" => Some((&["hdr"], &["("])),
+        "@instance-table-url" => Some((&["xml", "bin"], &["("])),
+        "@shader-url" | "@material-shader-url" => Some((&["wgsl"], &["("])),
+        "@texture-url" => Some((&["png", "jpg", "jpeg"], &["("])),
         "@image-url"
             if index >= 2
                 && matches!(
                     tokens[index - 2].text,
                     "scene-lut" | "sprite" | "color-table"
                 )
-                && tokens[index - 1].text == ":" =>
+                && matches!(tokens[index - 1].text, ":" | "<-") =>
         {
-            Some((&["png"], "("))
+            Some((&["png"], &["("]))
         }
         "source"
             if enclosing_block(tokens, index)
                 .and_then(|open| tokens.get(open.checked_sub(1)?))
                 .is_some_and(|kind| kind.text == "MeshLoader3D") =>
         {
-            Some((MESH_SOURCE_EXTENSIONS, ":"))
+            Some((MESH_SOURCE_EXTENSIONS, &[":", "<-"]))
         }
         _ => None,
     }
@@ -592,7 +592,7 @@ pub(super) fn scene_asset_selector_values(
                 | "root-node"
                 | "mode"
                 | "node"
-        ) && colon.text == ":"
+        ) && matches!(colon.text, ":" | "<-")
             && string.text.starts_with('"')
             && string.blocks_completion(cursor))
         .then_some((index, field.text, string))
@@ -604,13 +604,15 @@ pub(super) fn scene_asset_selector_values(
     let emission_animation = open
         .checked_sub(3)
         .and_then(|start| tokens.get(start..open))
-        .is_some_and(|prefix| prefix[0].text == "emission-animation" && prefix[1].text == ":");
+        .is_some_and(|prefix| {
+            prefix[0].text == "emission-animation" && matches!(prefix[1].text, ":" | "<-")
+        });
     let row = if emission_animation && matches!(kind, "clip" | "node") {
         open
     } else if matches!(kind, "clip" | "root-node" | "mode") {
         let array = enclosing_array(tokens, open)?;
         let prefix = tokens.get(array.checked_sub(2)?..array)?;
-        if prefix[0].text != "animation-layers" || prefix[1].text != ":" {
+        if prefix[0].text != "animation-layers" || !matches!(prefix[1].text, ":" | "<-") {
             return None;
         }
         enclosing_block(tokens, array)?
@@ -710,7 +712,7 @@ fn scene_row_mesh(tokens: &[Token<'_>], open: usize) -> Option<RowMesh> {
                 let Some([_, colon, value]) = tokens.get(start..start + 3) else {
                     continue;
                 };
-                if colon.text != ":" {
+                if !matches!(colon.text, ":" | "<-") {
                     continue;
                 }
                 if value.quoted() {
@@ -749,7 +751,7 @@ pub(super) fn scene_instance_reference_values(
             return None;
         };
         (matches!(field.text, "instance-of" | "instance-root")
-            && colon.text == ":"
+            && matches!(colon.text, ":" | "<-")
             && literal.text.starts_with('"')
             && literal.blocks_completion(cursor))
         .then_some((index, literal))
@@ -869,7 +871,7 @@ fn scene_row_field<'a>(tokens: &'a [Token<'_>], open: usize, name: &str) -> Opti
                 let [colon, value] = tokens.get(start..start + 2)? else {
                     return None;
                 };
-                if colon.text == ":" {
+                if matches!(colon.text, ":" | "<-") {
                     return Some(value);
                 }
             }
@@ -889,7 +891,11 @@ fn literal_field_value(tokens: &[Token<'_>], open: usize, name: &str) -> Option<
             "{" | "[" | "(" => depth += 1,
             "}" | "]" | ")" if depth == 0 => return None,
             "}" | "]" | ")" => depth -= 1,
-            field if depth == 0 && field == name && tokens.get(index + 1)?.text == ":" => {
+            field
+                if depth == 0
+                    && field == name
+                    && matches!(tokens.get(index + 1)?.text, ":" | "<-") =>
+            {
                 return Some(index + 2);
             }
             _ => {}
@@ -981,7 +987,7 @@ fn inline_particle_list<'a>(tokens: &[Token<'a>], row: usize) -> Option<(&'a str
     };
     let view = enclosing_block(tokens, array)?;
     (matches!(property.text, "particle-emitters" | "particle-affectors")
-        && colon.text == ":"
+        && matches!(colon.text, ":" | "<-")
         && tokens.get(view.checked_sub(1)?)?.text == "SceneView3D")
         .then_some((property.text, view))
 }
@@ -1003,7 +1009,7 @@ fn particle_parent_reference<'a>(
                 return None;
             };
             (matches!(field.text, "parent" | "parent-node")
-                && colon.text == ":"
+                && matches!(colon.text, ":" | "<-")
                 && literal.text.starts_with('"')
                 && literal.blocks_completion(cursor))
             .then_some((index, field.text == "parent-node", literal))
@@ -1077,7 +1083,7 @@ pub(super) fn scene_particle_group_values(
             return None;
         };
         (field.text == "particle-group"
-            && colon.text == ":"
+            && matches!(colon.text, ":" | "<-")
             && literal.text.starts_with('"')
             && literal.blocks_completion(cursor))
         .then_some((index, literal))
@@ -1142,7 +1148,7 @@ fn scene_light_scope<'a>(tokens: &'a [Token<'a>], cursor: usize) -> Option<Scene
             return None;
         };
         (field.text == "scope"
-            && colon.text == ":"
+            && matches!(colon.text, ":" | "<-")
             && literal.text.starts_with('"')
             && literal.blocks_completion(cursor))
         .then_some((index, literal))
@@ -1154,7 +1160,7 @@ fn scene_light_scope<'a>(tokens: &'a [Token<'a>], cursor: usize) -> Option<Scene
     };
     let view = enclosing_block(tokens, list)?;
     if property.text != "lights"
-        || colon.text != ":"
+        || !matches!(colon.text, ":" | "<-")
         || tokens.get(view.checked_sub(1)?)?.text != "SceneView3D"
     {
         return None;
@@ -1277,7 +1283,7 @@ pub(super) fn scene_material_slot_values(
             return None;
         };
         (field.text == "slot"
-            && colon.text == ":"
+            && matches!(colon.text, ":" | "<-")
             && literal.text.starts_with('"')
             && literal.blocks_completion(cursor))
         .then_some((index, literal))
@@ -1286,7 +1292,7 @@ pub(super) fn scene_material_slot_values(
     let palette = enclosing_block(tokens, style)?;
     let mut binding = tokens[..palette].iter().rev().filter(|token| token.code());
     binding.next()?;
-    if binding.next()?.text != ":" || binding.next()?.text != "material-slots" {
+    if !matches!(binding.next()?.text, ":" | "<-") || binding.next()?.text != "material-slots" {
         return None;
     }
     let row = enclosing_block(tokens, palette)?;
@@ -1471,7 +1477,7 @@ pub(super) fn scene_effect_buffer_values(
                 | "color-source"
                 | "depth-source"
                 | "stencil-source"
-        ) && colon.text == ":"
+        ) && matches!(colon.text, ":" | "<-")
             && literal.text.starts_with('"')
             && literal.blocks_completion(cursor))
         .then_some((index, field.text, literal))
@@ -1483,8 +1489,9 @@ pub(super) fn scene_effect_buffer_values(
     let previous_frame = kind == "name"
         && scene_row_field(tokens, row, "previous-frame").is_some_and(|value| value.text == "true");
     let binding_array = |list: usize, property| {
-        list.checked_sub(2)
-            .is_some_and(|start| tokens[start].text == property && tokens[start + 1].text == ":")
+        list.checked_sub(2).is_some_and(|start| {
+            tokens[start].text == property && matches!(tokens[start + 1].text, ":" | "<-")
+        })
     };
     if matches!(kind, "color-source" | "depth-source" | "stencil-source") {
         let captures = enclosing_array(tokens, row)?;
@@ -1596,9 +1603,11 @@ pub(super) fn scene_item_texture_values(
             || field.text == "source"
                 && enclosing_block(tokens, index)
                     .and_then(|block| tokens.get(block.checked_sub(3)?..block))
-                    .is_some_and(|prefix| prefix[0].text == "base-item" && prefix[1].text == ":")
+                    .is_some_and(|prefix| {
+                        prefix[0].text == "base-item" && matches!(prefix[1].text, ":" | "<-")
+                    })
             || field.text == "item" && in_shader_texture_inputs(tokens, index))
-            && colon.text == ":"
+            && matches!(colon.text, ":" | "<-")
             && literal.text.starts_with('"')
             && literal.blocks_completion(cursor))
         .then_some((field, literal))
@@ -1625,7 +1634,10 @@ pub(super) fn scene_item_texture_values(
             let [field, colon, value] = window else {
                 return None;
             };
-            if field.text != "texture-source" || colon.text != ":" || !value.quoted() {
+            if field.text != "texture-source"
+                || !matches!(colon.text, ":" | "<-")
+                || !value.quoted()
+            {
                 return None;
             }
             let scope = index.scope_at(field.range.start);
@@ -1665,7 +1677,7 @@ fn in_shader_texture_inputs(tokens: &[Token<'_>], field: usize) -> bool {
             matches!(
                 prefix[0].text,
                 "buffers" | "shader-textures" | "augment-textures"
-            ) && prefix[1].text == ":"
+            ) && matches!(prefix[1].text, ":" | "<-")
         })
 }
 
@@ -1680,7 +1692,7 @@ pub(super) fn scene_camera_values(
             return None;
         };
         (field.text == "camera"
-            && colon.text == ":"
+            && matches!(colon.text, ":" | "<-")
             && literal.text.starts_with('"')
             && literal.blocks_completion(cursor))
         .then_some((index, literal))
@@ -1693,7 +1705,7 @@ pub(super) fn scene_camera_values(
         let [property, colon] = tokens.get(captures.checked_sub(2)?..captures)? else {
             return None;
         };
-        if property.text != "scene-captures" || colon.text != ":" {
+        if property.text != "scene-captures" || !matches!(colon.text, ":" | "<-") {
             return None;
         }
         let view = enclosing_block(tokens, captures)?;
@@ -1766,7 +1778,7 @@ pub(super) fn scene_camera_values(
                 return None;
             };
             if id.text != "id"
-                || colon.text != ":"
+                || !matches!(colon.text, ":" | "<-")
                 || !name.quoted()
                 || serde_json::from_str::<String>(name.text).ok().as_deref() != Some(owner)
             {
@@ -1800,9 +1812,9 @@ fn in_capture_record(tokens: &[Token<'_>], position: usize, name: &str) -> bool 
     else {
         return false;
     };
-    tokens
-        .windows(3)
-        .any(|field| field[0].text == name && field[1].text == ":" && field[2].text == record.text)
+    tokens.windows(3).any(|field| {
+        field[0].text == name && matches!(field[1].text, ":" | "<-") && field[2].text == record.text
+    })
 }
 
 fn in_collision_shapes(tokens: &[Token<'_>], position: usize) -> bool {
@@ -1813,7 +1825,7 @@ fn in_collision_shapes(tokens: &[Token<'_>], position: usize) -> bool {
     };
     tokens.windows(4).any(|field| {
         field[0].text == "collision-shapes"
-            && field[1].text == ":"
+            && matches!(field[1].text, ":" | "<-")
             && field[2].text == "["
             && field[3].text == record.text
     })
@@ -1906,7 +1918,7 @@ pub(super) fn scene_string_options(
                 .and_then(|row| enclosing_array(tokens, row))
                 .and_then(|list| tokens.get(list.checked_sub(2)?..list))
                 .is_some_and(|prefix| {
-                    prefix[0].text == "scene-captures" && prefix[1].text == ":"
+                    prefix[0].text == "scene-captures" && matches!(prefix[1].text, ":" | "<-")
                 }) =>
         {
             xrack_parser::builtins::SCENE_CAPTURE_RENDERABLES
@@ -1952,7 +1964,10 @@ pub(super) fn scene_string_options(
             }
         }
     };
-    if colon.text != ":" || !literal.text.starts_with('"') || !literal.blocks_completion(cursor) {
+    if !matches!(colon.text, ":" | "<-")
+        || !literal.text.starts_with('"')
+        || !literal.blocks_completion(cursor)
+    {
         return None;
     }
     let code: Vec<_> = tokens.iter().filter(|token| token.code()).collect();
@@ -2383,8 +2398,10 @@ pub(super) fn scene_asset_paths(
             return None;
         };
         let (extensions, delimiter) = scene_asset_extensions(tokens, index)?;
-        (open.text == delimiter && path.text.starts_with('"') && path.blocks_completion(cursor))
-            .then_some((extensions, path))
+        (delimiter.contains(&open.text)
+            && path.text.starts_with('"')
+            && path.blocks_completion(cursor))
+        .then_some((extensions, path))
     })?;
     let prefix = &path.text[1..cursor - path.range.start];
     let (directory, name) = prefix.rsplit_once('/').unwrap_or(("", prefix));
@@ -2488,7 +2505,7 @@ pub(super) fn scene_parent_node_values(
             return None;
         };
         (field.text == "parent-node"
-            && colon.text == ":"
+            && matches!(colon.text, ":" | "<-")
             && literal.text.starts_with('"')
             && literal.blocks_completion(cursor))
         .then_some((index, literal))
@@ -2659,7 +2676,7 @@ fn scene_mesh_expression_path(
                     };
                     (end.get(index) == Some(&0)
                         && name.text == field.text
-                        && colon.text == ":"
+                        && matches!(colon.text, ":" | "<-")
                         && url.text == "@mesh-url"
                         && open.text == "("
                         && path.quoted())
@@ -2689,7 +2706,7 @@ fn scene_mesh_expression_path(
                         (end.get(index) == Some(&1)
                             && enclosing_block(members, index) == Some(open)
                             && property.text == "source"
-                            && colon.text == ":"
+                            && matches!(colon.text, ":" | "<-")
                             && path.quoted())
                         .then(|| serde_json::from_str(path.text).ok())
                         .flatten()

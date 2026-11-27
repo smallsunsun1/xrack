@@ -17,9 +17,9 @@ struct FeedDisplay {
 }
 
 export component SceneCaptureDemo inherits Window {
-    title: "XRack · 命名场景画面";
-    width: 560px; height: 382px; resizable: false;
-    background: #172738;
+    title <- "XRack · 命名场景画面";
+    width <- 560px; height <- 382px; resizable <- false;
+    background <- #172738;
     in-out property <string> feed-camera: "near-eye";
     in-out property <int> feed-layers: 2;
     in-out property <float> feed-scale: 0.5;
@@ -34,15 +34,15 @@ export component SceneCaptureDemo inherits Window {
         color: #fff, layers: 1, camera-kind: "", camera-height: 4,
         material: CaptureStyle { unlit: true },
     };
-    property <CameraFeed> feed: CameraFeed {
+    property <CameraFeed> feed <- CameraFeed {
         name: "detail", camera: root.feed-camera, layers: root.feed-layers, scale: root.feed-scale,
         enabled: root.feed-enabled,
     };
 
     view := SceneView3D {
-        width: 560px; height: 280px; camera: "main-eye"; layer-mask: 1;
-        scene-background: #243a52; scene-tone-map: none; cache-rendering: true;
-        model: [
+        width <- 560px; height <- 280px; camera <- "main-eye"; layer-mask <- 1;
+        scene-background <- #243a52; scene-tone-map <- none; cache-rendering <- true;
+        model <- [
             CaptureActor { id: "main-eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.base },
             CaptureActor {
                 id: "near-eye", mesh: "", x: -1.4, z: 7, camera-kind: "orthographic",
@@ -69,12 +69,12 @@ export component SceneCaptureDemo inherits Window {
                 color: #ffbc42, ..root.base
             },
         ];
-        scene-captures: [
+        scene-captures <- [
             root.feed,
             CameraFeed { name: "detail-alias", ..root.feed },
             CameraFeed { name: "unused", camera: "main-eye", layers: 1, scale: 1, enabled: true },
         ];
-        scene-effects: [
+        scene-effects <- [
             FeedDisplay {
                 shader: @shader-url("effects/scene_capture_display.wgsl"),
                 strength: root.display-feeds ? 1 : 0,
@@ -90,23 +90,23 @@ export component SceneCaptureDemo inherits Window {
         ];
     }
 
-    Label { x: 12px; y: 283px; width: 252px; height: 26px; text: "同一捕获 · 最近邻"; }
-    Label { x: 290px; y: 283px; width: 252px; height: 26px; text: "同一捕获 · 线性采样"; }
+    Label { x <- 12px; y <- 283px; width <- 252px; height <- 26px; text <- "同一捕获 · 最近邻"; }
+    Label { x <- 290px; y <- 283px; width <- 252px; height <- 26px; text <- "同一捕获 · 线性采样"; }
     switch-camera := Button {
-        x: 12px; y: 325px; width: 115px; height: 33px;
-        text: "切换相机";
+        x <- 12px; y <- 325px; width <- 115px; height <- 33px;
+        text <- "切换相机";
         clicked => { root.feed-camera = root.feed-camera == "near-eye" ? "far-eye" : "near-eye"; }
     }
     switch-layer := Button {
-        x: 137px; y: 325px; width: 115px; height: 33px;
-        text: "切换图层"; clicked => { root.feed-layers = root.feed-layers == 2 ? 4 : 2; }
+        x <- 137px; y <- 325px; width <- 115px; height <- 33px;
+        text <- "切换图层"; clicked => { root.feed-layers = root.feed-layers == 2 ? 4 : 2; }
     }
     CheckBox {
-        x: 263px; y: 325px; width: 122px; height: 33px;
-        text: "启用捕获"; checked <=> root.feed-enabled;
+        x <- 263px; y <- 325px; width <- 122px; height <- 33px;
+        text <- "启用捕获"; checked <-> root.feed-enabled;
     }
     CheckBox {
-        x: 395px; y: 325px; width: 151px; height: 33px;
-        text: "显示两路效果"; checked <=> root.display-feeds;
+        x <- 395px; y <- 325px; width <- 151px; height <- 33px;
+        text <- "显示两路效果"; checked <-> root.display-feeds;
     }
 }

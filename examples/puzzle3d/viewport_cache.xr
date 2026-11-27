@@ -6,11 +6,11 @@ struct CacheActor {
 }
 
 export component ViewportCacheDemo inherits Window {
-    title: "XRack · 3D 视口纹理缓存";
-    width: 552px;
-    height: 310px;
-    resizable: false;
-    background: #141d29;
+    title <- "XRack · 3D 视口纹理缓存";
+    width <- 552px;
+    height <- 310px;
+    resizable <- false;
+    background <- #141d29;
 
     in-out property <bool> use-cache: true;
     in-out property <bool> reference: true;
@@ -24,9 +24,9 @@ export component ViewportCacheDemo inherits Window {
     in-out property <bool> effects: true;
     in-out property <float> light-angle: -34;
     clock := Timer {
-        interval: 90;
-        repeat: true;
-        running: root.ticking;
+        interval <- 90;
+        repeat <- true;
+        running <- root.ticking;
         triggered => { root.tick = (root.tick + 1) % 100; }
     }
 
@@ -34,7 +34,7 @@ export component ViewportCacheDemo inherits Window {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #ffffff,
     };
-    property <[CacheActor]> scene: [
+    property <[CacheActor]> scene <- [
         CacheActor {
             id: "ball", mesh: "primitive:sphere", x: -1.25,
             scale-x: 1.3, scale-y: 1.3, scale-z: 1.3, color: root.ball-color, ..root.plain
@@ -49,46 +49,46 @@ export component ViewportCacheDemo inherits Window {
         },
     ];
 
-    Text { x: 12px; y: 6px; text: "主视口"; color: #e2eaf4; }
-    if root.reference: Text { x: 284px; y: 6px; text: "固定参考视口"; color: #e2eaf4; }
+    Text { x <- 12px; y <- 6px; text <- "主视口"; color <- #e2eaf4; }
+    if root.reference: Text { x <- 284px; y <- 6px; text <- "固定参考视口"; color <- #e2eaf4; }
     if root.reference: reference-view := SceneView3D {
-        x: 284px; y: 34px; width: 256px; height: 202px;
-        model: root.scene; cache-rendering: root.use-cache;
-        texture-width: root.fixed-size; texture-height: root.fixed-size;
-        camera-yaw: 0; camera-pitch: 8; camera-distance: 8;
-        light-yaw: root.light-angle; light-elevation: 60;
-        scene-background: #202c3e;
-        shadows: true; shadow-map-size: 512; shadow-bias: 0.01;
-        ambient-occlusion: root.effects; scene-hdr: root.effects;
-        bloom: root.effects; bloom-threshold: 0.7; bloom-strength: 0.23;
-        depth-of-field: root.effects; dof-focus-distance: 8; dof-blur-radius: 10px;
+        x <- 284px; y <- 34px; width <- 256px; height <- 202px;
+        model <- root.scene; cache-rendering <- root.use-cache;
+        texture-width <- root.fixed-size; texture-height <- root.fixed-size;
+        camera-yaw <- 0; camera-pitch <- 8; camera-distance <- 8;
+        light-yaw <- root.light-angle; light-elevation <- 60;
+        scene-background <- #202c3e;
+        shadows <- true; shadow-map-size <- 512; shadow-bias <- 0.01;
+        ambient-occlusion <- root.effects; scene-hdr <- root.effects;
+        bloom <- root.effects; bloom-threshold <- 0.7; bloom-strength <- 0.23;
+        depth-of-field <- root.effects; dof-focus-distance <- 8; dof-blur-radius <- 10px;
     }
     main-view := SceneView3D {
-        x: 12px + root.offset; y: 34px; width: 256px; height: 202px; opacity: root.scene-alpha;
-        model: root.scene; cache-rendering: root.use-cache;
-        texture-width: root.fixed-size; texture-height: root.fixed-size;
-        camera-yaw: root.angle; camera-pitch: 8; camera-distance: 8;
-        light-yaw: root.light-angle; light-elevation: 60;
-        scene-background: #202c3e;
-        shadows: true; shadow-map-size: 512; shadow-bias: 0.01;
-        ambient-occlusion: root.effects; scene-hdr: root.effects;
-        bloom: root.effects; bloom-threshold: 0.7; bloom-strength: 0.23;
-        depth-of-field: root.effects; dof-focus-distance: 8; dof-blur-radius: 10px;
+        x <- 12px + root.offset; y <- 34px; width <- 256px; height <- 202px; opacity <- root.scene-alpha;
+        model <- root.scene; cache-rendering <- root.use-cache;
+        texture-width <- root.fixed-size; texture-height <- root.fixed-size;
+        camera-yaw <- root.angle; camera-pitch <- 8; camera-distance <- 8;
+        light-yaw <- root.light-angle; light-elevation <- 60;
+        scene-background <- #202c3e;
+        shadows <- true; shadow-map-size <- 512; shadow-bias <- 0.01;
+        ambient-occlusion <- root.effects; scene-hdr <- root.effects;
+        bloom <- root.effects; bloom-threshold <- 0.7; bloom-strength <- 0.23;
+        depth-of-field <- root.effects; dof-focus-distance <- 8; dof-blur-radius <- 10px;
     }
     HorizontalLayout {
-        x: 12px; y: 247px; width: 528px; height: 47px; spacing: 9px;
+        x <- 12px; y <- 247px; width <- 528px; height <- 47px; spacing <- 9px;
         cache-mode := Button {
-            width: 112px; text: root.use-cache ? "缓存已启用" : "逐帧渲染";
+            width <- 112px; text <- root.use-cache ? "缓存已启用" : "逐帧渲染";
             clicked => { root.use-cache = !root.use-cache; }
         }
         count-update := Button {
-            width: 128px; text: "2D 计数 · " + root.tick;
+            width <- 128px; text <- "2D 计数 · " + root.tick;
             clicked => { root.tick = (root.tick + 1) % 100; }
         }
         auto-count := Button {
-            width: 96px; text: root.ticking ? "暂停" : "自动计数";
+            width <- 96px; text <- root.ticking ? "暂停" : "自动计数";
             clicked => { root.ticking = !root.ticking; }
         }
-        angle-slider := Slider { minimum: -30; maximum: 30; value <=> root.angle; }
+        angle-slider := Slider { minimum <- -30; maximum <- 30; value <-> root.angle; }
     }
 }

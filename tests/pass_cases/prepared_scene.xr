@@ -17,7 +17,7 @@ struct Actor {
 }
 
 export component App inherits Window {
-    property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    property <physicsworld3d> world <- Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
     property <[Actor]> actors: [
         Actor { id: "object", mesh: "primitive:box", physics-body: "rigid",
             x: 0, y: 2, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
@@ -37,5 +37,5 @@ export component App inherits Window {
         root.new-x = current.x;
     }
 
-    SceneView3D { model: Scene3D.prepare(root.actors, root.world); }
+    SceneView3D { model <- Scene3D.prepare(root.actors, root.world); }
 }

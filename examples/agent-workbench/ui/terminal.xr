@@ -11,9 +11,9 @@ export component TerminalPanel inherits Rectangle {
     in property <string> terminal-status;
     in property <string> terminal-tab;
     in property <string> workspace;
-    out property <length> viewport-width: terminal-viewport.layout-width;
-    out property <length> viewport-height: terminal-viewport.layout-height;
-    out property <bool> input-focused: terminal-input.has-focus;
+    out property <length> viewport-width <- terminal-viewport.layout-width;
+    out property <length> viewport-height <- terminal-viewport.layout-height;
+    out property <bool> input-focused <- terminal-input.has-focus;
 
     callback attach-terminal-output(start: int, end: int, selection: string);
     callback new-terminal-tab();
@@ -26,158 +26,158 @@ export component TerminalPanel inherits Rectangle {
     callback focus-input();
     focus-input => { terminal-input.focus(); }
 
-    vertical-stretch: 0;
-    background: #171d29;
-    clip: true;
+    vertical-stretch <- 0;
+    background <- #171d29;
+    clip <- true;
     VerticalLayout {
-        spacing: 0px;
+        spacing <- 0px;
         Rectangle {
-            height: 30px;
-            background: Palette.rail;
+            height <- 30px;
+            background <- Palette.rail;
             HorizontalLayout {
-                spacing: 4px;
-                padding-left: 6px;
-                padding-right: 6px;
-                cross-axis-alignment: center;
+                spacing <- 4px;
+                padding-left <- 6px;
+                padding-right <- 6px;
+                cross-axis-alignment <- center;
                 @slot(tabs);
                 new-terminal := Button {
-                    text: "+";
-                    width: 25px;
-                    height: 24px;
-                    flat: true;
-                    padding: 3px;
-                    accessible-name: @tr("new-terminal-tab");
-                    enabled: root.workspace != "" && !root.switching;
+                    text <- "+";
+                    width <- 25px;
+                    height <- 24px;
+                    flat <- true;
+                    padding <- 3px;
+                    accessible-name <- @tr("new-terminal-tab");
+                    enabled <- root.workspace != "" && !root.switching;
                     clicked => { root.new-terminal-tab(); terminal-input.focus(); }
                 }
             }
         }
         HorizontalLayout {
-            height: 33px;
-            padding-left: 10px;
-            padding-right: 7px;
-            spacing: 6px;
-            cross-axis-alignment: center;
+            height <- 33px;
+            padding-left <- 10px;
+            padding-right <- 7px;
+            spacing <- 6px;
+            cross-axis-alignment <- center;
             WorkbenchIcon {
-                width: 15px;
-                height: 15px;
-                tint: #9bb9ff;
-                shape: "M4 5 H20 V19 H4 Z M7 9 L10 12 L7 15 M12 15 H16";
+                width <- 15px;
+                height <- 15px;
+                tint <- #9bb9ff;
+                shape <- "M4 5 H20 V19 H4 Z M7 9 L10 12 L7 15 M12 15 H16";
             }
             Label {
-                text: root.terminal-status;
-                color: #dae2ee;
-                font-size: 11px;
+                text <- root.terminal-status;
+                color <- #dae2ee;
+                font-size <- 11px;
             }
             Label {
-                text: root.workspace;
-                horizontal-stretch: 1;
-                min-width: 0px;
-                overflow: elide;
-                color: #a4afc6;
-                font-size: 11px;
+                text <- root.workspace;
+                horizontal-stretch <- 1;
+                min-width <- 0px;
+                overflow <- elide;
+                color <- #a4afc6;
+                font-size <- 11px;
             }
             terminal-up := Button {
-                text: @tr("previous-page");
-                height: 25px;
-                flat: true;
-                padding: 3px;
-                font-size: 11px;
-                color: #dae2ee;
-                enabled: root.terminal-running;
+                text <- @tr("previous-page");
+                height <- 25px;
+                flat <- true;
+                padding <- 3px;
+                font-size <- 11px;
+                color <- #dae2ee;
+                enabled <- root.terminal-running;
                 clicked => { root.terminal-scroll(1); terminal-input.focus(); }
             }
             terminal-bottom := Button {
-                text: @tr("jump-to-bottom");
-                height: 25px;
-                flat: true;
-                padding: 3px;
-                font-size: 11px;
-                color: #dae2ee;
-                visible: root.terminal-history;
+                text <- @tr("jump-to-bottom");
+                height <- 25px;
+                flat <- true;
+                padding <- 3px;
+                font-size <- 11px;
+                color <- #dae2ee;
+                visible <- root.terminal-history;
                 clicked => { root.terminal-scroll(0); terminal-input.focus(); }
             }
             quote-terminal := Button {
-                text: terminal-document.selected-text == "" ? @tr("quote-output") : @tr("quote-selection");
-                accessible-name: terminal-document.selected-text == "" ? @tr("add-this-terminal-page-to-draft") : @tr("add-terminal-selection-to-draft");
-                height: 25px;
-                flat: true;
-                padding: 3px;
-                color: #dae2ee;
-                font-size: 11px;
-                enabled: root.can-attach && root.terminal-output-available;
-                focus-on-click: false;
+                text <- terminal-document.selected-text == "" ? @tr("quote-output") : @tr("quote-selection");
+                accessible-name <- terminal-document.selected-text == "" ? @tr("add-this-terminal-page-to-draft") : @tr("add-terminal-selection-to-draft");
+                height <- 25px;
+                flat <- true;
+                padding <- 3px;
+                color <- #dae2ee;
+                font-size <- 11px;
+                enabled <- root.can-attach && root.terminal-output-available;
+                focus-on-click <- false;
                 clicked => {
                     root.attach-terminal-output(terminal-document.selection-start-offset,
                         terminal-document.selection-end-offset, terminal-document.selected-text);
                 }
             }
             project-actions-button := Button {
-                text: @tr("actions");
-                accessible-name: @tr("run-project-action");
-                height: 25px;
-                flat: true;
-                padding: 3px;
-                color: #dae2ee;
-                font-size: 11px;
-                enabled: root.workspace != "" && !root.switching;
+                text <- @tr("actions");
+                accessible-name <- @tr("run-project-action");
+                height <- 25px;
+                flat <- true;
+                padding <- 3px;
+                color <- #dae2ee;
+                font-size <- 11px;
+                enabled <- root.workspace != "" && !root.switching;
                 clicked => { root.open-project-actions(); }
             }
             restart-terminal := Button {
-                text: @tr("restart");
-                accessible-name: @tr("restart-current-terminal");
-                height: 25px;
-                flat: true;
-                padding: 3px;
-                font-size: 11px;
-                color: #dae2ee;
-                enabled: !root.switching && root.terminal-tab != "";
+                text <- @tr("restart");
+                accessible-name <- @tr("restart-current-terminal");
+                height <- 25px;
+                flat <- true;
+                padding <- 3px;
+                font-size <- 11px;
+                color <- #dae2ee;
+                enabled <- !root.switching && root.terminal-tab != "";
                 clicked => { root.sync-terminal(true); terminal-input.focus(); }
             }
             hide-terminal := Button {
-                text: @tr("hide");
-                accessible-name: @tr("hide-workspace-terminal");
-                height: 25px;
-                flat: true;
-                padding: 3px;
-                font-size: 11px;
-                color: #dae2ee;
+                text <- @tr("hide");
+                accessible-name <- @tr("hide-workspace-terminal");
+                height <- 25px;
+                flat <- true;
+                padding <- 3px;
+                font-size <- 11px;
+                color <- #dae2ee;
                 clicked => { root.toggle-terminal(); }
             }
         }
-        Rectangle { height: 1px; background: #354157; }
+        Rectangle { height <- 1px; background <- #354157; }
         terminal-viewport := VerticalLayout {
-            padding-left: 9px;
-            padding-right: 9px;
-            padding-top: 4px;
-            padding-bottom: 4px;
-            vertical-stretch: 1;
+            padding-left <- 9px;
+            padding-right <- 9px;
+            padding-top <- 4px;
+            padding-bottom <- 4px;
+            vertical-stretch <- 1;
             terminal-document := StyledText {
-                text: root.terminal-screen;
-                font-family: "monospace";
-                font-size: 13px;
-                color: #dae2ee;
-                vertical-alignment: top;
-                wrap: no-wrap;
-                selectable: true;
-                persistent-selection: true;
+                text <- root.terminal-screen;
+                font-family <- "monospace";
+                font-size <- 13px;
+                color <- #dae2ee;
+                vertical-alignment <- top;
+                wrap <- no-wrap;
+                selectable <- true;
+                persistent-selection <- true;
             }
         }
         terminal-key-scope := FocusScope {
-            height: 26px;
+            height <- 26px;
             capture-key-pressed(event) => { root.terminal-key(event) }
             terminal-input := TextArea {
-                width: 100%;
-                height: 100%;
-                accessible-name: @tr("terminal-input");
-                read-only: !root.terminal-running || root.switching;
-                text <=> root.terminal-input-buffer;
-                background: #222b3b;
-                color: #dae2ee;
-                font-family: "monospace";
-                font-size: 12px;
-                border-width: 0px;
-                padding: 4px;
+                width <- 100%;
+                height <- 100%;
+                accessible-name <- @tr("terminal-input");
+                read-only <- !root.terminal-running || root.switching;
+                text <-> root.terminal-input-buffer;
+                background <- #222b3b;
+                color <- #dae2ee;
+                font-family <- "monospace";
+                font-size <- 12px;
+                border-width <- 0px;
+                padding <- 4px;
                 edited(text) => {
                     root.terminal-input-buffer = "";
                     root.terminal-text(text);

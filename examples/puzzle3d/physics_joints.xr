@@ -13,53 +13,53 @@ struct JointPart {
 }
 
 export component PhysicsJointsDemo inherits Window {
-    title: "XRack · 刚体关节";
-    width: 720px; height: 492px;
-    resizable: false;
-    background: #15212d;
+    title <- "XRack · 刚体关节";
+    width <- 720px; height <- 492px;
+    resizable <- false;
+    background <- #15212d;
 
     in-out property <bool> running: false;
-    in-out property <physicsworld3d> world: once Physics3D.new(Vector3D.new(0, 0, 0), 0.016);
+    in-out property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, 0, 0), 0.016);
     out property <bool> forward: true;
     out property <int> ticks: 0;
     out property <bool> accepted: true;
     out property <bool> wide-post: false;
-    out property <int> post: Physics3D.body-by-id(root.world, "post");
-    out property <int> door: Physics3D.body-by-id(root.world, "door");
-    out property <int> knob: Physics3D.body-by-id(root.world, "knob");
-    out property <int> slider: Physics3D.body-by-id(root.world, "slider");
-    out property <int> pendulum: Physics3D.body-by-id(root.world, "swing");
-    out property <int> tethered: Physics3D.body-by-id(root.world, "tether");
-    out property <int> hinge: Physics3D.joint-by-id(root.world, "hinge");
-    out property <int> rail: Physics3D.joint-by-id(root.world, "rail");
-    out property <int> tether: Physics3D.joint-by-id(root.world, "tether");
-    out property <int> ball-joint: Physics3D.joint-by-id(root.world, "swing");
-    out property <int> fixed-joint: Physics3D.joint-by-id(root.world, "knob");
+    out property <int> post <- Physics3D.body-by-id(root.world, "post");
+    out property <int> door <- Physics3D.body-by-id(root.world, "door");
+    out property <int> knob <- Physics3D.body-by-id(root.world, "knob");
+    out property <int> slider <- Physics3D.body-by-id(root.world, "slider");
+    out property <int> pendulum <- Physics3D.body-by-id(root.world, "swing");
+    out property <int> tethered <- Physics3D.body-by-id(root.world, "tether");
+    out property <int> hinge <- Physics3D.joint-by-id(root.world, "hinge");
+    out property <int> rail <- Physics3D.joint-by-id(root.world, "rail");
+    out property <int> tether <- Physics3D.joint-by-id(root.world, "tether");
+    out property <int> ball-joint <- Physics3D.joint-by-id(root.world, "swing");
+    out property <int> fixed-joint <- Physics3D.joint-by-id(root.world, "knob");
 
-    property <point3d> hinge-pin: Point3D.new(-2.9, 0.91, 0.6);
-    property <point3d> door-start: Point3D.new(-2.05, 0.91, 0.6);
-    property <point3d> knob-start: Point3D.new(-1.4, 0.91, 0.78);
-    property <point3d> rail-start: Point3D.new(2.1, 0.21, 0.86);
-    property <point3d> slider-start: Point3D.new(2.1, 0.5, 0.86);
-    property <point3d> swing-pin: Point3D.new(-0.5, 2.04, -1.3);
-    property <point3d> swing-start: Point3D.new(-0.5, 0.8, -1.3);
-    property <point3d> tether-pin: Point3D.new(2.9, 2.04, -1.5);
-    property <point3d> tether-start: Point3D.new(2.9, 1.05, -1.5);
-    property <vector3d> door-size: Vector3D.new(1.7, 1.75, 0.16);
-    property <vector3d> rail-size: Vector3D.new(3.05, 0.14, 0.43);
-    property <vector3d> slider-size: Vector3D.new(0.56, 0.4, 0.61);
-    property <point3d> origin: Point3D.new(0, 0, 0);
-    property <vector3d> vertical-axis: Vector3D.new(0, 0, 90);
-    property <vector3d> zero-angle: Vector3D.new(0, 0, 0);
+    property <point3d> hinge-pin <- Point3D.new(-2.9, 0.91, 0.6);
+    property <point3d> door-start <- Point3D.new(-2.05, 0.91, 0.6);
+    property <point3d> knob-start <- Point3D.new(-1.4, 0.91, 0.78);
+    property <point3d> rail-start <- Point3D.new(2.1, 0.21, 0.86);
+    property <point3d> slider-start <- Point3D.new(2.1, 0.5, 0.86);
+    property <point3d> swing-pin <- Point3D.new(-0.5, 2.04, -1.3);
+    property <point3d> swing-start <- Point3D.new(-0.5, 0.8, -1.3);
+    property <point3d> tether-pin <- Point3D.new(2.9, 2.04, -1.5);
+    property <point3d> tether-start <- Point3D.new(2.9, 1.05, -1.5);
+    property <vector3d> door-size <- Vector3D.new(1.7, 1.75, 0.16);
+    property <vector3d> rail-size <- Vector3D.new(3.05, 0.14, 0.43);
+    property <vector3d> slider-size <- Vector3D.new(0.56, 0.4, 0.61);
+    property <point3d> origin <- Point3D.new(0, 0, 0);
+    property <vector3d> vertical-axis <- Vector3D.new(0, 0, 90);
+    property <vector3d> zero-angle <- Vector3D.new(0, 0, 0);
 
-    out property <float> door-angle: Physics3D.joint-position(root.world, root.hinge);
-    out property <float> slider-travel: Physics3D.joint-position(root.world, root.rail);
-    out property <float> tether-span: root.tether == 0 ? 0.99 : Physics3D.joint-position(root.world, root.tether);
-    out property <point3d> door-position: root.door == 0 ? root.door-start : Physics3D.position(root.world, root.door);
-    out property <point3d> knob-position: root.knob == 0 ? root.knob-start : Physics3D.position(root.world, root.knob);
-    out property <point3d> slider-position: root.slider == 0 ? root.slider-start : Physics3D.position(root.world, root.slider);
-    out property <point3d> swing-position: root.pendulum == 0 ? root.swing-start : Physics3D.position(root.world, root.pendulum);
-    out property <point3d> tether-position: root.tethered == 0 ? root.tether-start : Physics3D.position(root.world, root.tethered);
+    out property <float> door-angle <- Physics3D.joint-position(root.world, root.hinge);
+    out property <float> slider-travel <- Physics3D.joint-position(root.world, root.rail);
+    out property <float> tether-span <- root.tether == 0 ? 0.99 : Physics3D.joint-position(root.world, root.tether);
+    out property <point3d> door-position <- root.door == 0 ? root.door-start : Physics3D.position(root.world, root.door);
+    out property <point3d> knob-position <- root.knob == 0 ? root.knob-start : Physics3D.position(root.world, root.knob);
+    out property <point3d> slider-position <- root.slider == 0 ? root.slider-start : Physics3D.position(root.world, root.slider);
+    out property <point3d> swing-position <- root.pendulum == 0 ? root.swing-start : Physics3D.position(root.world, root.pendulum);
+    out property <point3d> tether-position <- root.tethered == 0 ? root.tether-start : Physics3D.position(root.world, root.tethered);
 
     pure function body(id: string, shape: string, center: point3d, size: vector3d, mass: float, friction: float) -> RigBody {
         RigBody {
@@ -146,7 +146,7 @@ export component PhysicsJointsDemo inherits Window {
         if Physics3D.step(root.world) { root.ticks += 1; }
     }
     clock := Timer {
-        interval: 16; repeat: true; running: root.running;
+        interval <- 16; repeat <- true; running <- root.running;
         triggered => { root.advance(); }
     }
 
@@ -168,7 +168,7 @@ export component PhysicsJointsDemo inherits Window {
             Vector3D.new(0.035, Math.sqrt(dx * dx + dy * dy), 0.035),
             Vector3D.new(0, 0, -Math.to-degrees(Math.atan2(dx, dy))), tint)
     }
-    property <[JointPart]> parts: [
+    property <[JointPart]> parts <- [
         root.part("stage", "primitive:box", Point3D.new(0, -0.16, 0), Vector3D.new(8.5, 0.2, 5.5), root.zero-angle, #30424a),
         root.part("door-post", "primitive:box", root.hinge-pin, Vector3D.new(root.wide-post ? 0.35 : 0.16, 1.82, root.wide-post ? 0.38 : 0.19), root.zero-angle, #c3cdd5),
         root.part("door", "primitive:box", root.door-position, root.door-size, Physics3D.rotation(root.world, root.door), #dd9664),
@@ -183,42 +183,42 @@ export component PhysicsJointsDemo inherits Window {
         root.ball("tether", root.tether-position, 0.24, #f6cf7b),
     ];
     SceneView3D {
-        width: 720px; height: 420px; model: root.parts;
-        camera-yaw: 14; camera-pitch: 27; camera-distance: 10.8;
-        scene-background: #1d3244; ambient-intensity: 0.42; multisampling: true;
+        width <- 720px; height <- 420px; model <- root.parts;
+        camera-yaw <- 14; camera-pitch <- 27; camera-distance <- 10.8;
+        scene-background <- #1d3244; ambient-intensity <- 0.42; multisampling <- true;
     }
     joint-status := Text {
-        x: 18px; y: 16px; color: #e6edf6;
-        text: "门轴 " + Math.round(root.door-angle) + "°     滑轨 "
+        x <- 18px; y <- 16px; color <- #e6edf6;
+        text <- "门轴 " + Math.round(root.door-angle) + "°     滑轨 "
             + Math.round(root.slider-travel * 100) / 100.0 + "     吊挂 "
             + Math.round(root.tether-span * 100) / 100.0;
     }
     revision-status := Text {
-        x: 18px; y: 46px; color: #b6c7d5;
-        text: "门轴 ID " + root.hinge + "   ·   滑轨 ID " + root.rail
+        x <- 18px; y <- 46px; color <- #b6c7d5;
+        text <- "门轴 ID " + root.hinge + "   ·   滑轨 ID " + root.rail
             + (root.accepted ? "" : "   ·   场景更新已拒绝");
     }
-    ticks-status := Text { x: 595px; y: 16px; color: #b6c7d5; text: "步数 " + root.ticks; }
+    ticks-status := Text { x <- 595px; y <- 16px; color <- #b6c7d5; text <- "步数 " + root.ticks; }
     HorizontalLayout {
-        x: 14px; y: 432px; width: 692px; height: 44px; spacing: 10px;
+        x <- 14px; y <- 432px; width <- 692px; height <- 44px; spacing <- 10px;
         run-button := Button {
-            width: 90px; text: root.running ? "暂停" : "运行";
+            width <- 90px; text <- root.running ? "暂停" : "运行";
             clicked => { root.running = !root.running; }
         }
-        step-button := Button { width: 90px; text: "单步"; clicked => { root.advance(); } }
+        step-button := Button { width <- 90px; text <- "单步"; clicked => { root.advance(); } }
         reverse-button := Button {
-            width: 90px; text: "反向驱动";
+            width <- 90px; text <- "反向驱动";
             clicked => { if root.door == 0 { root.reset(); } root.drive(!root.forward); }
         }
         tighten-button := Button {
-            width: 90px; text: "收紧限位";
+            width <- 90px; text <- "收紧限位";
             clicked => { if root.door == 0 { root.reset(); } root.tighten(); }
         }
-        nudge-button := Button { width: 90px; text: "推动吊挂"; clicked => { root.nudge(); } }
+        nudge-button := Button { width <- 90px; text <- "推动吊挂"; clicked => { root.nudge(); } }
         post-button := Button {
-            width: 90px; text: "替换门柱";
+            width <- 90px; text <- "替换门柱";
             clicked => { root.apply-rig(!root.wide-post, false); }
         }
-        reset-button := Button { width: 72px; text: "重置"; clicked => { root.reset(); } }
+        reset-button := Button { width <- 72px; text <- "重置"; clicked => { root.reset(); } }
     }
 }

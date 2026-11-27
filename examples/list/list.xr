@@ -5,10 +5,10 @@ export struct DelegateSetting {
 }
 
 export component RefreshDemo inherits Window {
-    title: "Inspection feed";
-    width: 390px;
-    height: 540px;
-    color-scheme: system;
+    title <- "Inspection feed";
+    width <- 390px;
+    height <- 540px;
+    color-scheme <- system;
 
     out property <bool> refreshing: false;
     out property <int> requests: 0;
@@ -24,7 +24,7 @@ export component RefreshDemo inherits Window {
     }
 
     finish-refresh := Timer {
-        interval: 2200;
+        interval <- 2200;
         triggered() => {
             root.updates += 1;
             root.refreshing = false;
@@ -32,30 +32,30 @@ export component RefreshDemo inherits Window {
     }
 
     VerticalLayout {
-        padding: 20px;
-        spacing: 12px;
-        alignment: start;
-        Label { text: "Inspection feed"; font-size: 24px; font-weight: 700; }
+        padding <- 20px;
+        spacing <- 12px;
+        alignment <- start;
+        Label { text <- "Inspection feed"; font-size <- 24px; font-weight <- 700; }
         refresh-status := Label {
-            text: root.refreshing ? "Refreshing…" : "Completed refreshes: " + root.updates;
-            accessible-live: root.requests > 0 ? AccessibleLive.polite : AccessibleLive.off;
+            text <- root.refreshing ? "Refreshing…" : "Completed refreshes: " + root.updates;
+            accessible-live <- root.requests > 0 ? AccessibleLive.polite : AccessibleLive.off;
         }
         feed := ListView {
-            height: 280px;
-            row-height: 52px;
-            pull-to-refresh: true;
-            refreshing: root.refreshing;
-            accessible-name: "Inspection updates";
+            height <- 280px;
+            row-height <- 52px;
+            pull-to-refresh <- true;
+            refreshing <- root.refreshing;
+            accessible-name <- "Inspection updates";
             refresh-requested() => { root.refresh(); }
             for entry in ["Pump pressure", "Door interlock", "Water temperature"] : Label {
-                text: entry;
-                vertical-alignment: center;
+                text <- entry;
+                vertical-alignment <- center;
             }
         }
         refresh-button := Button {
-            height: 44px;
-            text: "Refresh";
-            enabled: !root.refreshing;
+            height <- 44px;
+            text <- "Refresh";
+            enabled <- !root.refreshing;
             clicked => { root.refresh(); }
         }
     }
@@ -75,14 +75,14 @@ component VisibilityTile inherits Button {
     in property <string> caption;
     property <int> presses: 0;
     callback activated();
-    text: root.caption + " · " + root.presses;
+    text <- root.caption + " · " + root.presses;
     clicked => { root.presses += 1; root.activated(); }
 }
 
 export component ListVisibilityDemo inherits Window {
-    title: "XRack · 列表与网格的记录可见性";
-    width: 660px; height: 320px;
-    background: #182331;
+    title <- "XRack · 列表与网格的记录可见性";
+    width <- 660px; height <- 320px;
+    background <- #182331;
     in-out property <[ListVisibilityRecord]> records: [
         ListVisibilityRecord { label: "文档", height: 30px, flags: ListVisibilityFlags { shown: true } },
         ListVisibilityRecord { label: "临时项", height: 30px, flags: ListVisibilityFlags { shown: false } },
@@ -91,8 +91,8 @@ export component ListVisibilityDemo inherits Window {
     ];
     in-out property <int> standard-index: 0;
     in property <int> inspected-source: 2;
-    out property <int> visible-index: entries.view-index-for-source(root.inspected-source);
-    out property <int> selected-source: summary.source-index-for-view(root.standard-index);
+    out property <int> visible-index <- entries.view-index-for-source(root.inspected-source);
+    out property <int> selected-source <- summary.source-index-for-view(root.standard-index);
     out property <int> last-source-index: -1;
     callback reveal-all();
     callback select-source(int);
@@ -109,37 +109,37 @@ export component ListVisibilityDemo inherits Window {
     }
 
     HorizontalLayout {
-        x: 12px; y: 8px; width: 636px; height: 32px;
-        spacing: 8px;
-        reveal := Button { text: "显示全部记录"; clicked => { root.reveal-all(); } }
-        Text { text: "取消左侧勾选会隐藏记录 · 网格点击次数随记录保留"; }
+        x <- 12px; y <- 8px; width <- 636px; height <- 32px;
+        spacing <- 8px;
+        reveal := Button { text <- "显示全部记录"; clicked => { root.reveal-all(); } }
+        Text { text <- "取消左侧勾选会隐藏记录 · 网格点击次数随记录保留"; }
     }
     entries := ListView {
-        x: 12px; y: 48px; width: 200px; height: 254px;
-        row-height: 30px; row-height-field: "height";
-        row-visible-field: "flags.shown";
-        preserve-scroll-anchor: true;
+        x <- 12px; y <- 48px; width <- 200px; height <- 254px;
+        row-height <- 30px; row-height-field <- "height";
+        row-visible-field <- "flags.shown";
+        preserve-scroll-anchor <- true;
         for entry[source] in root.records : CheckDelegate {
-            text: entry.label;
-            checked <=> entry.flags.shown;
+            text <- entry.label;
+            checked <-> entry.flags.shown;
             toggled => { root.last-source-index = source; }
         }
     }
     tiles := GridView {
-        x: 228px; y: 48px; width: 204px; height: 254px;
-        cell-width: 94px; cell-height: 44px; spacing: 6px;
-        row-visible-field: "flags.shown";
+        x <- 228px; y <- 48px; width <- 204px; height <- 254px;
+        cell-width <- 94px; cell-height <- 44px; spacing <- 6px;
+        row-visible-field <- "flags.shown";
         for entry[source] in root.records : VisibilityTile {
-            caption: entry.label;
+            caption <- entry.label;
             activated => { root.last-source-index = source; }
         }
     }
     summary := StandardListView {
-        x: 448px; y: 48px; width: 200px; height: 254px;
-        model: root.records; text-role: "label";
-        row-height: 30px; row-height-field: "height";
-        row-visible-field: "flags.shown";
-        current-index <=> root.standard-index;
+        x <- 448px; y <- 48px; width <- 200px; height <- 254px;
+        model <- root.records; text-role <- "label";
+        row-height <- 30px; row-height-field <- "height";
+        row-visible-field <- "flags.shown";
+        current-index <-> root.standard-index;
     }
 }
 
@@ -147,7 +147,7 @@ component NestedTrack inherits Button {
     in property <string> caption;
     property <int> plays: 0;
     callback played(string);
-    text: root.caption + " · " + root.plays;
+    text <- root.caption + " · " + root.plays;
     clicked => {
         root.plays += 1;
         root.played(root.caption);
@@ -158,35 +158,35 @@ component NestedAlbum inherits Rectangle {
     in property <string> name;
     in property <[string]> tracks;
     callback played(string);
-    background: #26374e;
-    Text { x: 10px; y: 7px; text: root.name; }
+    background <- #26374e;
+    Text { x <- 10px; y <- 7px; text <- root.name; }
     tracks-view := ListView {
-        x: 10px; y: 31px;
-        width: 95%; height: 96px;
-        row-height: 24px;
-        preserve-scroll-anchor: true;
+        x <- 10px; y <- 31px;
+        width <- 95%; height <- 96px;
+        row-height <- 24px;
+        preserve-scroll-anchor <- true;
         for track in root.tracks : NestedTrack {
-            caption: track;
+            caption <- track;
             played(caption) => { root.played(caption); }
         }
     }
 }
 
 export component NestedListsDemo inherits Window {
-    title: "XRack · 嵌套虚拟列表";
-    width: 580px; height: 330px;
-    background: #182331;
+    title <- "XRack · 嵌套虚拟列表";
+    width <- 580px; height <- 330px;
+    background <- #182331;
     in property <[string]> albums: ["文档", "图片", "音频", "视频"];
     in property <[string]> tracks: ["条目 0", "条目 1", "条目 2", "条目 3", "条目 4", "条目 5"];
     out property <string> last-played: "请选择一项";
-    Text { x: 14px; y: 9px; text: root.last-played; }
+    Text { x <- 14px; y <- 9px; text <- root.last-played; }
     albums-view := ListView {
-        x: 10px; y: 38px;
-        width: 96%; height: 280px;
-        row-height: 140px;
+        x <- 10px; y <- 38px;
+        width <- 96%; height <- 280px;
+        row-height <- 140px;
         for album in root.albums : NestedAlbum {
-            name: album;
-            tracks: root.tracks;
+            name <- album;
+            tracks <- root.tracks;
             played(caption) => { root.last-played = album + " · " + caption; }
         }
     }
@@ -204,43 +204,43 @@ component WorkspaceRow inherits Rectangle {
     in property <string> label;
     in-out property <[WorkspaceRecord]> records;
     in property <int> branch: -1;
-    background: #26374e;
-    Text { x: 10px; y: 5px; text: root.label; }
+    background <- #26374e;
+    Text { x <- 10px; y <- 5px; text <- root.label; }
     entries := StandardTableView {
-        x: 10px; y: 30px; width: 52%; height: 120px;
-        accessible-name: "工作表";
-        row-height: 24px; header-height: 24px;
-        row-header-width: 30px;
-        current-row: 0;
-        selection-target: SelectionTarget.cells;
-        copyable: true;
-        pasteable: true;
-        undoable: true;
-        edit-on-tab: true;
-        movable-rows: true;
-        frozen-columns: 1;
-        model: root.records;
-        TableColumn { title: "名称"; field: "title"; width: 150px; editable: true; }
-        TableColumn { title: "数量"; field: "quantity"; width: 110px; editable: true; }
-        TableColumn { title: "备注"; field: "note"; width: 230px; editable: true; }
+        x <- 10px; y <- 30px; width <- 52%; height <- 120px;
+        accessible-name <- "工作表";
+        row-height <- 24px; header-height <- 24px;
+        row-header-width <- 30px;
+        current-row <- 0;
+        selection-target <- SelectionTarget.cells;
+        copyable <- true;
+        pasteable <- true;
+        undoable <- true;
+        edit-on-tab <- true;
+        movable-rows <- true;
+        frozen-columns <- 1;
+        model <- root.records;
+        TableColumn { title <- "名称"; field <- "title"; width <- 150px; editable <- true; }
+        TableColumn { title <- "数量"; field <- "quantity"; width <- 110px; editable <- true; }
+        TableColumn { title <- "备注"; field <- "note"; width <- 230px; editable <- true; }
     }
     folders := TreeView {
-        x: 390px; y: 30px; width: 41%; height: 120px;
-        accessible-name: "目录";
-        row-height: 24px;
-        root-key: root.branch;
+        x <- 390px; y <- 30px; width <- 41%; height <- 120px;
+        accessible-name <- "目录";
+        row-height <- 24px;
+        root-key <- root.branch;
         for record in root.records : TreeRow {
-            key: record.key;
-            parent-key: record.parent;
-            TreeCell { text <=> record.title; }
+            key <- record.key;
+            parent-key <- record.parent;
+            TreeCell { text <-> record.title; }
         }
     }
 }
 
 export component NestedDataDemo inherits Window {
-    title: "XRack · 嵌套表格和树";
-    width: 720px; height: 364px;
-    background: #182331;
+    title <- "XRack · 嵌套表格和树";
+    width <- 720px; height <- 364px;
+    background <- #182331;
     in property <[string]> groups: ["项目 A", "项目 B", "项目 C"];
     in-out property <[WorkspaceRecord]> records: [
         WorkspaceRecord { key: 1, parent: -1, title: "资料", quantity: 1, note: "目录" },
@@ -251,14 +251,14 @@ export component NestedDataDemo inherits Window {
         WorkspaceRecord { key: 6, parent: -1, title: "归档", quantity: 6, note: "目录" },
     ];
     in property <int> branch: -1;
-    Text { x: 14px; y: 8px; text: "工作表和目录共用记录 · 双击名称编辑"; }
+    Text { x <- 14px; y <- 8px; text <- "工作表和目录共用记录 · 双击名称编辑"; }
     projects := ListView {
-        x: 10px; y: 34px; width: 97%; height: 320px;
-        row-height: 160px;
+        x <- 10px; y <- 34px; width <- 97%; height <- 320px;
+        row-height <- 160px;
         for group in root.groups : WorkspaceRow {
-            label: group;
-            records: root.records;
-            branch: root.branch;
+            label <- group;
+            records <- root.records;
+            branch <- root.branch;
         }
     }
 }
@@ -270,15 +270,15 @@ struct DelegateMode {
 }
 
 export component ItemDelegatesDemo inherits Window {
-    title: "XRack · 列表委托";
-    width: 644px;
-    height: 398px;
-    background: #182331;
+    title <- "XRack · 列表委托";
+    width <- 644px;
+    height <- 398px;
+    background <- #182331;
 
     in-out property <int> current-action: 0;
     in-out property <int> current-mode: 0;
     in property <bool> show-compact-mode: true;
-    in-out property <[DelegateSetting]> settings: once [
+    in-out property <[DelegateSetting]> settings: [
         DelegateSetting { label: "文档", selected: CheckState.unchecked, enabled: true },
         DelegateSetting { label: "图片", selected: CheckState.partially-checked, enabled: false },
         DelegateSetting { label: "音频", selected: CheckState.checked, enabled: true },
@@ -287,84 +287,84 @@ export component ItemDelegatesDemo inherits Window {
     out property <int> edits: 0;
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 12px;
+        padding <- 16px;
+        spacing <- 12px;
         HorizontalLayout {
-            spacing: 12px;
+            spacing <- 12px;
             VerticalLayout {
-                spacing: 6px;
-                Text { text: "常用操作"; }
+                spacing <- 6px;
+                Text { text <- "常用操作"; }
                 actions := ListView {
-                    row-height: 36px;
-                    current-index <=> root.current-action;
+                    row-height <- 36px;
+                    current-index <-> root.current-action;
                     for label[index] in ["打开工作区", "显示最近文件", "查看归档"] : ItemDelegate {
-                        text: label;
+                        text <- label;
                         clicked => { root.last-action = label + " · " + (index + 1); }
                     }
                 }
             }
             VerticalLayout {
-                spacing: 6px;
-                Text { text: "显示模式"; }
+                spacing <- 6px;
+                Text { text <- "显示模式"; }
                 modes := ListView {
-                    row-height: 36px;
-                    row-visible-field: "shown";
-                    row-key-field: "key";
-                    current-key <=> root.current-mode;
+                    row-height <- 36px;
+                    row-visible-field <- "shown";
+                    row-key-field <- "key";
+                    current-key <-> root.current-mode;
                     for mode in [
                         DelegateMode { key: 99, label: "旧模式", shown: false },
                         DelegateMode { key: 0, label: "详细", shown: true },
                         DelegateMode { key: 1, label: "紧凑", shown: root.show-compact-mode },
                         DelegateMode { key: 2, label: "仅文件名", shown: true },
                     ] : RadioDelegate {
-                        text: self.checked ? mode.label + " ✓" : mode.label;
-                        accessible-name: mode.label;
+                        text <- self.checked ? mode.label + " ✓" : mode.label;
+                        accessible-name <- mode.label;
                     }
                 }
             }
         }
         HorizontalLayout {
-            spacing: 12px;
+            spacing <- 12px;
             VerticalLayout {
-                spacing: 6px;
-                Text { text: "同步范围"; }
+                spacing <- 6px;
+                Text { text <- "同步范围"; }
                 checks := ListView {
-                    row-height: 36px;
+                    row-height <- 36px;
                     for setting in root.settings : CheckDelegate {
-                        text: setting.label;
-                        tristate: true;
-                        check-state <=> setting.selected;
+                        text <- setting.label;
+                        tristate <- true;
+                        check-state <-> setting.selected;
                         check-state-changed(state) => { root.edits += 1; }
                     }
                 }
             }
             VerticalLayout {
-                spacing: 6px;
-                Text { text: "离线可用"; }
+                spacing <- 6px;
+                Text { text <- "离线可用"; }
                 switches := ListView {
-                    row-height: 36px;
+                    row-height <- 36px;
                     for setting in root.settings : SwitchDelegate {
-                        text: setting.label;
-                        checked <=> setting.enabled;
+                        text <- setting.label;
+                        checked <-> setting.enabled;
                         SwitchThumb {
-                            width: 14px; height: 14px;
-                            background: checked ? #67d4cf : #c3ccd8;
-                            border-radius: 4px;
+                            width <- 14px; height <- 14px;
+                            background <- checked ? #67d4cf : #c3ccd8;
+                            border-radius <- 4px;
                         }
                         toggled => { root.edits += 1; }
                     }
                 }
             }
         }
-        Text { text: root.last-action; color: #acc0db; }
+        Text { text <- root.last-action; color <- #acc0db; }
     }
 }
 
 export component ListDemo inherits Window {
-    title: "XRack · ListView";
-    width: 540px;
-    height: 380px;
-    background: #182331;
+    title <- "XRack · ListView";
+    width <- 540px;
+    height <- 380px;
+    background <- #182331;
 
     in-out property <int> count: 100000;
     in-out property <int> current: -1;
@@ -373,81 +373,81 @@ export component ListDemo inherits Window {
     row-caption(row) => { "记录 " + (row + 1) }
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 8px;
-        Text { text: "虚拟列表 · " + root.count + " 条记录"; font-size: 20px; }
-        Text { text: "滚轮浏览，点击选择，Home / End 跳到首尾"; color: #acc0db; }
+        padding <- 16px;
+        spacing <- 8px;
+        Text { text <- "虚拟列表 · " + root.count + " 条记录"; font-size <- 20px; }
+        Text { text <- "滚轮浏览，点击选择，Home / End 跳到首尾"; color <- #acc0db; }
         records := ListView {
-            row-height: 32px;
-            background: #223249;
-            current-index <=> root.current;
+            row-height <- 32px;
+            background <- #223249;
+            current-index <-> root.current;
             changed(row) => { root.selections += 1; }
 
             for item[index] in root.count : Rectangle {
-                background: index % 2 == 0 ? #263750 : #223249;
-                Text { x: 12px; y: 6px; text: root.row-caption(item); }
+                background <- index % 2 == 0 ? #263750 : #223249;
+                Text { x <- 12px; y <- 6px; text <- root.row-caption(item); }
             }
         }
-        Text { text: root.current < 0 ? "尚未选择" : "已选择第 " + (root.current + 1) + " 条记录"; color: #b8caff; }
+        Text { text <- root.current < 0 ? "尚未选择" : "已选择第 " + (root.current + 1) + " 条记录"; color <- #b8caff; }
     }
 }
 
 export component DirectionalScrollDemo inherits Window {
-    title: "XRack · 双向滚动画布和网格";
-    width: 510px; height: 238px;
-    background: #182331;
+    title <- "XRack · 双向滚动画布和网格";
+    width <- 510px; height <- 238px;
+    background <- #182331;
     in-out property <bool> rtl: true;
     in-out property <length> horizontal: 0px;
     in-out property <int> current: 0;
-    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+    layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
 
     flip := Button {
-        x: 12px; y: 12px; width: 132px; height: 32px;
-        text: root.rtl ? "RTL → LTR" : "LTR → RTL";
+        x <- 12px; y <- 12px; width <- 132px; height <- 32px;
+        text <- root.rtl ? "RTL → LTR" : "LTR → RTL";
         clicked => { root.rtl = !root.rtl; }
     }
     jump := Button {
-        x: 158px; y: 12px; width: 134px; height: 32px;
-        text: "定位到阅读末端";
+        x <- 158px; y <- 12px; width <- 134px; height <- 32px;
+        text <- "定位到阅读末端";
         clicked => { canvas.scroll-to(280px, 0px); }
     }
     canvas := ScrollView {
-        x: 12px; y: 58px; width: 280px; height: 116px;
-        content-width: 560px; content-height: 160px;
-        content-x <=> root.horizontal;
+        x <- 12px; y <- 58px; width <- 280px; height <- 116px;
+        content-width <- 560px; content-height <- 160px;
+        content-x <-> root.horizontal;
         Rectangle {
-            width: 100%; height: 100%; background: #263750;
+            width <- 100%; height <- 100%; background <- #263750;
         }
         left-edge := Rectangle {
-            width: 140px; height: 94px; background: #386697;
-            Text { x: 16px; y: 20px; text: "画布左端"; color: #f0f3fa; }
+            width <- 140px; height <- 94px; background <- #386697;
+            Text { x <- 16px; y <- 20px; text <- "画布左端"; color <- #f0f3fa; }
         }
         right-edge := Rectangle {
-            x: 420px; width: 140px; height: 94px; background: #815329;
-            Text { x: 16px; y: 20px; text: "画布右端"; color: #f0f3fa; }
+            x <- 420px; width <- 140px; height <- 94px; background <- #815329;
+            Text { x <- 16px; y <- 20px; text <- "画布右端"; color <- #f0f3fa; }
         }
     }
     band := ScrollBar {
-        x: 12px; y: 183px; width: 280px; height: 14px;
-        target: canvas;
-        orientation: Orientation.horizontal;
-        step-size: 0.125;
-        accessible-name: "画布横向滚动";
+        x <- 12px; y <- 183px; width <- 280px; height <- 14px;
+        target <- canvas;
+        orientation <- Orientation.horizontal;
+        step-size <- 0.125;
+        accessible-name <- "画布横向滚动";
     }
     tiles := GridView {
-        x: 308px; y: 58px; width: 190px; height: 116px;
-        cell-width: 78px; cell-height: 42px; spacing: 8px;
-        current-index <=> root.current;
-        accessible-name: "示例网格";
+        x <- 308px; y <- 58px; width <- 190px; height <- 116px;
+        cell-width <- 78px; cell-height <- 42px; spacing <- 8px;
+        current-index <-> root.current;
+        accessible-name <- "示例网格";
         for index in 24 : Rectangle {
-            width: 100%; height: 100%;
-            Text { x: 12px; y: 9px; text: "卡片 " + index; }
+            width <- 100%; height <- 100%;
+            Text { x <- 12px; y <- 9px; text <- "卡片 " + index; }
         }
     }
     status := Text {
-        x: 12px; y: 207px;
-        text: "横向偏移 " + (canvas.content-x / 1px) + " · 网格 " + root.current;
-        color: #b8caff;
+        x <- 12px; y <- 207px;
+        text <- "横向偏移 " + (canvas.content-x / 1px) + " · 网格 " + root.current;
+        color <- #b8caff;
     }
 }
 
@@ -458,9 +458,9 @@ export struct SectionRecord {
 }
 
 export component SectionedListDemo inherits Window {
-    title: "XRack · 分段列表";
-    width: 530px; height: 246px;
-    background: #182331;
+    title <- "XRack · 分段列表";
+    width <- 530px; height <- 246px;
+    background <- #182331;
     in-out property <bool> sticky: true;
     in property <color> section-accent: #815329;
     in-out property <[SectionRecord]> records: [
@@ -473,57 +473,57 @@ export component SectionedListDemo inherits Window {
         SectionRecord { title: "存档", group: "已完成", shown: true },
         SectionRecord { title: "附注", group: "", shown: true },
     ];
-    out property <int> visible-rows: agenda.row-count;
+    out property <int> visible-rows <- agenda.row-count;
 
     pin := Button {
-        x: 12px; y: 10px; width: 156px; height: 30px;
-        text: root.sticky ? "关闭标题固定" : "固定当前段标题";
+        x <- 12px; y <- 10px; width <- 156px; height <- 30px;
+        text <- root.sticky ? "关闭标题固定" : "固定当前段标题";
         clicked => { root.sticky = !root.sticky; }
     }
     jump := Button {
-        x: 188px; y: 10px; width: 156px; height: 30px;
-        text: "定位到进行中";
+        x <- 188px; y <- 10px; width <- 156px; height <- 30px;
+        text <- "定位到进行中";
         clicked => {
             agenda.position-view-at-index(3, beginning);
             custom.position-view-at-index(3, beginning);
         }
     }
     agenda := StandardListView {
-        x: 12px; y: 62px; width: 244px; height: 110px;
-        accessible-name: "标准分段列表";
-        model: root.records;
-        text-role: "title";
-        row-visible-field: "shown";
-        row-height: 30px;
-        section-field: "group";
-        section-height: 26px;
-        sticky-section-headers: root.sticky;
+        x <- 12px; y <- 62px; width <- 244px; height <- 110px;
+        accessible-name <- "标准分段列表";
+        model <- root.records;
+        text-role <- "title";
+        row-visible-field <- "shown";
+        row-height <- 30px;
+        section-field <- "group";
+        section-height <- 26px;
+        sticky-section-headers <- root.sticky;
     }
     custom := ListView {
-        x: 274px; y: 62px; width: 244px; height: 110px;
-        accessible-name: "自定义分段列表";
-        row-visible-field: "shown";
-        row-height: 30px;
-        section-field: "group";
-        section-height: 26px;
-        sticky-section-headers: root.sticky;
+        x <- 274px; y <- 62px; width <- 244px; height <- 110px;
+        accessible-name <- "自定义分段列表";
+        row-visible-field <- "shown";
+        row-height <- 30px;
+        section-field <- "group";
+        section-height <- 26px;
+        sticky-section-headers <- root.sticky;
         SectionHeader {
-            accessible-name: section-label + "，" + section-count + " 项";
-            background: section-pinned ? root.section-accent : #304565;
+            accessible-name <- section-label + "，" + section-count + " 项";
+            background <- section-pinned ? root.section-accent : #304565;
             Text {
-                x: 10px; y: 3px;
-                text: section-label + " · " + section-count + " 项";
-                color: #f0f3fa;
+                x <- 10px; y <- 3px;
+                text <- section-label + " · " + section-count + " 项";
+                color <- #f0f3fa;
             }
         }
         for entry in root.records : Rectangle {
-            width: 100%; height: 100%;
-            background: #294364;
-            Text { x: 10px; y: 5px; text: entry.title; }
+            width <- 100%; height <- 100%;
+            background <- #294364;
+            Text { x <- 10px; y <- 5px; text <- entry.title; }
         }
     }
-    Text { x: 12px; y: 188px; text: "标准列表"; }
-    Text { x: 274px; y: 188px; text: "自定义行"; }
+    Text { x <- 12px; y <- 188px; text <- "标准列表"; }
+    Text { x <- 274px; y <- 188px; text <- "自定义行"; }
 }
 
 export struct LookupRecord {
@@ -534,14 +534,14 @@ export struct LookupRecord {
 }
 
 export component TypeaheadDemo inherits Window {
-    title: "XRack · 列表键入定位";
-    width: 660px; height: 252px;
-    background: #182331;
+    title <- "XRack · 列表键入定位";
+    width <- 660px; height <- 252px;
+    background <- #182331;
     in-out property <bool> search-enabled: true;
     in-out property <int> selected-row: -1;
     in-out property <int> selected-key: -1;
     in-out property <int> selected-string: -1;
-    out property <int> string-selection-count: strings.selection-count;
+    out property <int> string-selection-count <- strings.selection-count;
     callback choose-string(int);
     choose-string(row) => { strings.select-row(row); }
     in-out property <[LookupRecord]> records: [
@@ -555,65 +555,65 @@ export component TypeaheadDemo inherits Window {
         LookupRecord { id: 80, label: "Archive", alias: "archive mirror", shown: true },
     ];
 
-    Text { x: 12px; y: 10px; text: "聚焦视图后键入 Atlas、build 或「文档」"; }
+    Text { x <- 12px; y <- 10px; text <- "聚焦视图后键入 Atlas、build 或「文档」"; }
     CheckBox {
-        x: 12px; y: 41px; width: 156px; height: 28px;
-        text: "标准列表启用查找";
-        checked <=> root.search-enabled;
+        x <- 12px; y <- 41px; width <- 156px; height <- 28px;
+        text <- "标准列表启用查找";
+        checked <-> root.search-enabled;
     }
     standard := StandardListView {
-        x: 12px; y: 78px; width: 174px; height: 118px;
-        accessible-name: "按名称搜索";
-        model: root.records;
-        text-role: "label";
-        row-visible-field: "shown";
-        row-height: 30px;
-        current-index <=> root.selected-row;
-        typeahead-enabled: root.search-enabled;
+        x <- 12px; y <- 78px; width <- 174px; height <- 118px;
+        accessible-name <- "按名称搜索";
+        model <- root.records;
+        text-role <- "label";
+        row-visible-field <- "shown";
+        row-height <- 30px;
+        current-index <-> root.selected-row;
+        typeahead-enabled <- root.search-enabled;
     }
     tiles := GridView {
-        x: 206px; y: 78px; width: 262px; height: 118px;
-        accessible-name: "按别名搜索";
-        cell-width: 118px; cell-height: 44px; spacing: 6px;
-        row-visible-field: "shown";
-        row-key-field: "id";
-        current-key <=> root.selected-key;
-        typeahead-field: "alias";
+        x <- 206px; y <- 78px; width <- 262px; height <- 118px;
+        accessible-name <- "按别名搜索";
+        cell-width <- 118px; cell-height <- 44px; spacing <- 6px;
+        row-visible-field <- "shown";
+        row-key-field <- "id";
+        current-key <-> root.selected-key;
+        typeahead-field <- "alias";
         for item in root.records : Rectangle {
-            width: 100%; height: 100%;
-            Text { x: 8px; y: 7px; text: item.label; }
+            width <- 100%; height <- 100%;
+            Text { x <- 8px; y <- 7px; text <- item.label; }
         }
     }
     strings := ListView {
-        x: 486px; y: 78px; width: 160px; height: 118px;
-        accessible-name: "字符串列表";
-        row-height: 30px;
-        typeahead-enabled: true;
-        current-index <=> root.selected-string;
-        for item in ["Alpha", "Beta", "Almanac", "报告", "预览"] : Text { text: item; }
+        x <- 486px; y <- 78px; width <- 160px; height <- 118px;
+        accessible-name <- "字符串列表";
+        row-height <- 30px;
+        typeahead-enabled <- true;
+        current-index <-> root.selected-string;
+        for item in ["Alpha", "Beta", "Almanac", "报告", "预览"] : Text { text <- item; }
     }
     status := Text {
-        x: 12px; y: 219px;
-        text: "显示行 " + root.selected-row + " · 网格键 " + root.selected-key
+        x <- 12px; y <- 219px;
+        text <- "显示行 " + root.selected-row + " · 网格键 " + root.selected-key
             + " · 字符串行 " + root.selected-string;
     }
 }
 
 export component MultiSelectDemo inherits Window {
-    title: "XRack · 列表和网格多选";
-    width: 560px; height: 254px;
-    background: #182331;
+    title <- "XRack · 列表和网格多选";
+    width <- 560px; height <- 254px;
+    background <- #182331;
     in-out property <bool> multiple: true;
     in-out property <int> current: -1;
     in-out property <int> tile-key: -1;
     out property <int> list-selection: 0;
     out property <int> grid-selection: 0;
     out property <int> grid-selection-events: 0;
-    out property <int> actual-list-selection: entries.selection-count;
-    out property <int> actual-grid-selection: tiles.selection-count;
-    out property <bool> grid-has-selection: tiles.has-selection;
+    out property <int> actual-list-selection <- entries.selection-count;
+    out property <int> actual-grid-selection <- tiles.selection-count;
+    out property <bool> grid-has-selection <- tiles.has-selection;
     in property <int> inspected-row: 0;
-    out property <bool> inspected-selected: tiles.is-row-selected(root.inspected-row);
+    out property <bool> inspected-selected <- tiles.is-row-selected(root.inspected-row);
     out property <int> opened: 0;
     callback select-grid-row(int);
     select-grid-row(row) => { tiles.select-row(row); }
@@ -637,64 +637,64 @@ export component MultiSelectDemo inherits Window {
         LookupRecord { id: 70, label: "存档", alias: "完成", shown: true },
     ];
 
-    Text { x: 12px; y: 10px; text: "Ctrl / Command 增减，Shift 选取范围"; }
+    Text { x <- 12px; y <- 10px; text <- "Ctrl / Command 增减，Shift 选取范围"; }
     CheckBox {
-        x: 12px; y: 38px; width: 150px; height: 28px;
-        text: "启用多选";
-        checked <=> root.multiple;
+        x <- 12px; y <- 38px; width <- 150px; height <- 28px;
+        text <- "启用多选";
+        checked <-> root.multiple;
     }
     entries := StandardListView {
-        x: 12px; y: 74px; width: 174px; height: 130px;
-        accessible-name: "任务列表";
-        model: root.records;
-        text-role: "label";
-        row-visible-field: "shown";
-        row-height: 30px;
-        multi-select: root.multiple;
-        current-index <=> root.current;
+        x <- 12px; y <- 74px; width <- 174px; height <- 130px;
+        accessible-name <- "任务列表";
+        model <- root.records;
+        text-role <- "label";
+        row-visible-field <- "shown";
+        row-height <- 30px;
+        multi-select <- root.multiple;
+        current-index <-> root.current;
         selection-changed(n) => { root.list-selection = n; }
     }
     tiles := GridView {
-        x: 208px; y: 74px; width: 340px; height: 130px;
-        accessible-name: "任务网格";
-        cell-width: 156px; cell-height: 40px; spacing: 6px;
-        row-visible-field: "shown";
-        row-key-field: "id";
-        current-key <=> root.tile-key;
-        multi-select: root.multiple;
+        x <- 208px; y <- 74px; width <- 340px; height <- 130px;
+        accessible-name <- "任务网格";
+        cell-width <- 156px; cell-height <- 40px; spacing <- 6px;
+        row-visible-field <- "shown";
+        row-key-field <- "id";
+        current-key <-> root.tile-key;
+        multi-select <- root.multiple;
         selection-changed(n) => {
             root.grid-selection = n;
             root.grid-selection-events += 1;
         }
         for record in root.records : ItemDelegate {
-            text: record.label;
+            text <- record.label;
             clicked => { root.opened += 1; }
         }
     }
     status := Text {
-        x: 12px; y: 222px;
-        text: "列表 " + root.current + "/" + root.list-selection
+        x <- 12px; y <- 222px;
+        text <- "列表 " + root.current + "/" + root.list-selection
             + " · 网格 " + root.tile-key + "/" + root.grid-selection
             + " · 打开 " + root.opened;
-        color: #b8caff;
+        color <- #b8caff;
     }
     select-all := Button {
-        x: 208px; y: 38px; width: 120px; height: 28px;
-        text: "全选";
-        enabled: root.multiple;
+        x <- 208px; y <- 38px; width <- 120px; height <- 28px;
+        text <- "全选";
+        enabled <- root.multiple;
         clicked => { root.select-all-records(); }
     }
     clear := Button {
-        x: 342px; y: 38px; width: 120px; height: 28px;
-        text: "清空选区";
-        enabled: root.multiple && (entries.has-selection || tiles.has-selection);
+        x <- 342px; y <- 38px; width <- 120px; height <- 28px;
+        text <- "清空选区";
+        enabled <- root.multiple && (entries.has-selection || tiles.has-selection);
         clicked => { root.clear-selections(); }
     }
 }
 
 export component ListSelectionTransferDemo inherits Window {
-    title: "XRack · 跨视图选区";
-    width: 720px; height: 340px;
+    title <- "XRack · 跨视图选区";
+    width <- 720px; height <- 340px;
     in-out property <[LookupRecord]> records: [
         LookupRecord { id: 10, label: "规划", alias: "", shown: true },
         LookupRecord { id: 20, label: "草稿", alias: "", shown: false },
@@ -702,10 +702,10 @@ export component ListSelectionTransferDemo inherits Window {
         LookupRecord { id: 40, label: "审阅", alias: "", shown: true },
     ];
     in-out property <int> source-current: -1;
-    out property <[int]> source-keys: source-view.selected-keys;
-    out property <[int]> list-keys: list-view.selected-keys;
-    out property <[int]> grid-keys: grid-view.selected-keys;
-    out property <int> source-count: source-view.selection-count;
+    out property <[int]> source-keys <- source-view.selected-keys;
+    out property <[int]> list-keys <- list-view.selected-keys;
+    out property <[int]> grid-keys <- grid-view.selected-keys;
+    out property <int> source-count <- source-view.selection-count;
     out property <int> source-events: 0;
     out property <[int]> saved: [];
     callback choose([int]);
@@ -729,52 +729,52 @@ export component ListSelectionTransferDemo inherits Window {
     }
 
     VerticalLayout {
-        padding: 18px; spacing: 10px;
+        padding <- 18px; spacing <- 10px;
         HorizontalLayout {
-            spacing: 8px;
+            spacing <- 8px;
             choose-batch := Button {
-                text: "选中规划和草稿"; clicked => { root.choose([10, 20]); }
+                text <- "选中规划和草稿"; clicked => { root.choose([10, 20]); }
             }
             transfer-batch := Button {
-                text: "同步到其他视图"; clicked => { root.transfer(); }
+                text <- "同步到其他视图"; clicked => { root.transfer(); }
             }
             clear-batch := Button {
-                text: "清空选区"; clicked => { root.clear(); }
+                text <- "清空选区"; clicked => { root.clear(); }
             }
             restore-batch := Button {
-                text: "恢复已保存选区"; enabled: !Model.is-empty(root.saved);
+                text <- "恢复已保存选区"; enabled <- !Model.is-empty(root.saved);
                 clicked => { root.restore(); }
             }
         }
         HorizontalLayout {
-            spacing: 12px;
+            spacing <- 12px;
             VerticalLayout {
-                Label { text: "标准列表 · 隐藏草稿"; }
+                Label { text <- "标准列表 · 隐藏草稿"; }
                 source-view := StandardListView {
-                    model: root.records; text-role: "label"; row-key-field: "id";
-                    row-visible-field: "shown"; row-height: 36px; multi-select: true;
-                    current-key <=> root.source-current;
+                    model <- root.records; text-role <- "label"; row-key-field <- "id";
+                    row-visible-field <- "shown"; row-height <- 36px; multi-select <- true;
+                    current-key <-> root.source-current;
                     selection-changed(n) => { root.source-events += 1; }
                 }
             }
             VerticalLayout {
-                Label { text: "自定义列表"; }
+                Label { text <- "自定义列表"; }
                 list-view := ListView {
-                    row-key-field: "id"; row-height: 36px; multi-select: true;
-                    for row in root.records : ItemDelegate { text: row.label; }
+                    row-key-field <- "id"; row-height <- 36px; multi-select <- true;
+                    for row in root.records : ItemDelegate { text <- row.label; }
                 }
             }
             VerticalLayout {
-                Label { text: "网格"; }
+                Label { text <- "网格"; }
                 grid-view := GridView {
-                    row-key-field: "id"; cell-width: 98px; cell-height: 36px;
-                    spacing: 4px; multi-select: true;
-                    for row in root.records : ItemDelegate { text: row.label; }
+                    row-key-field <- "id"; cell-width <- 98px; cell-height <- 36px;
+                    spacing <- 4px; multi-select <- true;
+                    for row in root.records : ItemDelegate { text <- row.label; }
                 }
             }
         }
         batch-status := Label {
-            text: "选区 · 标准列表 " + Model.count(root.source-keys)
+            text <- "选区 · 标准列表 " + Model.count(root.source-keys)
                 + " · 自定义列表 " + Model.count(root.list-keys)
                 + " · 网格 " + Model.count(root.grid-keys);
         }
@@ -782,88 +782,88 @@ export component ListSelectionTransferDemo inherits Window {
 }
 
 export component ScrollBarsDemo inherits Window {
-    title: "XRack · External scroll controls";
-    width: 352px;
-    height: 272px;
-    background: #f0f3fa;
+    title <- "XRack · External scroll controls";
+    width <- 352px;
+    height <- 272px;
+    background <- #f0f3fa;
     in-out property <length> horizontal: 0px;
     in-out property <length> vertical: 0px;
     in property <length> canvas-height: 588px;
     in property <bool> scroll-enabled: true;
     in property <bool> canvas-visible: true;
-    in property <Orientation> readout-axis: once Orientation.vertical;
-    in property <ScrollSnapMode> snap-mode: once ScrollSnapMode.none;
+    in property <Orientation> readout-axis: Orientation.vertical;
+    in property <ScrollSnapMode> snap-mode: ScrollSnapMode.none;
     out property <int> scrolls: 0;
-    out property <float> vertical-position: vertical-bar.position;
-    out property <float> vertical-size: vertical-bar.size;
-    out property <float> readout-position: readout.position;
-    out property <float> readout-size: readout.size;
+    out property <float> vertical-position <- vertical-bar.position;
+    out property <float> vertical-size <- vertical-bar.size;
+    out property <float> readout-position <- readout.position;
+    out property <float> readout-size <- readout.size;
     out property <float> last-scroll-position: 0;
 
     canvas := ScrollView {
-        x: 16px; y: 16px; width: 260px; height: 196px;
-        content-width: 520px; content-height: root.canvas-height;
-        content-x <=> root.horizontal;
-        content-y <=> root.vertical;
-        enabled: root.scroll-enabled;
-        visible: root.canvas-visible;
-        horizontal-scroll-bar-policy: always-off;
-        vertical-scroll-bar-policy: always-off;
+        x <- 16px; y <- 16px; width <- 260px; height <- 196px;
+        content-width <- 520px; content-height <- root.canvas-height;
+        content-x <-> root.horizontal;
+        content-y <-> root.vertical;
+        enabled <- root.scroll-enabled;
+        visible <- root.canvas-visible;
+        horizontal-scroll-bar-policy <- always-off;
+        vertical-scroll-bar-policy <- always-off;
         scrolled() => {
             root.scrolls += 1;
             root.last-scroll-position = vertical-bar.position;
         }
-        Rectangle { width: 100%; height: 100%; background: #263750; }
-        Rectangle { x: 24px; y: 24px; width: 88px; height: 64px; background: #59bf94; }
-        Rectangle { x: 340px; y: 24px; width: 88px; height: 64px; background: #efab56; }
+        Rectangle { width <- 100%; height <- 100%; background <- #263750; }
+        Rectangle { x <- 24px; y <- 24px; width <- 88px; height <- 64px; background <- #59bf94; }
+        Rectangle { x <- 340px; y <- 24px; width <- 88px; height <- 64px; background <- #efab56; }
         if root.canvas-height >= 496px : Rectangle {
-            x: 24px; y: 432px; width: 88px; height: 64px; background: #72a9ee;
+            x <- 24px; y <- 432px; width <- 88px; height <- 64px; background <- #72a9ee;
         }
     }
     vertical-bar := ScrollBar {
-        target: canvas;
-        snap-mode: root.snap-mode;
-        step-size: 0.3;
-        x: 288px; y: 16px; width: 14px; height: 196px;
-        accessible-name: "Canvas vertical scroll";
+        target <- canvas;
+        snap-mode <- root.snap-mode;
+        step-size <- 0.3;
+        x <- 288px; y <- 16px; width <- 14px; height <- 196px;
+        accessible-name <- "Canvas vertical scroll";
     }
     vertical-indicator := ScrollIndicator {
-        target: canvas;
-        x: 316px; y: 16px; width: 8px; height: 196px;
+        target <- canvas;
+        x <- 316px; y <- 16px; width <- 8px; height <- 196px;
     }
     horizontal-bar := ScrollBar {
-        target: canvas;
-        orientation: Orientation.horizontal;
-        x: 16px; y: 224px; width: 260px; height: 14px;
-        accessible-name: "Canvas horizontal scroll";
+        target <- canvas;
+        orientation <- Orientation.horizontal;
+        x <- 16px; y <- 224px; width <- 260px; height <- 14px;
+        accessible-name <- "Canvas horizontal scroll";
     }
     readout := ScrollIndicator {
-        target: canvas;
-        orientation: root.readout-axis;
-        policy: always-off;
+        target <- canvas;
+        orientation <- root.readout-axis;
+        policy <- always-off;
     }
     ScrollIndicator {
-        position: readout.position;
-        size: readout.size;
-        orientation: Orientation.horizontal;
-        visible: root.canvas-visible;
-        x: 16px; y: 248px; width: 260px; height: 8px;
+        position <- readout.position;
+        size <- readout.size;
+        orientation <- Orientation.horizontal;
+        visible <- root.canvas-visible;
+        x <- 16px; y <- 248px; width <- 260px; height <- 8px;
     }
 }
 
 export component StandaloneScrollDemo inherits Window {
-    title: "XRack · Standalone scroll controls";
-    width: 352px;
-    height: 272px;
-    background: #f0f3fa;
+    title <- "XRack · Standalone scroll controls";
+    width <- 352px;
+    height <- 272px;
+    background <- #f0f3fa;
     in-out property <float> offset: 0;
     in property <float> thumb-size: 0.25;
     in property <bool> interactive: true;
-    in property <ScrollSnapMode> snap-mode: once ScrollSnapMode.none;
+    in property <ScrollSnapMode> snap-mode: ScrollSnapMode.none;
     in-out property <bool> snap-on-release: false;
-    out property <float> position: bar.position;
-    out property <float> size: bar.size;
-    out property <float> horizontal-position: horizontal-bar.position;
+    out property <float> position <- bar.position;
+    out property <float> size <- bar.size;
+    out property <float> horizontal-position <- horizontal-bar.position;
     out property <int> changes: 0;
     out property <float> last-change: 0;
     out property <float> before-jump: 0;
@@ -886,49 +886,49 @@ export component StandaloneScrollDemo inherits Window {
     step-back() => { bar.decrease(); }
 
     Rectangle {
-        x: 16px; y: 16px; width: 260px; height: 196px; clip: true;
+        x <- 16px; y <- 16px; width <- 260px; height <- 196px; clip <- true;
         canvas := Rectangle {
-            x: -horizontal-bar.position * 520px;
-            y: -bar.position * 784px;
-            width: 520px; height: 784px; background: #263750;
-            Rectangle { x: 24px; y: 24px; width: 88px; height: 64px; background: #59bf94; }
-            Rectangle { x: 24px; y: 612px; width: 88px; height: 64px; background: #72a9ee; }
-            Rectangle { x: 340px; y: 24px; width: 88px; height: 64px; background: #efab56; }
+            x <- -horizontal-bar.position * 520px;
+            y <- -bar.position * 784px;
+            width <- 520px; height <- 784px; background <- #263750;
+            Rectangle { x <- 24px; y <- 24px; width <- 88px; height <- 64px; background <- #59bf94; }
+            Rectangle { x <- 24px; y <- 612px; width <- 88px; height <- 64px; background <- #72a9ee; }
+            Rectangle { x <- 340px; y <- 24px; width <- 88px; height <- 64px; background <- #efab56; }
         }
     }
     bar := ScrollBar {
-        x: 288px; y: 16px; width: 14px; height: 196px;
-        position <=> root.offset;
-        size: root.thumb-size;
-        minimum-size: 0.4;
-        step-size: 0.125;
-        snap-mode: root.snap-on-release ? ScrollSnapMode.on-release : root.snap-mode;
-        interactive: root.interactive;
-        accessible-name: "Canvas position";
+        x <- 288px; y <- 16px; width <- 14px; height <- 196px;
+        position <-> root.offset;
+        size <- root.thumb-size;
+        minimum-size <- 0.4;
+        step-size <- 0.125;
+        snap-mode <- root.snap-on-release ? ScrollSnapMode.on-release : root.snap-mode;
+        interactive <- root.interactive;
+        accessible-name <- "Canvas position";
         changed(value) => { root.changes += 1; root.last-change = value; }
     }
     indicator := ScrollIndicator {
-        x: 316px; y: 16px; width: 8px; height: 196px;
-        position: bar.position;
-        size: bar.size;
+        x <- 316px; y <- 16px; width <- 8px; height <- 196px;
+        position <- bar.position;
+        size <- bar.size;
     }
     horizontal-bar := ScrollBar {
-        x: 16px; y: 224px; width: 260px; height: 14px;
-        orientation: horizontal;
-        size: 0.5;
-        accessible-name: "Canvas horizontal position";
+        x <- 16px; y <- 224px; width <- 260px; height <- 14px;
+        orientation <- horizontal;
+        size <- 0.5;
+        accessible-name <- "Canvas horizontal position";
     }
     snap-toggle := CheckBox {
-        x: 16px; y: 242px; width: 172px; height: 24px;
-        checked <=> root.snap-on-release;
-        text: "Snap on release";
+        x <- 16px; y <- 242px; width <- 172px; height <- 24px;
+        checked <-> root.snap-on-release;
+        text <- "Snap on release";
     }
 }
 
 export component ScrollFocusDemo inherits Window {
-    title: "XRack · Scroll to focus";
-    width: 380px; height: 224px;
-    background: #f0f3fa;
+    title <- "XRack · Scroll to focus";
+    width <- 380px; height <- 224px;
+    background <- #f0f3fa;
     in-out property <bool> reveal: true;
     in-out property <bool> rtl: false;
     in-out property <length> outer-x: 0px;
@@ -936,130 +936,130 @@ export component ScrollFocusDemo inherits Window {
     in-out property <length> inner-x: 0px;
     in-out property <length> inner-y: 0px;
 
-    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+    layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
     jump := Button {
-        x: 20px; y: 14px; width: 200px; height: 28px;
-        text: "Focus last field"; clicked => { last-field.focus(); }
+        x <- 20px; y <- 14px; width <- 200px; height <- 28px;
+        text <- "Focus last field"; clicked => { last-field.focus(); }
     }
     outer := ScrollView {
-        x: 20px; y: 56px; width: 200px; height: 120px;
-        reserve-scroll-bar-space: true;
-        auto-reveal-focus: root.reveal;
-        content-width: 330px; content-height: 340px;
-        content-x <=> root.outer-x;
-        content-y <=> root.outer-y;
+        x <- 20px; y <- 56px; width <- 200px; height <- 120px;
+        reserve-scroll-bar-space <- true;
+        auto-reveal-focus <- root.reveal;
+        content-width <- 330px; content-height <- 340px;
+        content-x <-> root.outer-x;
+        content-y <-> root.outer-y;
         Rectangle {
-            width: 100%; height: 100%;
-            background: #263750;
+            width <- 100%; height <- 100%;
+            background <- #263750;
         }
         first-field := LineEdit {
-            x: 12px; y: 10px; width: 120px; height: 24px;
-            text: "First";
+            x <- 12px; y <- 10px; width <- 120px; height <- 24px;
+            text <- "First";
         }
         disabled-field := LineEdit {
-            x: 70px; y: 158px; width: 116px; height: 24px;
-            text: "Unavailable"; enabled: false;
+            x <- 70px; y <- 158px; width <- 116px; height <- 24px;
+            text <- "Unavailable"; enabled <- false;
         }
         inner := ScrollView {
-            x: 100px; y: 220px; width: 160px; height: 90px;
-            reserve-scroll-bar-space: true;
-            auto-reveal-focus: root.reveal;
-            content-width: 240px; content-height: 220px;
-            content-x <=> root.inner-x;
-            content-y <=> root.inner-y;
-            Rectangle { width: 100%; height: 100%; background: #365472; }
+            x <- 100px; y <- 220px; width <- 160px; height <- 90px;
+            reserve-scroll-bar-space <- true;
+            auto-reveal-focus <- root.reveal;
+            content-width <- 240px; content-height <- 220px;
+            content-x <-> root.inner-x;
+            content-y <-> root.inner-y;
+            Rectangle { width <- 100%; height <- 100%; background <- #365472; }
             last-field := LineEdit {
-                x: 130px; y: 150px; width: 80px; height: 24px;
-                text: "Last";
+                x <- 130px; y <- 150px; width <- 80px; height <- 24px;
+                text <- "Last";
             }
         }
     }
     after := Button {
-        x: 20px; y: 190px; width: 200px; height: 24px;
-        text: "After the form";
+        x <- 20px; y <- 190px; width <- 200px; height <- 24px;
+        text <- "After the form";
     }
     locate := Button {
-        x: 236px; y: 14px; width: 132px; height: 28px;
-        text: "Center last field";
+        x <- 236px; y <- 14px; width <- 132px; height <- 28px;
+        text <- "Center last field";
         clicked => { outer.position-view-at-child(last-field, center, center); }
     }
     reveal-toggle := CheckBox {
-        x: 236px; y: 56px; width: 132px; height: 24px;
-        text: "Auto reveal"; checked <=> root.reveal;
+        x <- 236px; y <- 56px; width <- 132px; height <- 24px;
+        text <- "Auto reveal"; checked <-> root.reveal;
     }
     direction-toggle := CheckBox {
-        x: 236px; y: 88px; width: 132px; height: 24px;
-        text: "RTL"; checked <=> root.rtl;
+        x <- 236px; y <- 88px; width <- 132px; height <- 24px;
+        text <- "RTL"; checked <-> root.rtl;
     }
     focus-readout := Label {
-        x: 236px; y: 126px; width: 134px; height: 24px;
-        text: last-field.has-focus ? "Last field" : first-field.has-focus ? "First field" : "";
+        x <- 236px; y <- 126px; width <- 134px; height <- 24px;
+        text <- last-field.has-focus ? "Last field" : first-field.has-focus ? "First field" : "";
     }
 }
 
 export component ScrollGuttersDemo inherits Window {
-    title: "XRack · ScrollView gutters";
-    width: 370px; height: 200px;
-    background: #f0f3fa;
+    title <- "XRack · ScrollView gutters";
+    width <- 370px; height <- 200px;
+    background <- #f0f3fa;
     in-out property <bool> reserve: true;
     in-out property <bool> rtl: false;
     in-out property <bool> fixed-width: true;
     in-out property <bool> overflow-y: true;
-    out property <length> viewport-width: view.visible-width;
-    out property <length> viewport-height: view.visible-height;
-    out property <length> vertical-gutter: view.effective-scroll-bar-width;
-    out property <length> horizontal-gutter: view.effective-scroll-bar-height;
+    out property <length> viewport-width <- view.visible-width;
+    out property <length> viewport-height <- view.visible-height;
+    out property <length> vertical-gutter <- view.effective-scroll-bar-width;
+    out property <length> horizontal-gutter <- view.effective-scroll-bar-height;
 
-    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
-    Rectangle { x: 20px; y: 20px; width: 180px; height: 108px; background: #dde8f1; }
+    layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+    Rectangle { x <- 20px; y <- 20px; width <- 180px; height <- 108px; background <- #dde8f1; }
     view := ScrollView {
-        x: 20px; y: 20px; width: 180px; height: 108px;
-        reserve-scroll-bar-space: root.reserve;
-        content-width: root.fixed-width ? 176px : 0px;
-        content-height: root.overflow-y ? 150px : 60px;
+        x <- 20px; y <- 20px; width <- 180px; height <- 108px;
+        reserve-scroll-bar-space <- root.reserve;
+        content-width <- root.fixed-width ? 176px : 0px;
+        content-height <- root.overflow-y ? 150px : 60px;
         Rectangle {
-            width: 100%; height: 100%;
-            background: #263750;
+            width <- 100%; height <- 100%;
+            background <- #263750;
         }
         HorizontalLayout {
-            y: 8px; width: 100%; height: 24px; alignment: end;
-            edge-button := Button { width: 72px; text: "At edge"; }
+            y <- 8px; width <- 100%; height <- 24px; alignment <- end;
+            edge-button := Button { width <- 72px; text <- "At edge"; }
         }
         Rectangle {
-            x: 8px; y: 42px; width: 52px; height: 12px; background: #59bf94;
+            x <- 8px; y <- 42px; width <- 52px; height <- 12px; background <- #59bf94;
         }
     }
 
     gutter-toggle := CheckBox {
-        x: 220px; y: 20px; width: 140px; height: 22px;
-        text: "Reserve gutters"; checked <=> root.reserve;
+        x <- 220px; y <- 20px; width <- 140px; height <- 22px;
+        text <- "Reserve gutters"; checked <-> root.reserve;
     }
     rtl-toggle := CheckBox {
-        x: 220px; y: 48px; width: 140px; height: 22px;
-        text: "RTL"; checked <=> root.rtl;
+        x <- 220px; y <- 48px; width <- 140px; height <- 22px;
+        text <- "RTL"; checked <-> root.rtl;
     }
     width-toggle := CheckBox {
-        x: 220px; y: 76px; width: 140px; height: 22px;
-        text: "Fixed content width"; checked <=> root.fixed-width;
+        x <- 220px; y <- 76px; width <- 140px; height <- 22px;
+        text <- "Fixed content width"; checked <-> root.fixed-width;
     }
     height-toggle := CheckBox {
-        x: 220px; y: 104px; width: 140px; height: 22px;
-        text: "Vertical overflow"; checked <=> root.overflow-y;
+        x <- 220px; y <- 104px; width <- 140px; height <- 22px;
+        text <- "Vertical overflow"; checked <-> root.overflow-y;
     }
     viewport-readout := Label {
-        x: 20px; y: 144px; width: 330px; height: 20px;
-        text: "Viewport: " + Math.round(root.viewport-width / 1px) + " × " + Math.round(root.viewport-height / 1px) + " px";
+        x <- 20px; y <- 144px; width <- 330px; height <- 20px;
+        text <- "Viewport: " + Math.round(root.viewport-width / 1px) + " × " + Math.round(root.viewport-height / 1px) + " px";
     }
     bar-readout := Label {
-        x: 20px; y: 166px; width: 330px; height: 20px;
-        text: "Scrollbars: " + Math.round(root.vertical-gutter / 1px) + " / " + Math.round(root.horizontal-gutter / 1px) + " px";
+        x <- 20px; y <- 166px; width <- 330px; height <- 20px;
+        text <- "Scrollbars: " + Math.round(root.vertical-gutter / 1px) + " / " + Math.round(root.horizontal-gutter / 1px) + " px";
     }
 }
 
 export component ScrollVisualMetricsDemo inherits Window {
-    title: "XRack · Custom scroll controls";
-    width: 332px; height: 216px;
-    background: #f0f3fa;
+    title <- "XRack · Custom scroll controls";
+    width <- 332px; height <- 216px;
+    background <- #f0f3fa;
     in-out property <bool> rtl: false;
     in-out property <bool> show-canvas: true;
     in-out property <bool> fade-idle: false;
@@ -1071,94 +1071,94 @@ export component ScrollVisualMetricsDemo inherits Window {
         bar.increase();
         canvas.scroll-by(-20px, 0px);
     }
-    out property <bool> bar-active: bar.active;
-    out property <bool> bar-pressed: bar.pressed;
-    out property <bool> bar-hovered: bar.hovered;
-    out property <float> thumb-position: bar.visual-position;
-    out property <float> thumb-size: bar.visual-size;
-    out property <float> indicator-position: indicator.visual-position;
-    out property <float> indicator-size: indicator.visual-size;
-    out property <float> logical-position: bar.position;
-    out property <float> logical-size: bar.size;
+    out property <bool> bar-active <- bar.active;
+    out property <bool> bar-pressed <- bar.pressed;
+    out property <bool> bar-hovered <- bar.hovered;
+    out property <float> thumb-position <- bar.visual-position;
+    out property <float> thumb-size <- bar.visual-size;
+    out property <float> indicator-position <- indicator.visual-position;
+    out property <float> indicator-size <- indicator.visual-size;
+    out property <float> logical-position <- bar.position;
+    out property <float> logical-size <- bar.size;
 
-    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+    layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
     canvas := ScrollView {
-        x: 16px; y: 16px; width: 200px; height: 60px; visible: root.show-canvas;
-        content-width: root.canvas-width; content-height: 60px;
-        content-x <=> root.offset;
-        horizontal-scroll-bar-policy: always-off;
-        Rectangle { width: 1000px; height: 60px; background: #263750; }
+        x <- 16px; y <- 16px; width <- 200px; height <- 60px; visible <- root.show-canvas;
+        content-width <- root.canvas-width; content-height <- 60px;
+        content-x <-> root.offset;
+        horizontal-scroll-bar-policy <- always-off;
+        Rectangle { width <- 1000px; height <- 60px; background <- #263750; }
         for index in 10 : Rectangle {
-            x: index * 100px + 12px; y: 10px; width: 70px; height: 40px;
-            background: index % 2 == 0 ? #59bf94 : #72a9ee;
+            x <- index * 100px + 12px; y <- 10px; width <- 70px; height <- 40px;
+            background <- index % 2 == 0 ? #59bf94 : #72a9ee;
         }
     }
     bar := ScrollBar {
-        target: canvas; orientation: horizontal;
-        x: 16px; y: 82px; width: 200px; height: 12px;
-        minimum-size: 40%; step-size: 0.1;
-        accessible-name: "Canvas scroll";
-        ScrollTrack { background: #263750; border-radius: 6px; }
+        target <- canvas; orientation <- horizontal;
+        x <- 16px; y <- 82px; width <- 200px; height <- 12px;
+        minimum-size <- 40%; step-size <- 0.1;
+        accessible-name <- "Canvas scroll";
+        ScrollTrack { background <- #263750; border-radius <- 6px; }
         bar-thumb := ScrollThumb {
-            background: bar.pressed ? #72a9ee : #59bf94;
-            opacity: root.fade-idle && !bar.active ? 0.0 : 1.0;
+            background <- bar.pressed ? #72a9ee : #59bf94;
+            opacity <- root.fade-idle && !bar.active ? 0.0 : 1.0;
             animate opacity { duration: 140ms; }
-            border-radius: 6px;
+            border-radius <- 6px;
             HorizontalLayout {
-                width: 100%; height: 100%;
-                alignment: center; cross-axis-alignment: center;
-                Rectangle { width: 16px; height: 4px; background: #263750; border-radius: 2px; }
+                width <- 100%; height <- 100%;
+                alignment <- center; cross-axis-alignment <- center;
+                Rectangle { width <- 16px; height <- 4px; background <- #263750; border-radius <- 2px; }
             }
         }
     }
     indicator := ScrollIndicator {
-        x: 16px; y: 100px; width: 200px; height: 8px;
-        orientation: horizontal;
-        position: 20%; size: 20%; minimum-size: 30%;
-        indicator-thumb := ScrollThumb { background: #e5854f; border-radius: 4px; }
+        x <- 16px; y <- 100px; width <- 200px; height <- 8px;
+        orientation <- horizontal;
+        position <- 20%; size <- 20%; minimum-size <- 30%;
+        indicator-thumb := ScrollThumb { background <- #e5854f; border-radius <- 4px; }
     }
-    direction-toggle := CheckBox { text: "RTL"; x: 233px; y: 18px; width: 80px; height: 24px; checked <=> root.rtl; }
-    canvas-toggle := CheckBox { text: "Canvas"; x: 233px; y: 50px; width: 90px; height: 24px; checked <=> root.show-canvas; }
-    fade-toggle := CheckBox { text: "Fade"; x: 233px; y: 82px; width: 80px; height: 24px; checked <=> root.fade-idle; }
+    direction-toggle := CheckBox { text <- "RTL"; x <- 233px; y <- 18px; width <- 80px; height <- 24px; checked <-> root.rtl; }
+    canvas-toggle := CheckBox { text <- "Canvas"; x <- 233px; y <- 50px; width <- 90px; height <- 24px; checked <-> root.show-canvas; }
+    fade-toggle := CheckBox { text <- "Fade"; x <- 233px; y <- 82px; width <- 80px; height <- 24px; checked <-> root.fade-idle; }
     state-readout := Label {
-        x: 233px; y: 109px; width: 90px; height: 18px;
-        text: bar.pressed ? "Pressed" : bar.hovered ? "Hovered" : bar.active ? "Scrolling" : "Idle";
+        x <- 233px; y <- 109px; width <- 90px; height <- 18px;
+        text <- bar.pressed ? "Pressed" : bar.hovered ? "Hovered" : bar.active ? "Scrolling" : "Idle";
     }
     bar-readout := Label {
-        x: 16px; y: 124px; width: 300px; height: 24px;
-        text: "Bar: " + Math.round(bar.visual-position * 100) + "% + " + Math.round(bar.visual-size * 100) + "%";
+        x <- 16px; y <- 124px; width <- 300px; height <- 24px;
+        text <- "Bar: " + Math.round(bar.visual-position * 100) + "% + " + Math.round(bar.visual-size * 100) + "%";
     }
     indicator-readout := Label {
-        x: 16px; y: 148px; width: 300px; height: 24px;
-        text: "Indicator: " + Math.round(indicator.visual-position * 100) + "% + " + Math.round(indicator.visual-size * 100) + "%";
+        x <- 16px; y <- 148px; width <- 300px; height <- 24px;
+        text <- "Indicator: " + Math.round(indicator.visual-position * 100) + "% + " + Math.round(indicator.visual-size * 100) + "%";
     }
     back := Button {
-        x: 16px; y: 180px; width: 93px; height: 26px;
-        text: "− 1 step"; clicked => { bar.decrease(); }
+        x <- 16px; y <- 180px; width <- 93px; height <- 26px;
+        text <- "− 1 step"; clicked => { bar.decrease(); }
     }
     forward := Button {
-        x: 116px; y: 180px; width: 93px; height: 26px;
-        text: "+ 1 step"; clicked => { bar.increase(); }
+        x <- 116px; y <- 180px; width <- 93px; height <- 26px;
+        text <- "+ 1 step"; clicked => { bar.increase(); }
     }
     queue := Button {
-        x: 216px; y: 180px; width: 100px; height: 26px;
-        text: "Batch move"; clicked => { root.queued-steps(); }
+        x <- 216px; y <- 180px; width <- 100px; height <- 26px;
+        text <- "Batch move"; clicked => { root.queued-steps(); }
     }
 }
 
 export component ScrollPositionDemo inherits Window {
-    title: "XRack · 滚动定位";
-    width: 540px; height: 300px;
-    background: #182331;
+    title <- "XRack · 滚动定位";
+    width <- 540px; height <- 300px;
+    background <- #182331;
     in-out property <int> count: 10000;
     in-out property <int> current: 0;
     in-out property <length> records-target: 0px;
     in property <bool> preview-enabled: true;
     in property <bool> pan-enabled: true;
-    out property <length> preview-x: preview.content-x;
-    out property <length> preview-y: preview.content-y;
-    out property <length> records-y: records.content-y;
-    out property <length> records-height: records.visible-height;
+    out property <length> preview-x <- preview.content-x;
+    out property <length> preview-y <- preview.content-y;
+    out property <length> records-y <- records.content-y;
+    out property <length> records-height <- records.visible-height;
     out property <int> preview-scrolls: 0;
     out property <int> records-scrolls: 0;
     out property <length> last-preview-x: 0px;
@@ -1175,121 +1175,121 @@ export component ScrollPositionDemo inherits Window {
         records.position-view-at-index(row, end);
     }
 
-    Text { x: 16px; y: 12px; text: "滚动定位 · 虚拟列表"; font-size: 20px; }
+    Text { x <- 16px; y <- 12px; text <- "滚动定位 · 虚拟列表"; font-size <- 20px; }
     preview := ScrollView {
-        x: 16px; y: 50px; width: 160px; height: 120px;
-        content-width: 320px; content-height: 240px;
-        enabled: root.preview-enabled;
-        mouse-drag-pan-enabled: root.pan-enabled;
+        x <- 16px; y <- 50px; width <- 160px; height <- 120px;
+        content-width <- 320px; content-height <- 240px;
+        enabled <- root.preview-enabled;
+        mouse-drag-pan-enabled <- root.pan-enabled;
         scrolled() => {
             root.preview-scrolls += 1;
             root.last-preview-x = self.content-x;
             root.last-preview-y = self.content-y;
         }
-        Rectangle { width: 320px; height: 240px; background: #263750; }
+        Rectangle { width <- 320px; height <- 240px; background <- #263750; }
         Rectangle {
-            x: 96px; y: 60px; width: 88px; height: 80px;
-            background: root.preview-scrolls > 0 ? #49b989 : #4687da;
+            x <- 96px; y <- 60px; width <- 88px; height <- 80px;
+            background <- root.preview-scrolls > 0 ? #49b989 : #4687da;
         }
-        Text { x: 104px; y: 66px; text: "目标区"; }
+        Text { x <- 104px; y <- 66px; text <- "目标区"; }
         canvas-button := Button {
-            x: 10px; y: 8px; width: 82px; height: 28px;
-            text: "点或拖";
+            x <- 10px; y <- 8px; width <- 82px; height <- 28px;
+            text <- "点或拖";
             clicked() => { root.preview-clicks += 1; }
         }
     }
     records := ListView {
-        x: 190px; y: 50px; width: 334px; height: 120px; row-height: 24px;
-        current-index <=> root.current;
-        content-y <=> root.records-target;
-        mouse-drag-pan-enabled: root.pan-enabled;
+        x <- 190px; y <- 50px; width <- 334px; height <- 120px; row-height <- 24px;
+        current-index <-> root.current;
+        content-y <-> root.records-target;
+        mouse-drag-pan-enabled <- root.pan-enabled;
         scrolled() => { root.records-scrolls += 1; }
         for item in root.count : Rectangle {
-            background: item % 2 == 0 ? #263750 : #304565;
-            Text { x: 12px; y: 2px; text: "记录 " + item; }
+            background <- item % 2 == 0 ? #263750 : #304565;
+            Text { x <- 12px; y <- 2px; text <- "记录 " + item; }
         }
     }
     preview-offset := Text {
-        x: 16px; y: 184px;
-        text: "画布 " + (root.preview-x / 1px) + ", " + (root.preview-y / 1px);
+        x <- 16px; y <- 184px;
+        text <- "画布 " + (root.preview-x / 1px) + ", " + (root.preview-y / 1px);
     }
     list-offset := Text {
-        x: 190px; y: 184px;
-        text: "列表 Y " + (root.records-y / 1px);
+        x <- 190px; y <- 184px;
+        text <- "列表 Y " + (root.records-y / 1px);
     }
     jump := Button {
-        x: 16px; y: 226px; width: 202px; height: 40px;
-        text: "定位到第 9000 行";
+        x <- 16px; y <- 226px; width <- 202px; height <- 40px;
+        text <- "定位到第 9000 行";
         clicked() => {
             root.scroll-preview(96px, 60px);
             root.position(9000, ScrollAlignment.center);
         }
     }
     reset := Button {
-        x: 228px; y: 226px; width: 136px; height: 40px;
-        text: "回到起点";
+        x <- 228px; y <- 226px; width <- 136px; height <- 40px;
+        text <- "回到起点";
         clicked() => { root.scroll-preview(0px, 0px); root.position(0, beginning); }
     }
     scroll-status := Text {
-        x: 16px; y: 274px; color: #acc0db;
-        text: "用户滚动  画布 " + root.preview-scrolls + " · 列表 " + root.records-scrolls + " · 点击 " + root.preview-clicks;
+        x <- 16px; y <- 274px; color <- #acc0db;
+        text <- "用户滚动  画布 " + root.preview-scrolls + " · 列表 " + root.records-scrolls + " · 点击 " + root.preview-clicks;
     }
 }
 
 export component LinkedScrollDemo inherits Window {
-    title: "XRack · 双向滚动绑定";
-    width: 540px; height: 270px;
-    background: #182331;
+    title <- "XRack · 双向滚动绑定";
+    width <- 540px; height <- 270px;
+    background <- #182331;
     in-out property <length> vertical: -36px;
     in-out property <length> horizontal: 0px;
     in property <length> small-content: 180px;
-    out property <length> large-y: large.content-y;
-    out property <length> small-y: small.content-y;
-    out property <length> follower-y: follower.content-y;
+    out property <length> large-y <- large.content-y;
+    out property <length> small-y <- small.content-y;
+    out property <length> follower-y <- follower.content-y;
     out property <int> large-scrolls: 0;
     out property <int> small-scrolls: 0;
     out property <length> large-writeback: 0px;
 
-    Text { x: 16px; y: 12px; text: "目标 Y " + (root.vertical / 1px); font-size: 20px; }
-    Text { x: 16px; y: 45px; text: "共享位置 · 大画布"; }
-    Text { x: 190px; y: 45px; text: "共享位置 · 小画布"; }
-    Text { x: 364px; y: 45px; text: "单向跟随"; }
+    Text { x <- 16px; y <- 12px; text <- "目标 Y " + (root.vertical / 1px); font-size <- 20px; }
+    Text { x <- 16px; y <- 45px; text <- "共享位置 · 大画布"; }
+    Text { x <- 190px; y <- 45px; text <- "共享位置 · 小画布"; }
+    Text { x <- 364px; y <- 45px; text <- "单向跟随"; }
 
     large := ScrollView {
-        x: 16px; y: 75px; width: 160px; height: 120px;
-        content-width: 320px; content-height: 420px;
-        content-x <=> root.horizontal;
-        content-y <=> root.vertical;
+        x <- 16px; y <- 75px; width <- 160px; height <- 120px;
+        content-width <- 320px; content-height <- 420px;
+        content-x <-> root.horizontal;
+        content-y <-> root.vertical;
         scrolled() => {
             root.large-scrolls += 1;
             root.large-writeback = root.vertical;
         }
-        Rectangle { width: 100%; height: 100%; background: #263750; }
-        Rectangle { x: 45px; y: 95px; width: 80px; height: 40px; background: #49b989; }
+        Rectangle { width <- 100%; height <- 100%; background <- #263750; }
+        Rectangle { x <- 45px; y <- 95px; width <- 80px; height <- 40px; background <- #49b989; }
     }
     small := ScrollView {
-        x: 190px; y: 75px; width: 160px; height: 120px;
-        content-height: root.small-content;
-        content-y <=> root.vertical;
+        x <- 190px; y <- 75px; width <- 160px; height <- 120px;
+        content-height <- root.small-content;
+        content-y <-> root.vertical;
         scrolled() => { root.small-scrolls += 1; }
-        Rectangle { width: 100%; height: 100%; background: #304565; }
-        Rectangle { x: 35px; y: 75px; width: 80px; height: 40px; background: #efab56; }
+        Rectangle { width <- 100%; height <- 100%; background <- #304565; }
+        Rectangle { x <- 35px; y <- 75px; width <- 80px; height <- 40px; background <- #efab56; }
     }
     follower := ScrollView {
-        x: 364px; y: 75px; width: 160px; height: 120px;
-        content-height: 420px;
-        content-y: root.vertical;
-        Rectangle { width: 100%; height: 100%; background: #263750; }
-        Rectangle { x: 35px; y: 95px; width: 80px; height: 40px; background: #4687da; }
+        x <- 364px; y <- 75px; width <- 160px; height <- 120px;
+        content-height <- 420px;
+        content-y <- root.vertical;
+        Rectangle { width <- 100%; height <- 100%; background <- #263750; }
+        Rectangle { x <- 35px; y <- 95px; width <- 80px; height <- 40px; background <- #4687da; }
     }
     move-small := Button {
-        x: 16px; y: 216px; width: 158px; height: 36px;
-        text: "小画布定位到 40";
+        x <- 16px; y <- 216px; width <- 158px; height <- 36px;
+        text <- "小画布定位到 40";
         clicked() => { small.scroll-to(0px, 40px); }
     }
     set-deep := Button {
-        x: 190px; y: 216px; width: 160px; height: 36px;
-        text: "共享目标设为 -170";
+        x <- 190px; y <- 216px; width <- 160px; height <- 36px;
+        text <- "共享目标设为 -170";
         clicked() => { root.vertical = -170px; }
     }
 }
@@ -1300,14 +1300,14 @@ export struct DirectoryItem {
 }
 
 export component AnchoredListDemo inherits Window {
-    title: "XRack · 保留虚拟列表阅读位置";
-    width: 560px; height: 274px;
-    background: #182331;
+    title <- "XRack · 保留虚拟列表阅读位置";
+    width <- 560px; height <- 274px;
+    background <- #182331;
     in-out property <[DirectoryItem]> records: [];
     in property <length> anchor-row-height: 32px;
     in property <bool> anchor-comparison: false;
-    out property <length> anchored-y: anchored.content-y;
-    out property <length> plain-y: plain.content-y;
+    out property <length> anchored-y <- anchored.content-y;
+    out property <length> plain-y <- plain.content-y;
     out property <int> scroll-events: 0;
     callback prepend();
     callback reverse-order();
@@ -1317,44 +1317,44 @@ export component AnchoredListDemo inherits Window {
         plain.position-view-at-index(index, beginning);
     }
 
-    Text { x: 16px; y: 12px; text: "保留可见记录"; font-size: 18px; }
-    Text { x: 288px; y: 12px; text: "保留像素偏移"; font-size: 18px; }
+    Text { x <- 16px; y <- 12px; text <- "保留可见记录"; font-size <- 18px; }
+    Text { x <- 288px; y <- 12px; text <- "保留像素偏移"; font-size <- 18px; }
     anchored := ListView {
-        x: 16px; y: 48px; width: 256px; height: 160px; row-height: root.anchor-row-height;
-        preserve-scroll-anchor: true;
+        x <- 16px; y <- 48px; width <- 256px; height <- 160px; row-height <- root.anchor-row-height;
+        preserve-scroll-anchor <- true;
         scrolled() => { root.scroll-events += 1; }
         for item in root.records : Rectangle {
-            background: item.rank % 2 == 0 ? #263750 : #405971;
-            Text { x: 12px; y: 5px; text: item.label; }
+            background <- item.rank % 2 == 0 ? #263750 : #405971;
+            Text { x <- 12px; y <- 5px; text <- item.label; }
         }
     }
     plain := StandardListView {
-        x: 288px; y: 48px; width: 256px; height: 160px; row-height: 32px;
-        preserve-scroll-anchor: root.anchor-comparison;
-        model: root.records; text-role: "label";
+        x <- 288px; y <- 48px; width <- 256px; height <- 160px; row-height <- 32px;
+        preserve-scroll-anchor <- root.anchor-comparison;
+        model <- root.records; text-role <- "label";
     }
     jump := Button {
-        x: 16px; y: 224px; width: 162px; height: 34px;
-        text: "定位到记录 12000";
+        x <- 16px; y <- 224px; width <- 162px; height <- 34px;
+        text <- "定位到记录 12000";
         clicked() => { root.position(12000); }
     }
     prepend := Button {
-        x: 190px; y: 224px; width: 156px; height: 34px;
-        text: "在开头插入";
+        x <- 190px; y <- 224px; width <- 156px; height <- 34px;
+        text <- "在开头插入";
         clicked() => { root.prepend(); }
     }
     reverse := Button {
-        x: 358px; y: 224px; width: 156px; height: 34px;
-        text: "反转排序";
+        x <- 358px; y <- 224px; width <- 156px; height <- 34px;
+        text <- "反转排序";
         clicked() => { root.reverse-order(); }
     }
 }
 
 export component StandardListDemo inherits Window {
-    title: "XRack · 默认行列表";
-    width: 584px;
-    height: 355px;
-    background: #182331;
+    title <- "XRack · 默认行列表";
+    width <- 584px;
+    height <- 355px;
+    background <- #182331;
 
     in-out property <[string]> categories: ["全部", "最近", "收藏"];
     in-out property <[DirectoryItem]> records: [
@@ -1367,45 +1367,45 @@ export component StandardListDemo inherits Window {
     in-out property <int> jump-index: 2;
     out property <int> selections: 0;
 
-    Text { x: 20px; y: 16px; text: "默认行 · 字符串与记录模型"; font-size: 22px; }
+    Text { x <- 20px; y <- 16px; text <- "默认行 · 字符串与记录模型"; font-size <- 22px; }
     categories-view := StandardListView {
-        x: 20px; y: 58px; width: 146px; height: 222px;
-        accessible-name: "分类";
-        model: root.categories;
-        current-index <=> root.category;
-        row-height: 34px;
+        x <- 20px; y <- 58px; width <- 146px; height <- 222px;
+        accessible-name <- "分类";
+        model <- root.categories;
+        current-index <-> root.category;
+        row-height <- 34px;
     }
     records-view := StandardListView {
-        x: 180px; y: 58px; width: 384px; height: 222px;
-        accessible-name: "目录";
-        model: root.records;
-        text-role: "label";
-        current-index <=> root.current;
-        row-height: 32px;
+        x <- 180px; y <- 58px; width <- 384px; height <- 222px;
+        accessible-name <- "目录";
+        model <- root.records;
+        text-role <- "label";
+        current-index <-> root.current;
+        row-height <- 32px;
         changed(index) => { root.selections += 1; }
     }
     jump := Button {
-        x: 20px; y: 294px; width: 146px; height: 40px;
-        text: "跳到目标行";
+        x <- 20px; y <- 294px; width <- 146px; height <- 40px;
+        text <- "跳到目标行";
         clicked() => { root.current = root.jump-index; }
     }
-    Text { x: 180px; y: 305px; text: "当前索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color: #acc0db; }
+    Text { x <- 180px; y <- 305px; text <- "当前索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color <- #acc0db; }
 }
 component GridCard inherits Rectangle {
     in property <string> label;
     in property <int> rank;
     property <bool> pinned: false;
 
-    accessible-name: root.label;
-    background: root.rank % 2 == 0 ? #263750 : #304565;
-    Text { x: 10px; y: 8px; text: root.label; color: #edf3ff; }
-    pin := CheckBox { x: 10px; y: 42px; text: "收藏"; checked <=> root.pinned; }
+    accessible-name <- root.label;
+    background <- root.rank % 2 == 0 ? #263750 : #304565;
+    Text { x <- 10px; y <- 8px; text <- root.label; color <- #edf3ff; }
+    pin := CheckBox { x <- 10px; y <- 42px; text <- "收藏"; checked <-> root.pinned; }
 }
 
 export component GridDemo inherits Window {
-    title: "XRack · 虚拟网格";
-    width: 620px; height: 420px;
-    background: #182331;
+    title <- "XRack · 虚拟网格";
+    width <- 620px; height <- 420px;
+    background <- #182331;
 
     in-out property <[DirectoryItem]> records: [
         DirectoryItem { label: "条目 00000", rank: 0 },
@@ -1417,21 +1417,21 @@ export component GridDemo inherits Window {
     out property <int> selections: 0;
 
     VerticalLayout {
-        padding: 16px; spacing: 8px;
-        Text { text: "虚拟网格 · 调整窗口宽度重新排列"; font-size: 20px; }
+        padding <- 16px; spacing <- 8px;
+        Text { text <- "虚拟网格 · 调整窗口宽度重新排列"; font-size <- 20px; }
         tiles := GridView {
-            preserve-scroll-anchor: root.preserve-viewport;
-            accessible-name: "资源网格";
-            cell-width: 128px; cell-height: 84px; spacing: 8px;
-            current-index <=> root.current;
+            preserve-scroll-anchor <- root.preserve-viewport;
+            accessible-name <- "资源网格";
+            cell-width <- 128px; cell-height <- 84px; spacing <- 8px;
+            current-index <-> root.current;
             changed(index) => { root.selections += 1; }
-            for item in root.records : GridCard { label: item.label; rank: item.rank; }
+            for item in root.records : GridCard { label <- item.label; rank <- item.rank; }
         }
         HorizontalLayout {
-            spacing: 12px;
-            cross-axis-alignment: center;
-            jump-grid := Button { text: "跳到目标"; clicked() => { root.current = root.jump-index; } }
-            Text { text: "索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color: #acc0db; }
+            spacing <- 12px;
+            cross-axis-alignment <- center;
+            jump-grid := Button { text <- "跳到目标"; clicked() => { root.current = root.jump-index; } }
+            Text { text <- "索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color <- #acc0db; }
         }
     }
 }
@@ -1445,50 +1445,50 @@ export struct ViewCountRow {
 
 component EmptyTableContent inherits Rectangle {
     callback recovered();
-    Text { x: 12px; y: 12px; text: "没有匹配的表格记录"; }
+    Text { x <- 12px; y <- 12px; text <- "没有匹配的表格记录"; }
     retry-table := Button {
-        x: 12px; y: 45px; width: 136px; text: "清除筛选";
+        x <- 12px; y <- 45px; width <- 136px; text <- "清除筛选";
         clicked => { root.recovered(); }
     }
 }
 
 export component ViewCountsDemo inherits Window {
-    title: "XRack · 数据视图行数";
-    width: 780px; height: 422px;
-    background: #182331;
+    title <- "XRack · 数据视图行数";
+    width <- 780px; height <- 422px;
+    background <- #182331;
 
     in property <[ViewCountRow]> sample: [
         ViewCountRow { key: 1, parent: -1, title: "文档", shown: true },
         ViewCountRow { key: 2, parent: 1, title: "计划", shown: false },
         ViewCountRow { key: 3, parent: -1, title: "图片", shown: true },
     ];
-    in-out property <[ViewCountRow]> records: once root.sample;
+    in-out property <[ViewCountRow]> records: root.sample;
     in-out property <string> query: "";
     in-out property <int> selected-key: -1;
     out property <int> selection-events: 0;
     out property <int> row-activations: 0;
     out property <int> retry-count: 0;
-    out property <int> search-source-count: search.source-row-count;
-    out property <int> search-match-count: search.row-count;
+    out property <int> search-source-count <- search.source-row-count;
+    out property <int> search-match-count <- search.row-count;
     callback select-source(int);
     select-source(row) => { summary.select-source-index(row); }
     pure callback table-query() -> string;
     table-query => { root.query }
 
     HorizontalLayout {
-        x: 12px; y: 8px; width: 756px; height: 34px; spacing: 8px;
+        x <- 12px; y <- 8px; width <- 756px; height <- 34px; spacing <- 8px;
         hide := Button {
-            text: "筛选无结果";
+            text <- "筛选无结果";
             clicked => {
                 root.records = [ViewCountRow { key: 1, parent: -1, title: "文档", shown: false }];
                 root.query = "missing";
             }
         }
-        clear := Button { text: "清空模型"; clicked => { root.records = []; } }
-        restore := Button { text: "恢复"; clicked => { root.records = root.sample; root.query = ""; } }
-        expand := Button { text: "展开文档"; clicked => { folders.expand(1); } }
+        clear := Button { text <- "清空模型"; clicked => { root.records = []; } }
+        restore := Button { text <- "恢复"; clicked => { root.records = root.sample; root.query = ""; } }
+        expand := Button { text <- "展开文档"; clicked => { folders.expand(1); } }
         reorder := Button {
-            text: "交换记录";
+            text <- "交换记录";
             clicked => {
                 root.records = [
                     ViewCountRow { key: 3, parent: -1, title: "图片", shown: true },
@@ -1497,116 +1497,116 @@ export component ViewCountsDemo inherits Window {
                 ];
             }
         }
-        selection-label := Label { text: "选中键 " + root.selected-key; }
+        selection-label := Label { text <- "选中键 " + root.selected-key; }
     }
 
     entries := ListView {
-        row-key-field: "key";
-        current-key <=> root.selected-key;
+        row-key-field <- "key";
+        current-key <-> root.selected-key;
         changed(index) => { root.selection-events += 1; }
-        x: 12px; y: 72px; width: 242px; height: 132px;
-        row-height: 28px; row-visible-field: "shown";
+        x <- 12px; y <- 72px; width <- 242px; height <- 132px;
+        row-height <- 28px; row-visible-field <- "shown";
         for row in root.records : ItemDelegate {
-            text: row.title;
+            text <- row.title;
             clicked => { root.row-activations += 1; }
         }
         list-empty := EmptyState {
             retry-list := Button {
-                x: 12px; y: 50px; width: 128px;
-                text: "恢复记录";
+                x <- 12px; y <- 50px; width <- 128px;
+                text <- "恢复记录";
                 clicked => { root.records = root.sample; root.query = ""; root.retry-count += 1; }
             }
             empty-note := Text {
-                x: 12px; y: 12px;
-                text: entries.source-row-count == 0 ? "暂无记录" : "没有符合条件的记录";
+                x <- 12px; y <- 12px;
+                text <- entries.source-row-count == 0 ? "暂无记录" : "没有符合条件的记录";
             }
         }
     }
     list-count := Text {
-        x: 12px; y: 49px;
-        text: "列表 " + entries.row-count + " / " + entries.source-row-count;
+        x <- 12px; y <- 49px;
+        text <- "列表 " + entries.row-count + " / " + entries.source-row-count;
     }
     tiles := GridView {
-        row-key-field: "key";
-        current-key <=> root.selected-key;
+        row-key-field <- "key";
+        current-key <-> root.selected-key;
         changed(index) => { root.selection-events += 1; }
-        x: 268px; y: 72px; width: 242px; height: 132px;
-        cell-width: 108px; cell-height: 32px; row-visible-field: "shown";
-        for row in root.records : Text { text: row.title; }
+        x <- 268px; y <- 72px; width <- 242px; height <- 132px;
+        cell-width <- 108px; cell-height <- 32px; row-visible-field <- "shown";
+        for row in root.records : Text { text <- row.title; }
         grid-empty := EmptyState {
-            Text { x: 12px; y: 12px; text: "网格无结果"; }
+            Text { x <- 12px; y <- 12px; text <- "网格无结果"; }
         }
     }
     grid-count := Text {
-        x: 268px; y: 49px;
-        text: "网格 " + tiles.row-count + " / " + tiles.source-row-count;
+        x <- 268px; y <- 49px;
+        text <- "网格 " + tiles.row-count + " / " + tiles.source-row-count;
     }
     summary := StandardListView {
-        row-key-field: "key";
-        current-key <=> root.selected-key;
+        row-key-field <- "key";
+        current-key <-> root.selected-key;
         changed(index) => { root.selection-events += 1; }
-        x: 524px; y: 72px; width: 242px; height: 132px;
-        model: root.records; text-role: "title"; row-visible-field: "shown";
+        x <- 524px; y <- 72px; width <- 242px; height <- 132px;
+        model <- root.records; text-role <- "title"; row-visible-field <- "shown";
         standard-empty := EmptyState {
-            Text { x: 12px; y: 12px; text: "标准列表无结果"; }
+            Text { x <- 12px; y <- 12px; text <- "标准列表无结果"; }
         }
     }
     standard-count := Text {
-        x: 524px; y: 49px;
-        text: "标准列表 " + summary.row-count + " / " + summary.source-row-count;
+        x <- 524px; y <- 49px;
+        text <- "标准列表 " + summary.row-count + " / " + summary.source-row-count;
     }
 
     table := TableView {
-        x: 12px; y: 246px; width: 242px; height: 158px;
-        row-height: 28px; row-visible-field: "shown";
-        TableColumn { title: "名称"; width: 220px; }
-        for row in root.records : TableRow { Text { text: row.title; } }
+        x <- 12px; y <- 246px; width <- 242px; height <- 158px;
+        row-height <- 28px; row-visible-field <- "shown";
+        TableColumn { title <- "名称"; width <- 220px; }
+        for row in root.records : TableRow { Text { text <- row.title; } }
         table-empty := EmptyState {
-            Text { x: 12px; y: 12px; text: "表格无结果"; }
+            Text { x <- 12px; y <- 12px; text <- "表格无结果"; }
         }
     }
     table-count := Text {
-        x: 12px; y: 223px;
-        text: "表格 " + table.row-count + " / " + table.source-row-count;
+        x <- 12px; y <- 223px;
+        text <- "表格 " + table.row-count + " / " + table.source-row-count;
     }
     search := StandardTableView {
-        x: 268px; y: 246px; width: 242px; height: 158px;
-        model: root.records; filter-field: "title"; filter-text: root.table-query();
-        TableColumn { title: "名称"; field: "title"; width: 220px; }
+        x <- 268px; y <- 246px; width <- 242px; height <- 158px;
+        model <- root.records; filter-field <- "title"; filter-text <- root.table-query();
+        TableColumn { title <- "名称"; field <- "title"; width <- 220px; }
         search-empty := EmptyState {
             recover-table := EmptyTableContent {
-                width: 100%; height: 100%;
+                width <- 100%; height <- 100%;
                 recovered => { root.query = ""; root.records = root.sample; root.retry-count += 1; }
             }
         }
     }
     search-count := Text {
-        x: 268px; y: 223px;
-        text: "搜索表格 " + search.row-count + " / " + search.source-row-count;
+        x <- 268px; y <- 223px;
+        text <- "搜索表格 " + search.row-count + " / " + search.source-row-count;
     }
     folders := TreeView {
-        x: 524px; y: 246px; width: 242px; height: 158px;
-        row-height: 28px; filter-field: "title"; filter-text: root.query;
+        x <- 524px; y <- 246px; width <- 242px; height <- 158px;
+        row-height <- 28px; filter-field <- "title"; filter-text <- root.query;
         for row in root.records : TreeRow {
-            key: row.key;
-            parent-key: row.parent;
-            Text { text: row.title; }
+            key <- row.key;
+            parent-key <- row.parent;
+            Text { text <- row.title; }
         }
         tree-empty := EmptyState {
-            Text { x: 12px; y: 12px; text: "目录无结果"; }
+            Text { x <- 12px; y <- 12px; text <- "目录无结果"; }
         }
     }
     tree-count := Text {
-        x: 524px; y: 223px;
-        text: "目录 " + folders.row-count + " / " + folders.source-row-count;
+        x <- 524px; y <- 223px;
+        text <- "目录 " + folders.row-count + " / " + folders.source-row-count;
     }
 }
 
 
 export component KeyNavigationDemo inherits Window {
-    title: "XRack · 按键定位记录";
-    width: 480px; height: 260px;
-    background: #182331;
+    title <- "XRack · 按键定位记录";
+    width <- 480px; height <- 260px;
+    background <- #182331;
     in-out property <[ViewCountRow]> records: [
         ViewCountRow { key: 10, parent: -1, title: "启动界面", shown: true },
         ViewCountRow { key: 20, parent: -1, title: "载入配置", shown: true },
@@ -1622,7 +1622,7 @@ export component KeyNavigationDemo inherits Window {
         ViewCountRow { key: 120, parent: -1, title: "准备就绪", shown: true },
     ];
     in-out property <int> selected-key: -1;
-    out property <int> selection-position: entries.selected-view-index;
+    out property <int> selection-position <- entries.selected-view-index;
     out property <int> changed-count: 0;
 
     callback select-target(int);
@@ -1631,22 +1631,22 @@ export component KeyNavigationDemo inherits Window {
     reveal-target(key) => { entries.position-view-at-key(key, beginning); }
 
     HorizontalLayout {
-        x: 12px; y: 12px; width: 456px; height: 34px; spacing: 10px;
-        select-button := Button { text: "选中记录 80"; clicked => { root.select-target(80); } }
-        reveal-button := Button { text: "滚动到记录 80"; clicked => { root.reveal-target(80); } }
+        x <- 12px; y <- 12px; width <- 456px; height <- 34px; spacing <- 10px;
+        select-button := Button { text <- "选中记录 80"; clicked => { root.select-target(80); } }
+        reveal-button := Button { text <- "滚动到记录 80"; clicked => { root.reveal-target(80); } }
     }
     status := Label {
-        x: 12px; y: 56px;
-        text: "选中键 " + root.selected-key + " · 显示索引 " + root.selection-position;
+        x <- 12px; y <- 56px;
+        text <- "选中键 " + root.selected-key + " · 显示索引 " + root.selection-position;
     }
     entries := ListView {
-        x: 12px; y: 90px; width: 456px; height: 154px; row-height: 28px;
-        row-key-field: "key";
-        row-visible-field: "shown";
-        current-key <=> root.selected-key;
+        x <- 12px; y <- 90px; width <- 456px; height <- 154px; row-height <- 28px;
+        row-key-field <- "key";
+        row-visible-field <- "shown";
+        current-key <-> root.selected-key;
         changed(index) => { root.changed-count += 1; }
         for row in root.records : ItemDelegate {
-            text: row.key + " · " + row.title;
+            text <- row.key + " · " + row.title;
         }
     }
 }

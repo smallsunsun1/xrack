@@ -50,11 +50,11 @@ EXTENSION_FILES = (
     "preview-queue.js",
 )
 SAMPLE = """export component PreviewProbe inherits Window {
-    width: 120px;
-    height: 80px;
-    in-out property <int> count: once 21;
-    out property <int> doubled: count * 2;
-    Text { text: "Count: " + root.doubled; }
+    width <- 120px;
+    height <- 80px;
+    in-out property <int> count: 21;
+    out property <int> doubled <- count * 2;
+    Text { text <- "Count: " + root.doubled; }
 }
 """
 SERVER_TARGETS = {

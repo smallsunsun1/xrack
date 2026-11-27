@@ -12,8 +12,8 @@ struct GeometryActor {
 }
 
 export component ParametricGeometryDemo inherits Window {
-    title: "XRack · Parametric geometry";
-    width: 600px; height: 372px; background: #192330;
+    title <- "XRack · Parametric geometry";
+    width <- 600px; height <- 372px; background <- #192330;
 
     in-out property <string> shape: "torus";
     in-out property <float> radius: 0.9;
@@ -24,12 +24,12 @@ export component ParametricGeometryDemo inherits Window {
     in-out property <bool> duplicate: false;
     in-out property <bool> auxiliary: false;
 
-    property <ShapeSpec> input: ShapeSpec {
+    property <ShapeSpec> input <- ShapeSpec {
         shape: root.shape, width: 2.2, height: 2.25, depth: 0.75,
         radius: root.radius, tube-radius: 0.23, top-radius: root.shape == "cylinder" ? root.radius : 0.0,
         segments: root.resolution, rings: 14, capped: true,
     };
-    property <GeometryActor> defaults: GeometryActor {
+    property <GeometryActor> defaults <- GeometryActor {
         id: "", geometry: ShapeSpec { shape: "", ..root.input },
         material: ShapeFinish {
             base-color: #fff, unlit: true, depth-draw-mode: root.auxiliary ? "opaque-prepass" : "opaque-only",
@@ -38,7 +38,7 @@ export component ParametricGeometryDemo inherits Window {
         color: #fff, visible: true, casts-shadow: false, camera-kind: "", camera-height: 4,
         instance-of: "",
     };
-    property <[GeometryActor]> world: [
+    property <[GeometryActor]> world <- [
         GeometryActor { id: "eye", camera-kind: "orthographic", z: 8, ..root.defaults },
         GeometryActor {
             id: "piece", geometry: root.input, x: root.offset, color: root.tint, casts-shadow: true, ..root.defaults
@@ -52,29 +52,29 @@ export component ParametricGeometryDemo inherits Window {
             visible: root.shadows, z: -1.9, ..root.defaults
         }
     ];
-    out property <string> center-hit: Scene3D.pick-camera(
+    out property <string> center-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(600px, 320px), Point2D.new(300px, 160px));
-    out property <string> ring-hit: Scene3D.pick-camera(
+    out property <string> ring-hit <- Scene3D.pick-camera(
         root.world, "eye", Point2D.new(600px, 320px), Point2D.new(372px, 160px));
 
-    out property <hit3d> center-sweep: Scene3D.sphere-cast(
+    out property <hit3d> center-sweep <- Scene3D.sphere-cast(
         root.world, Point3D.new(0, 0, 5), Vector3D.new(0, 0, -1), 8, 0.18);
 
     SceneView3D {
-        width: 600px; height: 320px; model: root.world; camera: "eye";
-        scene-background: #22334b; shadows: root.shadows; shadow-map-size: 256;
-        light-yaw: -45; light-elevation: 25; ambient-intensity: 0.4;
-        temporal-aa: root.auxiliary; temporal-aa-mode: "motion-vectors";
+        width <- 600px; height <- 320px; model <- root.world; camera <- "eye";
+        scene-background <- #22334b; shadows <- root.shadows; shadow-map-size <- 256;
+        light-yaw <- -45; light-elevation <- 25; ambient-intensity <- 0.4;
+        temporal-aa <- root.auxiliary; temporal-aa-mode <- "motion-vectors";
     }
     shape-button := Button {
-        x: 12px; y: 334px; width: 130px; height: 30px; text: root.shape;
+        x <- 12px; y <- 334px; width <- 130px; height <- 30px; text <- root.shape;
         clicked => {
             root.shape = root.shape == "torus" ? "sphere" : root.shape == "sphere" ? "capsule"
                 : root.shape == "capsule" ? "cylinder" : root.shape == "cylinder" ? "cone"
                 : root.shape == "cone" ? "box" : root.shape == "box" ? "plane" : "torus";
         }
     }
-    Slider { x: 158px; y: 334px; width: 155px; height: 30px; minimum: 0.5; maximum: 1.1; value <=> root.radius; }
-    CheckBox { x: 335px; y: 334px; width: 109px; text: "Shadows"; checked <=> root.shadows; }
-    CheckBox { x: 457px; y: 334px; width: 130px; text: "Instance"; checked <=> root.duplicate; }
+    Slider { x <- 158px; y <- 334px; width <- 155px; height <- 30px; minimum <- 0.5; maximum <- 1.1; value <-> root.radius; }
+    CheckBox { x <- 335px; y <- 334px; width <- 109px; text <- "Shadows"; checked <-> root.shadows; }
+    CheckBox { x <- 457px; y <- 334px; width <- 130px; text <- "Instance"; checked <-> root.duplicate; }
 }

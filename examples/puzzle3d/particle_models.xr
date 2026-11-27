@@ -15,9 +15,9 @@ struct ModelParticleActor {
 }
 
 export component ParticleModelsDemo inherits Window {
-    title: "XRack · 模型粒子";
-    width: 670px; height: 457px;
-    background: #182333;
+    title <- "XRack · 模型粒子";
+    width <- 670px; height <- 457px;
+    background <- #182333;
 
     in-out property <float> time: 0.7;
     in-out property <bool> imported: false;
@@ -29,8 +29,8 @@ export component ParticleModelsDemo inherits Window {
     in-out property <float> spacing: 0;
     in-out property <float> motion-scale: 1;
 
-    property <string> prototype: root.imported ? @mesh-url("models/amber.glb") : "primitive:box";
-    property <ModelEmitter> first: ModelEmitter {
+    property <string> prototype <- root.imported ? @mesh-url("models/amber.glb") : "primitive:box";
+    property <ModelEmitter> first <- ModelEmitter {
         position: Point3D.new(-1.65, 0.35, 0.5), color: root.translucent ? #5cd9ff70 : #5cd9ffff,
         size: 1.15, end-size: 1.02, lifetime: 4,
         bursts: [ParticleBurst { time: 0, count: root.population }], fade-in: 0, fade-out: 0, seed: 23,
@@ -41,7 +41,7 @@ export component ParticleModelsDemo inherits Window {
         emitter-extents: Vector3D.new(root.spacing, root.spacing * 0.7, root.spacing * 0.9),
         velocity: Vector3D.new(0.8 * root.motion-scale, 0, 0),
     };
-    property <[ModelEmitter]> emitters: [
+    property <[ModelEmitter]> emitters <- [
         ModelEmitter { ..root.first },
         ModelEmitter {
             position: Point3D.new(1.5, 0.35, 0.5),
@@ -54,7 +54,7 @@ export component ParticleModelsDemo inherits Window {
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #ffffff, camera-kind: "", camera-height: 6, visible: true,
     };
-    property <[ModelParticleActor]> model: [
+    property <[ModelParticleActor]> model <- [
         ModelParticleActor { id: "eye", mesh: "", z: 10, camera-kind: "orthographic", ..root.defaults },
         ModelParticleActor {
             id: "backdrop", x: 0, y: 0, z: -3, scale-x: 20, scale-y: 9, scale-z: 0.1,
@@ -67,24 +67,24 @@ export component ParticleModelsDemo inherits Window {
         },
     ];
     SceneView3D {
-        width: 670px; height: 352px; model: root.model;
-        camera: "eye"; scene-background: #101925;
-        environment-intensity: 1.0;
-        ambient-intensity: 0.35;
-        light-yaw: root.light-angle; light-elevation: 47;
-        particle-emitters: root.emitters; particle-time: root.time;
-        cache-rendering: true;
+        width <- 670px; height <- 352px; model <- root.model;
+        camera <- "eye"; scene-background <- #101925;
+        environment-intensity <- 1.0;
+        ambient-intensity <- 0.35;
+        light-yaw <- root.light-angle; light-elevation <- 47;
+        particle-emitters <- root.emitters; particle-time <- root.time;
+        cache-rendering <- true;
     }
     prototype-toggle := Button {
-        x: 18px; y: 365px; width: 110px; height: 36px;
-        text: root.imported ? "glTF 网格" : "立方体";
+        x <- 18px; y <- 365px; width <- 110px; height <- 36px;
+        text <- root.imported ? "glTF 网格" : "立方体";
         clicked => { root.imported = !root.imported; }
     }
-    spin-toggle := CheckBox { x: 143px; y: 365px; width: 86px; height: 36px; text: "旋转"; checked <=> root.spin; }
-    cover-toggle := CheckBox { x: 242px; y: 365px; width: 87px; height: 36px; text: "遮挡"; checked <=> root.cover; }
-    fade-toggle := CheckBox { x: 346px; y: 365px; width: 104px; height: 36px; text: "半透明"; checked <=> root.translucent; }
-    Label { x: 477px; y: 365px; width: 50px; height: 36px; text: "光照"; }
-    light-slider := Slider { x: 525px; y: 366px; width: 123px; height: 35px; minimum: -160; maximum: 160; value <=> root.light-angle; }
-    Label { x: 18px; y: 413px; width: 52px; height: 36px; text: "时间"; }
-    time-slider := Slider { x: 72px; y: 413px; width: 576px; height: 35px; minimum: 0; maximum: 2.1; value <=> root.time; }
+    spin-toggle := CheckBox { x <- 143px; y <- 365px; width <- 86px; height <- 36px; text <- "旋转"; checked <-> root.spin; }
+    cover-toggle := CheckBox { x <- 242px; y <- 365px; width <- 87px; height <- 36px; text <- "遮挡"; checked <-> root.cover; }
+    fade-toggle := CheckBox { x <- 346px; y <- 365px; width <- 104px; height <- 36px; text <- "半透明"; checked <-> root.translucent; }
+    Label { x <- 477px; y <- 365px; width <- 50px; height <- 36px; text <- "光照"; }
+    light-slider := Slider { x <- 525px; y <- 366px; width <- 123px; height <- 35px; minimum <- -160; maximum <- 160; value <-> root.light-angle; }
+    Label { x <- 18px; y <- 413px; width <- 52px; height <- 36px; text <- "时间"; }
+    time-slider := Slider { x <- 72px; y <- 413px; width <- 576px; height <- 35px; minimum <- 0; maximum <- 2.1; value <-> root.time; }
 }

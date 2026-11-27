@@ -1,33 +1,33 @@
 export component TableWorkload inherits Window {
-    width: 640px;
-    height: 360px;
+    width <- 640px;
+    height <- 360px;
     in-out property <[string]> records: [];
     out property <int> ticks: 0;
     out property <int> heartbeats: 0;
 
     refresh := Timer {
-        interval: 50;
+        interval <- 50;
         triggered => { root.ticks += 1; }
     }
     heartbeat := Timer {
-        interval: 20;
-        repeat: true;
+        interval <- 20;
+        repeat <- true;
         triggered => { root.heartbeats += 1; }
     }
     VerticalLayout {
         start := Button {
-            text: "Schedule update";
+            text <- "Schedule update";
             clicked => { refresh.start(); heartbeat.start(); editor.focus(); }
         }
         editor := TextInput {}
         grid := TableView {
-            row-height: 28px;
-            selection-target: cells;
-            TableColumn { title: "Device"; width: 260px; }
-            TableColumn { title: "Location"; width: 180px; }
+            row-height <- 28px;
+            selection-target <- cells;
+            TableColumn { title <- "Device"; width <- 260px; }
+            TableColumn { title <- "Location"; width <- 180px; }
             for item in root.records : TableRow {
-                TableCell { text <=> item; }
-                TableCell { text: "Warehouse"; }
+                TableCell { text <-> item; }
+                TableCell { text <- "Warehouse"; }
             }
         }
     }

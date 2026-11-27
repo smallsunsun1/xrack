@@ -63,8 +63,8 @@
             <pre aria-label="XRack counter source"><code><span class="keyword">export component</span> Counter <span class="keyword">inherits</span> Window {
   <span class="keyword">in-out property</span> &lt;int&gt; count: <span class="number">0</span>;
   VerticalLayout {
-    Text { text: <span class="string">"Count: "</span> + root.count; }
-    Text { text: <span class="string">"Doubled: "</span> + root.count * <span class="number">2</span>; }
+    Text { text &lt;- <span class="string">"Count: "</span> + root.count; }
+    Text { text &lt;- <span class="string">"Doubled: "</span> + root.count * <span class="number">2</span>; }
     increment := Button {
       text: <span class="string">"Increment"</span>;
       clicked =&gt; { root.count += <span class="number">1</span>; }

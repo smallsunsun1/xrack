@@ -3,6 +3,6 @@
 // CHECK: "xr.control_link"{{.*}}name = "checked"
 export component Toggle inherits Window {
     property <bool> flag: false;
-    out property <bool> selected: root.flag;
-    CheckBox { checked <=> root.flag; }
+    out property <bool> selected <- root.flag;
+    CheckBox { checked <-> root.flag; }
 }

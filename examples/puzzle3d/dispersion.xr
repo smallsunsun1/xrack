@@ -15,10 +15,10 @@ struct DispersionLamp {
 }
 
 export component DispersionDemo inherits Window {
-    title: "XRack · 体积色散";
-    width: 460px;
-    height: 278px;
-    background: #141d29;
+    title <- "XRack · 体积色散";
+    width <- 460px;
+    height <- 278px;
+    background <- #141d29;
 
     in-out property <bool> dispersed: true;
     in-out property <bool> show-glass: true;
@@ -30,7 +30,7 @@ export component DispersionDemo inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
         camera-kind: "", camera-height: 5.6,
     };
-    property <[DispersionObject]> scene: [
+    property <[DispersionObject]> scene <- [
         DispersionObject {
             id: "stripes", mesh: @mesh-url("models/dispersion-stripes.gltf"),
             z: -4, scale-x: 5.1, scale-y: 2.3, ..root.defaults
@@ -47,16 +47,16 @@ export component DispersionDemo inherits Window {
     property <[DispersionLamp]> lamps;
 
     SceneView3D {
-        width: 460px;
-        height: 224px;
-        model: root.scene;
-        camera: "eye";
-        lights: root.lamps;
-        ambient-intensity: 0;
-        multisampling: root.msaa;
-        scene-background: #253346;
+        width <- 460px;
+        height <- 224px;
+        model <- root.scene;
+        camera <- "eye";
+        lights <- root.lamps;
+        ambient-intensity <- 0;
+        multisampling <- root.msaa;
+        scene-background <- #253346;
     }
-    dispersion-toggle := CheckBox { x: 20px; y: 230px; width: 110px; height: 40px; text: "体积色散"; checked <=> root.dispersed; }
-    Label { x: 155px; y: 230px; width: 80px; height: 40px; text: "倾斜角度"; }
-    angle := Slider { x: 249px; y: 230px; width: 179px; height: 40px; minimum: 0; maximum: 45; value <=> root.yaw; }
+    dispersion-toggle := CheckBox { x <- 20px; y <- 230px; width <- 110px; height <- 40px; text <- "体积色散"; checked <-> root.dispersed; }
+    Label { x <- 155px; y <- 230px; width <- 80px; height <- 40px; text <- "倾斜角度"; }
+    angle := Slider { x <- 249px; y <- 230px; width <- 179px; height <- 40px; minimum <- 0; maximum <- 45; value <-> root.yaw; }
 }

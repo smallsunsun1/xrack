@@ -1,113 +1,113 @@
 export component MediaDemo inherits Window {
     in-out property <bool> crop: false;
-    property <image> landscape: @image-url("assets/landscape.png");
-    property <image> orbit: @image-url("assets/orbit.svg");
+    property <image> landscape <- @image-url("assets/landscape.png");
+    property <image> orbit <- @image-url("assets/orbit.svg");
 
-    title: "XRack 图像与路径";
-    width: 660px;
-    height: 376px;
-    background: #101725;
+    title <- "XRack 图像与路径";
+    width <- 660px;
+    height <- 376px;
+    background <- #101725;
 
     Text {
-        x: 28px; y: 20px;
-        text: "XRack 图像与路径";
-        font-size: 26px;
-        color: #f0f4ff;
+        x <- 28px; y <- 20px;
+        text <- "XRack 图像与路径";
+        font-size <- 26px;
+        color <- #f0f4ff;
     }
     Text {
-        x: 28px; y: 58px;
-        text: "PNG 纹理 · SVG 图像 · 矢量轮廓";
-        font-size: 15px;
-        color: #a7b6ce;
+        x <- 28px; y <- 58px;
+        text <- "PNG 纹理 · SVG 图像 · 矢量轮廓";
+        font-size <- 15px;
+        color <- #a7b6ce;
     }
 
     Rectangle {
-        x: 28px; y: 96px; width: 190px; height: 184px;
-        background: #1d293d;
-        border-radius: 14px;
+        x <- 28px; y <- 96px; width <- 190px; height <- 184px;
+        background <- #1d293d;
+        border-radius <- 14px;
         png-image := Image {
-            x: 10px; y: 10px; width: 170px; height: 160px;
-            source: root.landscape;
-            image-fit: root.crop ? ImageFit.cover : ImageFit.contain;
+            x <- 10px; y <- 10px; width <- 170px; height <- 160px;
+            source <- root.landscape;
+            image-fit <- root.crop ? ImageFit.cover : ImageFit.contain;
         }
     }
     Rectangle {
-        x: 235px; y: 96px; width: 190px; height: 184px;
-        background: #1d293d;
-        border-radius: 14px;
+        x <- 235px; y <- 96px; width <- 190px; height <- 184px;
+        background <- #1d293d;
+        border-radius <- 14px;
         svg-image := Image {
-            x: 10px; y: 10px; width: 170px; height: 160px;
-            source: root.orbit;
-            image-fit: contain;
+            x <- 10px; y <- 10px; width <- 170px; height <- 160px;
+            source <- root.orbit;
+            image-fit <- contain;
         }
     }
     Rectangle {
-        x: 442px; y: 96px; width: 190px; height: 184px;
-        background: #1d293d;
-        border-radius: 14px;
+        x <- 442px; y <- 96px; width <- 190px; height <- 184px;
+        background <- #1d293d;
+        border-radius <- 14px;
         badge := Path {
-            x: 12px; y: 14px; width: 166px; height: 156px;
-            viewbox-width: 100; viewbox-height: 100;
-            commands: "M50 8 L90 31 V69 Q90 77 83 81 L57 94 Q50 98 43 94 L17 81 Q10 77 10 69 V31 Z M50 36 a14 14 0 1 0 0 28 a14 14 0 1 0 0 -28 Z";
-            fill: @linear-gradient(135deg, #39ddba, #526dff);
-            stroke: #b5f3ee;
-            stroke-width: 2px;
+            x <- 12px; y <- 14px; width <- 166px; height <- 156px;
+            viewbox-width <- 100; viewbox-height <- 100;
+            commands <- "M50 8 L90 31 V69 Q90 77 83 81 L57 94 Q50 98 43 94 L17 81 Q10 77 10 69 V31 Z M50 36 a14 14 0 1 0 0 28 a14 14 0 1 0 0 -28 Z";
+            fill <- @linear-gradient(135deg, #39ddba, #526dff);
+            stroke <- #b5f3ee;
+            stroke-width <- 2px;
         }
     }
 
-    Text { x: 28px; y: 289px; text: "PNG / 位图"; color: #a7b6ce; font-size: 15px; }
-    Text { x: 235px; y: 289px; text: "SVG / 图像"; color: #a7b6ce; font-size: 15px; }
-    Text { x: 442px; y: 289px; text: "Path / 填充和描边"; color: #a7b6ce; font-size: 15px; }
+    Text { x <- 28px; y <- 289px; text <- "PNG / 位图"; color <- #a7b6ce; font-size <- 15px; }
+    Text { x <- 235px; y <- 289px; text <- "SVG / 图像"; color <- #a7b6ce; font-size <- 15px; }
+    Text { x <- 442px; y <- 289px; text <- "Path / 填充和描边"; color <- #a7b6ce; font-size <- 15px; }
 
     toggle := Button {
-        x: 28px; y: 322px; width: 604px; height: 36px;
-        padding: 6px;
-        background: #314b80;
-        color: #f0f4ff;
-        font-size: 15px;
-        text: root.crop ? "PNG: cover · 点击切换" : "PNG: contain · 点击切换";
+        x <- 28px; y <- 322px; width <- 604px; height <- 36px;
+        padding <- 6px;
+        background <- #314b80;
+        color <- #f0f4ff;
+        font-size <- 15px;
+        text <- root.crop ? "PNG: cover · 点击切换" : "PNG: contain · 点击切换";
         clicked() => { root.crop = !root.crop; }
     }
 }
 
 export component NineSliceDemo inherits Window {
-    title: "XRack · 九宫格图像";
-    width: 460px; height: 268px;
-    background: #101725;
+    title <- "XRack · 九宫格图像";
+    width <- 460px; height <- 268px;
+    background <- #101725;
     in-out property <length> panel-width: 203px;
     in-out property <length> panel-height: 129px;
-    in-out property <ImageTileMode> horizontal-mode: once stretch;
-    in-out property <ImageTileMode> vertical-mode: once stretch;
-    in-out property <image> frame: once @image-url("assets/nine-slice.svg", nine-slice(4 6 8 10));
+    in-out property <ImageTileMode> horizontal-mode: stretch;
+    in-out property <ImageTileMode> vertical-mode: stretch;
+    in-out property <image> frame: @image-url("assets/nine-slice.svg", nine-slice(4 6 8 10));
 
     Label {
-        x: 24px; y: 24px; text: "固定四角，独立平铺两条轴";
-        font-size: 20px; color: #f0f4ff;
+        x <- 24px; y <- 24px; text <- "固定四角，独立平铺两条轴";
+        font-size <- 20px; color <- #f0f4ff;
     }
     sliced := Image {
-        x: 24px; y: 64px; width: root.panel-width; height: root.panel-height;
-        source: root.frame;
-        horizontal-tile-mode: root.horizontal-mode;
-        vertical-tile-mode: root.vertical-mode;
-        accessible-name: "九宫格边框";
+        x <- 24px; y <- 64px; width <- root.panel-width; height <- root.panel-height;
+        source <- root.frame;
+        horizontal-tile-mode <- root.horizontal-mode;
+        vertical-tile-mode <- root.vertical-mode;
+        accessible-name <- "九宫格边框";
     }
     Image {
-        x: 253px; y: 64px; width: 183px; height: 129px;
-        source: @image-url("assets/nine-slice.svg");
-        image-fit: fill;
-        accessible-name: "整张图像拉伸对照";
+        x <- 253px; y <- 64px; width <- 183px; height <- 129px;
+        source <- @image-url("assets/nine-slice.svg");
+        image-fit <- fill;
+        accessible-name <- "整张图像拉伸对照";
     }
     Label {
-        x: 24px; y: 201px; text: "九宫格";
-        color: #a7b6ce;
+        x <- 24px; y <- 201px; text <- "九宫格";
+        color <- #a7b6ce;
     }
     Label {
-        x: 253px; y: 201px; text: "整张拉伸";
-        color: #a7b6ce;
+        x <- 253px; y <- 201px; text <- "整张拉伸";
+        color <- #a7b6ce;
     }
     cycle-horizontal := Button {
-        x: 24px; y: 226px; width: 202px; height: 30px;
-        text: root.horizontal-mode == ImageTileMode.stretch ? "横向拉伸" :
+        x <- 24px; y <- 226px; width <- 202px; height <- 30px;
+        text <- root.horizontal-mode == ImageTileMode.stretch ? "横向拉伸" :
               root.horizontal-mode == ImageTileMode.repeat ? "横向重复" : "横向等分";
         clicked() => {
             root.horizontal-mode = root.horizontal-mode == ImageTileMode.stretch ? repeat :
@@ -115,8 +115,8 @@ export component NineSliceDemo inherits Window {
         }
     }
     cycle-vertical := Button {
-        x: 253px; y: 226px; width: 183px; height: 30px;
-        text: root.vertical-mode == ImageTileMode.stretch ? "纵向拉伸" :
+        x <- 253px; y <- 226px; width <- 183px; height <- 30px;
+        text <- root.vertical-mode == ImageTileMode.stretch ? "纵向拉伸" :
               root.vertical-mode == ImageTileMode.repeat ? "纵向重复" : "纵向等分";
         clicked() => {
             root.vertical-mode = root.vertical-mode == ImageTileMode.stretch ? repeat :
@@ -126,169 +126,169 @@ export component NineSliceDemo inherits Window {
 }
 
 export component AnimatedImageDemo inherits Window {
-    title: "XRack · GIF 播放";
-    width: 460px; height: 258px;
-    background: #101725;
-    in-out property <image> animation: once @image-url("assets/pulse.gif");
+    title <- "XRack · GIF 播放";
+    width <- 460px; height <- 258px;
+    background <- #101725;
+    in-out property <image> animation: @image-url("assets/pulse.gif");
     in-out property <bool> running: true;
     in-out property <bool> pause: false;
     in-out property <bool> show: true;
     in-out property <float> rate: 1.0;
     in-out property <int> passes: -1;
-    out property <int> frame: pulse.current-frame;
-    out property <int> frame-total: pulse.frame-count;
+    out property <int> frame <- pulse.current-frame;
+    out property <int> frame-total <- pulse.frame-count;
     out property <int> completions: 0;
 
     Label {
-        x: 24px; y: 20px;
-        text: "当前帧 " + root.frame + " / " + root.frame-total + " · 完成 " + root.completions;
-        font-size: 19px; color: #f0f4ff;
+        x <- 24px; y <- 20px;
+        text <- "当前帧 " + root.frame + " / " + root.frame-total + " · 完成 " + root.completions;
+        font-size <- 19px; color <- #f0f4ff;
     }
     pulse := AnimatedImage {
-        x: 24px; y: 55px; width: 214px; height: 132px;
-        source: root.animation;
-        playing: root.running; paused: root.pause; speed: root.rate; loops: root.passes;
-        visible: root.show;
-        accessible-name: "GIF 动画";
+        x <- 24px; y <- 55px; width <- 214px; height <- 132px;
+        source <- root.animation;
+        playing <- root.running; paused <- root.pause; speed <- root.rate; loops <- root.passes;
+        visible <- root.show;
+        accessible-name <- "GIF 动画";
         finished() => { root.completions = root.completions + 1; }
     }
     Image {
-        x: 266px; y: 55px; width: 170px; height: 105px;
-        source: root.animation;
-        accessible-name: "GIF 首帧";
+        x <- 266px; y <- 55px; width <- 170px; height <- 105px;
+        source <- root.animation;
+        accessible-name <- "GIF 首帧";
     }
-    Label { x: 266px; y: 167px; text: "静态 Image 的首帧"; color: #a7b6ce; }
+    Label { x <- 266px; y <- 167px; text <- "静态 Image 的首帧"; color <- #a7b6ce; }
     toggle := Button {
-        x: 24px; y: 205px; width: 126px; height: 34px;
-        text: root.running ? "停止" : "播放";
+        x <- 24px; y <- 205px; width <- 126px; height <- 34px;
+        text <- root.running ? "停止" : "播放";
         clicked() => { root.running = !root.running; }
     }
     pause-button := Button {
-        x: 165px; y: 205px; width: 126px; height: 34px;
-        text: root.pause ? "继续" : "暂停";
+        x <- 165px; y <- 205px; width <- 126px; height <- 34px;
+        text <- root.pause ? "继续" : "暂停";
         clicked() => { root.pause = !root.pause; }
     }
     speed-button := Button {
-        x: 310px; y: 205px; width: 126px; height: 34px;
-        text: root.rate == 1.0 ? "切换 2×" : "切换 1×";
+        x <- 310px; y <- 205px; width <- 126px; height <- 34px;
+        text <- root.rate == 1.0 ? "切换 2×" : "切换 1×";
         clicked() => { root.rate = root.rate == 1.0 ? 2.0 : 1.0; }
     }
 }
 
 export component SpriteAtlasDemo inherits Window {
-    title: "XRack · 精灵图";
-    width: 460px; height: 282px;
-    background: #101725;
-    in-out property <image> atlas: once @image-url("assets/sprite-atlas.png");
+    title <- "XRack · 精灵图";
+    width <- 460px; height <- 282px;
+    background <- #101725;
+    in-out property <image> atlas: @image-url("assets/sprite-atlas.png");
     in-out property <int> column: 0;
     in-out property <int> row-index: 0;
     in-out property <int> cell-height: 4;
-    in-out property <ImageFit> fit-mode: once contain;
-    in-out property <ImageRendering> sampling: once pixelated;
-    in-out property <ImageTileMode> tile-mode: once stretch;
-    out property <int> atlas-width: root.atlas.width;
-    out property <int> atlas-height: root.atlas.height;
+    in-out property <ImageFit> fit-mode: contain;
+    in-out property <ImageRendering> sampling: pixelated;
+    in-out property <ImageTileMode> tile-mode: stretch;
+    out property <int> atlas-width <- root.atlas.width;
+    out property <int> atlas-height <- root.atlas.height;
 
     Label {
-        x: 24px; y: 20px; font-size: 20px; color: #f0f4ff;
-        text: "精灵图 " + root.atlas-width + " × " + root.atlas-height;
+        x <- 24px; y <- 20px; font-size <- 20px; color <- #f0f4ff;
+        text <- "精灵图 " + root.atlas-width + " × " + root.atlas-height;
     }
     Image {
-        x: 24px; y: 62px; width: 184px; height: 184px;
-        source: root.atlas;
-        image-rendering: pixelated;
-        accessible-name: "原始精灵图";
+        x <- 24px; y <- 62px; width <- 184px; height <- 184px;
+        source <- root.atlas;
+        image-rendering <- pixelated;
+        accessible-name <- "原始精灵图";
     }
     Rectangle {
-        x: 250px; y: 62px; width: 150px; height: 120px;
-        background: #263653;
+        x <- 250px; y <- 62px; width <- 150px; height <- 120px;
+        background <- #263653;
         selected := Image {
-            width: 100%; height: 100%;
-            source: root.atlas;
-            source-clip-x: root.column * 4;
-            source-clip-y: root.row-index * 4;
-            source-clip-width: 4;
-            source-clip-height: root.cell-height;
-            image-fit: root.fit-mode;
-            horizontal-alignment: right;
-            vertical-alignment: bottom;
-            image-rendering: root.sampling;
-            horizontal-tile-mode: root.tile-mode;
-            accessible-name: "选中的图块";
+            width <- 100%; height <- 100%;
+            source <- root.atlas;
+            source-clip-x <- root.column * 4;
+            source-clip-y <- root.row-index * 4;
+            source-clip-width <- 4;
+            source-clip-height <- root.cell-height;
+            image-fit <- root.fit-mode;
+            horizontal-alignment <- right;
+            vertical-alignment <- bottom;
+            image-rendering <- root.sampling;
+            horizontal-tile-mode <- root.tile-mode;
+            accessible-name <- "选中的图块";
         }
     }
     natural := Image {
-        x: 250px; y: 192px; width: 48px;
-        source: root.atlas;
-        source-clip-x: root.column * 4;
-        source-clip-y: root.row-index * 4;
-        source-clip-width: 4; source-clip-height: root.cell-height;
-        image-rendering: root.sampling;
+        x <- 250px; y <- 192px; width <- 48px;
+        source <- root.atlas;
+        source-clip-x <- root.column * 4;
+        source-clip-y <- root.row-index * 4;
+        source-clip-width <- 4; source-clip-height <- root.cell-height;
+        image-rendering <- root.sampling;
     }
     next := Button {
-        x: 250px; y: 249px; width: 91px; height: 28px; text: "下一格";
+        x <- 250px; y <- 249px; width <- 91px; height <- 28px; text <- "下一格";
         clicked() => {
             root.row-index = root.column == 1 ? 1 - root.row-index : root.row-index;
             root.column = 1 - root.column;
         }
     }
     filter := Button {
-        x: 345px; y: 249px; width: 91px; height: 28px;
-        text: root.sampling == ImageRendering.pixelated ? "像素采样" : "平滑采样";
+        x <- 345px; y <- 249px; width <- 91px; height <- 28px;
+        text <- root.sampling == ImageRendering.pixelated ? "像素采样" : "平滑采样";
         clicked() => { root.sampling = root.sampling == ImageRendering.pixelated ? smooth : pixelated; }
     }
 }
 
 export component ImageColorizeDemo inherits Window {
-    title: "XRack · 图像着色";
-    width: 624px; height: 266px;
-    background: #101725;
-    in-out property <image> mask: once @image-url("assets/color-mask.png");
+    title <- "XRack · 图像着色";
+    width <- 624px; height <- 266px;
+    background <- #101725;
+    in-out property <image> mask: @image-url("assets/color-mask.png");
     in-out property <brush> accent: #39d6bc;
     in-out property <int> clip-x: 0;
-    in-out property <int> clip-width: once root.mask.width;
-    in-out property <ImageTileMode> tile-mode: once stretch;
+    in-out property <int> clip-width: root.mask.width;
+    in-out property <ImageTileMode> tile-mode: stretch;
     property <bool> alternate: false;
 
     Label {
-        x: 24px; y: 20px; font-size: 21px; color: #f0f4ff;
-        text: "同一份透明度，可以换不同画刷";
+        x <- 24px; y <- 20px; font-size <- 21px; color <- #f0f4ff;
+        text <- "同一份透明度，可以换不同画刷";
     }
     Image {
-        x: 24px; y: 61px; width: 120px; height: 120px;
-        source: root.mask;
-        accessible-name: "原图";
+        x <- 24px; y <- 61px; width <- 120px; height <- 120px;
+        source <- root.mask;
+        accessible-name <- "原图";
     }
     accent-preview := Image {
-        x: 176px; y: 61px; width: 120px; height: 120px;
-        source: root.mask;
-        source-clip-x: root.clip-x; source-clip-width: root.clip-width;
-        horizontal-tile-mode: root.tile-mode;
-        colorize: root.accent;
-        accessible-name: "可切换画刷";
+        x <- 176px; y <- 61px; width <- 120px; height <- 120px;
+        source <- root.mask;
+        source-clip-x <- root.clip-x; source-clip-width <- root.clip-width;
+        horizontal-tile-mode <- root.tile-mode;
+        colorize <- root.accent;
+        accessible-name <- "可切换画刷";
     }
     Image {
-        x: 328px; y: 61px; width: 120px; height: 120px;
-        source: root.mask;
-        source-clip-x: root.clip-x; source-clip-width: root.clip-width;
-        horizontal-tile-mode: root.tile-mode;
-        colorize: @linear-gradient(90deg, #f45f51, #3b5cf5);
-        accessible-name: "线性渐变";
+        x <- 328px; y <- 61px; width <- 120px; height <- 120px;
+        source <- root.mask;
+        source-clip-x <- root.clip-x; source-clip-width <- root.clip-width;
+        horizontal-tile-mode <- root.tile-mode;
+        colorize <- @linear-gradient(90deg, #f45f51, #3b5cf5);
+        accessible-name <- "线性渐变";
     }
     Image {
-        x: 480px; y: 61px; width: 120px; height: 120px;
-        source: @image-url("assets/orbit.svg");
-        colorize: @radial-gradient(circle, #fff3ad, #956aff);
-        image-fit: contain;
-        accessible-name: "SVG 径向渐变";
+        x <- 480px; y <- 61px; width <- 120px; height <- 120px;
+        source <- @image-url("assets/orbit.svg");
+        colorize <- @radial-gradient(circle, #fff3ad, #956aff);
+        image-fit <- contain;
+        accessible-name <- "SVG 径向渐变";
     }
-    Label { x: 24px; y: 190px; text: "原图"; color: #a7b6ce; }
-    Label { x: 176px; y: 190px; text: "纯色 / 渐变"; color: #a7b6ce; }
-    Label { x: 328px; y: 190px; text: "线性渐变"; color: #a7b6ce; }
-    Label { x: 480px; y: 190px; text: "SVG 径向渐变"; color: #a7b6ce; }
+    Label { x <- 24px; y <- 190px; text <- "原图"; color <- #a7b6ce; }
+    Label { x <- 176px; y <- 190px; text <- "纯色 / 渐变"; color <- #a7b6ce; }
+    Label { x <- 328px; y <- 190px; text <- "线性渐变"; color <- #a7b6ce; }
+    Label { x <- 480px; y <- 190px; text <- "SVG 径向渐变"; color <- #a7b6ce; }
     toggle-brush := Button {
-        x: 24px; y: 225px; width: 576px; height: 29px;
-        text: root.alternate ? "换回纯色" : "把纯色换成纵向渐变";
+        x <- 24px; y <- 225px; width <- 576px; height <- 29px;
+        text <- root.alternate ? "换回纯色" : "把纯色换成纵向渐变";
         clicked() => {
             root.alternate = !root.alternate;
             root.accent = root.alternate ? @linear-gradient(180deg, #ffd77d, #526dff) : #39d6bc;

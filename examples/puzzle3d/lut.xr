@@ -6,10 +6,10 @@ struct LutActor {
 }
 
 export component LutDemo inherits Window {
-    title: "XRack · LUT 调色";
-    width: 480px;
-    height: 300px;
-    background: #141d29;
+    title <- "XRack · LUT 调色";
+    width <- 480px;
+    height <- 300px;
+    background <- #141d29;
 
     in-out property <int> preset: 2;
     in-out property <float> strength: 1;
@@ -26,41 +26,41 @@ export component LutDemo inherits Window {
         id: "", mesh: "", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, camera-kind: "", camera-height: 7.2,
     };
-    property <[LutActor]> models: [
+    property <[LutActor]> models <- [
         LutActor { id: "chart", mesh: @mesh-url("models/finish.gltf"), ..root.defaults },
         LutActor { id: "eye", z: 8.6, camera-kind: "orthographic", ..root.defaults },
     ];
 
     view := SceneView3D {
-        width: 480px;
-        height: 248px;
-        camera: "eye";
-        model: root.models;
-        scene-background: #30435b;
-        scene-hdr: root.hdr;
-        bloom: root.hdr;
-        bloom-threshold: 0.15;
-        scene-saturation: root.saturation;
-        scene-lut: root.preset == 1 ? @image-url("models/lut-identity.png")
+        width <- 480px;
+        height <- 248px;
+        camera <- "eye";
+        model <- root.models;
+        scene-background <- #30435b;
+        scene-hdr <- root.hdr;
+        bloom <- root.hdr;
+        bloom-threshold <- 0.15;
+        scene-saturation <- root.saturation;
+        scene-lut <- root.preset == 1 ? @image-url("models/lut-identity.png")
                  : root.preset == 2 ? @image-url("models/lut-warm.png")
                  : root.preset == 3 ? @image-url("models/lut-invert.png") : @image-url("");
-        scene-lut-size: root.requested-size;
-        scene-lut-strength: root.strength;
+        scene-lut-size <- root.requested-size;
+        scene-lut-strength <- root.strength;
     }
 
     HorizontalLayout {
-        y: 248px;
-        width: 480px;
-        height: 52px;
-        padding: 12px;
-        spacing: 12px;
+        y <- 248px;
+        width <- 480px;
+        height <- 52px;
+        padding <- 12px;
+        spacing <- 12px;
         lut-toggle := Button {
-            width: 118px;
-            text: root.preset-name();
+            width <- 118px;
+            text <- root.preset-name();
             clicked => { root.preset = (root.preset + 1) % 4; }
         }
-        hdr-toggle := CheckBox { width: 124px; text: "HDR + 泛光"; checked <=> root.hdr; }
-        Label { width: 36px; text: "混合"; }
-        strength-slider := Slider { width: 130px; minimum: 0; maximum: 1; value <=> root.strength; }
+        hdr-toggle := CheckBox { width <- 124px; text <- "HDR + 泛光"; checked <-> root.hdr; }
+        Label { width <- 36px; text <- "混合"; }
+        strength-slider := Slider { width <- 130px; minimum <- 0; maximum <- 1; value <-> root.strength; }
     }
 }

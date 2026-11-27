@@ -1,76 +1,76 @@
 component SettingsPanel inherits VerticalLayout {
     in property <string> heading: "Settings";
     in property <color> panel-accent: #34788a;
-    padding: 16px;
-    spacing: 10px;
+    padding <- 16px;
+    spacing <- 10px;
 
-    caption := Label { text: root.heading; color: root.panel-accent; }
+    caption := Label { text <- root.heading; color <- root.panel-accent; }
     VerticalLayout {
-        spacing: 12px;
+        spacing <- 12px;
         @children
     }
-    Label { text: "Tab to navigate • Space to apply • Arrow keys to adjust"; }
+    Label { text <- "Tab to navigate • Space to apply • Arrow keys to adjust"; }
 }
 
 export component SlotDemo inherits Window {
-    title: "XRack — replaceable control parts";
-    width: 480px;
-    height: 270px;
+    title <- "XRack — replaceable control parts";
+    width <- 480px;
+    height <- 270px;
     in-out property <int> applied: 0;
     in-out property <float> volume: 40;
     in-out property <string> caption: "Audio settings";
     in-out property <bool> controls-enabled: true;
 
     panel := SettingsPanel {
-        heading: root.caption;
-        panel-accent: #26a69a;
+        heading <- root.caption;
+        panel-accent <- #26a69a;
 
-        caption := Label { text: "Volume " + root.volume; }
+        caption := Label { text <- "Volume " + root.volume; }
         apply := Button {
-            accessible-name: "Apply settings";
-            text: "Apply settings";
-            enabled: root.controls-enabled;
+            accessible-name <- "Apply settings";
+            text <- "Apply settings";
+            enabled <- root.controls-enabled;
             clicked => { root.applied += 1; }
             ButtonContent {
                 HorizontalLayout {
-                    alignment: center;
-                    spacing: 8px;
-                    Rectangle { width: 10px; height: 10px; border-radius: 5px; background: #fff; }
-                    Label { text: "Apply • " + root.applied; color: #fff; }
+                    alignment <- center;
+                    spacing <- 8px;
+                    Rectangle { width <- 10px; height <- 10px; border-radius <- 5px; background <- #fff; }
+                    Label { text <- "Apply • " + root.applied; color <- #fff; }
                 }
             }
         }
         volume-slider := Slider {
-            accessible-name: "Volume";
-            value <=> root.volume;
-            minimum: 0;
-            maximum: 100;
-            step: 5;
-            enabled: root.controls-enabled;
-            SliderHandle { width: 14px; height: 14px; border-radius: 4px; background: #fd9f58; }
+            accessible-name <- "Volume";
+            value <-> root.volume;
+            minimum <- 0;
+            maximum <- 100;
+            step <- 5;
+            enabled <- root.controls-enabled;
+            SliderHandle { width <- 14px; height <- 14px; border-radius <- 4px; background <- #fd9f58; }
         }
     }
 }
 
 export global SharedSettings {
     in-out property <int> count: 2;
-    out property <int> doubled: root.count * 2;
+    out property <int> doubled <- root.count * 2;
     callback increment();
     increment => { root.count += 1; }
 }
 
 export global SharedSummary {
-    out property <int> value: SharedSettings.doubled;
+    out property <int> value <- SharedSettings.doubled;
     callback increment();
     increment => { SharedSettings.increment(); }
 }
 
 component SettingsReadout inherits Label {
-    text: "Shared: " + SharedSettings.doubled;
+    text <- "Shared: " + SharedSettings.doubled;
 }
 
 export component GlobalDemo inherits Window {
-    out property <int> current: SharedSettings.count;
+    out property <int> current <- SharedSettings.count;
     SettingsReadout {}
     SettingsReadout {}
     update := Button { clicked => { SharedSettings.increment(); } }
@@ -78,72 +78,72 @@ export component GlobalDemo inherits Window {
 
 component IndicatorMark inherits Rectangle {
     in property <string> symbol;
-    background: #263d50;
-    border-radius: 6px;
-    Text { width: 100%; height: 100%; text: root.symbol; color: #fff; horizontal-alignment: center; vertical-alignment: center; }
+    background <- #263d50;
+    border-radius <- 6px;
+    Text { width <- 100%; height <- 100%; text <- root.symbol; color <- #fff; horizontal-alignment <- center; vertical-alignment <- center; }
 }
 
 export component ToggleIndicatorDemo inherits Window {
-    title: "XRack — custom toggle indicators";
-    width: 420px;
-    height: 260px;
-    in-out property <CheckState> tri: once CheckState.unchecked;
+    title <- "XRack — custom toggle indicators";
+    width <- 420px;
+    height <- 260px;
+    in-out property <CheckState> tri: CheckState.unchecked;
     in-out property <bool> option-enabled: true;
     in-out property <bool> network: false;
     in-out property <int> profile: 0;
-    out property <CheckState> observed-state: master.check-state;
-    out property <bool> observed-checked: master.checked;
-    out property <bool> observed-network: online.checked;
+    out property <CheckState> observed-state <- master.check-state;
+    out property <bool> observed-checked <- master.checked;
+    out property <bool> observed-network <- online.checked;
 
     VerticalLayout {
-        padding: 18px;
-        spacing: 10px;
+        padding <- 18px;
+        spacing <- 10px;
         master := CheckBox {
-            text: "Include optional settings";
-            check-state <=> root.tri;
-            tristate: true;
+            text <- "Include optional settings";
+            check-state <-> root.tri;
+            tristate <- true;
             ToggleIndicator {
-                width: 34px; height: 26px;
+                width <- 34px; height <- 26px;
                 IndicatorMark {
-                    width: 100%; height: 100%;
-                    symbol: master.checked ? "✓"
+                    width <- 100%; height <- 100%;
+                    symbol <- master.checked ? "✓"
                         : master.check-state == CheckState.partially-checked ? "–" : "○";
                 }
             }
         }
         profiles := RadioGroup {
-            current-index <=> root.profile;
+            current-index <-> root.profile;
             personal := RadioButton {
-                text: "Personal";
+                text <- "Personal";
                 ToggleIndicator {
-                    width: 34px; height: 24px;
-                    IndicatorMark { width: 100%; height: 100%; symbol: personal.checked ? "P" : "○"; }
+                    width <- 34px; height <- 24px;
+                    IndicatorMark { width <- 100%; height <- 100%; symbol <- personal.checked ? "P" : "○"; }
                 }
             }
             shared := RadioButton {
-                text: "Shared";
+                text <- "Shared";
                 ToggleIndicator {
-                    width: 34px; height: 24px;
-                    IndicatorMark { width: 100%; height: 100%; symbol: shared.checked ? "S" : "○"; }
+                    width <- 34px; height <- 24px;
+                    IndicatorMark { width <- 100%; height <- 100%; symbol <- shared.checked ? "S" : "○"; }
                 }
             }
         }
         online := Switch {
-            text: "Connect automatically";
-            enabled: root.option-enabled;
-            checked <=> root.network;
+            text <- "Connect automatically";
+            enabled <- root.option-enabled;
+            checked <-> root.network;
             ToggleIndicator {
-                width: 54px; height: 28px;
-                IndicatorMark { width: 100%; height: 100%; symbol: online.checked ? "ON" : "OFF"; }
+                width <- 54px; height <- 28px;
+                IndicatorMark { width <- 100%; height <- 100%; symbol <- online.checked ? "ON" : "OFF"; }
             }
         }
     }
 }
 
 export component SpinIndicatorDemo inherits Window {
-    title: "XRack — custom stepper indicators";
-    width: 440px;
-    height: 250px;
+    title <- "XRack — custom stepper indicators";
+    width <- 440px;
+    height <- 250px;
     in-out property <int> quantity: 2;
     in-out property <float> price: 1.25;
     in-out property <bool> rtl: false;
@@ -151,97 +151,97 @@ export component SpinIndicatorDemo inherits Window {
     out property <int> edits: 0;
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 8px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
-        amounts := Label { text: "Quantity " + quantity-field.value + " · Price " + price-field.value; }
+        padding <- 16px;
+        spacing <- 8px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        amounts := Label { text <- "Quantity " + quantity-field.value + " · Price " + price-field.value; }
         quantity-field := SpinBox {
-            accessible-name: "Quantity";
-            value <=> root.quantity;
-            minimum: 0;
-            maximum: 10;
-            read-only: root.locked;
+            accessible-name <- "Quantity";
+            value <-> root.quantity;
+            minimum <- 0;
+            maximum <- 10;
+            read-only <- root.locked;
             edited(value) => { root.edits += 1; }
             SpinUpIndicator {
-                width: 52px; height: 23px;
-                IndicatorMark { width: 100%; height: 100%; symbol: "+1"; }
+                width <- 52px; height <- 23px;
+                IndicatorMark { width <- 100%; height <- 100%; symbol <- "+1"; }
             }
             SpinDownIndicator {
-                IndicatorMark { width: 100%; height: 100%; symbol: "−1"; }
+                IndicatorMark { width <- 100%; height <- 100%; symbol <- "−1"; }
             }
         }
         price-field := DoubleSpinBox {
-            accessible-name: "Price";
-            value <=> root.price;
-            minimum: 0;
-            maximum: 10;
-            decimals: 2;
-            step-size: 0.25;
+            accessible-name <- "Price";
+            value <-> root.price;
+            minimum <- 0;
+            maximum <- 10;
+            decimals <- 2;
+            step-size <- 0.25;
             edited(value) => { root.edits += 1; }
             SpinUpIndicator {
-                width: 64px; height: 24px;
-                IndicatorMark { width: 100%; height: 100%; symbol: "+0.25"; }
+                width <- 64px; height <- 24px;
+                IndicatorMark { width <- 100%; height <- 100%; symbol <- "+0.25"; }
             }
         }
         lock := CheckBox {
-            text: "Quantity is read-only";
-            checked <=> root.locked;
+            text <- "Quantity is read-only";
+            checked <-> root.locked;
         }
         direction := Button {
-            text: root.rtl ? "RTL" : "LTR";
+            text <- root.rtl ? "RTL" : "LTR";
             clicked => { root.rtl = !root.rtl; }
         }
     }
 }
 
 export component RangeHandleDemo inherits Window {
-    title: "XRack — custom range handles";
-    width: 440px;
-    height: 300px;
+    title <- "XRack — custom range handles";
+    width <- 440px;
+    height <- 300px;
     in-out property <float> low: 20;
     in-out property <float> high: 80;
     in-out property <float> vertical-high: 70;
     in property <bool> rtl: false;
     out property <int> changes: 0;
     out property <int> releases: 0;
-    out property <float> preview-lower: band.lower-position;
-    out property <float> horizontal-visual: band.lower-visual-position;
-    out property <float> vertical-visual: column.upper-visual-position;
+    out property <float> preview-lower <- band.lower-position;
+    out property <float> horizontal-visual <- band.lower-visual-position;
+    out property <float> vertical-visual <- column.upper-visual-position;
 
     VerticalLayout {
-        padding: 18px;
-        spacing: 12px;
-        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
-        Label { text: "Budget: " + band.lower-value + " – " + band.upper-value; }
+        padding <- 18px;
+        spacing <- 12px;
+        layout-direction <- root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        Label { text <- "Budget: " + band.lower-value + " – " + band.upper-value; }
         band := RangeSlider {
-            height: 40px;
-            accessible-name: "Budget";
-            minimum: 0;
-            maximum: 100;
-            step: 10;
-            snap-mode: ScrollSnapMode.on-release;
-            live: false;
-            lower-value <=> root.low;
-            upper-value <=> root.high;
+            height <- 40px;
+            accessible-name <- "Budget";
+            minimum <- 0;
+            maximum <- 100;
+            step <- 10;
+            snap-mode <- ScrollSnapMode.on-release;
+            live <- false;
+            lower-value <-> root.low;
+            upper-value <-> root.high;
             changed(lower, upper) => { root.changes += 1; }
             released(lower, upper) => { root.releases += 1; }
             RangeLowerHandle {
-                width: 42px; height: 24px;
-                background: band.lower-position >= 0.45 ? #277f93 : #d77d4d;
-                border-radius: 5px;
+                width <- 42px; height <- 24px;
+                background <- band.lower-position >= 0.45 ? #277f93 : #d77d4d;
+                border-radius <- 5px;
             }
         }
         column := RangeSlider {
-            width: 46px;
-            height: 142px;
-            orientation: vertical;
-            accessible-name: "Vertical limit";
-            lower-value: 20;
-            upper-value <=> root.vertical-high;
+            width <- 46px;
+            height <- 142px;
+            orientation <- vertical;
+            accessible-name <- "Vertical limit";
+            lower-value <- 20;
+            upper-value <-> root.vertical-high;
             RangeUpperHandle {
-                width: 28px; height: 38px;
-                background: #277f93;
-                border-radius: 5px;
+                width <- 28px; height <- 38px;
+                background <- #277f93;
+                border-radius <- 5px;
             }
         }
     }
@@ -250,60 +250,60 @@ export component RangeHandleDemo inherits Window {
 component NavigationBadge inherits Rectangle {
     in property <string> caption;
     in property <bool> marked: false;
-    width: 100px;
-    height: 24px;
-    border-radius: 6px;
-    background: root.marked ? #208c78 : #5a5389;
+    width <- 100px;
+    height <- 24px;
+    border-radius <- 6px;
+    background <- root.marked ? #208c78 : #5a5389;
     Text {
-        width: 100%; height: 100%;
-        horizontal-alignment: center; vertical-alignment: center;
-        color: #fff; text: root.caption;
+        width <- 100%; height <- 100%;
+        horizontal-alignment <- center; vertical-alignment <- center;
+        color <- #fff; text <- root.caption;
     }
 }
 
 export component TabContentDemo inherits Window {
-    title: "XRack — custom tab content";
-    width: 432px;
-    height: 246px;
+    title <- "XRack — custom tab content";
+    width <- 432px;
+    height <- 246px;
     in-out property <int> selected: 0;
     in property <[string]> sections: ["Overview", "Reports", "Settings"];
 
     tabs := TabBar {
-        x: 18px; y: 18px; width: 192px; height: 48px;
-        spacing: 6px;
-        accessible-name: "Sections";
-        current-index <=> root.selected;
+        x <- 18px; y <- 18px; width <- 192px; height <- 48px;
+        spacing <- 6px;
+        accessible-name <- "Sections";
+        current-index <-> root.selected;
         for name[index] in root.sections : TabButton {
-            text: name;
-            enabled: index != 1;
+            text <- name;
+            enabled <- index != 1;
             ButtonContent {
-                NavigationBadge { caption: name; marked: checked; }
+                NavigationBadge { caption <- name; marked <- checked; }
             }
         }
     }
     jump := Button {
-        x: 18px; y: 82px; width: 160px; height: 46px;
-        text: "Go to settings";
+        x <- 18px; y <- 82px; width <- 160px; height <- 46px;
+        text <- "Go to settings";
         clicked => { root.selected = 2; }
         ButtonContent {
-            NavigationBadge { caption: "Jump to settings"; }
+            NavigationBadge { caption <- "Jump to settings"; }
         }
     }
     Label {
-        x: 18px; y: 146px;
-        text: "Selected section: " + root.selected;
+        x <- 18px; y <- 146px;
+        text <- "Selected section: " + root.selected;
     }
     vertical-tabs := TabBar {
-        x: 240px; y: 18px; width: 160px; height: 118px;
-        orientation: vertical;
-        spacing: 4px;
-        accessible-name: "Vertical sections";
-        current-index <=> root.selected;
+        x <- 240px; y <- 18px; width <- 160px; height <- 118px;
+        orientation <- vertical;
+        spacing <- 4px;
+        accessible-name <- "Vertical sections";
+        current-index <-> root.selected;
         for name[index] in root.sections : TabButton {
-            text: name;
-            enabled: index != 1;
+            text <- name;
+            enabled <- index != 1;
             ButtonContent {
-                NavigationBadge { caption: name; marked: checked; }
+                NavigationBadge { caption <- name; marked <- checked; }
             }
         }
     }

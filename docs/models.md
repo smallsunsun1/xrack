@@ -10,7 +10,7 @@
 
 在 iOS 点按系统状态栏，当前页面或活动弹层中可见面积最大的外层纵向滚动区会立即回到顶部。横向位置和其他滚动区的偏移会保留，焦点沿用该滚动容器的常规规则。
 
-`ScrollView`、`Flickable`、列表、网格、树和表格可用 `pull-to-refresh: true;` 启用下拉刷新。在内容顶部向下拉超过 72 个逻辑像素后松手，触发一次 `refresh-requested()`。短内容也可以下拉。绑定 `refreshing: root.loading;`，在回调里开始加载，并在异步工作结束后清除加载状态。加载期间显示刷新指示器，应用可将同一个刷新回调用在普通按钮上。iOS 的无障碍元素提供 **Refresh** 操作，加载中暂停该操作。减弱动态效果时，指示器仍会显示，滚动内容的位置保持稳定。
+`ScrollView`、`Flickable`、列表、网格、树和表格可用 `pull-to-refresh: true;` 启用下拉刷新。在内容顶部向下拉超过 72 个逻辑像素后松手，触发一次 `refresh-requested()`。短内容也可以下拉。绑定 `refreshing <- root.loading;`，在回调里开始加载，并在异步工作结束后清除加载状态。加载期间显示刷新指示器，应用可将同一个刷新回调用在普通按钮上。iOS 的无障碍元素提供 **Refresh** 操作，加载中暂停该操作。减弱动态效果时，指示器仍会显示，滚动内容的位置保持稳定。
 
 `ScrollView`、`Flickable`、列表、网格、树和表格可以设置 `dismiss-keyboard-on-drag: true;`。iOS 在滚动容器接管触摸拖动时收起软键盘及输入工具栏，保留当前字段焦点、草稿和选区。内容未撑满视口时也可以拖动收起。点回输入框可继续输入。外接键盘只显示当前字段的工具栏时，拖动仍保留原生编辑器和工具栏。正在组字时也保留键盘。属性默认关闭。
 
@@ -30,7 +30,7 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 
 附着模式的 `position` 和 `size` 是只读的归一化视口数据，分别为实际偏移和可见长度占内容总长度的比例。没有溢出时返回 `0` 和 `1`，视口尚未布局或被隐藏时都返回 `0`。滚动条的显示策略和最小滑块尺寸独立于这两个值。可以用这些读数驱动文本、颜色或另一个滚动指示器。编译器会检查它们流入当前布局阶段的尺寸或位置时是否形成反馈。
 
-省略 `target` 即可使用独立滚动控件。`size` 是可见部分占总内容的比例，取值为 `0..1`，`position` 的有效范围为 `0..1-size`。用 `position <=> root.offset` 接收滚动条输入，或者在表达式中读取 `bar.position` 和 `bar.size` 来移动自定义内容或驱动指示器。`size` 改变时，有效位置会重新夹紧，原绑定值会保留。用户移动滑块时会写回位置并触发 `changed(position)`。`step-size` 控制方向键和无障碍增减的步长，默认 `0.1`。两种模式都支持 `minimum-size` 设置最小滑块比例，滚动条可用 `interactive: false` 切换为被动显示。运行 `bazel run //examples/list:list -- --standalone-scroll` 体验。
+省略 `target` 即可使用独立滚动控件。`size` 是可见部分占总内容的比例，取值为 `0..1`，`position` 的有效范围为 `0..1-size`。用 `position <-> root.offset` 接收滚动条输入，或者在表达式中读取 `bar.position` 和 `bar.size` 来移动自定义内容或驱动指示器。`size` 改变时，有效位置会重新夹紧，原绑定值会保留。用户移动滑块时会写回位置并触发 `changed(position)`。`step-size` 控制方向键和无障碍增减的步长，默认 `0.1`。两种模式都支持 `minimum-size` 设置最小滑块比例，滚动条可用 `interactive: false` 切换为被动显示。运行 `bazel run //examples/list:list -- --standalone-scroll` 体验。
 
 在 iOS 上，有可滚动范围和正步长的交互式 `ScrollBar` 会作为可调节元素出现在 UIKit 无障碍树中。独立滚动条以比例提供当前位置，附着式滚动条以逻辑像素提供视口偏移。增减按配置的步长执行，并在边界处停用对应方向。禁用或被动显示的滚动条只提供读数。
 
@@ -66,7 +66,7 @@ Android 库存示例的 **Open canvas** 可以用触摸对照双轴拖动、自�
 
 定位命令在回调结束并更新模型和布局后执行，结果限制在可滚动范围内。越界行索引会被忽略，定位本身不改变选择。`content-x` 和 `content-y` 是从滚动起点量起的带符号偏移。向阅读末端或向下滚动时，两者分别变为负值。RTL 下，横向 `0px` 对应内容右端，`scroll-to(x, y)` 仍接受非负的逻辑距离。`visible-width` 和 `visible-height` 是只读视口尺寸。表格的视口尺寸以表身为准。
 
-可用 `content-y: root.offset;` 提供响应式初值，或用 `content-y <=> root.offset;` 把滚动位置链接到可写的 `length` 属性。`ScrollView` 和表格的横轴也支持同样的绑定。单向绑定沿用其他可编辑控件的规则，视口首次主动移动后保留自己的位置。双向链接中的属性表示目标位置，各视口独立裁剪，内容尺寸变化本身不会写回。用户滚动和定位命令实际移动视口时，只将移动的轴写回绑定源。绑定纵轴的虚拟视图以目标位置为准，键盘导航可以更新它。运行 `bazel run //examples/list:list -- --linked` 可比较不同内容长度的联动画布。
+可用 `content-y: root.offset;` 取一次滚动初值，用 `content-y <- root.offset;` 持续跟随，或用 `content-y <-> root.offset;` 把滚动位置链接到可写的 `length` 属性。`ScrollView` 和表格的横轴也支持同样的绑定。视口在单向绑定下持续跟随源属性。初值和双向链接提供可写的滚动位置。双向链接中的属性表示目标位置，各视口独立裁剪，内容尺寸变化本身不会写回。用户滚动和定位命令实际移动视口时，只将移动的轴写回绑定源。绑定纵轴的虚拟视图以目标位置为准，键盘导航可以更新它。运行 `bazel run //examples/list:list -- --linked` 可比较不同内容长度的联动画布。
 
 `scrolled()` 在滚轮、拖动、惯性、键盘或辅助功能实际移动视口后触发。回调可读取布局更新后的 `self.content-x` 和 `self.content-y`。一次斜向滚动对每个移动的视口触发一次，已到边界的视口和程序化定位不触发。运行 `bazel run //examples/list:list -- --position` 可比较手动滚动和按钮跳转时的回调计数。
 
@@ -108,7 +108,7 @@ Android 系统返回键可收起当前聚焦任务行的操作区。[Android 任
 
 视口可以设置 `mouse-drag-pan-enabled: true;` 启用左键拖动，默认关闭。短按按原控件的点击处理，超过拖动阈值后视口接管，剩余滚动量只交给也启用左键平移的祖先视口。文本选择、滑块、滚动条和拖放仍使用各自的手势。运行 `bazel run //examples/list:list -- --position` 可在画布按钮和列表上试用。
 
-`TextEdit` 支持多行文本、`text <=>`、`edited(string)`、`read-only`、占位文本和 IME。`wrap` 接受 `word-wrap`、`char-wrap` 和 `no-wrap`。Enter 插入换行，Home 和 End 按当前显示行移动，Ctrl 或 Command 加 Home 和 End 移到文档首尾。鼠标拖动或 Shift 加方向键可跨行选择，滚轮浏览内容，编辑和键盘移动时视口跟随光标。
+`TextEdit` 支持多行文本、`text <->`、`edited(string)`、`read-only`、占位文本和 IME。`wrap` 接受 `word-wrap`、`char-wrap` 和 `no-wrap`。Enter 插入换行，Home 和 End 按当前显示行移动，Ctrl 或 Command 加 Home 和 End 移到文档首尾。鼠标拖动或 Shift 加方向键可跨行选择，滚轮浏览内容，编辑和键盘移动时视口跟随光标。
 
 单行和多行文本控件支持鼠标选区和系统剪贴板。Ctrl 或 Command 加 C、X、V 分别复制、剪切、粘贴，只读字段可以复制。Ctrl 或 Command 加 Z 撤销，加 Shift 和 Z 或按 Ctrl+Y 重做。连续输入和删除可以合并，粘贴、剪切及 IME 提交各自形成一笔。历史按编辑控件保存，虚拟列表内按稳定行标识定位。当前文本与历史记录不一致时会重建历史起点，避免撤销覆盖外部更新。剪贴板回执只作用于原来的编辑目标和选区。
 
@@ -120,7 +120,7 @@ Android 系统返回键可收起当前聚焦任务行的操作区。[Android 任
 
 混排希伯来文、阿拉伯文、拉丁字母和数字时，点击、左右方向键、选区高亮和 IME 光标都使用实际排字的字形位置。一个逻辑偏移在方向边界可以有两个视觉位置，连续的逻辑选区也可以分成多个高亮段。编辑和剪贴板继续使用原文顺序。多行编辑器上下移动保留屏幕横坐标，软换行后的方向解析以单个视觉行为单位。运行 `bazel run //examples/form:form -- --bidi` 体验。
 
-`Dialog` 是同一窗口内的模态弹层。用 `open <=> root.dialog-open;` 双向绑定打开状态。窗口居中显示对话框，内容按垂直布局排列。`DialogButton` 的 `role` 取 `accept` 或 `reject`，关闭后分别触发 `accepted()` 或 `rejected()`。Escape 默认取消，也可通过 `close-on-escape` 关闭此行为。启用 `close-on-outside` 后，在遮罩上按下并松开会取消。最近打开的对话框接收输入，Tab 在其中循环，关闭后恢复原焦点。
+`Dialog` 是同一窗口内的模态弹层。用 `open <-> root.dialog-open;` 双向绑定打开状态。窗口居中显示对话框，内容按垂直布局排列。`DialogButton` 的 `role` 取 `accept` 或 `reject`，关闭后分别触发 `accepted()` 或 `rejected()`。Escape 默认取消，也可通过 `close-on-escape` 关闭此行为。启用 `close-on-outside` 后，在遮罩上按下并松开会取消。最近打开的对话框接收输入，Tab 在其中循环，关闭后恢复原焦点。
 
 `PopupWindow` 在当前窗口内显示，直接父元素是定位锚点。`placement` 默认是 `below`，也可选 `above`、`left`、`right` 或 `offset`。空间不足时会尝试换到对侧并限制在窗口边缘，`x`、`y` 可提供额外偏移。锚点滚出可见范围时，弹层随之隐藏。`open` 可双向绑定，也可调用 `show()` 和 `close()`，操作会触发 `opened()` 和 `closed()`。
 
@@ -140,7 +140,7 @@ Android 导航示例的 **Open popup** 覆盖打开时移动锚点、边缘翻�
 
 `ApplicationWindow` 是可直接运行的窗口根元素，沿用 `Window` 的主题、标题、尺寸和关闭回调。直接声明的 `MenuBar`、`PageHeader` 和 `PageFooter` 各最多一个，依次放在窗口顶部、菜单栏下方和底部。正文位于剩余区域，`padding` 及四边覆盖只作用于正文。`available-width/height` 发布实际正文尺寸，正文子项可用百分比填满。正文滚动时，菜单栏、页眉和页脚保持固定，弹层仍以窗口为范围。Tab 和无障碍按菜单栏、页眉、正文、页脚遍历。运行 `bazel run //examples/navigation:navigation -- --application-window` 可试用。
 
-`SwipeView` 可以直接声明多个 `SwipePage`，也可以用一个 `for … : SwipePage` 从模型生成页面。用 `current-index <=> root.page;` 双向绑定页索引，或者给页面声明 `value`，再用 `current-value` 与标签栏共用业务标识。重复页面只创建当前页内的组件，已访问页面的局部状态随模型行保留。
+`SwipeView` 可以直接声明多个 `SwipePage`，也可以用一个 `for … : SwipePage` 从模型生成页面。用 `current-index <-> root.page;` 双向绑定页索引，或者给页面声明 `value`，再用 `current-value` 与标签栏共用业务标识。重复页面只创建当前页内的组件，已访问页面的局部状态随模型行保留。
 
 通过 `orientation` 选择横向或纵向。可用触摸、中键拖动或聚焦后按方向键切页，Home 和 End 跳到首尾可用页。手势在松手时切页，页内同轴滚动优先，滚到边界后下一次滑动可以切页。`interactive: false;` 暂停手势和键盘切页，应用仍可更新选择。导航跳过隐藏或禁用的页面。按索引选择时，索引不可用会显示首个可用页。按值选择时，未匹配到可用页会保留值并显示空页。用户切页会写回选择并触发 `changed(index)`。运行 `bazel run //examples/navigation:navigation -- --model-swipe` 可体验。
 
@@ -164,7 +164,7 @@ iOS 把非空的 `PageIndicator` 公开成一个无障碍元素，读出当前�
 
 `ListView`、`GridView`、`StandardListView`、`TableView`、`StandardTableView` 和 `TreeView` 都可读取两个行数。`source-row-count` 是源模型行数，`row-count` 是经过可见性过滤、搜索和树的根节点范围及展开状态之后的行数，包含当前滚动范围外的行。网格按模型项计数。可绑定 `view.row-count == 0` 显示空状态，再用 `view.source-row-count` 区分空模型和筛选无匹配项。运行 `bazel run //examples/list:list -- --row-counts` 体验。
 
-列表、网格和标准列表可用 `row-key-field: "id";` 配合 `current-key <=> root.selected;` 按业务键选中记录。字段名须为常量，支持点分路径，键须为唯一的非负整数。`-1` 清除选中。有同一键的记录移动或暂时被过滤时，应用保存的键不变。记录重新出现时自动恢复高亮，替换整个模型也能按相同的键恢复。鼠标、键盘或 `select-source-index()` 选中记录时写回业务键，并继续向 `changed(index)` 传递显示索引。运行 `--row-counts` 示例，选中记录后点击「交换记录」可看到它跟随数据移动。
+列表、网格和标准列表可用 `row-key-field: "id";` 配合 `current-key <-> root.selected;` 按业务键选中记录。字段名须为常量，支持点分路径，键须为唯一的非负整数。`-1` 清除选中。有同一键的记录移动或暂时被过滤时，应用保存的键不变。记录重新出现时自动恢复高亮，替换整个模型也能按相同的键恢复。鼠标、键盘或 `select-source-index()` 选中记录时写回业务键，并继续向 `changed(index)` 传递显示索引。运行 `--row-counts` 示例，选中记录后点击「交换记录」可看到它跟随数据移动。
 
 业务键索引在首次查找时建立。修改记录只检查该记录的键，重排复用已提取的键并更新位置。选中状态的绑定只跟踪所查询的键及模型结构。
 
@@ -178,7 +178,7 @@ iOS 把非空的 `PageIndicator` 公开成一个无障碍元素，读出当前�
 
 `ItemDelegate`、`CheckDelegate`、`RadioDelegate` 和 `SwitchDelegate` 可作为 `ListView` 或 `GridView` 的直接行模板。整行可点击，默认高亮当前项，也可显式绑定 `highlighted`。聚焦列表后用方向键选行，按 Enter 或空格触发当前委托。`ItemDelegate.clicked()` 可读取重复项和索引，`RadioDelegate` 的勾选由列表的 `current-index` 派生。
 
-直接重复的 `CheckDelegate` 和 `SwitchDelegate` 用 `checked <=> row.field` 写回布尔字段。`CheckDelegate` 也支持 `check-state <=> row.state` 和 `tristate: true;`。交互会核对行标识和字段原值，确认写入后才执行状态回调。运行 `bazel run //examples/list:list -- --item-delegates` 查看四种控件。
+直接重复的 `CheckDelegate` 和 `SwitchDelegate` 用 `checked <-> row.field` 写回布尔字段。`CheckDelegate` 也支持 `check-state <-> row.state` 和 `tristate: true;`。交互会核对行标识和字段原值，确认写入后才执行状态回调。运行 `bazel run //examples/list:list -- --item-delegates` 查看四种控件。
 
 `TreeView` 接收一个重复的 `TreeRow`。在模板中用 `key: record.id; parent-key: record.parent-id;` 把两个整数记录字段声明为树的角色。非负键唯一，找不到父节点的记录显示为根，重复键的记录会被排除。循环在最小键处断开父链接。`current-key` 可双向绑定，展开状态按模型行标识保留，排序不会把展开状态转给别的记录。点击三角或按 Enter、Space 可切换展开，左右键可展开、折叠或移动到父子节点。只有视口内的可见节点会创建行内容。运行 `bazel run //examples/tree:tree` 查看示例。
 
@@ -194,7 +194,7 @@ iOS 在系统无障碍树中提供树节点名称、展开状态以及 **Expand*
 
 `TreeView.root-key` 指定浏览分支，默认 `-1` 显示完整模型。设为有效业务键时，从该节点的子项开始显示，子项的父键视为视图边界，缩进深度从零计算。未知键显示空视图。`depth`、`row-for-key` 和展开命令都针对当前分支，键盘导航停留在该分支内。切换分支后滚动位置回到顶部，显式绑定的滚动偏移仍由绑定控制。展开状态和多选按记录标识保存，切回原分支可继续使用。运行 `bazel run //examples/tree:tree -- --branches` 查看共享模型的两个独立视图。
 
-`TreeView` 可用 `filter-field: "label"; filter-text: root.query;` 搜索当前分支。字段名支持嵌套路径，字段类型为 `string`。搜索去除查询首尾空白并忽略大小写，保留命中节点及其祖先。搜索期间路径自动展开，可以用方向键在父子节点间移动。清空查询后恢复原来的展开状态。筛选和编辑共用同一模型，只有视口内的行会创建控件。双树示例右侧提供搜索框。
+`TreeView` 可用 `filter-field: "label"; filter-text <- root.query;` 搜索当前分支。字段名支持嵌套路径，字段类型为 `string`。搜索去除查询首尾空白并忽略大小写，保留命中节点及其祖先。搜索期间路径自动展开，可以用方向键在父子节点间移动。清空查询后恢复原来的展开状态。筛选和编辑共用同一模型，只有视口内的行会创建控件。双树示例右侧提供搜索框。
 
 `TreeView` 可用 `row-visible-field: "visibility.shown";` 从常量布尔字段路径读取可见性。值为 `false` 时隐藏该节点及其子树，搜索和 `root-key` 都遵守这层可见性。展开和选区按原业务键保留，重新显示时恢复。隐藏分支会取消其中的编辑草稿，拒绝基于旧场景发起的提交。开启 `preserve-scroll-anchor` 可在隐藏视口前方的子树时保持当前记录的位置。运行 `bazel run //examples/tree:tree -- --visibility` 切换分支并试用搜索。
 
@@ -214,7 +214,7 @@ iOS 在系统无障碍树中提供树节点名称、展开状态以及 **Expand*
 
 `[int]` 可用于属性、回调参数和返回值，也可以通过 `for` 生成元素。用 `Model.count`、`Model.is-empty` 或 `Model.at` 读取，Rust 可以用属性的 `model_*` 访问器取得共享的 `VecModel<i64>`。运行 `bazel run //examples/tree:tree -- --batch-selection`，选择含折叠节点的一批记录，保存、清空后再恢复。
 
-`TreeRow` 可在布局中组合类型化编辑器。`TreeCell { text <=> record.label; }` 编辑字符串，`SpinBox { value <=> record.quota; }` 编辑整数，`Slider { value <=> record.load; }` 编辑浮点数，`CheckBox { checked <=> record.active; }` 或 `Switch` 编辑布尔值。绑定目标是可写列表中当前记录的字段。布局可用 `if` 条件显示，编辑器的路径需保持稳定。
+`TreeRow` 可在布局中组合类型化编辑器。`TreeCell { text <-> record.label; }` 编辑字符串，`SpinBox { value <-> record.quota; }` 编辑整数，`Slider { value <-> record.load; }` 编辑浮点数，`CheckBox { checked <-> record.active; }` 或 `Switch` 编辑布尔值。绑定目标是可写列表中当前记录的字段。布局可用 `if` 条件显示，编辑器的路径需保持稳定。
 
 iOS 增大系统字号时，`TreeCell` 的可见文本按行高绘制，窄单元格用省略号提示。编辑时可水平滚动，文字、光标和触摸位置使用同一字号。
 
@@ -264,7 +264,7 @@ iOS 上，可排序列标题作为按钮出现在 UIKit 无障碍树中。其值
 
 基于记录模型的 `ListView`、`StandardListView`、`TreeView`、`TableView` 和 `StandardTableView` 可以用 `row-height-field: "height";` 指定行高字段。字段名须为常量，字段类型须为 `length`。非正或非有限值使用默认 `row-height`，正值裁剪到 12–512 个逻辑像素。用户拖动或命令设置的表格行高优先，清除覆盖后恢复记录中的最新高度。字段修改只更新对应记录的投影，树按展开后的顺序计算几何。运行 `bazel run //examples/table:table -- --row-field` 可查看共享模型的表格与列表，并对比记录修改和手动覆盖。
 
-`StandardTableView` 可直接绑定记录列表，例如 `model: root.inventory; TableColumn { title: "设备"; field: "name"; }`。`field` 是编译期校验的字段名，支持字符串、整数、浮点数、布尔值、`Date` 和 `Time`。控件为可见行生成文本单元格，复用固定表头、列宽调整、选择和排序回调。默认将程序选中的行滚入视口，可通过 `follow-current: false;` 关闭。辅助技术可读取可见的表头、行列位置和单元格值。运行 `bazel run //examples/table:table -- --standard` 体验五万行库存表。
+`StandardTableView` 可直接绑定记录列表，例如 `model <- root.inventory; TableColumn { title: "设备"; field: "name"; }`。`field` 是编译期校验的字段名，支持字符串、整数、浮点数、布尔值、`Date` 和 `Time`。控件为可见行生成文本单元格，复用固定表头、列宽调整、选择和排序回调。默认将程序选中的行滚入视口，可通过 `follow-current: false;` 关闭。辅助技术可读取可见的表头、行列位置和单元格值。运行 `bazel run //examples/table:table -- --standard` 体验五万行库存表。
 
 iOS 增大系统字号时，默认表头可加高，并给数据行留出空间。声明的表头高度、行高和列宽仍约束布局。内置表头和单元格按可用高度调整字号，放不下的文本用省略号提示，VoiceOver 仍可读取完整值。编辑中的单元格可水平滚动，文字、光标和输入位置共用同一字号。
 
@@ -274,7 +274,7 @@ Android 软键盘的提交操作沿用表格的类型校验。有效值写回后
 
 `StandardTableView` 可设置 `auto-sort: true;`，由控件按排序列的 `field` 对视图排序，排序回调仍会收到通知。多个视图可共享模型并使用不同顺序。排序保留记录标识、行高和多选，显式排序与清除排序时会按记录标识重定位当前行。排序字段更新时重新计算顺序，同值项保持源顺序，`current-row` 此时按新的显示顺序解释。清除排序后恢复源顺序，手动移动行可在此时使用。运行 `bazel run //examples/table:table -- --sorted-views` 体验。
 
-`StandardTableView` 可用 `filter-field: "name"; filter-text: root.query;` 按字符串字段筛选。字段支持嵌套路径，匹配会忽略大小写和查询首尾空白。筛选和自动排序可同时使用，编辑仍按记录标识写回共享模型。`current-row` 按当前显示位置解释，显式选区和手动行高按记录标识保留，复制和粘贴使用显示行。筛选期间暂停拖动行，清空查询后恢复基础顺序。若连续编辑的提交使记录退出筛选，Tab 从它原先的显示位置继续查找。运行 `bazel run //examples/table:table -- --editable`，用搜索框筛选五万条库存记录。
+`StandardTableView` 可用 `filter-field: "name"; filter-text <- root.query;` 按字符串字段筛选。字段支持嵌套路径，匹配会忽略大小写和查询首尾空白。筛选和自动排序可同时使用，编辑仍按记录标识写回共享模型。`current-row` 按当前显示位置解释，显式选区和手动行高按记录标识保留，复制和粘贴使用显示行。筛选期间暂停拖动行，清空查询后恢复基础顺序。若连续编辑的提交使记录退出筛选，Tab 从它原先的显示位置继续查找。运行 `bazel run //examples/table:table -- --editable`，用搜索框筛选五万条库存记录。
 
 `TableView` 和 `StandardTableView` 可用 `row-visible-field: "flags.shown";` 指定控制可见性的布尔字段。字段路径须为常量，值为 `false` 的记录退出视图，源模型、记录标识、选区和手动行高均保留。有隐藏行时暂停拖动排行，已有的手动顺序随记录保留。标准表格可同时按文本筛选和排序。行定位、复制和粘贴使用当前显示行号。开启 `preserve-scroll-anchor` 时，隐藏锚点前的记录会保留锚点记录在视口中的位置。运行 `bazel run //examples/table:table -- --row-visibility`，可在共享记录的两个表格里切换首行可见性。
 
@@ -304,7 +304,7 @@ Android 软键盘的提交操作沿用表格的类型校验。有效值写回后
 
 表格设置 `copyable: true;` 后，可用 Ctrl 或 Command 加 C 复制选区到系统剪贴板。复制按当前显示列顺序读取模型，包括离屏的已选行和列。单元格选区输出最小矩形，选区内的空洞保留为空字段。文本中的制表符、换行和引号会转义。自定义表格默认复制直接文本和双向绑定的模型值，也可在直接单元格上用 `clipboard-text` 指定导出文本。编辑中的文本选区优先。一次复制最多 100 万个字段或 8 MiB。
 
-`TableCell { text <=> item; }` 可编辑 `for item in root.records` 中可写 `[string]` 模型的一行。双击单元格，或在聚焦后按 Enter / F2 开始编辑。Enter 提交，Tab 提交并移动焦点，Escape 或切换到其他控件会丢弃草稿。应用在编辑期间重排模型时，仍可见的记录会按行标识保留草稿。滚出视口、删除记录或外部改值会结束编辑。文本输入、IME、剪贴板和撤销在草稿上工作，提交时才修改模型。
+`TableCell { text <-> item; }` 可编辑 `for item in root.records` 中可写 `[string]` 模型的一行。双击单元格，或在聚焦后按 Enter / F2 开始编辑。Enter 提交，Tab 提交并移动焦点，Escape 或切换到其他控件会丢弃草稿。应用在编辑期间重排模型时，仍可见的记录会按行标识保留草稿。滚出视口、删除记录或外部改值会结束编辑。文本输入、IME、剪贴板和撤销在草稿上工作，提交时才修改模型。
 
 `TableView` 和 `StandardTableView` 可组合布尔属性 `edit-on-click`、`edit-on-selected-click`、`edit-on-double-click`、`edit-on-key` 和 `edit-on-typing`。默认开启双击和 Enter / F2。选中后单击以本次点击之前的选区为准。输入可打印文字会打开编辑器，用第一段文字替换选中的原值，并将结果保存在草稿中。
 
@@ -312,11 +312,11 @@ Android 软键盘的提交操作沿用表格的类型校验。有效值写回后
 
 回调可调用 `table.edit-cell(row, column)`，行号按显示顺序，列号按声明顺序。命令将焦点移到可见、可写的文本单元格，保留表格选区。定位离屏单元格时，可在同一回调先调用 `position-view-at-cell`。切换到另一个编辑目标或调用 `table.cancel-edit()` 会丢弃该表的草稿。运行 `bazel run //examples/table:records -- --edit-triggers` 体验。
 
-结构化行可用 `export struct StockRow { name: string, units: int }` 声明，`property <[StockRow]>` 接收 `StockRow { name: "交换机", units: 12 }` 等记录字面量。在 `TableRow` 的直接子元素中，`TableCell { text <=> row.name; }` 编辑字符串，`SpinBox { value <=> row.units; }` 编辑整数，`Slider { value <=> row.load; }` 编辑浮点数，`CheckBox { checked <=> row.available; }` 或 `Switch` 编辑布尔值。提交核对行标识和被编辑字段的原值，再把改动合并进最新记录。Rust 使用生成的 `StockRow` 和 `VecModel<StockRow>`。运行 `bazel run //examples/table:records` 可体验独立字段编辑和按类型排序。
+结构化行可用 `export struct StockRow { name: string, units: int }` 声明，`property <[StockRow]>` 接收 `StockRow { name: "交换机", units: 12 }` 等记录字面量。在 `TableRow` 的直接子元素中，`TableCell { text <-> row.name; }` 编辑字符串，`SpinBox { value <-> row.units; }` 编辑整数，`Slider { value <-> row.load; }` 编辑浮点数，`CheckBox { checked <-> row.available; }` 或 `Switch` 编辑布尔值。提交核对行标识和被编辑字段的原值，再把改动合并进最新记录。Rust 使用生成的 `StockRow` 和 `VecModel<StockRow>`。运行 `bazel run //examples/table:records` 可体验独立字段编辑和按类型排序。
 
 记录字段可使用其他命名记录类型，类型之间不能形成循环。 记录字段也可接收 `[int]` 或命名记录的列表。绑定同一个模型会保留行标识，修改模型内容时读到这些行的绑定会重新求值。表格和树编辑器可以双向绑定 `row.stock.units` 这样的字段。`TableColumn.field`、`text-role`、`value-role` 和 `row-height-field` 接受点分路径，例如 `"stock.units"`。树的 `key` 和 `parent-key` 可引用嵌套的整数。粘贴解析器返回整段子记录时，撤销历史仍按实际变更的字段保存。运行 `bazel run //examples/table:records -- --nested` 可查看同一库存模型在表格、列表、下拉框和树中的投影。
 
-`TableRow` 与 `TreeRow` 可以在静态子路径使用匿名组件，例如 `NameEditor { value <=> row.name; submitted => { root.save(); } }`。组件只在记录进入视口时创建，滚动、排序和树的折叠保留同一记录的局部状态，删除记录或替换模型会释放对应实例。点击表格单元格内的控件时，表格先更新选区，控件继续处理本次点击。无障碍树公开行列坐标以及编辑器和按钮自己的角色。
+`TableRow` 与 `TreeRow` 可以在静态子路径使用匿名组件，例如 `NameEditor { value <-> row.name; submitted => { root.save(); } }`。组件只在记录进入视口时创建，滚动、排序和树的折叠保留同一记录的局部状态，删除记录或替换模型会释放对应实例。点击表格单元格内的控件时，表格先更新选区，控件继续处理本次点击。无障碍树公开行列坐标以及编辑器和按钮自己的角色。
 
 直接作为表格单元格的组件可设置 `clipboard-text: row.name;`，从模型复制可见和离屏记录。表格启用 `pasteable` 后，自定义编辑器可用 `clipboard-target: "value";` 指定绑定到当前模型行的 `in-out` 输入，再用 `clipboard-paste(text) => { … }` 返回包含 `accepted: bool` 和同类型 `value` 的记录。每列可在静态子路径配置一个解析器。表达式可读取外层组件属性、当前记录和索引，也可调用纯回调。所有字段通过校验后才一起提交，解析覆盖离屏行。未配置解析器的自定义单元格会使整次粘贴取消。
 

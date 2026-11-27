@@ -6,10 +6,10 @@ struct FocusActor {
 }
 
 export component FocusDemo inherits Window {
-    title: "XRack · 景深";
-    width: 480px;
-    height: 300px;
-    background: #141d29;
+    title <- "XRack · 景深";
+    width <- 480px;
+    height <- 300px;
+    background <- #141d29;
 
     in-out property <bool> enabled: true;
     in-out property <bool> orthographic: true;
@@ -24,8 +24,8 @@ export component FocusDemo inherits Window {
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
         camera-kind: "", camera-height: 6.4,
     };
-    property <string> card: @mesh-url("models/focus-card.gltf");
-    property <[FocusActor]> models: [
+    property <string> card <- @mesh-url("models/focus-card.gltf");
+    property <[FocusActor]> models <- [
         FocusActor { id: "near", mesh: root.card, x: -3.05, z: 4, color: #f9bdad, ..root.defaults },
         FocusActor { id: "middle", mesh: root.card, x: 0, color: #dce3ff, ..root.defaults },
         FocusActor { id: "far", mesh: root.card, x: 3.05, z: -5, color: #9dddef, ..root.defaults },
@@ -42,37 +42,37 @@ export component FocusDemo inherits Window {
             ..root.defaults
         },
     ];
-    out property <string> picked: Scene3D.pick-camera(root.models, "eye",
+    out property <string> picked <- Scene3D.pick-camera(root.models, "eye",
         Point2D.new(480px, 248px), Point2D.new(240px, 113px));
 
     view := SceneView3D {
-        width: 480px;
-        height: 248px;
-        model: root.models;
-        camera: "eye";
-        scene-background: #172339;
-        depth-of-field: root.enabled;
-        dof-focus-distance: root.focus;
-        dof-focus-range: 0.8;
-        dof-blur-radius: root.radius;
-        scene-hdr: root.hdr;
-        bloom: root.hdr;
-        multisampling: root.glass;
-        supersampling: root.aa-scale;
-        order-independent-transparency: root.glass;
+        width <- 480px;
+        height <- 248px;
+        model <- root.models;
+        camera <- "eye";
+        scene-background <- #172339;
+        depth-of-field <- root.enabled;
+        dof-focus-distance <- root.focus;
+        dof-focus-range <- 0.8;
+        dof-blur-radius <- root.radius;
+        scene-hdr <- root.hdr;
+        bloom <- root.hdr;
+        multisampling <- root.glass;
+        supersampling <- root.aa-scale;
+        order-independent-transparency <- root.glass;
     }
 
     HorizontalLayout {
-        y: 248px;
-        width: 480px;
-        height: 52px;
-        padding: 12px;
-        spacing: 12px;
-        focus-toggle := CheckBox { width: 74px; text: "景深"; checked <=> root.enabled; }
-        ortho-toggle := CheckBox { width: 72px; text: "正交"; checked <=> root.orthographic; }
-        glass-toggle := CheckBox { width: 72px; text: "玻璃"; checked <=> root.glass; }
-        hdr-toggle := CheckBox { width: 68px; text: "HDR"; checked <=> root.hdr; }
-        Label { width: 36px; text: "对焦"; }
-        focus-slider := Slider { width: 74px; minimum: 8; maximum: 17; value <=> root.focus; }
+        y <- 248px;
+        width <- 480px;
+        height <- 52px;
+        padding <- 12px;
+        spacing <- 12px;
+        focus-toggle := CheckBox { width <- 74px; text <- "景深"; checked <-> root.enabled; }
+        ortho-toggle := CheckBox { width <- 72px; text <- "正交"; checked <-> root.orthographic; }
+        glass-toggle := CheckBox { width <- 72px; text <- "玻璃"; checked <-> root.glass; }
+        hdr-toggle := CheckBox { width <- 68px; text <- "HDR"; checked <-> root.hdr; }
+        Label { width <- 36px; text <- "对焦"; }
+        focus-slider := Slider { width <- 74px; minimum <- 8; maximum <- 17; value <-> root.focus; }
     }
 }

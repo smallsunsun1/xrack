@@ -13,11 +13,11 @@ struct LodActor {
 }
 
 export component LodDemo inherits Window {
-    title: "XRack · 网格细节";
-    width: 480px;
-    height: 330px;
-    resizable: false;
-    background: #141d29;
+    title <- "XRack · 网格细节";
+    width <- 480px;
+    height <- 330px;
+    resizable <- false;
+    background <- #141d29;
 
     in-out property <float> distance: 6;
     in-out property <bool> orthographic: false;
@@ -36,8 +36,8 @@ export component LodDemo inherits Window {
     in-out property <float> clip-far: 100;
     in-out property <float> visible-distance: -1;
     in-out property <[int]> probe-rows: [1];
-    property <point2d> viewport: Point2D.new(280px, 252px);
-    property <point2d> center: Point2D.new(140px, 126px);
+    property <point2d> viewport <- Point2D.new(280px, 252px);
+    property <point2d> center <- Point2D.new(140px, 126px);
 
     property <LodActor> defaults: LodActor {
         id: "", mesh: "", x: 0, y: 0, z: 0,
@@ -49,7 +49,7 @@ export component LodDemo inherits Window {
         animation: "", animation-time: 0,
         instance-of: "", instance-template: false, instancing-lod-factor: -1,
     };
-    property <string> target-mesh: root.automatic
+    property <string> target-mesh <- root.automatic
         ? (root.deformation
             ? (root.morph-only ? @mesh-url("models/lod-morph.gltf", auto-lod)
                 : @mesh-url("models/lod-deform.gltf", auto-lod))
@@ -57,8 +57,8 @@ export component LodDemo inherits Window {
                 : (root.instanced ? @mesh-url("models/lod-surface-instanced.gltf", auto-lod)
                     : @mesh-url("models/lod-surface.gltf", auto-lod))))
         : "primitive:sphere";
-    property <string> lod-owner: root.instanced ? "template" : "target";
-    property <[LodActor]> scene: [
+    property <string> lod-owner <- root.instanced ? "template" : "target";
+    property <[LodActor]> scene <- [
         LodActor { mesh: "primitive:box", lod-of: root.lod-owner, lod-max-size: 60px, visible: !root.automatic, ..root.defaults },
         LodActor {
             id: "target", color: #52b7fa,
@@ -95,79 +95,79 @@ export component LodDemo inherits Window {
         },
     ];
 
-    out property <hit3d> camera-hit: Scene3D.hit-camera(root.scene, "view", root.viewport, root.center);
-    out property <hit3d> orbit-hit: Scene3D.hit(root.scene, 0, 0, root.distance, root.viewport, root.center);
-    out property <[hit3d]> camera-hits: Scene3D.hit-all-camera(root.scene, "view", root.viewport, root.center);
-    out property <hit3d> world-hit: Scene3D.ray-hit(
+    out property <hit3d> camera-hit <- Scene3D.hit-camera(root.scene, "view", root.viewport, root.center);
+    out property <hit3d> orbit-hit <- Scene3D.hit(root.scene, 0, 0, root.distance, root.viewport, root.center);
+    out property <[hit3d]> camera-hits <- Scene3D.hit-all-camera(root.scene, "view", root.viewport, root.center);
+    out property <hit3d> world-hit <- Scene3D.ray-hit(
         root.scene, Point3D.new(0, 0, 10), Vector3D.new(0, 0, -1), 20);
 
-    property <point3d> probe-origin: Point3D.new(0, 0, 10);
-    property <vector3d> probe-direction: Vector3D.new(0, 0, -2);
+    property <point3d> probe-origin <- Point3D.new(0, 0, 10);
+    property <vector3d> probe-direction <- Vector3D.new(0, 0, -2);
     property <string> probe-result: "检测射线";
-    out property <hit3d> view-ray: viewport-view.ray-hit(root.probe-origin, root.probe-direction, root.probe-max);
-    out property <[hit3d]> view-rays: viewport-view.ray-hit-all(root.probe-origin, root.probe-direction, root.probe-max);
-    out property <hit3d> view-ray-row: viewport-view.ray-hit-row(root.probe-origin, root.probe-direction, root.probe-max, 1);
-    out property <[hit3d]> view-ray-subset: viewport-view.ray-hit-subset(root.probe-origin, root.probe-direction, root.probe-max, root.probe-rows);
-    out property <hit3d> view-ray-instance: viewport-view.ray-hit-instance(
+    out property <hit3d> view-ray <- viewport-view.ray-hit(root.probe-origin, root.probe-direction, root.probe-max);
+    out property <[hit3d]> view-rays <- viewport-view.ray-hit-all(root.probe-origin, root.probe-direction, root.probe-max);
+    out property <hit3d> view-ray-row <- viewport-view.ray-hit-row(root.probe-origin, root.probe-direction, root.probe-max, 1);
+    out property <[hit3d]> view-ray-subset <- viewport-view.ray-hit-subset(root.probe-origin, root.probe-direction, root.probe-max, root.probe-rows);
+    out property <hit3d> view-ray-instance <- viewport-view.ray-hit-instance(
         root.probe-origin, root.probe-direction, root.probe-max,
         root.view-ray.row-index, root.view-ray.mesh-node-index, root.view-ray.instance-index);
-    out property <hit3d> nearest: viewport-view.closest-point(root.probe-origin, root.probe-max);
-    out property <hit3d> nearest-row: viewport-view.closest-point-row(root.probe-origin, root.probe-max, 1);
+    out property <hit3d> nearest <- viewport-view.closest-point(root.probe-origin, root.probe-max);
+    out property <hit3d> nearest-row <- viewport-view.closest-point-row(root.probe-origin, root.probe-max, 1);
 
     HorizontalLayout {
-        padding: 14px;
-        spacing: 14px;
+        padding <- 14px;
+        spacing <- 14px;
         viewport-view := SceneView3D {
-            width: root.viewport.x;
-            height: root.viewport.y;
-            model: root.scene;
-            camera: "view"; layer-mask: root.probe-layers;
-            shadows: root.shadows;
-            shadow-map-size: 256;
-            light-yaw: 26;
-            light-elevation: 42;
-            scene-background: #22314a;
+            width <- root.viewport.x;
+            height <- root.viewport.y;
+            model <- root.scene;
+            camera <- "view"; layer-mask <- root.probe-layers;
+            shadows <- root.shadows;
+            shadow-map-size <- 256;
+            light-yaw <- 26;
+            light-elevation <- 42;
+            scene-background <- #22314a;
         }
         VerticalLayout {
-            width: 150px;
-            spacing: 6px;
-            Text { text: "相机距离"; color: #edf4ff; }
+            width <- 150px;
+            spacing <- 6px;
+            Text { text <- "相机距离"; color <- #edf4ff; }
             distance-slider := Slider {
-                width: 142px;
-                height: 30px;
-                minimum: 3;
-                maximum: 60;
-                step: 1;
-                value <=> root.distance;
+                width <- 142px;
+                height <- 30px;
+                minimum <- 3;
+                maximum <- 60;
+                step <- 1;
+                value <-> root.distance;
             }
-            ortho-toggle := CheckBox { text: "正交相机"; checked <=> root.orthographic; }
-            detail-toggle := CheckBox { text: "始终用主网格"; checked <=> root.full-detail; }
-            auto-toggle := CheckBox { text: "自动减面"; checked <=> root.automatic; }
-            instance-toggle := CheckBox { text: "从原型实例化"; checked <=> root.instanced; }
-            Text { text: "细节因子（−1 自动）"; color: #edf4ff; }
+            ortho-toggle := CheckBox { text <- "正交相机"; checked <-> root.orthographic; }
+            detail-toggle := CheckBox { text <- "始终用主网格"; checked <-> root.full-detail; }
+            auto-toggle := CheckBox { text <- "自动减面"; checked <-> root.automatic; }
+            instance-toggle := CheckBox { text <- "从原型实例化"; checked <-> root.instanced; }
+            Text { text <- "细节因子（−1 自动）"; color <- #edf4ff; }
             factor-slider := Slider {
-                width: 142px; height: 28px; minimum: -1; maximum: 1; step: 0.1;
-                value <=> root.lod-factor;
+                width <- 142px; height <- 28px; minimum <- -1; maximum <- 1; step <- 0.1;
+                value <-> root.lod-factor;
             }
             probe-button := Button {
-                width: 142px; height: 30px;
-                text: root.probe-result;
+                width <- 142px; height <- 30px;
+                text <- root.probe-result;
                 clicked => {
                     let hit = viewport-view.ray-hit(root.probe-origin, root.probe-direction, root.probe-max);
                     root.probe-result = hit.valid ? "射线 Z = " + Math.round(hit.position.z * 1000) / 1000.0 : "射线未命中";
                 }
             }
             if root.automatic: deform-toggle := CheckBox {
-                text: "蒙皮与形变";
-                checked <=> root.deformation;
+                text <- "蒙皮与形变";
+                checked <-> root.deformation;
             }
             if root.automatic && root.deformation: pose-slider := Slider {
-                width: 142px;
-                height: 30px;
-                minimum: 0;
-                maximum: 1;
-                step: 0.01;
-                value <=> root.time;
+                width <- 142px;
+                height <- 30px;
+                minimum <- 0;
+                maximum <- 1;
+                step <- 0.01;
+                value <-> root.time;
             }
         }
     }

@@ -14,8 +14,8 @@ export component MeshSubsetPlan inherits Window {
     in property <[int]> faces: [];
     in property <[Subset]> slices: [];
     SceneView3D {
-        width: 80px; height: 80px;
-        model: [Actor {
+        width <- 80px; height <- 80px;
+        model <- [Actor {
             id: "panel", x: 0, y: 0, z: 0,
             scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
             geometry: Geometry { vertices: root.points, indices: root.faces, subsets: root.slices },
