@@ -94,3 +94,101 @@ export component CameraAimDemo inherits Window {
         }
     }
 }
+
+struct LookAtActor {
+    id: string, parent: string, mesh: string,
+    x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    pivot-x: float, pivot-z: float,
+    look-at: string, look-at-up: vector3d, visible: bool, color: color,
+}
+
+struct LookAtSpot {
+    kind: string, parent: string,
+    x: float, y: float, z: float, yaw: float, elevation: float,
+    intensity: float, color: color, range: float, inner-angle: float, outer-angle: float,
+}
+
+export component LookAtDemo inherits Window {
+    title <- "XRack · 节点跟踪";
+    width <- 440px; height <- 325px;
+    background <- #172335;
+
+    in-out property <point3d> beacon: Point3D.new(1.5, 0.75, -1.4);
+    in-out property <string> target-id: "beacon";
+    in-out property <bool> beacon-visible: true;
+    in-out property <bool> mirror: false;
+    in-out property <bool> reciprocal: false;
+    in-out property <vector3d> world-up: Vector3D.new(0, 1, 0);
+
+    property <LookAtActor> defaults <- LookAtActor {
+        id: "", mesh: "", parent: "", x: 0, y: 0, z: 0,
+        yaw: 0, pitch: 0, roll: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        pivot-x: 0, pivot-z: 0, look-at: "", look-at-up: root.world-up,
+        color: #ead0a4, visible: true,
+    };
+    property <scenemodel3d> world <- Scene3D.prepare([
+        LookAtActor { id: "rig", x: -1.4, yaw: 26, scale-x: 1.35, scale-y: 0.85, ..root.defaults },
+        LookAtActor {
+            id: "pointer", parent: "rig", mesh: "primitive:box", y: 0.8, yaw: 15,
+            scale-x: 0.23, scale-y: 0.28, scale-z: root.mirror ? -1.9 : 1.9, pivot-z: 0.25,
+            look-at: root.target-id, color: #d9b8fa, ..root.defaults
+        },
+        LookAtActor {
+            id: "tip", parent: "pointer", mesh: "primitive:sphere", z: -0.56,
+            scale-x: 0.25, scale-y: 0.25, scale-z: 0.075, color: #fef0cb, ..root.defaults
+        },
+        LookAtActor {
+            id: "beacon", mesh: "primitive:box", visible: root.beacon-visible,
+            x: root.beacon.x, y: root.beacon.y, z: root.beacon.z,
+            scale-x: 0.6, scale-y: 0.6, scale-z: 0.6, pivot-x: 0.2,
+            look-at: root.reciprocal ? "pointer" : "", color: #56d6d0, ..root.defaults
+        },
+        LookAtActor {
+            id: "floor", mesh: "primitive:box", y: -0.2,
+            scale-x: 9, scale-y: 0.25, scale-z: 8, color: #453f56, ..root.defaults
+        },
+    ]);
+    property <point3d> offset <- Point3D.new(0, 0, 0);
+    property <vector3d> zero-direction <- Vector3D.new(0, 0, 0);
+    out property <point3d> world-pivot <- Scene3D.map-position(
+        root.world, "pointer", "", Point3D.new(0, 0, 0.25), root.offset);
+    out property <point3d> tip-world <- Scene3D.map-position(root.world, "tip", "", root.offset, root.offset);
+    out property <vector3d> world-forward <- Scene3D.map-direction(
+        root.world, "pointer", "", Vector3D.new(0, 0, -1), root.zero-direction);
+    out property <vector3d> beacon-forward <- Scene3D.map-direction(
+        root.world, "beacon", "", Vector3D.new(0, 0, -1), root.zero-direction);
+    out property <projectedpoint3d> tip-pixel <- view.project(root.tip-world);
+    out property <hit3d> tip-hit <- view.hit-row(root.tip-pixel.point, 2);
+
+    view := SceneView3D {
+        width <- 440px; height <- 274px;
+        model <- root.world; camera-distance <- 11; camera-yaw <- 20; camera-pitch <- 31;
+        scene-background <- #26364a; ambient-intensity <- 0.45;
+        lights <- [
+            LookAtSpot { kind: "spot", parent: "pointer", color: #fee7a4,
+                x: 0, y: 0, z: -0.42, yaw: 0, elevation: 0,
+                intensity: 14, range: 8, inner-angle: 12, outer-angle: 25 },
+            LookAtSpot { kind: "directional", parent: "", color: #e1ecff,
+                x: 0, y: 0, z: 0, yaw: 15, elevation: 58,
+                intensity: 1.4, range: 0, inner-angle: 0, outer-angle: 0 },
+        ];
+    }
+    HorizontalLayout {
+        x <- 12px; y <- 282px; width <- 416px; height <- 32px; spacing <- 8px;
+        move := Button {
+            text <- "移动目标";
+            clicked => {
+                root.beacon = root.beacon.x > 0 ? Point3D.new(-0.6, 1.45, 2.2) : Point3D.new(1.5, 0.75, -1.4);
+            }
+        }
+        follow := Button {
+            text <- root.target-id == "" ? "开启跟踪" : "关闭跟踪";
+            clicked => { root.target-id = root.target-id == "" ? "beacon" : ""; }
+        }
+        flip := Button {
+            text <- root.mirror ? "镜像" : "正常";
+            clicked => { root.mirror = !root.mirror; }
+        }
+    }
+}

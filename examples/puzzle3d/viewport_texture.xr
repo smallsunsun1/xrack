@@ -15,6 +15,9 @@ export component ViewportTextureDemo inherits Window {
     in-out property <bool> mips: false;
     in-out property <bool> hide-source: false;
     in-out property <bool> feedback: false;
+    in-out property <bool> show-consumer: true;
+    out property <int> source-pixels <- source-view.effective-texture-width;
+    out property <int> relay-pixels <- relay-view.effective-texture-height;
 
     property <FeedActor> unit: FeedActor {
         id: "", mesh: "primitive:rectangle",
@@ -65,6 +68,7 @@ export component ViewportTextureDemo inherits Window {
         ];
     }
     consumer-view := SceneView3D {
+        visible <- root.show-consumer;
         x <- 238px; y <- 42px; width <- 220px; height <- 148px;
         model <- root.consumer-model; camera <- "eye";
         scene-background <- #354360; cache-rendering <- true;

@@ -1,0 +1,120 @@
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -88,6 +88,33 @@
+     use unicode_bidi::BidiClass::{L, EN, ES, ET, CS, NSM, ON, WS, S};
+     matches!(character, ' '..='~')
+         || matches!(unicode_bidi::bidi_class(character), L | EN | ES | ET | CS | NSM | ON | WS | S)
++}
++
++struct AlphabeticInk {
++    cursor: f32,
++    top: f32,
++    bottom: f32,
++}
++
++impl AlphabeticInk {
++    fn new(baseline: f32) -> Self {
++        Self {
++            cursor: baseline,
++            top: baseline,
++            bottom: baseline,
++        }
++    }
++
++    fn add(&mut self, glyph: &ShapedGlyph, scale: f32) {
++        let y = self.cursor + glyph.offset_y * scale - glyph.bearing_y * scale;
++        self.top = self.top.min(y);
++        self.bottom = self.bottom.max(y + glyph.height * scale);
++        self.cursor += glyph.advance_y * scale;
++    }
++
++    fn bounds(&self) -> [f32; 2] {
++        [self.top, self.top + (self.bottom - self.top)]
++    }
+ }
+ 
+ const WORD_SLICE_HINT_SLOTS: usize = 16_384;
+@@ -306,20 +333,51 @@
+         Ok(width)
+     }
+ 
++    /// Measures the width and baseline-relative ink of a simple LTR span.
++    #[doc(hidden)]
++    pub fn measure_ltr_width_and_ink(&self, text: &str, paint: &Paint) -> Option<(f32, [f32; 2])> {
++        if !text.chars().all(|ch| (' '..='~').contains(&ch) || unified_ideograph(ch)) {
++            return None;
++        }
++        let mut context = self.0.borrow_mut();
++        let settings = &paint.text;
++        let id = unwrapped_shaping_id(text, settings);
++        if context.shaping_run_cache.contains(&id) {
++            return None;
++        }
++        let style = WordStyle::new(settings.font_ids, &settings.font_variations);
++        let mut width = 0.0;
++        let mut ink = AlphabeticInk::new(0.0);
++        // Match measure_text_width's word advances and alphabetic_ink_bounds's
++        // glyph placement. Leave word-slice shortcuts to the width-only path.
++        for text in text.split_word_bounds() {
++            if sliced_word_width(&context, text, settings, &style).is_some() {
++                return None;
++            }
++            if let Some(word) = cached_word(
++                &mut context,
++                text,
++                rustybuzz::Direction::LeftToRight,
++                &style,
++                WordMetrics::Ink,
++            ) {
++                let scale = word.scale(settings.font_size);
++                width += word.width(scale, settings.letter_spacing);
++                for glyph in &word.glyphs {
++                    ink.add(glyph, scale);
++                }
++            }
++        }
++        context.find_font(&settings.font_ids, |_| (false, ())).ok()?;
++        Some((width, ink.bounds()))
++    }
++
+     /// Measures vertical ink at an alphabetic baseline without positioning glyphs.
+     #[doc(hidden)]
+     pub fn alphabetic_ink_bounds(&self, baseline: f32, text: &str, paint: &Paint) -> Result<[f32; 2], ErrorKind> {
+         let mut context = self.0.borrow_mut();
+         let settings = &paint.text;
+-        let mut cursor = baseline;
+-        let mut top = baseline;
+-        let mut bottom = baseline;
+-        let mut add = |glyph: &ShapedGlyph, scale: f32| {
+-            let y = cursor + glyph.offset_y * scale - glyph.bearing_y * scale;
+-            top = top.min(y);
+-            bottom = bottom.max(y + glyph.height * scale);
+-            cursor += glyph.advance_y * scale;
+-        };
++        let mut ink = AlphabeticInk::new(baseline);
+         if text.chars().all(|ch| unified_ideograph(ch) || simple_ltr_character(ch)) {
+             // These characters form a single LTR run. Use the same words
+             // and floating point additions as shape_run followed by layout.
+@@ -330,7 +388,7 @@
+                 ) {
+                     let scale = word.scale(settings.font_size);
+                     for glyph in &word.glyphs {
+-                        add(glyph, scale);
++                        ink.add(glyph, scale);
+                     }
+                 }
+             }
+@@ -338,10 +396,10 @@
+         } else {
+             let run = cached_run(&mut context, settings, text, None)?;
+             for glyph in &run.metrics.glyphs {
+-                add(glyph, 1.0);
++                ink.add(glyph, 1.0);
+             }
+         }
+-        Ok([top, top + (bottom - top)])
++        Ok(ink.bounds())
+     }
+ 
+     /// Retrieves the scaled advance and offset of a standalone ideograph.

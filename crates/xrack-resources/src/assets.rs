@@ -19,8 +19,8 @@ use xrack_mlir::{Module, OperationRef};
 use xrack_runtime::{
     Image, ImageAsset,
     scene3d::{
-        EnvironmentProbe, InstanceTable3D, MeshAsset, MeshImage, MeshImportOptions,
-        environment_resource_key, mesh_resource_key, texture_resource_key,
+        EnvironmentProbe, InstanceTable3D, MeshAsset, MeshImportOptions, ParticlePointCloud,
+        TextureAsset3D, environment_resource_key, mesh_resource_key, texture_resource_key,
     },
 };
 
@@ -36,9 +36,10 @@ pub struct ResolvedAssets {
 #[derive(Default)]
 pub struct SceneAssets {
     pub meshes: BTreeMap<String, MeshAsset>,
+    pub point_clouds: BTreeMap<String, ParticlePointCloud>,
     pub instance_tables: BTreeMap<String, InstanceTable3D>,
     pub environments: BTreeMap<String, Arc<EnvironmentProbe>>,
-    pub textures: BTreeMap<String, Arc<MeshImage>>,
+    pub textures: BTreeMap<String, TextureAsset3D>,
     pub material_shaders: BTreeMap<String, Arc<str>>,
     pub effects: BTreeMap<String, Arc<str>>,
 }
@@ -71,7 +72,8 @@ pub fn resolve_assets(
     let mut lod_sources = BTreeMap::<((PathBuf, MeshSource), bool), MeshAsset>::new();
     let mut lut_images = Vec::new();
     let mut table_files = BTreeMap::<PathBuf, InstanceTable3D>::new();
-    let mut texture_files = BTreeMap::<PathBuf, Arc<MeshImage>>::new();
+    let mut point_files = BTreeMap::<PathBuf, ParticlePointCloud>::new();
+    let mut texture_files = BTreeMap::<PathBuf, TextureAsset3D>::new();
     let mut visit = |op: OperationRef<'_>| {
         if op.name() == "xr.image_url" {
             let url = op.attr("value")?;
@@ -180,6 +182,34 @@ pub fn resolve_assets(
                 assets.inputs.insert(path);
                 entry.insert(table);
             }
+        } else if op.name() == "xr.particle_shape_url" {
+            let url = op.attr("value")?;
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                assets.scene.point_clouds.entry(url.into())
+            {
+                let mut resolve = || {
+                    let path =
+                        asset_path(base, local_path(url)?, declared.as_ref(), "particle shape")?;
+                    let shape = match point_files.entry(path.clone()) {
+                        std::collections::btree_map::Entry::Occupied(shape) => shape.get().clone(),
+                        std::collections::btree_map::Entry::Vacant(shape) => {
+                            let bytes = read_asset(&path, "particle shape")?;
+                            shape.insert(crate::particle_shape::decode(&bytes)?).clone()
+                        }
+                    };
+                    Ok::<_, String>((path, shape))
+                };
+                let (path, shape) = resolve().map_err(|error| {
+                    let span = op.span();
+                    let source = op.source_file().unwrap_or(&filename);
+                    format!(
+                        "{source}:{}:{}: particle shape {url:?}: {error}",
+                        span.line, span.column
+                    )
+                })?;
+                assets.inputs.insert(path);
+                entry.insert(shape);
+            }
         } else if op.name() == "xr.texture_url" {
             let url = op.attr("value")?;
             let key = texture_resource_key(url);
@@ -201,8 +231,18 @@ pub fn resolve_assets(
                     std::collections::btree_map::Entry::Occupied(texture) => texture.get().clone(),
                     std::collections::btree_map::Entry::Vacant(texture) => {
                         let bytes = read_asset(&path, "3D texture").map_err(error_at_texture)?;
-                        let image = prepare_scene_texture(&bytes).map_err(error_at_texture)?;
-                        texture.insert(Arc::new(image)).clone()
+                        let extension = path.extension().and_then(|ext| ext.to_str());
+                        let asset = if extension.is_some_and(|ext| {
+                            ext.eq_ignore_ascii_case("ktx") || ext.eq_ignore_ascii_case("ktx2")
+                        }) {
+                            let cube = crate::environment::decode_cubemap(&path, &bytes)
+                                .map_err(error_at_texture)?;
+                            TextureAsset3D::Cubemap(cube)
+                        } else {
+                            let image = prepare_scene_texture(&bytes).map_err(error_at_texture)?;
+                            TextureAsset3D::Image(Arc::new(image))
+                        };
+                        texture.insert(asset).clone()
                     }
                 };
                 assets.inputs.insert(path);
@@ -362,6 +402,11 @@ pub fn require_scene_assets(module: &Module, scene: &SceneAssets) -> Result<(), 
                 let url = op.attr("value")?;
                 if !scene.meshes.contains_key(&mesh_resource_key(url, options)) {
                     return Err(format!("unresolved mesh {url:?}"));
+                }
+            } else if op.name() == "xr.particle_shape_url" {
+                let url = op.attr("value")?;
+                if !scene.point_clouds.contains_key(url) {
+                    return Err(format!("unresolved particle shape {url:?}"));
                 }
             } else if op.name() == "xr.texture_url" {
                 let url = op.attr("value")?;

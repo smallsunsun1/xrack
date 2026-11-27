@@ -43,6 +43,9 @@ femtovg = { version = "=0.28.0", default-features = false, features = ["wgpu", "
 wgpu = { version = "=30.0.0", default-features = false, features = ["std", "wgsl", "metal", "vulkan", "dx12"] }
 winit = "=0.30.13"
 fontdb = "0.23"
+lyon_tessellation = "=1.0.23"
+rustybuzz = "=0.20.1"
+unicode-script = "0.5"
 nalgebra = { version = "=0.35.0", default-features = false, features = ["std"] }
 rapier3d = { version = "=0.36.1", features = ["debug-render", "enhanced-determinism"] }
 ttf-parser = "0.25"

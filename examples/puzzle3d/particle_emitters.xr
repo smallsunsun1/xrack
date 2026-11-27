@@ -1,11 +1,14 @@
 struct ParticleBurst { time: float, count: int }
+struct EmitterKey { time: float, position: point3d }
 
 struct SpatialEmitter {
     position: point3d, color: color, size: float, lifetime: float,
     bursts: [ParticleBurst], fade-out: float, seed: int,
     emitter-shape: string, emitter-extents: vector3d, emitter-fill: bool, emitter-roll: float,
     velocity: vector3d, velocity-spread: vector3d, velocity-mode: string, velocity-cone-angle: float,
-    velocity-target: point3d,
+    velocity-target: point3d, velocity-target-normalized: bool, velocity-target-magnitude: float,
+    velocity-speed-variation: float,
+    parent: string, emission-track: [EmitterKey], emitter-id: string, follow-emitter: string,
 }
 
 struct EmitterCamera {
@@ -26,6 +29,16 @@ export component ParticleEmittersDemo inherits Window {
     in-out property <float> turn: 0;
     in-out property <float> time: 0.62;
     in-out property <int> population: 520;
+    in-out property <bool> target-normalized: true;
+    in-out property <float> target-magnitude: 3.2;
+    in-out property <float> target-variation: 0;
+    in-out property <int> target-placement: 0;
+
+    property <[EmitterKey]> no-track: [];
+    property <[EmitterKey]> target-track <- [
+        EmitterKey { time: 0, position: Point3D.new(-1.6, 0, 0) },
+        EmitterKey { time: 1, position: Point3D.new(-0.6, 0, 0) },
+    ];
 
     property <SpatialEmitter> defaults <- SpatialEmitter {
         position: Point3D.new(-2.45, 0, 0), color: #50dbffff, size: 0.069, lifetime: 4,
@@ -34,10 +47,14 @@ export component ParticleEmittersDemo inherits Window {
         emitter-fill: true, emitter-roll: 0, velocity-mode: "vector", velocity-cone-angle: 0,
         velocity: Vector3D.new(0, 0, 0), velocity-spread: Vector3D.new(0, 0, 0),
         velocity-target: Point3D.new(2.20, 1.15, 0),
+        velocity-target-normalized: root.target-normalized, velocity-target-magnitude: root.target-magnitude,
+        velocity-speed-variation: root.target-variation,
+        parent: "", emission-track: root.no-track, emitter-id: "", follow-emitter: "",
     };
     property <[SpatialEmitter]> emitters <- [
         SpatialEmitter {
             position: Point3D.new(-0.35, -0.7, 0), color: #bbcade, size: 0.10, bursts: [ParticleBurst { time: 0, count: 1 }],
+            emitter-id: "carrier",
             ..root.defaults
         },
         SpatialEmitter {
@@ -48,7 +65,10 @@ export component ParticleEmittersDemo inherits Window {
             color: #ff9e4fff, position: Point3D.new(2.2, -1.55, 0),
             emitter-shape: "cylinder", emitter-extents: Vector3D.new(0.52, 0.10, 0.52),
             velocity: Vector3D.new(0, 3.2, 0), velocity-spread: Vector3D.new(1.05, 0.20, 0.5),
-            velocity-mode: root.direction, velocity-cone-angle: root.angle, seed: 48, ..root.defaults
+            velocity-mode: root.direction, velocity-cone-angle: root.angle, seed: 48,
+            parent: root.target-placement == 1 ? "mount" : "",
+            emission-track: root.target-placement == 2 ? root.target-track : root.no-track,
+            follow-emitter: root.target-placement == 3 ? "carrier" : "", ..root.defaults
         },
         SpatialEmitter {
             position: Point3D.new(2.2, 1.15, 0), color: #bbcade, size: 0.10, bursts: [ParticleBurst { time: 0, count: 1 }],
@@ -60,6 +80,11 @@ export component ParticleEmittersDemo inherits Window {
             id: "inspection", mesh: "", x: 0, y: 0, z: 9,
             scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
             color: #ffffff, camera-kind: "orthographic", camera-height: 6,
+        },
+        EmitterCamera {
+            id: "mount", mesh: "", x: -1.6, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+            color: #ffffff, camera-kind: "", camera-height: 0,
         },
     ];
 
@@ -87,8 +112,19 @@ export component ParticleEmittersDemo inherits Window {
             root.direction = root.direction == "cone" ? "target" : root.direction == "target" ? "normalized-vector" : "cone";
         }
     }
+    CheckBox {
+        x <- 554px; y <- 372px; width <- 106px; height <- 35px; text <- "固定速率";
+        enabled <- root.direction == "target"; checked <-> root.target-normalized;
+    }
     Label { x <- 14px; y <- 421px; width <- 49px; height <- 32px; text <- "时间"; }
     time-slider := Slider { x <- 66px; y <- 421px; width <- 352px; height <- 32px; minimum <- 0; maximum <- 1.3; value <-> root.time; }
-    Label { x <- 438px; y <- 421px; width <- 54px; height <- 32px; text <- "锥半角"; }
-    angle-slider := Slider { x <- 496px; y <- 421px; width <- 158px; height <- 32px; minimum <- 0; maximum <- 75; value <-> root.angle; }
+    Label { x <- 438px; y <- 421px; width <- 54px; height <- 32px; text <- root.direction == "target" ? "倍率" : "锥半角"; }
+    angle-slider := Slider {
+        x <- 496px; y <- 421px; width <- 158px; height <- 32px; minimum <- 0; maximum <- 75; value <-> root.angle;
+        visible <- root.direction != "target";
+    }
+    magnitude-slider := Slider {
+        x <- 496px; y <- 421px; width <- 158px; height <- 32px; minimum <- -4; maximum <- 4; value <-> root.target-magnitude;
+        visible <- root.direction == "target";
+    }
 }

@@ -27,6 +27,16 @@ impl RoundedClip {
         }
     }
 
+    pub(crate) fn translates_to(self, other: Self, offset: Point) -> bool {
+        self.radii == other.radii
+            && Rect::new(
+                self.bounds.x + offset.x,
+                self.bounds.y + offset.y,
+                self.bounds.width,
+                self.bounds.height,
+            ) == other.bounds
+    }
+
     pub(crate) fn contains(self, point: Point) -> bool {
         if !self.bounds.contains(point) {
             return false;

@@ -1,0 +1,99 @@
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -3184,6 +3184,8 @@
+     Generic,
+     PremultipliedImageMask,
+     SolidColor,
++    AlphaGlyph,
++    ClearColor,
+ }
+ 
+ // Only what materialize() reads belongs in the key; anything else would split the cache for nothing.
+@@ -3317,6 +3319,15 @@
+                 "mesh_opacity_fragment"
+             } else {
+                 "mesh_fragment"
++            }
++        } else if *fragment_paint == FragmentPaint::ClearColor {
++            "fs_clear_color"
++        } else if *fragment_paint == FragmentPaint::AlphaGlyph {
++            match (*clip_shape, *clip_mask) {
++                (false, false) => "fs_alpha_glyph",
++                (true, false) => "fs_alpha_glyph_clip",
++                (false, true) => "fs_alpha_glyph_mask",
++                (true, true) => "fs_alpha_glyph_clip_mask",
+             }
+         } else if *fragment_paint == FragmentPaint::SolidColor {
+             match (*clip_shape, *clip_mask) {
+@@ -4475,18 +4486,19 @@
+         // to hash, by 1.3 % of the time 600 unclipped fills take to encode.
+         pipeline_state.clip_shape = params.clip.is_some();
+         pipeline_state.clip_mask = params.clip_mask.is_some();
+-        // These programs share the generic vertex geometry and coverage.
+-        // Glyphs and batched geometry use their own fragment paths.
+-        if params.glyph_texture_type == 0
+-            && !params.atlas_fills
++        // These programs share the generic vertex geometry. Batched
++        // geometry has its own vertex and fragment inputs.
++        if !params.atlas_fills
+             && !params.opacity_tiles
+             && !params.direct_opacity
+             && params.instanced_fill_vertices == 0
+             && !params.mesh_palette
+         {
+-            pipeline_state.fragment_paint = match params.shader_type {
+-                ShaderType::FillColor => FragmentPaint::SolidColor,
+-                ShaderType::FillImage
++            pipeline_state.fragment_paint = match (params.shader_type, params.glyph_texture_type) {
++                (ShaderType::FillColor, 0) => FragmentPaint::SolidColor,
++                (ShaderType::FillColor, 1) => FragmentPaint::AlphaGlyph,
++                (ShaderType::FillColorUnclipped, 0) => FragmentPaint::ClearColor,
++                (ShaderType::FillImage, 0)
+                     if pipeline_state.clip_mask
+                         && params.tex_type == 0.0
+                         && params.image_transfer.is_none() =>
+diff --git a/src/renderer/wgpu/shader.wgsl b/src/renderer/wgpu/shader.wgsl
+--- a/src/renderer/wgpu/shader.wgsl
++++ b/src/renderer/wgpu/shader.wgsl
+@@ -195,6 +195,40 @@
+     return params.inner_col * (stroke * (scissorMask(vertex.fpos, params) * clip));
+ }
+ 
++@fragment
++fn fs_clear_color() -> @location(0) vec4f {
++    return params.inner_col;
++}
++
++@fragment
++fn fs_alpha_glyph(vertex: VertexOutput) -> @location(0) vec4f {
++    return shade_alpha_glyph(vertex, 1.0);
++}
++
++@fragment
++fn fs_alpha_glyph_clip(vertex: VertexOutput) -> @location(0) vec4f {
++    return shade_alpha_glyph(vertex, clipMask(vertex.fpos));
++}
++
++@fragment
++fn fs_alpha_glyph_mask(vertex: VertexOutput) -> @location(0) vec4f {
++    return shade_alpha_glyph(vertex, clipMaskCoverage(vertex.fpos));
++}
++
++@fragment
++fn fs_alpha_glyph_clip_mask(vertex: VertexOutput) -> @location(0) vec4f {
++    return shade_alpha_glyph(vertex, clipMask(vertex.fpos) * clipMaskCoverage(vertex.fpos));
++}
++
++fn shade_alpha_glyph(vertex: VertexOutput, clip: f32) -> vec4f {
++    if strokeMask(vertex, params) < params.stroke_thr {
++        discard;
++    }
++    let coverage = scissorMask(vertex.fpos, params) * clip;
++    let mask = textureSample(glyph_texture, glyph_sampler, vertex.ftcoord).x;
++    return params.inner_col * (mask * coverage);
++}
++
+ fn shade(vertex: VertexOutput, clip: f32) -> vec4<f32> {
+     var result: vec4<f32>;
+     let shader_type_int: i32 = i32(params.shader_type);

@@ -43,9 +43,9 @@ void XrackDialect::initialize() {
 bool isExpression(Operation &op) {
   return isa<LiteralOp, ReadOp, DynamicActionOp, DynamicReadOp, LoaderMountedOp, LoaderExternalStatusOp, ControlReadOp, GeometryReadOp, SceneViewQueryOp, StackReadOp, TreeQueryOp, TreeSelectionKeysOp, ListSelectionKeysOp, ViewIndexOp, ViewCountOp, ListSelectionReadOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, MediaReadOp, TextAcceptsOp, TextValidityOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, MeshLoaderReadOp, FocusReadOp, TextSelectionReadOp, TextCommandAvailableOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ButtonPressedOp, ButtonCheckedOp, RadioCheckedOp, NavigationActiveOp, NavigationIndexOp, NavigationCountOp, ToggleStateReadOp, NumericValueReadOp, ComboStateReadOp, ComboPopupReadOp, RangePositionReadOp, ParamOp, UnaryOp, CastOp,
              ListRowSelectedOp, StringifyOp, BinaryOp, ConcatOp, SelectOp, SolidBrushOp, GradientStopOp,
-             LinearGradientOp, RadialGradientOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, TextureUrlOp, ShaderUrlOp, MaterialShaderUrlOp, InstanceTableUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, Hit3DArrayOp, PointerButtonsOp, CallOp,
+             LinearGradientOp, RadialGradientOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, TextureUrlOp, ShaderUrlOp, MaterialShaderUrlOp, InstanceTableUrlOp, ParticleShapeUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, Hit3DArrayOp, PointerButtonsOp, CallOp,
              RoundOp, MathFunctionOp, GeometryFunctionOp, PhysicsFunctionOp, Point2DFieldOp, Point3DFieldOp,
-             ProjectedPoint3DFieldOp, Bounds3DFieldOp, MeshAsset3DFieldOp, MeshNode3DFieldOp, WalkResult3DOp, WalkResult3DFieldOp, Hit3DFieldOp, Instance3DFieldOp, InstanceTable3DFieldOp,
+             ProjectedPoint3DFieldOp, RenderStats3DFieldOp, Bounds3DFieldOp, MeshAsset3DFieldOp, MeshNode3DFieldOp, WalkResult3DOp, WalkResult3DFieldOp, Hit3DFieldOp, Instance3DFieldOp, InstanceTable3DFieldOp, TextureData2DFieldOp,
              PhysicsContact3DFieldOp, PhysicsContact3DArrayOp, PhysicsHit3DFieldOp, PhysicsHit3DArrayOp,
              Vector3DFieldOp, Vector2DFieldOp, Quaternion3DFieldOp, RotationTrack3DFieldOp,
              StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, UpdateRecordOp, DefaultRecordOp, RecordArrayOp,
@@ -90,6 +90,12 @@ LogicalResult ShaderUrlOp::verify() {
   return success();
 }
 
+LogicalResult ParticleShapeUrlOp::verify() {
+  if (getValue().empty())
+    return emitOpError("requires a nonempty particle shape path");
+  return success();
+}
+
 LogicalResult InstanceTableUrlOp::verify() {
   if (getValue().empty())
     return emitOpError("requires a nonempty instance table path");
@@ -120,8 +126,12 @@ LogicalResult TranslateOp::verify() {
   return success();
 }
 
+static bool isSceneTextureSize(llvm::StringRef name) {
+  return name == "effective-texture-width" || name == "effective-texture-height";
+}
+
 static bool geometryProperty(llvm::StringRef name) {
-  return llvm::StringSwitch<bool>(name)
+  return isSceneTextureSize(name) || llvm::StringSwitch<bool>(name)
       .Cases({"layout-x", "layout-y", "layout-width", "layout-height", "layout-ready",
               "window-bounds-x", "window-bounds-y", "window-bounds-width", "window-bounds-height",
               "available-width", "available-height"}, true)
@@ -239,7 +249,15 @@ LogicalResult SceneViewQueryOp::verify() {
   llvm::SmallVector<Type, 4> inputs;
   Type output;
   auto method = getValue();
-  if (method == "project") {
+  if (method == "render-stats") {
+    output = RenderStats3DType::get(context);
+  } else if (method == "has-active-camera") {
+    output = BoolType::get(context);
+  } else if (method == "active-camera") {
+    output = StringType::get(context);
+  } else if (method == "active-camera-row" || method == "active-camera-node") {
+    output = integer;
+  } else if (method == "project") {
     inputs = {world};
     output = ProjectedPoint3DType::get(context);
   } else if (method == "unproject") {
@@ -248,9 +266,9 @@ LogicalResult SceneViewQueryOp::verify() {
   } else if (method == "pick") {
     inputs = {point};
     output = StringType::get(context);
-  } else if (method == "hit" || method == "hit-all") {
+  } else if (method == "hit" || method == "hit-item" || method == "hit-all") {
     inputs = {point};
-    output = method == "hit" ? Type(hit) : Type(hits);
+    output = method == "hit-all" ? Type(hits) : Type(hit);
   } else if (method == "hit-row") {
     inputs = {point, integer};
     output = hit;
@@ -260,9 +278,9 @@ LogicalResult SceneViewQueryOp::verify() {
   } else if (method == "hit-instance") {
     inputs = {point, integer, integer, integer};
     output = hit;
-  } else if (method == "ray-hit" || method == "ray-hit-all" ||
-             method == "ray-hit-row" || method == "ray-hit-subset" ||
-             method == "ray-hit-instance") {
+  } else if (method == "ray-hit" || method == "ray-hit-item" ||
+             method == "ray-hit-all" || method == "ray-hit-row" ||
+             method == "ray-hit-subset" || method == "ray-hit-instance") {
     inputs = {world, Vector3DType::get(context), number};
     if (method == "ray-hit-row")
       inputs.push_back(integer);
@@ -290,8 +308,14 @@ LogicalResult SceneViewQueryOp::verify() {
 
 LogicalResult GeometryReadOp::verify() {
   auto type = getResult().getType();
-  if (geometryProperty(getValue()) &&
-      (getValue() == "layout-ready" ? isa<BoolType>(type) : isa<LengthType>(type)))
+  const auto property = getValue();
+  if (isSceneTextureSize(property)) {
+    if (isa<IntType>(type))
+      return success();
+    return emitOpError("requires an int for a SceneView3D texture size");
+  }
+  if (geometryProperty(property) &&
+      (property == "layout-ready" ? isa<BoolType>(type) : isa<LengthType>(type)))
     return success();
   return emitOpError("requires a typed layout geometry property");
 }
@@ -1601,13 +1625,14 @@ LogicalResult ElementOp::verify() {
            (name == "preload-model" && !isa<SceneModel3DType>(type)) ||
            (name == "camera-fit" && !isa<Bounds3DType>(type)) ||
            ((name == "environment-sky" || name == "skybox-sky" || name == "scissor-rect") && !isa<RecordType>(type)) ||
-           ((name == "lights" || name == "reflection-probes" || name == "fog-volumes" || name == "particle-emitters" || name == "particle-affectors" || name == "scene-effects" || name == "scene-captures") && !isa<RecordListType>(type)) ||
+           ((name == "lights" || name == "reflection-probes" || name == "fog-volumes" || name == "particle-emitters" || name == "particle-instance-models" || name == "particle-affectors" || name == "scene-effects" || name == "scene-captures") && !isa<RecordListType>(type)) ||
            ((name == "selected-object" || name == "environment" || name == "skybox-source" ||
              name == "camera" || name == "temporal-aa-mode" || name == "scene-effect" ||
              name == "scene-color-capture" || name == "scene-depth-capture" ||
              name == "render-mode" || name == "render-format" || name == "render-overrides" ||
              name == "texture-source" || name == "shadow-map-precision" || name == "material-debug" || name == "oit-method") && !isa<StringType>(type)) ||
            ((name == "shadows" || name == "imported-lights" || name == "environment-skybox" || name == "frustum-culling" ||
+             name == "scene-grid" || name == "scene-grid-axes" ||
              name == "depth-prepass" || name == "debug-wireframe" ||
              name == "shadow-debug-cascades" || name == "shadow-debug-light-volumes" ||
              name == "shadow-debug-casters" || name == "shadow-debug-receivers" ||
@@ -1619,13 +1644,13 @@ LogicalResult ElementOp::verify() {
              name == "lens-flare" || name == "lens-flare-aspect-corrected" ||
              name == "fog-depth-enabled" || name == "fog-height-enabled" ||
              name == "fog-transmit-enabled" || name == "depth-of-field" || name == "scene-effect-depth" || name == "scene-effect-animate" ||
-             name == "texture-only" || name == "texture-mipmaps") && !isa<BoolType>(type)) ||
+             name == "texture-only" || name == "texture-mipmaps" || name == "auto-camera") && !isa<BoolType>(type)) ||
            ((name == "shadow-map-size" || name == "shadow-cascades" || name == "bloom-levels" ||
              name == "lens-flare-ghost-count" || name == "lens-flare-blur-levels" ||
              name == "fxaa-search-steps" ||
              name == "scene-lut-size" || name == "texture-width" || name == "texture-height" || name == "progressive-aa" || name == "ssr-steps" || name == "ssgi-rays" || name == "ssgi-steps" ||
              name == "fog-volume-samples" || name == "fog-volume-density-samples" || name == "layer-mask" ||
-             name == "scene-effect-history-revision" || name == "reflection-faces-per-frame" ||
+             name == "scene-effect-history-revision" || name == "render-stats-revision" || name == "reflection-faces-per-frame" ||
              name == "reflection-filter-passes-per-frame" || name == "reflection-filter-texels-per-frame" ||
              name == "bake-denoise-passes") && !isa<IntType>(type)) ||
            (name == "physics-world" && !isa<PhysicsWorld3DType>(type)) ||
@@ -1636,7 +1661,7 @@ LogicalResult ElementOp::verify() {
            ((name == "dof-blur-radius" || name == "lod-fade-width") && !isa<LengthType>(type)) ||
            (name == "scene-tone-map" && !isa<SceneToneMapType>(type)) ||
            ((name == "scene-background" || name == "ambient-color" || name == "fog-color" ||
-             name == "scene-vignette-color") && !isa<ColorType>(type)) ||
+             name == "scene-vignette-color" || name == "scene-grid-color") && !isa<ColorType>(type)) ||
            (((name.starts_with("camera-") && name != "camera-fit") || name.starts_with("light-") ||
              name == "ambient-intensity" || name == "shadow-bias" || name == "shadow-distance" ||
              name == "shadow-cascade-blend" || name == "shadow-split-balance" ||
@@ -1644,6 +1669,7 @@ LogicalResult ElementOp::verify() {
              name == "environment-pitch" || name == "environment-roll" || name == "environment-horizon" ||
              name == "skybox-yaw" || name == "skybox-pitch" || name == "skybox-roll" ||
              name == "skybox-intensity" || name == "skybox-blur" ||
+             name == "scene-grid-height" || name == "scene-grid-spacing" ||
              name == "bake-indirect-factor" ||
              name == "supersampling" || name == "temporal-aa-strength" || name == "render-scale" ||
              name == "fxaa-edge-threshold" || name == "fxaa-min-threshold" ||
@@ -3232,6 +3258,13 @@ LogicalResult TextCommandOp::verify() {
   return emitOpError("requires set-selection-offsets(int, int), edit-cell(int, int), a valid text edit signature, or a known command with no operands");
 }
 
+LogicalResult SceneTouchOp::verify() {
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("touch commands are not allowed in pure callbacks");
+  return success();
+}
+
 LogicalResult ScrollCommandOp::verify() {
   if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
@@ -3626,7 +3659,7 @@ static LogicalResult verifyStatementBlock(Region &body, bool allowReturn) {
       return child.emitOpError("must be immediately before xr.end in a callback");
     if (!isa<IfOp, ForOp, LocalOp, AssignOp, InvokeOp, EvaluateOp, LogOp, NavigateOp, TimerCommandOp, MediaCommandOp, PopupCommandOp,
              FileDialogOpenOp, NativeDialogOpenOp, WindowCloseOp, WindowCommandOp, CheckGroupCommandOp,
-             SecondaryWindowCommandOp, FocusCommandOp, ButtonClickOp, ButtonToggleOp, SwipeCancelOp, TextCommandOp, ScrollCommandOp, PositionChildOp, SourceSelectionOp, TreeCommandOp, TableSortCommandOp, TableSelectionCommandOp, TableHistoryCommandOp, SplitRestoreOp, CancelFlickOp, ReturnToBoundsOp, MoveColumnOp, MoveRowOp, MoveNavigationItemOp, ModelEditOp,
+             SecondaryWindowCommandOp, FocusCommandOp, ButtonClickOp, ButtonToggleOp, SwipeCancelOp, TextCommandOp, ScrollCommandOp, SceneTouchOp, PositionChildOp, SourceSelectionOp, TreeCommandOp, TableSortCommandOp, TableSelectionCommandOp, TableHistoryCommandOp, SplitRestoreOp, CancelFlickOp, ReturnToBoundsOp, MoveColumnOp, MoveRowOp, MoveNavigationItemOp, ModelEditOp,
              SetRowHeightOp, ReturnOp, EndOp>(child) &&
         !isExpression(child))
       return child.emitOpError("is not valid in a callback or event handler");
@@ -4091,6 +4124,9 @@ LogicalResult MathFunctionOp::verify() {
 
 void GeometryFunctionOp::getEffects(
     llvm::SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  // Asset catalogs return editable, detached model snapshots.
+  if (isa<StringListType>(getResult().getType()))
+    effects.emplace_back(MemoryEffects::Allocate::get(), cast<OpResult>(getResult()));
   // Scene queries read mutable models, including nested vertex and index
   // tables. An unchanged SSA model handle does not imply unchanged geometry.
   if (llvm::any_of(getInputs(), [](Value input) {
@@ -4426,7 +4462,9 @@ LogicalResult GeometryFunctionOp::verify() {
     } else if (operation != "quaternion-identity") {
       return emitOpError("unknown quaternion function");
     }
-  } else if (operation == "mesh-node-3d" || operation == "mesh-node-indices-3d") {
+  } else if (operation == "mesh-node-3d" || operation == "mesh-node-indices-3d" ||
+             operation == "mesh-material-slots-3d" || operation == "mesh-material-variants-3d" ||
+             operation == "mesh-animation-clips-3d" || operation == "mesh-animation-duration-3d") {
     auto args = getInputs().getTypes();
     if (args.empty() || !isa<MeshAsset3DType, StringType>(args.front()))
       return emitOpError("expected a meshasset3d or asset key string");
@@ -4436,10 +4474,17 @@ LogicalResult GeometryFunctionOp::verify() {
         return emitOpError("expected an integer node index or string selector");
       inputs.push_back(args[1]);
       output = MeshNode3DType::get(getContext());
-    } else {
+    } else if (operation == "mesh-animation-duration-3d") {
+      inputs.push_back(StringType::get(getContext()));
+      output = number;
+    } else if (operation == "mesh-node-indices-3d") {
       if (args.size() == 2)
         inputs.push_back(StringType::get(getContext()));
       output = IntListType::get(getContext());
+    } else {
+      if (operation == "mesh-material-slots-3d" && args.size() == 2)
+        inputs.push_back(StringType::get(getContext()));
+      output = StringListType::get(getContext());
     }
   } else if (operation == "scene-node-3d") {
     auto args = getInputs().getTypes();
@@ -4448,6 +4493,9 @@ LogicalResult GeometryFunctionOp::verify() {
       return emitOpError("expected a scene, object id and integer node index or string selector");
     inputs.assign(args.begin(), args.end());
     output = MeshNode3DType::get(getContext());
+  } else if (operation == "geometry-status-3d" || operation == "geometry-error-3d") {
+    inputs = {SceneModel3DType::get(getContext()), StringType::get(getContext())};
+    output = StringType::get(getContext());
   } else if (operation == "bounds-3d") {
     if (getInputs().empty() || !isa<RecordListType, SceneModel3DType>(getInputs().front().getType()))
       return emitOpError("bounds requires a scene or scene object record list");
@@ -4462,6 +4510,13 @@ LogicalResult GeometryFunctionOp::verify() {
     if (getInputs().size() == 2)
       inputs.push_back(PhysicsWorld3DType::get(getContext()));
     output = SceneModel3DType::get(getContext());
+  } else if (operation == "combine-3d") {
+    auto scene = SceneModel3DType::get(getContext());
+    inputs = {scene, scene};
+    output = scene;
+  } else if (operation == "texture-rgba8") {
+    inputs = {IntType::get(getContext()), IntType::get(getContext()), IntListType::get(getContext())};
+    output = TextureData2DType::get(getContext());
   } else if (operation == "prepare-instance-table-3d") {
     if (getInputs().size() != 1 || !isa<RecordListType>(getInputs().front().getType()))
       return emitOpError("instance table preparation requires a record list");
@@ -4637,6 +4692,15 @@ LogicalResult RotationTrack3DFieldOp::verify() {
   return emitOpError("invalid rotation track field or result type");
 }
 
+LogicalResult TextureData2DFieldOp::verify() {
+  auto type = getResult().getType();
+  auto field = getValue();
+  if (((field == "width" || field == "height") && isa<IntType>(type)) ||
+      (field == "valid" && isa<BoolType>(type)))
+    return success();
+  return emitOpError("invalid texture data field or result type");
+}
+
 LogicalResult InstanceTable3DFieldOp::verify() {
   auto type = getResult().getType();
   auto field = getValue();
@@ -4664,7 +4728,8 @@ LogicalResult Hit3DFieldOp::verify() {
   auto type = getResult().getType();
   auto field = getValue();
   if (((field == "valid" || field == "entering") && isa<BoolType>(type)) ||
-      (field == "object-id" && isa<StringType>(type)) ||
+      ((field == "object-id" || field == "item-source") && isa<StringType>(type)) ||
+      (field == "item-position" && isa<Point2DType>(type)) ||
       ((field == "row-index" || field == "mesh-node-index" || field == "instance-index") &&
        isa<IntType>(type)) ||
       ((field == "distance" || field == "u" || field == "v") && isa<FloatType>(type)) ||
@@ -4746,6 +4811,22 @@ LogicalResult ProjectedPoint3DFieldOp::verify() {
       ((field == "valid" || field == "inside") && isa<BoolType>(type)))
     return success();
   return emitOpError("invalid projected point field or result type");
+}
+
+LogicalResult RenderStats3DFieldOp::verify() {
+  auto *context = getContext();
+  Type expected = llvm::StringSwitch<Type>(getValue())
+      .Cases({"valid", "gpu-supported", "gpu-valid", "gpu-truncated"}, BoolType::get(context))
+      .Case("work", StringType::get(context))
+      .Cases({"revision", "frame", "output-width", "output-height", "raster-width",
+              "raster-height", "samples", "cpu-micros", "mesh-draws", "mesh-vertices",
+              "sprite-draws", "sprites", "shadow-passes", "reflection-faces",
+              "capture-passes", "depth-prepass-draws", "mesh-upload-bytes", "gpu-nanos",
+              "gpu-passes"}, IntType::get(context))
+      .Default(Type());
+  if (expected != getResult().getType())
+    return emitOpError("invalid render statistics field or result type");
+  return success();
 }
 
 LogicalResult Vector2DFieldOp::verify() {
@@ -4882,9 +4963,18 @@ LogicalResult LiteralOp::verify() {
     valid = parseFloatLiteral(spelling).has_value();
   } else if (isa<Point2DType, Vector2DType, Transform2DType, Point3DType, Vector3DType, Quaternion3DType>(type)) {
     valid = parseGeometryLiteral(type, spelling).has_value();
+  } else if (isa<TextureData2DType>(type)) {
+    const auto [dimensions, hex] = spelling.split(':');
+    const auto [w, h] = dimensions.split('x');
+    unsigned width, height;
+    valid = spelling.empty() ||
+            (!w.getAsInteger(10, width) && width > 0 && width <= MaxTextureDataDimension &&
+             !h.getAsInteger(10, height) && height > 0 && height <= MaxTextureDataDimension &&
+             hex.size() == size_t(width) * height * 8 &&
+             llvm::all_of(hex, [](char byte) { return llvm::isHexDigit(byte); }));
   } else if (isa<RotationTrack3DType>(type)) {
     valid = parseRotationTrackLiteral(spelling).has_value();
-  } else if (isa<ProjectedPoint3DType, Hit3DType, Instance3DType, InstanceTable3DType, MeshAsset3DType, MeshNode3DType, Bounds3DType, WalkResult3DType, PhysicsWorld3DType, SceneModel3DType, PhysicsContact3DType, PhysicsHit3DType>(type)) {
+  } else if (isa<ProjectedPoint3DType, RenderStats3DType, Hit3DType, Instance3DType, InstanceTable3DType, MeshAsset3DType, MeshNode3DType, Bounds3DType, WalkResult3DType, PhysicsWorld3DType, SceneModel3DType, PhysicsContact3DType, PhysicsHit3DType>(type)) {
     valid = spelling.empty();
   } else if (isa<BoolType>(type)) {
     valid = spelling == "true" || spelling == "false";
@@ -5192,7 +5282,8 @@ static LogicalResult verifyDirectGeometryFlow(Operation *op, const Owners &owner
                 "preferred-width", "preferred-height", "max-width", "max-height",
                 "visible", "spacing", "layout-order", "layout-direction", "row", "col", "orientation",
                 "content-width", "content-height", "viewport-height", "content-x", "content-y",
-                "reserve-scroll-bar-space", "vertical-scroll-bar-policy", "horizontal-scroll-bar-policy"}, true)
+                "reserve-scroll-bar-space", "vertical-scroll-bar-policy", "horizontal-scroll-bar-policy",
+                "texture-width", "texture-height", "render-scale"}, true)
         .Default(false) || name.starts_with("padding-") ||
         name.starts_with("transform-") || name == "padding";
   };
@@ -5218,7 +5309,8 @@ static LogicalResult verifyDirectGeometryFlow(Operation *op, const Owners &owner
     Operation *geometrySource = nullptr;
     if (auto read = dyn_cast<GeometryReadOp>(definition)) {
       geometrySource = owners.lookup(read.getOwner());
-    } else if (auto query = dyn_cast<SceneViewQueryOp>(definition)) {
+    } else if (auto query = dyn_cast<SceneViewQueryOp>(definition);
+               query && query.getValue() != "render-stats") {
       geometrySource = owners.lookup(query.getOwner());
     } else if (auto read = dyn_cast<ViewportReadOp>(definition); read && isScrollBarExtent(read.getValue())) {
       geometrySource = owners.lookup(read.getOwner());
@@ -5885,6 +5977,10 @@ static LogicalResult verifyReferences(ComponentOp component,
       auto target = elementOwner(read.getOwner());
       if (!target || target.getKind() != "AnimatedImage")
         result = op->emitOpError("requires an AnimatedImage owner");
+    } else if (auto touch = dyn_cast<SceneTouchOp>(op)) {
+      auto owner = elementOwner(touch.getOwner());
+      if (!owner || owner.getKind() != "SceneView3D" || !staticPropertyOwner(owner))
+        result = op->emitOpError("requires a statically addressed SceneView3D");
     } else if (auto query = dyn_cast<SceneViewQueryOp>(op)) {
       auto owner = elementOwner(query.getOwner());
       if (!owner || owner.getKind() != "SceneView3D" || !staticPropertyOwner(owner))
@@ -5905,6 +6001,8 @@ static LogicalResult verifyReferences(ComponentOp component,
       else if ((read.getValue() == "available-width" || read.getValue() == "available-height") &&
                !isPane(element.getKind()) && element.getKind() != "ApplicationWindow")
         result = op->emitOpError("available size requires a Pane or ControlFrame or ApplicationWindow");
+      else if (isSceneTextureSize(read.getValue()) && element.getKind() != "SceneView3D")
+        result = op->emitOpError("effective texture size requires a SceneView3D");
     } else if (auto read = dyn_cast<ViewportReadOp>(op)) {
       auto target = elementOwner(read.getOwner());
       if (isScrollBarExtent(read.getValue()) && (!target || target.getKind() != "ScrollView"))
@@ -6597,7 +6695,7 @@ static bool recordScalarType(llvm::StringRef type) {
       .Cases({"int", "float", "bool", "string", "styled-text", "length", "color", "brush",
               "point2d", "vector2d", "transform2d", "Point2D", "Vector2D", "Transform2D",
               "point3d", "Point3D", "vector3d", "Vector3D", "quaternion3d", "Quaternion3D", "rotationtrack3d", "RotationTrack3D", "hit3d", "Hit3D",
-              "projectedpoint3d", "ProjectedPoint3D", "instance3d", "Instance3D", "instancetable3d", "InstanceTable3D", "meshasset3d", "MeshAsset3D", "meshnode3d", "MeshNode3D", "bounds3d", "Bounds3D", "walkresult3d", "WalkResult3D",
+              "projectedpoint3d", "ProjectedPoint3D", "renderstats3d", "RenderStats3D", "instance3d", "Instance3D", "instancetable3d", "InstanceTable3D", "texturedata2d", "TextureData2D", "meshasset3d", "MeshAsset3D", "meshnode3d", "MeshNode3D", "bounds3d", "Bounds3D", "walkresult3d", "WalkResult3D",
               "physicsworld3d", "PhysicsWorld3D", "scenemodel3d", "SceneModel3D", "physicscontact3d", "PhysicsContact3D",
               "physicshit3d", "PhysicsHit3D",
               "image", "LogLevel", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering", "ButtonDisplay",
@@ -6619,7 +6717,7 @@ static bool validRecordFieldType(llvm::StringRef type) {
   if (recordScalarType(type) || recordIdentifier(type))
     return true;
   auto element = recordListElement(type);
-  return element && (*element == "int" || !recordScalarType(*element));
+  return element && (*element == "int" || *element == "string" || !recordScalarType(*element));
 }
 
 static LogicalResult indexRecord(RecordDeclOp record, Records &records, EnumLayouts &enums) {
@@ -6728,7 +6826,7 @@ static LogicalResult verifyRecordLayouts(ModuleOp module, const Records &records
     auto visitFields = [&](const Fields &fields) -> LogicalResult {
       for (const auto &field : fields) {
         llvm::StringRef type = field.second;
-        if (recordScalarType(type) || type == "[int]")
+        if (recordScalarType(type) || type == "[int]" || type == "[string]")
           continue;
         auto target = declarations.find(recordListElement(type).value_or(type));
         if (target == declarations.end())
@@ -7047,22 +7145,29 @@ static LogicalResult verifyEnumOperations(Operation *op,
   return success();
 }
 
+static LogicalResult verifySceneRecordFields(
+    Operation *op, llvm::StringRef record, const Records &records, const EnumLayouts &enums,
+    llvm::StringRef subject,
+    std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>> fields,
+    std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>> optionalFields) {
+  for (const auto &[field, expected] : fields) {
+    if (recordFieldType(records, enums, record, field) != expected)
+      return op->emitOpError() << subject << " requires a " << expected << " field named " << field;
+  }
+  for (const auto &[field, expected] : optionalFields)
+    if (auto actual = recordFieldType(records, enums, record, field);
+        actual && *actual != expected)
+      return op->emitOpError() << subject << " requires a " << expected << " field named " << field;
+  return success();
+}
+
 static LogicalResult verifySceneRecords(
     Operation *op, Type type, const Records &records, const EnumLayouts &enums,
     llvm::StringRef subject,
     std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>> fields,
     std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>> optionalFields) {
-  auto model = dyn_cast<RecordListType>(type);
-  if (!model)
-    return success();
-  for (const auto &[field, expected] : fields) {
-    if (recordFieldType(records, enums, model.getName(), field) != expected)
-      return op->emitOpError() << subject << " requires a " << expected << " field named " << field;
-  }
-  for (const auto &[field, expected] : optionalFields)
-    if (auto actual = recordFieldType(records, enums, model.getName(), field);
-        actual && *actual != expected)
-      return op->emitOpError() << subject << " requires a " << expected << " field named " << field;
+  if (auto model = dyn_cast<RecordListType>(type))
+    return verifySceneRecordFields(op, model.getName(), records, enums, subject, fields, optionalFields);
   return success();
 }
 
@@ -7132,10 +7237,13 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
     if (auto inputs = recordFieldType(records, enums, material, "shader-textures")) {
       auto element = recordListElement(*inputs);
       if (!element ||
-          (recordFieldType(records, enums, *element, "texture") != "string" &&
+          (recordFieldType(records, enums, *element, "data") != "texturedata2d" &&
+           recordFieldType(records, enums, *element, "texture") != "string" &&
            recordFieldType(records, enums, *element, "item") != "string" &&
            recordFieldType(records, enums, *element, "capture") != "string"))
-        return op->emitOpError("3D material shader-textures requires a record list with a string field named texture, item or capture");
+        return op->emitOpError("3D material shader-textures requires a record list with texturedata2d data or a string texture, item or capture");
+      if (auto data = recordFieldType(records, enums, *element, "data"); data && *data != "texturedata2d")
+        return op->emitOpError("3D material shader texture requires a texturedata2d field named data");
       for (llvm::StringRef name : {"texture", "item", "capture", "attachment", "filter", "wrap-u", "wrap-v", "color-space"})
         if (auto field = recordFieldType(records, enums, *element, name); field && *field != "string")
           return op->emitOpError("3D material shader texture requires a string field named ") << name;
@@ -7163,11 +7271,14 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
                                "clearcoat-normal-map", "transmission-map",
                                "specular-map", "specular-color-map", "thickness-map", "anisotropy-map"}) {
     auto texture = recordFieldType(records, enums, material, name);
-    if (!texture || *texture == "string")
+    if (!texture || *texture == "string" || (name != "base-item" && *texture == "texturedata2d"))
       continue;
     auto schema = records.find(*texture);
     if (schema == records.end() || enums.contains(*texture))
-      return op->emitOpError("3D material map requires a texture key or record");
+      return op->emitOpError("3D material map requires a texture key, texturedata2d or sampler record");
+    auto data = recordFieldType(records, enums, *texture, "data");
+    if (data && (*data != "texturedata2d" || name == "base-item"))
+      return op->emitOpError("invalid 3D sampler data field, expected texturedata2d on a material map");
     for (const auto &[setting, expected] :
          std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
              {"source", "string"}, {"wrap-u", "string"}, {"wrap-v", "string"},
@@ -7177,7 +7288,7 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
              {"uv-offset-u", "float"}, {"uv-offset-v", "float"}, {"uv-rotation", "float"},
              {"uv-flip-u", "bool"}, {"uv-flip-v", "bool"}}) {
       auto field = recordFieldType(records, enums, *texture, setting);
-      if ((setting == "source" || field) && (!field || *field != expected))
+      if (((setting == "source" && !data) || field) && (!field || *field != expected))
         return op->emitOpError("invalid 3D texture field ") << setting << ", expected " << expected;
     }
   }
@@ -7263,13 +7374,25 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
        {"casts-reflections", "bool"}, {"parent", "string"}, {"parent-node", "string"}, {"layers", "int"},
        {"physics-body", "string"}, {"visible", "bool"}, {"depth-bias", "float"},
        {"motion-vector-enabled", "bool"}, {"motion-vector-scale", "float"},
+       {"model-blend-mode", "string"}, {"model-blend-order", "string"},
+       {"model-blend-end-node", "string"}, {"model-blend-activation-node", "string"},
+       {"model-blend-activation-speed", "float"},
+       {"model-blend-time", "float"}, {"model-blend-duration", "float"},
+       {"model-blend-stagger", "float"}, {"model-blend-arrival", "float"},
+       {"model-blend-origin", "point3d"}, {"model-blend-offset", "vector3d"},
+       {"model-blend-orientation", "quaternion3d"}, {"model-blend-scale", "vector3d"},
+       {"model-blend-velocity", "vector3d"}, {"model-blend-spread", "vector3d"},
+       {"model-blend-gravity", "vector3d"}, {"model-blend-spin", "vector3d"},
+       {"model-blend-axis", "vector3d"}, {"model-blend-seed", "int"},
        {"instancing-lod-min", "float"}, {"instancing-lod-max", "float"},
        {"instancing-lod-factor", "float"},
        {"lod-of", "string"}, {"lod-max-size", "length"}, {"lod-bias", "float"},
        {"camera-lod-bias", "float"}, {"pickable", "bool"}, {"collidable", "bool"}, {"trigger", "bool"}, {"pivot-x", "float"}, {"pivot-y", "float"}, {"pivot-z", "float"},
        {"camera-kind", "string"}, {"camera-fov", "float"}, {"camera-height", "float"}, {"camera-width", "float"},
+       {"camera-fov-axis", "string"},
        {"camera-near", "float"}, {"camera-far", "float"}, {"camera-look-at", "string"},
        {"camera-look-at-point", "point3d"}, {"camera-up", "vector3d"},
+       {"look-at", "string"}, {"look-at-up", "vector3d"},
        {"camera-clip-normal", "vector3d"}, {"camera-clip-space", "string"},
        {"camera-reverse-depth", "bool"},
        {"camera-left", "float"}, {"camera-right", "float"},
@@ -7327,6 +7450,19 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
           return op->emitOpError("3D animation-layers requires a ") << expected << " field named " << name;
       }
     }
+    if (auto overrides = recordFieldType(records, enums, model.getName(), "animation-node-overrides")) {
+      auto entry = recordListElement(*overrides);
+      if (!entry || !records.contains(*entry) || enums.contains(*entry))
+        return op->emitOpError("3D animation-node-overrides requires a list of node records");
+      for (const auto &[name, expected] :
+           std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+               {"node", "string"}, {"translation", "vector3d"}, {"rotation", "quaternion3d"},
+               {"scale", "vector3d"}, {"weight", "float"}}) {
+        auto field = recordFieldType(records, enums, *entry, name);
+        if ((name == "node" || field) && field != expected)
+          return op->emitOpError("3D animation-node-overrides requires a ") << expected << " field named " << name;
+      }
+    }
     auto collisionShapes = recordFieldType(records, enums, model.getName(), "collision-shapes");
     if (collisionShapes) {
       auto shape = recordListElement(*collisionShapes);
@@ -7335,9 +7471,60 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
       if (failed(verifyCollisionShapes(op, *shape, records, enums)))
         return failure();
     }
+    auto skinJoints = recordFieldType(records, enums, model.getName(), "skin-joints");
+    if (skinJoints) {
+      auto joint = recordListElement(*skinJoints);
+      if (!joint)
+        return op->emitOpError("3D skin-joints requires a list of joint records");
+      if (failed(verifySceneRecordFields(op, *joint, records, enums, "3D skin-joints",
+                                         {{"node", "string"}}, {})))
+        return failure();
+      if (auto matrix = recordFieldType(records, enums, *joint, "inverse-bind")) {
+        if (!records.contains(*matrix) || enums.contains(*matrix))
+          return op->emitOpError("3D inverse-bind requires a matrix record");
+        char name[] = "m11";
+        for (char row = '1'; row <= '4'; ++row)
+          for (char column = '1'; column <= '4'; ++column) {
+            name[1] = row;
+            name[2] = column;
+            if (recordFieldType(records, enums, *matrix, name) != "float")
+              return op->emitOpError("3D inverse-bind requires a float field named ") << name;
+          }
+      }
+    }
+    bool weightedGeometry = false;
+    bool tangentMorph = false;
+    bool binormalMorph = false;
     if (auto geometry = recordFieldType(records, enums, model.getName(), "geometry")) {
       if (!records.contains(*geometry) || enums.contains(*geometry))
         return op->emitOpError("3D model requires geometry to be a record");
+      if (auto weights = recordFieldType(records, enums, *geometry, "skin-weights")) {
+        if (!skinJoints || !recordFieldType(records, enums, *geometry, "vertices"))
+          return op->emitOpError("3D skin-weights requires vertices and skin-joints");
+        auto weight = recordListElement(*weights);
+        if (!weight)
+          return op->emitOpError("3D skin-weights requires a list of weight records");
+        if (failed(verifySceneRecordFields(op, *weight, records, enums, "3D skin-weights",
+                                           {{"vertex", "int"}, {"joint", "int"}, {"weight", "float"}}, {})))
+          return failure();
+        weightedGeometry = true;
+      }
+      if (auto deltas = recordFieldType(records, enums, *geometry, "morph-deltas")) {
+        if (!recordFieldType(records, enums, *geometry, "vertices"))
+          return op->emitOpError("3D morph-deltas requires geometry.vertices");
+        auto delta = recordListElement(*deltas);
+        if (!delta)
+          return op->emitOpError("3D morph-deltas requires a list of delta records");
+        if (failed(verifySceneRecordFields(
+                op, *delta, records, enums, "3D morph-deltas",
+                {{"target", "string"}, {"vertex", "int"}},
+                {{"position", "vector3d"}, {"normal", "vector3d"}, {"tangent", "vector3d"},
+                 {"binormal", "vector3d"}, {"u", "float"}, {"v", "float"}, {"u1", "float"}, {"v1", "float"},
+                 {"color-r", "float"}, {"color-g", "float"}, {"color-b", "float"}, {"color-a", "float"}})))
+          return failure();
+        tangentMorph = recordFieldType(records, enums, *delta, "tangent").has_value();
+        binormalMorph = recordFieldType(records, enums, *delta, "binormal").has_value();
+      }
       if (auto vertices = recordFieldType(records, enums, *geometry, "vertices")) {
         if (recordFieldType(records, enums, *geometry, "shape"))
           return op->emitOpError("3D geometry cannot declare both shape and vertices");
@@ -7347,10 +7534,19 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
         for (const auto &[name, expected] :
              std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
                  {"position", "point3d"}, {"normal", "vector3d"},
+                 {"tangent", "vector3d"}, {"tangent-sign", "float"},
                  {"u", "float"}, {"v", "float"}, {"u1", "float"}, {"v1", "float"}, {"color", "color"}}) {
           auto field = recordFieldType(records, enums, *vertex, name);
           if ((name == "position" || field) && (!field || *field != expected))
             return op->emitOpError("invalid 3D vertex field ") << name << ", expected " << expected;
+        }
+        if (!recordFieldType(records, enums, *vertex, "tangent")) {
+          if (tangentMorph)
+            return op->emitOpError("3D morph-deltas tangent requires a vertex tangent");
+          if (binormalMorph)
+            return op->emitOpError("3D morph-deltas binormal requires a vertex tangent");
+          if (recordFieldType(records, enums, *vertex, "tangent-sign"))
+            return op->emitOpError("3D tangent-sign requires a vertex tangent");
         }
         if (auto indices = recordFieldType(records, enums, *geometry, "indices"); indices && *indices != "[int]")
           return op->emitOpError("3D geometry indices require [int]");
@@ -7374,7 +7570,8 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
                  {"shape", "string"}, {"width", "float"}, {"height", "float"},
                  {"depth", "float"}, {"radius", "float"}, {"top-radius", "float"},
                  {"tube-radius", "float"}, {"segments", "int"}, {"rings", "int"},
-                 {"capped", "bool"}}) {
+                 {"capped", "bool"}, {"text", "string"}, {"font", "Font"}, {"text-scale", "float"},
+                 {"asynchronous", "bool"}}) {
           auto field = recordFieldType(records, enums, *geometry, name);
           if ((name == "shape" || field) && (!field || *field != expected))
             return op->emitOpError("invalid 3D geometry field ") << name << ", expected " << expected;
@@ -7385,6 +7582,8 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
                !collisionShapes) {
       return op->emitOpError("3D model requires mesh, mesh-asset, a geometry record, or a collision-shapes list");
     }
+    if (skinJoints && !weightedGeometry && !recordFieldType(records, enums, model.getName(), "instance-of"))
+      return op->emitOpError("3D skin-joints requires geometry.skin-weights or instance-of");
     if (auto material = recordFieldType(records, enums, model.getName(), "material"))
       if (failed(verifySceneMaterial(op, *material, records, enums)))
         return failure();
@@ -7403,10 +7602,11 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
   return success();
 }
 
-static LogicalResult verifySceneLights(BindOp lights, const Records &records,
-                                       const EnumLayouts &enums) {
-  return verifySceneRecords(
-      lights, lights.getInput().getType(), records, enums, "3D lights",
+static LogicalResult verifySceneLightRecord(Operation *op, llvm::StringRef record,
+                                            const Records &records, const EnumLayouts &enums,
+                                            llvm::StringRef subject) {
+  return verifySceneRecordFields(
+      op, record, records, enums, subject,
       {{"kind", "string"}, {"x", "float"}, {"y", "float"}, {"z", "float"}, {"yaw", "float"},
        {"elevation", "float"}, {"intensity", "float"}, {"color", "color"}, {"range", "float"},
        {"inner-angle", "float"}, {"outer-angle", "float"}},
@@ -7419,36 +7619,80 @@ static LogicalResult verifySceneLights(BindOp lights, const Records &records,
        {"shadow-lock-texels", "bool"}, {"bake-mode", "string"}, {"scope", "string"}});
 }
 
+static LogicalResult verifySceneLights(BindOp lights, const Records &records,
+                                       const EnumLayouts &enums) {
+  if (auto recordsType = dyn_cast<RecordListType>(lights.getInput().getType()))
+    return verifySceneLightRecord(lights, recordsType.getName(), records, enums, "3D lights");
+  return success();
+}
+
+static LogicalResult verifyParticleInstanceModels(BindOp models, const Records &records,
+                                                  const EnumLayouts &enums) {
+  return verifySceneRecords(models, models.getInput().getType(), records, enums,
+                            "3D particle instance models",
+                            {{"emitter", "string"}, {"model", "scenemodel3d"}}, {});
+}
+
 static LogicalResult verifyParticleEmitters(BindOp emitters, const Records &records,
                                             const EnumLayouts &enums) {
   if (failed(verifySceneRecords(
       emitters, emitters.getInput().getType(), records, enums, "3D particle emitters",
       {{"position", "point3d"}, {"color", "color"}, {"size", "float"}, {"lifetime", "float"}},
       {{"parent", "string"}, {"parent-node", "string"}, {"particle-group", "string"},
-       {"lifetime-variation", "float"}, {"size-variation", "float"}, {"end-size-variation", "float"},
+       {"emitter-id", "string"}, {"follow-emitter", "string"}, {"follow-burst-at", "string"},
+       {"lifetime-variation", "float"}, {"reversed", "bool"}, {"size-variation", "float"}, {"end-size-variation", "float"},
        {"emission-loop", "bool"}, {"end-size", "float"}, {"start-time", "float"}, {"rate", "float"},
        {"velocity", "vector3d"}, {"velocity-spread", "vector3d"},
        {"gravity", "vector3d"}, {"fade-in", "float"}, {"fade-out", "float"},
+       {"fade-in-effect", "string"}, {"fade-out-effect", "string"}, {"unified-color-variation", "bool"},
        {"intensity", "float"}, {"seed", "int"}, {"layers", "int"}, {"enabled", "bool"},
        {"sprite", "image"}, {"sprite-frames", "int"}, {"sprite-frame", "int"},
        {"sprite-duration", "float"}, {"sprite-duration-variation", "float"},
        {"sprite-playback", "string"}, {"sprite-interpolate", "bool"},
-       {"sprite-random-start", "bool"}, {"color-table", "image"},
-       {"particle-blend-mode", "string"}, {"emitter-shape", "string"},
+       {"sprite-random-start", "bool"}, {"sprite-billboard", "bool"}, {"color-table", "image"},
+       {"sprite-offset-x", "float"}, {"sprite-offset-y", "float"},
+       {"particle-blend-mode", "string"}, {"particle-sort-mode", "string"},
+       {"depth-bias", "float"}, {"depth-fade-distance", "float"}, {"emitter-shape", "string"},
+       {"emitter-point-source", "string"}, {"emitter-point-randomize", "bool"}, {"emitter-point-scale", "vector3d"},
+       {"emitter-scene-root", "string"}, {"emitter-scene-exclude", "[string]"},
+       {"emitter-scene-center", "point3d"}, {"emitter-scene-extents", "vector3d"},
        {"emitter-mesh", "string"}, {"emitter-mesh-scale", "vector3d"},
        {"emitter-extents", "vector3d"}, {"emitter-fill", "bool"}, {"emitter-yaw", "float"},
        {"emitter-pitch", "float"}, {"emitter-roll", "float"}, {"velocity-mode", "string"},
        {"velocity-cone-angle", "float"}, {"velocity-target", "point3d"},
-       {"velocity-target-spread", "vector3d"}, {"velocity-speed-variation", "float"},
+       {"velocity-target-spread", "vector3d"}, {"velocity-target-normalized", "bool"},
+       {"velocity-target-magnitude", "float"}, {"velocity-speed-variation", "float"},
        {"trail-segments", "int"}, {"trail-duration", "float"}, {"trail-end-scale", "float"},
        {"trail-fade", "float"}, {"trail-eol-fade", "float"},
-       {"particle-model", "string"}, {"particle-rotation", "vector3d"},
+       {"trail-length", "float"}, {"trail-length-variation", "float"},
+       {"trail-length-delta-min", "float"}, {"trail-scale-multiplier", "float"},
+       {"trail-alpha-fade", "float"},
+       {"trail-texcoord-mode", "string"}, {"trail-texcoord-multiplier", "float"},
+       {"particle-instances-only", "bool"}, {"particle-model", "string"}, {"particle-model-scene", "scenemodel3d"},
+       {"particle-align-mode", "string"},
+       {"particle-align-target", "point3d"}, {"particle-rotation", "vector3d"},
        {"particle-rotation-variation", "vector3d"}, {"particle-angular-velocity", "vector3d"},
        {"particle-angular-velocity-variation", "vector3d"},
        {"particle-casts-shadow", "bool"}, {"particle-receives-shadow", "bool"},
        {"particle-casts-reflections", "bool"}})))
     return failure();
   if (auto list = dyn_cast<RecordListType>(emitters.getInput().getType())) {
+    if (auto lights = recordFieldType(records, enums, list.getName(), "particle-lights")) {
+      auto light = recordListElement(*lights);
+      if (!light || !records.contains(*light) || enums.contains(*light))
+        return emitters.emitOpError("3D particle-lights requires a list of light records");
+      if (failed(verifySceneLightRecord(emitters, *light, records, enums, "3D particle-lights")))
+        return failure();
+    }
+    if (auto variation = recordFieldType(records, enums, list.getName(), "color-variation")) {
+      if (!records.contains(*variation) || enums.contains(*variation))
+        return emitters.emitOpError("3D particle color-variation requires an RGBA record");
+      for (llvm::StringRef channel : {"red", "green", "blue", "alpha"}) {
+        auto field = recordFieldType(records, enums, *variation, channel);
+        if (field && field != "float")
+          return emitters.emitOpError("3D particle color-variation requires a float field named ") << channel;
+      }
+    }
     if (auto bursts = recordFieldType(records, enums, list.getName(), "bursts")) {
       auto event = recordListElement(*bursts);
       if (!event || !records.contains(*event) || enums.contains(*event))
@@ -7504,6 +7748,12 @@ static LogicalResult verifyParticleAffectors(BindOp affectors, const Records &re
       {{"affector-kind", "string"}},
       {{"parent", "string"}, {"parent-node", "string"}, {"particle-group", "string"},
        {"position", "point3d"}, {"position-variation", "vector3d"}, {"direction", "vector3d"},
+       {"attractor-shape", "string"}, {"attractor-extents", "vector3d"}, {"attractor-fill", "bool"},
+       {"attractor-yaw", "float"}, {"attractor-pitch", "float"}, {"attractor-roll", "float"},
+       {"attractor-point-source", "string"}, {"attractor-point-randomize", "bool"}, {"attractor-point-scale", "vector3d"},
+       {"attractor-scene-root", "string"}, {"attractor-scene-exclude", "[string]"},
+       {"attractor-scene-center", "point3d"}, {"attractor-scene-extents", "vector3d"},
+       {"attractor-mesh", "string"}, {"attractor-mesh-scale", "vector3d"}, {"attractor-samples", "int"},
        {"duration", "float"}, {"duration-variation", "float"}, {"start-age", "float"},
        {"hide-at-end", "bool"}, {"radius", "float"}, {"outer-radius", "float"}, {"strength", "float"},
        {"angular-speed", "float"}, {"global-amount", "vector3d"}, {"global-pace", "vector3d"},
@@ -7623,11 +7873,14 @@ static LogicalResult verifySceneEffects(BindOp effects, const Records &records,
   if (auto model = dyn_cast<RecordListType>(type))
     if (auto buffers = recordFieldType(records, enums, model.getName(), "buffers")) {
       if (!buffers->consume_front("[") || !buffers->consume_back("]") ||
-          (recordFieldType(records, enums, *buffers, "name") != "string" &&
+          (recordFieldType(records, enums, *buffers, "data") != "texturedata2d" &&
+           recordFieldType(records, enums, *buffers, "name") != "string" &&
            recordFieldType(records, enums, *buffers, "texture") != "string" &&
            recordFieldType(records, enums, *buffers, "item") != "string" &&
            recordFieldType(records, enums, *buffers, "capture") != "string"))
-        return effects.emitOpError("3D effect pass buffers requires a record list with a string field named name, texture, item or capture");
+        return effects.emitOpError("3D effect pass buffers require texturedata2d data or a string name, texture, item or capture");
+      if (auto data = recordFieldType(records, enums, *buffers, "data"); data && *data != "texturedata2d")
+        return effects.emitOpError("3D effect pass buffer requires a texturedata2d field named data");
       for (llvm::StringRef name : {"previous-frame", "enabled"})
         if (auto type = recordFieldType(records, enums, *buffers, name); type && *type != "bool")
           return effects.emitOpError("3D effect pass buffer requires a bool field named ") << name;
@@ -7739,6 +7992,8 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
             (binding.getName() == "scissor-rect" && failed(verifySceneScissor(binding, records, enums))) ||
             ((binding.getName() == "environment-sky" || binding.getName() == "skybox-sky") &&
              failed(verifySceneSky(binding, records, enums))) ||
+            (binding.getName() == "particle-instance-models" &&
+                failed(verifyParticleInstanceModels(binding, records, enums))) ||
             (binding.getName() == "particle-emitters" && failed(verifyParticleEmitters(binding, records, enums))) ||
             (binding.getName() == "particle-affectors" && failed(verifyParticleAffectors(binding, records, enums))) ||
             (binding.getName() == "fog-volumes" && failed(verifyFogVolumes(binding, records, enums))) ||

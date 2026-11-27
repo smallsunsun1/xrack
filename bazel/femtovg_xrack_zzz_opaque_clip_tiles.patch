@@ -1,0 +1,238 @@
+diff --git a/src/clip.rs b/src/clip.rs
+--- a/src/clip.rs
++++ b/src/clip.rs
+@@ -68,6 +68,7 @@
+ /// the target, the pixels it spans there and what one of them is of the
+ /// image, which is no smaller. `hard` takes a pixel whole or not at all,
+ /// for an operation that coverage cannot bound.
++/// `opaque` certifies full coverage over this draw's geometry.
+ #[derive(Copy, Clone, Debug, PartialEq)]
+ pub(crate) struct MaskCoverage {
+     pub(crate) image: ImageId,
+@@ -75,6 +76,7 @@
+     pub(crate) size: [f32; 2],
+     pub(crate) texel: [f32; 2],
+     pub(crate) hard: bool,
++    pub(crate) opaque: bool,
+ }
+ 
+ impl MaskCoverage {
+@@ -1041,6 +1043,7 @@
+                         size: [width as f32, height as f32],
+                         texel: [1.0 / image_width as f32, 1.0 / image_height as f32],
+                         hard: false,
++                        opaque: false,
+                     });
+                 }
+                 _ => {}
+@@ -1050,6 +1053,18 @@
+             }
+         }
+         (shape, mask)
++    }
++
++    pub(crate) fn mask_covers_rect(&self, coverage: MaskCoverage, bounds: Bounds, fringe: f32) -> bool {
++        let target = self.current_render_target;
++        for entry in self.clip_stack.iter().rev() {
++            if entry.target == target {
++                if let ClipKind::Mask { mask, origin } = &entry.kind {
++                    return mask.image == coverage.image && mask.covers(*origin, bounds, fringe);
++                }
++            }
++        }
++        false
+     }
+ 
+     /// The device rect outside which the clip on the current render target's
+diff --git a/src/clip/mask.rs b/src/clip/mask.rs
+--- a/src/clip/mask.rs
++++ b/src/clip/mask.rs
+@@ -244,6 +244,7 @@
+     pub(crate) image: ImageId,
+     pub(crate) key: MaskKey,
+     pub(crate) pixels: Vec<u8>,
++    opaque_tiles: Vec<bool>,
+     used: Cell<u64>,
+ }
+ 
+@@ -254,7 +255,32 @@
+ 
+     /// What the mask holds: its pixels, and its image.
+     fn bytes(&self) -> usize {
+-        bytes_of(self.size())
++        bytes_of(self.size()) + self.opaque_tiles.len()
++    }
++
++    pub(crate) fn covers(&self, origin: [i32; 2], bounds: crate::geometry::Bounds, pad: f32) -> bool {
++        if self.opaque_tiles.is_empty() {
++            return false;
++        }
++        let [width, height] = self.size();
++        let left = (bounds.minx - pad - origin[0] as f32).floor();
++        let top = (bounds.miny - pad - origin[1] as f32).floor();
++        let right = (bounds.maxx + pad - origin[0] as f32).ceil();
++        let bottom = (bounds.maxy + pad - origin[1] as f32).ceil();
++        if !(left >= 0.0 && top >= 0.0 && right <= width as f32 && bottom <= height as f32
++            && left < right && top < bottom)
++        {
++            return false;
++        }
++        let columns = width.div_ceil(OPAQUE_TILE_SIZE);
++        let left = left as usize / OPAQUE_TILE_SIZE;
++        let right = (right as usize).div_ceil(OPAQUE_TILE_SIZE);
++        let top = top as usize / OPAQUE_TILE_SIZE;
++        let bottom = (bottom as usize).div_ceil(OPAQUE_TILE_SIZE);
++        (top..bottom).all(|row| {
++            self.opaque_tiles[row * columns + left..row * columns + right]
++                .iter().all(|opaque| *opaque)
++        })
+     }
+ 
+     /// Cuts `pixels`, a mask of `size` whose corner lies at `offset` in
+@@ -302,6 +328,24 @@
+ /// changes by a pixel from frame to frame finds an image of its size.
+ pub(crate) const IMAGE_GRANULARITY: usize = 64;
+ 
++const OPAQUE_TILE_SIZE: usize = 16;
++
++fn opaque_tile_count([width, height]: [usize; 2]) -> usize {
++    width.div_ceil(OPAQUE_TILE_SIZE) * height.div_ceil(OPAQUE_TILE_SIZE)
++}
++
++fn opaque_tiles(pixels: &[u8], size: [usize; 2]) -> Vec<bool> {
++    let columns = size[0].div_ceil(OPAQUE_TILE_SIZE);
++    let mut tiles = vec![true; opaque_tile_count(size)];
++    for (y, row) in pixels.chunks_exact(size[0]).enumerate() {
++        for (x, pixels) in row.chunks(OPAQUE_TILE_SIZE).enumerate() {
++            let tile = &mut tiles[(y / OPAQUE_TILE_SIZE) * columns + x];
++            *tile = *tile && pixels.iter().all(|pixel| *pixel == 255);
++        }
++    }
++    tiles
++}
++
+ /// The size of the image a mask of `size` is kept in.
+ pub(crate) fn image_size(size: [usize; 2]) -> [usize; 2] {
+     size.map(|side| side.max(1).div_ceil(IMAGE_GRANULARITY) * IMAGE_GRANULARITY)
+@@ -395,9 +439,14 @@
+         let fits = image_size(size);
+         let image_bytes = fits[0] * fits[1];
+         // What the mask adds: its pixels, and its image unless a spare one serves.
++        let index_bytes = if self.idle_frames > IDLE_FRAMES {
++            opaque_tile_count(size)
++        } else {
++            0
++        };
+         let needs = |spare: &[(ImageId, [usize; 2])]| {
+             let served = spare.iter().any(|(_, size)| *size == fits);
+-            size[0] * size[1] + if served { 0 } else { image_bytes }
++            size[0] * size[1] + index_bytes + if served { 0 } else { image_bytes }
+         };
+         let mut dropped = Vec::new();
+         let mut at = 0;
+@@ -453,6 +502,12 @@
+             id: self.next_id,
+             image,
+             key: key.clone(),
++            // The index is worthwhile for clips retained across motion.
++            opaque_tiles: if self.idle_frames > IDLE_FRAMES {
++                opaque_tiles(&pixels, key.size())
++            } else {
++                Vec::new()
++            },
+             pixels,
+             used: Cell::new(self.frame),
+         });
+@@ -613,6 +668,36 @@
+         masks.end_frame();
+         assert_eq!((masks.len(), masks.asked_len()), (0, 0), "a frame unasked");
+         assert!(masks.asked(&[1, 2, 3]).is_none());
++    }
++
++    #[test]
++    fn retained_opaque_tiles_include_only_full_coverage() {
++        use crate::geometry::Bounds;
++
++        let mut canvas = crate::Canvas::new(crate::RecordingRenderer::default()).unwrap();
++        let image = canvas
++            .create_image_empty(64, 64, crate::PixelFormat::Gray8, crate::ImageFlags::empty())
++            .unwrap();
++        let mut masks = ClipMasks::default();
++        masks.set_idle_frames(32);
++        let mut outline = MaskOutline::default();
++        outline.child(FillRule::NonZero, std::iter::once(square(4.0, 4.0, 40.0)));
++        let key = outline.key(outline.rect([0, 0, 100, 100]), None);
++        let [width, height] = key.size();
++        let mut pixels = vec![255; width * height];
++        pixels[18 * width + 18] = 254;
++        let mask = masks.keep(key, image, pixels);
++        let region = |x: u32, y: u32| Bounds {
++            minx: x as f32,
++            miny: y as f32,
++            maxx: (x + 5) as f32,
++            maxy: (y + 5) as f32,
++        };
++        assert!(mask.covers([0, 0], region(2, 2), 1.0));
++        assert!(!mask.covers([0, 0], region(17, 17), 1.0));
++        assert!(!mask.covers([0, 0], region(13, 13), 1.0));
++        assert!(!mask.covers([0, 0], region(width as u32 - 2, 2), 1.0));
++        assert_eq!(masks.bytes(), bytes_of([width, height]) + opaque_tile_count([width, height]));
+     }
+ 
+     #[test]
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1383,7 +1383,7 @@
+         }
+ 
+         let mut shared = None;
+-        let (clip, path_cache, fringe_width) = self.fill_outline(path, &transform, anti_alias, fill_rule, &mut shared);
++        let (mut clip, path_cache, fringe_width) = self.fill_outline(path, &transform, anti_alias, fill_rule, &mut shared);
+ 
+         // Detect if this path fill is in fact just an unclipped image copy
+ 
+@@ -1405,6 +1405,17 @@
+             return;
+         }
+ 
++        if let Some(mask) = &mut clip.mask {
++            if !mask.hard
++                && matches!(paint_flavor, PaintFlavor::Image { .. })
++                && path_cache.path_fill_is_rect().is_some()
++                && self.mask_covers_rect(*mask, path_cache.bounds, fringe_width * 2.0)
++            {
++                // The fill and its fringe cover only fully opaque mask texels.
++                // Keep the same pipeline and skip the shader's mask read.
++                mask.opaque = true;
++            }
++        }
+         // GPU uniforms
+         let flavor = if path_cache.is_convex() {
+             let params = Params::new(
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -338,7 +338,8 @@
+             self.0[2..4].copy_from_slice(&mask.origin);
+             self.0[6..8].copy_from_slice(&mask.size);
+             self.0[10..12].copy_from_slice(&mask.texel);
+-            self.0[53] = f32::from(u8::from(mask.hard));
++            // Negative means this draw has verified unit coverage.
++            self.0[53] = if mask.opaque { -1.0 } else { f32::from(u8::from(mask.hard)) };
+         }
+     }
+ 
+diff --git a/src/renderer/wgpu/shader.wgsl b/src/renderer/wgpu/shader.wgsl
+--- a/src/renderer/wgpu/shader.wgsl
++++ b/src/renderer/wgpu/shader.wgsl
+@@ -414,6 +414,9 @@
+ // border - what a fragment past the mask reads. An operation that coverage
+ // cannot bound takes the pixels the clip covers by half or more, whole.
+ fn clipMaskCoverage(p: vec2<f32>) -> f32 {
++    if params.clip_mask_hard < 0.0 {
++        return 1.0;
++    }
+     let size = params.scissor_mat[1].zw;
+     let at = clamp(p - params.scissor_mat[0].zw, vec2<f32>(0.5, 0.5), size - vec2<f32>(0.5, 0.5));
+     let coverage = textureLoad(clip_mask_texture, vec2<i32>(at), 0).r;

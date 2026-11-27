@@ -225,8 +225,10 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::PhysicsContact3DList => ValueType::PhysicsContact3DList,
         Type::PhysicsHit3DList => ValueType::PhysicsHit3DList,
         Type::ProjectedPoint3D => ValueType::ProjectedPoint3D,
+        Type::RenderStats3D => ValueType::RenderStats3D,
         Type::Instance3D => ValueType::Instance3D,
         Type::InstanceTable3D => ValueType::InstanceTable3D,
+        Type::TextureData2D => ValueType::TextureData2D,
         Type::MeshAsset3D => ValueType::MeshAsset3D,
         Type::MeshNode3D => ValueType::MeshNode3D,
         Type::Bounds3D => ValueType::Bounds3D,
@@ -358,6 +360,9 @@ struct Loader<'m> {
     analysis: ComponentAnalysis<'m>,
     geometry_targets: BTreeSet<String>,
     scene_view_targets: BTreeSet<String>,
+    scene_item_targets: BTreeSet<String>,
+    scene_texture_size_targets: BTreeSet<String>,
+    render_stats_targets: BTreeSet<String>,
     viewport_targets: BTreeSet<String>,
     source_scroll_targets: BTreeSet<String>,
     key_scroll_targets: BTreeSet<String>,
@@ -457,6 +462,9 @@ impl<'m> Loader<'m> {
             selectors: loader.selectors,
             geometry_targets: loader.geometry_targets,
             scene_view_targets: loader.scene_view_targets,
+            scene_item_targets: loader.scene_item_targets,
+            scene_texture_size_targets: loader.scene_texture_size_targets,
+            render_stats_targets: loader.render_stats_targets,
             viewport_targets: loader.viewport_targets,
             source_scroll_targets: loader.source_scroll_targets,
             key_scroll_targets: loader.key_scroll_targets,
@@ -725,6 +733,19 @@ impl<'m> Loader<'m> {
                         .collect::<Result<Vec<_>>>()?;
                     self.focus_targets.insert(owner.into());
                     body.push(Statement::Focus(owner.into(), command, arguments));
+                }
+                "xr.scene_touch" => {
+                    let owner = attribute(statement, "owner")?.to_owned();
+                    self.geometry_targets.insert(owner.clone());
+                    body.push(Statement::SceneTouch(
+                        owner,
+                        [
+                            expression(self, 0)?,
+                            expression(self, 1)?,
+                            expression(self, 2)?,
+                            expression(self, 3)?,
+                        ],
+                    ));
                 }
                 "xr.button_click" => {
                     let owner = attribute(statement, "owner")?;
@@ -1734,19 +1755,35 @@ impl<'m> Loader<'m> {
             "xr.scene_view_query" => {
                 let target = attribute(op, "owner")?.to_owned();
                 self.geometry_targets.insert(target.clone());
-                self.scene_view_targets.insert(target.clone());
-                Expression::SceneViewQuery(target, spelling()?.into(), arguments(self)?)
+                let method = spelling()?;
+                if method == "render-stats" {
+                    self.render_stats_targets.insert(target.clone());
+                } else {
+                    self.scene_view_targets.insert(target.clone());
+                    if xrack_syntax::builtins::scene_view_reads_item_sources(method) {
+                        self.scene_item_targets.insert(target.clone());
+                    }
+                }
+                Expression::SceneViewQuery(target, method.into(), arguments(self)?)
             }
             "xr.geometry_read" => {
                 let target = attribute(op, "owner")?.to_owned();
-                let metric = match spelling()? {
-                    "layout-ready" => None,
-                    name => Some(runtime::GeometryMetric::from_name(name).ok_or_else(|| {
-                        invalid(op, format_args!("unknown geometry metric {name}"))
-                    })?),
-                };
+                let name = spelling()?;
                 self.geometry_targets.insert(target.clone());
-                Expression::GeometryRead(target, metric)
+                if let Some(axis) = xrack_syntax::builtins::scene_texture_size_axis(name) {
+                    self.scene_texture_size_targets.insert(target.clone());
+                    Expression::SceneTextureSize(target, axis)
+                } else {
+                    let metric = match name {
+                        "layout-ready" => None,
+                        name => {
+                            Some(runtime::GeometryMetric::from_name(name).ok_or_else(|| {
+                                invalid(op, format_args!("unknown geometry metric {name}"))
+                            })?)
+                        }
+                    };
+                    Expression::GeometryRead(target, metric)
+                }
             }
             "xr.viewport_read" | "xr.flick_motion_read" => {
                 let target = attribute(op, "owner")?.to_owned();
@@ -1922,6 +1959,7 @@ impl<'m> Loader<'m> {
                     .cloned()
                     .ok_or_else(|| invalid(op, "unresolved instance table"))?,
             )),
+            "xr.particle_shape_url" => Expression::Literal(Value::String(spelling()?.to_owned())),
             "xr.material_shader_url" => Expression::Literal(Value::String(
                 runtime::material_shader::resource_key(spelling()?),
             )),
@@ -2321,8 +2359,10 @@ impl<'m> Loader<'m> {
             | "xr.mesh_asset3d_field"
             | "xr.mesh_node3d_field"
             | "xr.projected_point3d_field"
+            | "xr.render_stats3d_field"
             | "xr.instance3d_field"
             | "xr.instance_table3d_field"
+            | "xr.texture_data2d_field"
             | "xr.walk_result3d_field"
             | "xr.vector2d_field"
             | "xr.key_field"
@@ -2472,8 +2512,10 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         PhysicsContact3DList,
         PhysicsHit3DList,
         ProjectedPoint3D,
+        RenderStats3D,
         Instance3D,
         InstanceTable3D,
+        TextureData2D,
         MeshAsset3D,
         MeshNode3D,
         Bounds3D,
@@ -2855,6 +2897,7 @@ const PROPERTIES: &[&str] = &[
     "renderer",
     "revision",
     "camera",
+    "auto-camera",
     "camera-yaw",
     "camera-pitch",
     "camera-distance",
@@ -2873,6 +2916,7 @@ const PROPERTIES: &[&str] = &[
     "bake-denoise-passes",
     "bake-indirect-factor",
     "particle-emitters",
+    "particle-instance-models",
     "particle-affectors",
     "particle-time",
     "fog-volumes",
@@ -2917,6 +2961,12 @@ const PROPERTIES: &[&str] = &[
     "environment-roll",
     "environment-horizon",
     "environment-skybox",
+    "render-stats-revision",
+    "scene-grid",
+    "scene-grid-axes",
+    "scene-grid-color",
+    "scene-grid-height",
+    "scene-grid-spacing",
     "frustum-culling",
     "multisampling",
     "supersampling",

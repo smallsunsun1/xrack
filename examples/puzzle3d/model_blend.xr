@@ -1,0 +1,138 @@
+struct BlendActor {
+    id: string, mesh: string, parent: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float, visible: bool, pickable: bool,
+    model-blend-mode: string, model-blend-order: string, model-blend-time: float,
+    model-blend-end-node: string, model-blend-activation-node: string, model-blend-activation-speed: float,
+    model-blend-duration: float, model-blend-stagger: float, model-blend-arrival: float,
+    model-blend-origin: point3d, model-blend-offset: vector3d,
+    model-blend-orientation: quaternion3d, model-blend-scale: vector3d,
+    model-blend-velocity: vector3d, model-blend-spread: vector3d, model-blend-gravity: vector3d,
+    model-blend-spin: vector3d, model-blend-axis: vector3d, model-blend-seed: int,
+}
+
+export component ModelBlendDemo inherits Window {
+    title <- "XRack · 模型三角面粒子";
+    width <- 640px; height <- 457px;
+    background <- #182333;
+
+    in-out property <float> time: 0.54;
+    in-out property <string> mode: "transfer";
+    in-out property <string> order: "activation";
+    in-out property <bool> imported: false;
+    in-out property <bool> cover: false;
+    in-out property <bool> secondary: false;
+    in-out property <bool> running: false;
+    in-out property <bool> transformed: false;
+    in-out property <bool> named-nodes: false;
+    in-out property <bool> mirrored: false;
+    in-out property <bool> reference: false;
+    in-out property <float> sweep-speed: 3.0;
+    in-out property <float> target-shift: 0;
+
+    property <BlendActor> defaults <- BlendActor {
+        id: "", mesh: "primitive:box", parent: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, camera-kind: "", camera-height: 6, visible: true, pickable: false,
+        model-blend-mode: "", model-blend-order: root.order, model-blend-time: root.time,
+        model-blend-end-node: "", model-blend-activation-node: "", model-blend-activation-speed: root.sweep-speed,
+        model-blend-duration: 1.36, model-blend-stagger: 0.36, model-blend-arrival: 0.55,
+        model-blend-origin: Point3D.new(-0.35, -0.35, 0),
+        model-blend-offset: Vector3D.new(4, 0, 0),
+        model-blend-orientation: Quaternion3D.from-axis-angle(Vector3D.new(0, 0, 1), root.transformed ? 37 : 0),
+        model-blend-scale: root.transformed ? Vector3D.new(1.25, 0.58, 1.0) : Vector3D.new(1, 1, 1),
+        model-blend-velocity: Vector3D.new(1.3, 0.8, 0),
+        model-blend-spread: Vector3D.new(2.9, 2.35, 1.25),
+        model-blend-gravity: Vector3D.new(0, -1.6, 0),
+        model-blend-spin: Vector3D.new(78, 154, -35),
+        model-blend-axis: Vector3D.new(1, 0.23, 0.1),
+        model-blend-seed: 83,
+    };
+    property <[BlendActor]> model <- [
+        BlendActor { id: "eye", mesh: "", z: 10, camera-kind: "orthographic", ..root.defaults },
+        BlendActor {
+            id: "landing-rig", mesh: "", x: 1.6 + root.target-shift, z: 0.4,
+            scale-x: root.mirrored ? -1.45 : 1.45, scale-y: 0.66, scale-z: 0.91,
+            roll: 21, ..root.defaults
+        },
+        BlendActor {
+            id: "landing", parent: "landing-rig", mesh: "", roll: -34, pitch: 14,
+            scale-x: 0.8, scale-y: 0.79, scale-z: 0.8, ..root.defaults
+        },
+        BlendActor { id: "release-plane", mesh: "", x: -1.6, yaw: 90, ..root.defaults },
+        BlendActor {
+            id: "panel", z: -3, scale-x: 18, scale-y: 12, scale-z: 0.1,
+            color: #253347, ..root.defaults
+        },
+        BlendActor {
+            id: "fragment", mesh: root.imported ? @mesh-url("models/brushed-panel.gltf") : "primitive:sphere",
+            parent: root.reference ? "landing" : "",
+            x: root.reference ? 0 : -1.6, y: 0, z: root.reference ? 0 : 0.4,
+            pickable: true, color: #ffad46,
+            scale-x: root.reference ? 1 : 0.8, scale-y: root.reference ? 1 : 0.8, scale-z: root.reference ? 1 : 0.8,
+            model-blend-mode: root.reference ? "" : root.mode,
+            model-blend-end-node: root.named-nodes ? "landing" : "",
+            model-blend-activation-node: root.named-nodes ? "release-plane" : "",
+            ..root.defaults
+        },
+        BlendActor {
+            id: "secondary", mesh: "primitive:sphere", visible: root.secondary,
+            x: -1.6, y: -1.9, z: 0.4, color: #49bfe8,
+            scale-x: 0.35, scale-y: 0.35, scale-z: 0.35, model-blend-mode: root.mode,
+            model-blend-time: root.time * 0.5, ..root.defaults
+        },
+        BlendActor {
+            id: "cover", visible: root.cover, pickable: true, x: -1.6, y: 0, z: 3,
+            scale-x: 1.9, scale-y: 1.9, scale-z: 0.12, color: #627682, ..root.defaults
+        },
+    ];
+
+    out property <string> origin-hit <- Scene3D.pick-camera(
+        root.model, "eye", Point2D.new(640px, 352px), Point2D.new(226px, 176px));
+    out property <string> target-hit <- Scene3D.pick-camera(
+        root.model, "eye", Point2D.new(640px, 352px), Point2D.new(414px, 176px));
+
+    clock := FrameAnimation {
+        running <- root.running;
+        triggered(delta, elapsed, frame) => {
+            root.time += delta;
+            if root.time >= 2 {
+                root.time = 2;
+                root.running = false;
+            }
+        }
+    }
+
+    SceneView3D {
+        width <- 640px; height <- 352px; model <- root.model; camera <- "eye";
+        scene-background <- #101925; cache-rendering <- true;
+        ambient-intensity <- 0.5; light-yaw <- 35; light-elevation <- 47;
+    }
+    mode-button := Button {
+        x <- 18px; y <- 363px; width <- 130px; height <- 36px;
+        text <- root.mode == "explode" ? "散开" : root.mode == "construct" ? "聚合" : "转移";
+        clicked => {
+            root.running = false;
+            root.mode = root.mode == "explode" ? "construct" : root.mode == "construct" ? "transfer" : "explode";
+        }
+    }
+    order-button := Button {
+        x <- 160px; y <- 363px; width <- 130px; height <- 36px;
+        text <- root.order == "sequential" ? "按网格顺序" : root.order == "random" ? "随机发射" : "平面扫过";
+        clicked => {
+            root.order = root.order == "sequential" ? "random" : root.order == "random" ? "activation" : "sequential";
+        }
+    }
+    play-toggle := Button {
+        x <- 302px; y <- 363px; width <- 116px; height <- 36px; text <- root.running ? "暂停" : "播放";
+        clicked => {
+            if !root.running && root.time >= 2 { root.time = 0; }
+            root.running = !root.running;
+        }
+    }
+    CheckBox { x <- 430px; y <- 363px; width <- 89px; height <- 36px; text <- "变换终点"; checked <-> root.transformed; }
+    CheckBox { x <- 527px; y <- 363px; width <- 96px; height <- 36px; text <- "glTF"; checked <-> root.imported; }
+    Label { x <- 18px; y <- 414px; width <- 46px; height <- 32px; text <- "时间"; }
+    CheckBox { x <- 509px; y <- 411px; width <- 118px; height <- 36px; text <- "场景锚点"; checked <-> root.named-nodes; }
+    time-slider := Slider { x <- 68px; y <- 411px; width <- 425px; height <- 36px; minimum <- 0; maximum <- 2; value <-> root.time; }
+}

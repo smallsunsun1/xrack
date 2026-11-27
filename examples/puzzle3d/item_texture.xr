@@ -46,6 +46,23 @@ export component ItemTextureDemo inherits Window {
     out property <int> cancels: 0;
     out property <length> contact-x;
     out property <length> contact-y;
+    in-out property <point2d> probe-point: Point2D.new(177px, 112px);
+    out property <hit3d> panel-hit <- screen.hit-item(root.probe-point);
+    out property <point2d> panel-local <- root.panel-hit.item-position;
+    out property <string> probe-label: "检查贴图面板";
+    in-out property <bool> gestures-enabled: false;
+    out property <int> gesture-starts: 0;
+    out property <int> gesture-ends: 0;
+    out property <int> gesture-cancels: 0;
+    out property <int> gesture-pointer-downs: 0;
+    out property <int> gesture-pointer-cancels: 0;
+    out property <int> gesture-pointer-clicks: 0;
+    out property <float> gesture-scale: 1;
+    out property <float> gesture-angle: 0;
+    out property <bool> gesture-active <- panel-gesture.active;
+    out property <point2d> gesture-center <- Point2D.new(panel-gesture.center-x, panel-gesture.center-y);
+    property <float> start-scale: 1;
+    property <float> start-angle: 0;
 
     callback toggle-power();
     toggle-power => {
@@ -99,7 +116,7 @@ export component ItemTextureDemo inherits Window {
         content-height <- root.scroll-console ? 284px : 224px;
         content-y <-> root.viewport-offset;
         vertical-scroll-bar-policy <- always-off;
-        SceneView3D {
+        screen := SceneView3D {
             width <- 600px; height <- 224px; model <- root.world; camera <- "eye";
             scene-background <- #253d52; cache-rendering <- true; texture-input <- root.input-enabled;
             scissor-rect <- Scissor { x: 0px, y: 0px, width: 300px, height: 224px, enabled: root.clip-right-panel };
@@ -184,6 +201,38 @@ export component ItemTextureDemo inherits Window {
                 }
             }
         }
+        panel-gesture := ScaleRotateGestureHandler {
+            width <- root.panel-width; height <- 102px;
+            visible <- root.gestures-enabled; enabled <- root.gestures-enabled;
+            started => {
+                root.start-scale = root.gesture-scale;
+                root.start-angle = root.gesture-angle;
+                root.gesture-starts += 1;
+            }
+            updated => {
+                root.gesture-scale = root.start-scale * self.scale;
+                root.gesture-angle = root.start-angle + self.rotation;
+            }
+            ended => { root.gesture-ends += 1; }
+            cancelled => { root.gesture-cancels += 1; }
+            Rectangle {
+                width <- root.panel-width; height <- 102px; background <- #203751; clip <- true;
+                Rectangle {
+                    x <- 63px; y <- 27px; width <- 48px; height <- 48px; border-radius <- 5px; background <- #79d7a8;
+                    transform-scale-x <- root.gesture-scale; transform-scale-y <- root.gesture-scale;
+                    transform-rotation <- root.gesture-angle;
+                    Rectangle { x <- 6px; y <- 6px; width <- 12px; height <- 12px; background <- #f3b672; }
+                }
+            }
+            gesture-tap := TouchArea {
+                width <- root.panel-width; height <- 102px;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down { root.gesture-pointer-downs += 1; }
+                    if event.kind == PointerEventKind.cancel { root.gesture-pointer-cancels += 1; }
+                }
+                clicked => { root.gesture-pointer-clicks += 1; }
+            }
+        }
         if root.fine-grid: Rectangle {
             width <- root.panel-width; height <- 102px;
             for stripe in 44: Rectangle {
@@ -233,6 +282,15 @@ export component ItemTextureDemo inherits Window {
         text <- root.offscreen-only ? "恢复 2D 面板" : "只在面片显示";
         clicked => { root.offscreen-only = !root.offscreen-only; }
     }
+    probe-face := Button {
+        x <- 18px; y <- 340px; width <- 197px; height <- 35px;
+        text <- root.probe-label;
+        clicked => {
+            root.probe-point = root.probe-point.x < 300px ? Point2D.new(423px,112px) : Point2D.new(177px,112px);
+            root.probe-label = root.panel-hit.valid
+                ? root.panel-hit.item-source + " · " + root.panel-hit.object-id : "面板未命中";
+        }
+    }
     mapping-mode := Button {
         x <- 232px; y <- 340px; width <- 175px; height <- 35px;
         text <- root.mapping == 0 ? "原始 UV" : root.mapping == 1 ? "交换纹理轴"
@@ -242,5 +300,359 @@ export component ItemTextureDemo inherits Window {
     sample-mips-toggle := CheckBox {
         x <- 421px; y <- 340px; width <- 156px; height <- 35px;
         text <- "采样 mip 层"; checked <-> root.sample-mips;
+    }
+}
+
+struct RayPanelActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float, camera-far: float,
+    visible: bool, pickable: bool, layers: int, material: ScreenMaterial,
+}
+
+struct RayPanelClip { x: length, y: length, width: length, height: length, enabled: bool }
+
+export component RayItemTextureDemo inherits Window {
+    title <- "XRack · 世界射线拾取贴图";
+    width <- 600px; height <- 352px; background <- #172332;
+
+    in-out property <point3d> ray-origin: Point3D.new(2.675, 0.486, 7);
+    in-out property <vector3d> ray-direction: Vector3D.new(0, 0, -5);
+    in-out property <float> ray-limit: 8;
+    in-out property <float> camera-far: 12;
+    in-out property <int> view-layers: 3;
+    in-out property <bool> scissor: false;
+    in-out property <bool> blocker: false;
+    in-out property <bool> duplicate: false;
+    in-out property <bool> panel-visible: true;
+    in-out property <bool> texture-input: true;
+    in-out property <length> panel-width: 174px;
+    in-out property <int> mapping: 0;
+    out property <hit3d> ray-result <- screen.ray-hit-item(root.ray-origin, root.ray-direction, root.ray-limit);
+    out property <point2d> local-result <- root.ray-result.item-position;
+    out property <hit3d> clicked-hit;
+    out property <string> label: "查询控制器射线";
+
+    property <PanelMap> texture-map <- PanelMap {
+        source: "ray-dashboard", wrap-u: root.mapping == 2 ? "repeat" : root.mapping == 3 ? "mirror" : "clamp",
+        uv-scale-u: root.mapping >= 2 ? 2 : 1, uv-rotation: root.mapping == 1 ? 90 : 0,
+        uv-pivot-u: root.mapping == 1 ? 0.5 : 0, uv-pivot-v: root.mapping == 1 ? 0.5 : 0,
+        uv-flip-u: root.mapping == 1, mip-filter: "none",
+    };
+    property <ScreenMaterial> finish <- ScreenMaterial {
+        base-color: #ffffff, base-item: root.texture-map, unlit: true, alpha-mode: "opaque",
+    };
+    property <RayPanelActor> defaults <- RayPanelActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 2.5, scale-y: 1.62, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, camera-kind: "", camera-height: 4.2, camera-far: root.camera-far,
+        visible: true, pickable: true, layers: 1, material: root.finish,
+    };
+    screen := SceneView3D {
+        width <- 600px; height <- 224px; camera <- "eye"; layer-mask <- root.view-layers;
+        scene-background <- #253d52; cache-rendering <- true; texture-input <- root.texture-input;
+        scissor-rect <- RayPanelClip { x: 0px, y: 0px, width: 300px, height: 224px, enabled: root.scissor };
+        model <- [
+            RayPanelActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.defaults },
+            RayPanelActor { id: "left", x: -2.3, ..root.defaults },
+            RayPanelActor { id: "right", x: 2.3, layers: 2, ..root.defaults },
+            RayPanelActor {
+                id: "occluder", x: 2.3, z: 1, layers: 2, visible: root.blocker, pickable: false,
+                material: ScreenMaterial {
+                    base-color: #494061, base-item: PanelMap { source: "", ..root.texture-map }, ..root.finish
+                },
+                ..root.defaults
+            },
+        ];
+    }
+    Rectangle {
+        x <- 12px; y <- 236px; width <- root.panel-width; height <- 102px;
+        texture-source <- "ray-dashboard"; texture-only <- true; visible <- root.panel-visible; background <- #29415e;
+        Rectangle { x <- 14px; y <- 16px; width <- 32px; height <- 18px; background <- #64c5a1; }
+        Text { x <- 16px; y <- 44px; text <- "控制面板"; color <- #ffffff; }
+        Rectangle { x <- 18px; y <- 74px; width <- 102px; height <- 6px; background <- #f8bb73; }
+    }
+    Rectangle {
+        x <- 12px; y <- 236px; width <- 12px; height <- 12px;
+        texture-source <- "ray-dashboard"; texture-only <- true; visible <- root.duplicate;
+    }
+
+    probe := Button {
+        x <- 14px; y <- 236px; width <- 225px; height <- 36px; text <- root.label;
+        clicked => {
+            root.clicked-hit = screen.ray-hit-item(root.ray-origin, root.ray-direction, root.ray-limit);
+            root.label = root.clicked-hit.valid ? root.clicked-hit.item-source + " · " + root.clicked-hit.object-id : "射线未命中";
+        }
+    }
+    aim := Button {
+        x <- 250px; y <- 236px; width <- 128px; height <- 36px;
+        text <- root.ray-origin.x < 0 ? "瞄准右侧" : "瞄准左侧";
+        clicked => {
+            root.ray-origin = root.ray-origin.x < 0 ? Point3D.new(2.675,0.486,7) : Point3D.new(-1.925,0.486,7);
+        }
+    }
+    CheckBox { x <- 388px; y <- 236px; width <- 98px; height <- 36px; text <- "遮挡"; checked <-> root.blocker; }
+    CheckBox { x <- 14px; y <- 288px; width <- 146px; height <- 36px; text <- "裁掉右半视口"; checked <-> root.scissor; }
+    mapping-toggle := Button {
+        x <- 172px; y <- 288px; width <- 164px; height <- 36px;
+        text <- root.mapping < 2 ? "原始 UV" : root.mapping == 2 ? "重复 UV" : "镜像 UV";
+        clicked => { root.mapping = root.mapping < 2 ? 2 : root.mapping == 2 ? 3 : 0; }
+    }
+}
+
+component ControllerTouchPanel inherits Rectangle {
+    in property <string> source-name;
+    in property <bool> controls-mode: false;
+    in property <bool> advanced-ranges: false;
+    in property <bool> toggles-mode: false;
+    in property <bool> toggles-enabled: true;
+    in property <bool> switch-rtl: false;
+    out property <CheckState> survey-state;
+    out property <CheckState> survey-last;
+    out property <int> survey-changes: 0;
+    out property <int> profile: 0;
+    out property <int> profile-changes: 0;
+    out property <bool> switch-on: false;
+    out property <int> switch-changes: 0;
+    in-out property <float> lower: 30;
+    in-out property <float> upper: 70;
+    in property <DialInputMode> dial-mode: horizontal;
+    out property <float> tuning: 50;
+    out property <float> lower-thumb <- band.lower-position;
+    out property <float> upper-thumb <- band.upper-position;
+    in property <bool> slider-live: false;
+    out property <int> button-downs: 0;
+    out property <int> button-ups: 0;
+    out property <int> button-cancels: 0;
+    out property <int> button-clicks: 0;
+    out property <bool> button-pressed <- power.pressed;
+    out property <float> level: 20;
+    out property <float> thumb <- gain.position;
+    out property <[TouchPoint]> contacts <- pad.touch-points;
+    out property <int> count <- pad.active-touch-count;
+    out property <int> downs: 0;
+    out property <int> ups: 0;
+    out property <int> cancels: 0;
+    out property <int> clicks: 0;
+    out property <point2d> last-position;
+    out property <string> state: "等待触点";
+    callback contact-changed(kind: string);
+    width <- 174px; height <- 102px;
+    texture-source <- root.source-name; texture-only <- true; background <- #29415e;
+    pad := TouchArea {
+        width <- 174px; height <- 102px; multi-touch <- true; visible <- !root.toggles-mode && !root.controls-mode && !root.advanced-ranges;
+        pointer-event(event) => {
+            root.last-position = Point2D.new(event.x, event.y);
+            if event.kind == PointerEventKind.down { root.downs += 1; root.state = "触点已按下"; root.contact-changed("down"); }
+            if event.kind == PointerEventKind.move { root.state = "触点已移动"; root.contact-changed("move"); }
+            if event.kind == PointerEventKind.up { root.ups += 1; root.state = "触点已抬起"; root.contact-changed("up"); }
+            if event.kind == PointerEventKind.cancel { root.cancels += 1; root.state = "触点已取消"; root.contact-changed("cancel"); }
+        }
+        clicked => { root.clicks += 1; }
+        for contact in self.touch-points : Rectangle {
+            x <- contact.x - 7px; y <- contact.y - 7px; width <- 14px; height <- 14px;
+            border-radius <- 7px; background <- #68e4b4;
+        }
+    }
+    power := Button {
+        x <- 23px; y <- 8px; width <- 128px; height <- 30px; visible <- !root.toggles-mode && root.controls-mode && !root.advanced-ranges;
+        text <- root.button-clicks % 2 == 0 ? "控制器开关" : "已启动";
+        pressed => { root.button-downs += 1; }
+        released => { root.button-ups += 1; }
+        canceled => { root.button-cancels += 1; }
+        clicked => { root.button-clicks += 1; }
+    }
+    gain := Slider {
+        x <- 12px; y <- 58px; width <- 150px; height <- 24px; visible <- !root.toggles-mode && root.controls-mode && !root.advanced-ranges;
+        value <-> root.level; minimum <- 0; maximum <- 100; live <- root.slider-live;
+    }
+    band := RangeSlider {
+        x <- 12px; y <- 12px; width <- 150px; height <- 22px; visible <- !root.toggles-mode && root.advanced-ranges;
+        minimum <- 0; maximum <- 100; lower-value <-> root.lower; upper-value <-> root.upper;
+        live <- root.slider-live;
+    }
+    tuner := Dial {
+        x <- 12px; y <- 47px; width <- 47px; height <- 47px; visible <- !root.toggles-mode && root.advanced-ranges;
+        minimum <- 0; maximum <- 100; value <-> root.tuning; input-mode <- root.dial-mode; wrap <- true;
+    }
+    survey := CheckBox {
+        x <- 12px; y <- 4px; width <- 150px; height <- 30px;
+        visible <- root.toggles-mode; enabled <- root.toggles-enabled;
+        text <- "三态选项"; tristate <- true; check-state <-> root.survey-state;
+        check-state-changed(state) => {
+            root.survey-changes += 1;
+            root.survey-last = state;
+        }
+    }
+    profiles := ButtonGroup {
+        current-index <-> root.profile;
+        selected(value) => { root.profile-changes += 1; }
+    }
+    standard := RadioButton {
+        x <- 12px; y <- 34px; width <- 74px; height <- 30px;
+        visible <- root.toggles-mode; enabled <- root.toggles-enabled;
+        text <- "标准"; value <- "standard"; group <- profiles;
+    }
+    precise := RadioButton {
+        x <- 88px; y <- 34px; width <- 74px; height <- 30px;
+        visible <- root.toggles-mode; enabled <- root.toggles-enabled;
+        text <- "精细"; value <- "precise"; group <- profiles;
+    }
+    mode := Switch {
+        x <- 12px; y <- 66px; width <- 150px; height <- 30px;
+        visible <- root.toggles-mode; enabled <- root.toggles-enabled;
+        layout-direction <- root.switch-rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        text <- "辅助模式"; checked <-> root.switch-on;
+        toggled() => { root.switch-changes += 1; }
+    }
+}
+
+export component ControllerTouchDemo inherits Window {
+    title <- "XRack · 3D 控制器触点";
+    width <- 600px; height <- 352px; background <- #172332;
+
+    in-out property <bool> view-enabled: true;
+    in-out property <bool> controls-mode: false;
+    in-out property <bool> advanced-ranges: false;
+    in-out property <bool> toggles-mode: false;
+    in-out property <bool> toggles-enabled: true;
+    out property <CheckState> left-survey <- left-pad.survey-state;
+    out property <CheckState> left-survey-last <- left-pad.survey-last;
+    out property <int> left-survey-changes <- left-pad.survey-changes;
+    out property <int> left-profile <- left-pad.profile;
+    out property <int> left-profile-changes <- left-pad.profile-changes;
+    out property <bool> left-switch-on <- left-pad.switch-on;
+    out property <int> left-switch-changes <- left-pad.switch-changes;
+    out property <bool> right-switch-on <- right-pad.switch-on;
+    out property <int> right-switch-changes <- right-pad.switch-changes;
+    in-out property <float> left-lower: 30;
+    in-out property <float> left-upper: 70;
+    in-out property <DialInputMode> dial-mode: horizontal;
+    out property <float> left-lower-thumb <- left-pad.lower-thumb;
+    out property <float> left-upper-thumb <- left-pad.upper-thumb;
+    out property <float> left-tuning <- left-pad.tuning;
+    in-out property <bool> slider-live: false;
+    out property <int> button-downs <- left-pad.button-downs;
+    out property <int> button-ups <- left-pad.button-ups;
+    out property <int> button-cancels <- left-pad.button-cancels;
+    out property <int> button-clicks <- left-pad.button-clicks;
+    out property <bool> button-pressed <- left-pad.button-pressed;
+    out property <float> left-level <- left-pad.level;
+    out property <float> left-thumb <- left-pad.thumb;
+    out property <float> right-level <- right-pad.level;
+    out property <float> right-thumb <- right-pad.thumb;
+    in-out property <bool> right-visible: true;
+    in-out property <string> command-source: "controller-left";
+    in-out property <point2d> command-position: root.toggles-mode
+        ? Point2D.new(22px, 81px)
+        : root.advanced-ranges ? Point2D.new(62px, 23px) : Point2D.new(40px, 28px);
+    in-out property <int> command-id: 1;
+    in-out property <bool> command-pressed: true;
+    out property <[TouchPoint]> left-touches <- left-pad.contacts;
+    out property <[TouchPoint]> right-touches <- right-pad.contacts;
+    out property <int> left-count <- left-pad.count;
+    out property <int> right-count <- right-pad.count;
+    out property <int> left-downs <- left-pad.downs;
+    out property <int> left-ups <- left-pad.ups;
+    out property <int> left-cancels <- left-pad.cancels;
+    out property <int> left-clicks <- left-pad.clicks;
+    out property <int> right-downs <- right-pad.downs;
+    out property <int> right-ups <- right-pad.ups;
+    out property <int> right-cancels <- right-pad.cancels;
+    out property <int> right-clicks <- right-pad.clicks;
+    out property <point2d> last-left <- left-pad.last-position;
+    out property <point2d> last-right <- right-pad.last-position;
+    out property <string> previous-event: "";
+    out property <string> last-event: "";
+    in-out property <point3d> ray-origin: Point3D.new(-2.3, root.controls-mode ? 0.4 : 0, 7);
+
+    property <PanelMap> panel-map: PanelMap {
+        source: "controller-left", wrap-u: "clamp", uv-scale-u: 1, uv-rotation: 0,
+        uv-pivot-u: 0, uv-pivot-v: 0, uv-flip-u: false, mip-filter: "none",
+    };
+    property <ScreenMaterial> finish <- ScreenMaterial {
+        base-color: #ffffff, base-item: root.panel-map, unlit: true, alpha-mode: "opaque",
+    };
+    property <RayPanelActor> defaults <- RayPanelActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 2.5, scale-y: 1.62, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, camera-kind: "", camera-height: 4.2, camera-far: 12,
+        visible: true, pickable: true, layers: 1, material: root.finish,
+    };
+    screen := SceneView3D {
+        width <- 600px; height <- 224px; camera <- "eye";
+        scene-background <- #253d52; cache-rendering <- true; texture-input <- root.view-enabled;
+        model <- [
+            RayPanelActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.defaults },
+            RayPanelActor { id: "left", x: -2.3, ..root.defaults },
+            RayPanelActor {
+                id: "right", x: 2.3,
+                material: ScreenMaterial {
+                    base-item: PanelMap { source: "controller-right", ..root.panel-map }, ..root.finish
+                },
+                ..root.defaults
+            },
+        ];
+    }
+    left-pad := ControllerTouchPanel {
+        x <- 10px; y <- 225px; source-name <- "controller-left"; lower <-> root.left-lower; upper <-> root.left-upper; controls-mode <- root.controls-mode; slider-live <- root.slider-live; advanced-ranges <- root.advanced-ranges; dial-mode <- root.dial-mode;
+        toggles-mode <- root.toggles-mode; toggles-enabled <- root.toggles-enabled;
+        contact-changed(kind) => { root.previous-event = root.last-event; root.last-event = "left-" + kind; }
+    }
+    right-pad := ControllerTouchPanel {
+        x <- 195px; y <- 225px; source-name <- "controller-right"; visible <- root.right-visible; controls-mode <- root.controls-mode; slider-live <- root.slider-live; advanced-ranges <- root.advanced-ranges; dial-mode <- root.dial-mode;
+        toggles-mode <- root.toggles-mode; toggles-enabled <- root.toggles-enabled; switch-rtl <- true;
+        contact-changed(kind) => { root.previous-event = root.last-event; root.last-event = "right-" + kind; }
+    }
+    inject := Button {
+        x <- 14px; y <- 237px; width <- 167px; height <- 36px; text <- "发送面板触点";
+        clicked => { screen.set-touchpoint(root.command-source, root.command-position, root.command-id, root.command-pressed); }
+    }
+    ray-inject := Button {
+        x <- 194px; y <- 237px; width <- 184px; height <- 36px; text <- "发送射线触点";
+        clicked => {
+            let hit = screen.ray-hit-item(root.ray-origin, Vector3D.new(0,0,-1), 8);
+            screen.set-touchpoint(hit.item-source, hit.item-position, root.command-id, root.command-pressed && hit.valid);
+        }
+    }
+    aim := Button {
+        x <- 392px; y <- 237px; width <- 145px; height <- 36px;
+        text <- root.toggles-mode
+            ? (root.command-position.x < 30px ? "拖动开关滑块" : "移回开关起点")
+            : root.advanced-ranges
+            ? (root.command-position.x < 75px ? "移向滑轨中央" : "移回下限手柄")
+            : (root.ray-origin.x < 0 ? "瞄准右侧" : "瞄准左侧");
+        clicked => {
+            if root.toggles-mode {
+                root.command-position = root.command-position.x < 30px
+                    ? Point2D.new(35px, 81px) : Point2D.new(22px, 81px);
+            } else if root.advanced-ranges {
+                root.command-position = root.command-position.x < 75px
+                    ? Point2D.new(87px, 23px) : Point2D.new(62px, 23px);
+            } else {
+                root.ray-origin = Point3D.new(-root.ray-origin.x, root.ray-origin.y, 7);
+            }
+        }
+    }
+    CheckBox { x <- 14px; y <- 290px; width <- 137px; height <- 34px; text <- "按住触点"; checked <-> root.command-pressed; }
+    Text {
+        x <- 182px; y <- 294px; color <- #d6ecfc;
+        text <- root.toggles-mode ? (root.left-switch-on ? "左侧已开启" : "左侧已关闭")
+            : root.advanced-ranges
+            ? "范围 " + Math.round(root.left-lower) + "–" + Math.round(root.left-upper)
+            : left-pad.state;
+    }
+    Text {
+        x <- 350px; y <- 294px; color <- #d6ecfc;
+        text <- root.toggles-mode ? (root.right-switch-on ? "右侧已开启" : "右侧已关闭")
+            : root.advanced-ranges ? "旋钮 " + Math.round(root.left-tuning) : right-pad.state;
+    }
+    CheckBox {
+        x <- 182px; y <- 314px; width <- 190px; height <- 30px;
+        text <- "复选、单选和开关"; checked <-> root.toggles-mode;
+    }
+    CheckBox {
+        x <- 390px; y <- 314px; width <- 185px; height <- 30px;
+        text <- "双手柄滑块和旋钮"; checked <-> root.advanced-ranges;
     }
 }

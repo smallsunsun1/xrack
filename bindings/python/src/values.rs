@@ -6,7 +6,7 @@ use pyo3::{
     inspect::PyStaticExpr,
     prelude::*,
     type_hint_identifier, type_hint_subscript,
-    types::{PyBool, PyFloat, PyInt, PyList, PyString},
+    types::{PyBool, PyBytes, PyFloat, PyInt, PyList, PyString},
 };
 use std::{collections::BTreeMap, path::PathBuf};
 use xrack_interpreter::{HostValue, ValueType};
@@ -357,6 +357,23 @@ owned_value!(MeshAsset3D, rt::MeshAsset3D);
 
 #[pymethods]
 impl MeshAsset3D {
+    #[pyo3(signature = (variant = ""))]
+    fn material_slots(&self, variant: &str) -> Vec<String> {
+        self.0.material_slot_selectors(variant).into_snapshot()
+    }
+
+    fn material_variants(&self) -> Vec<String> {
+        self.0.material_variant_selectors().into_snapshot()
+    }
+
+    fn animation_clips(&self) -> Vec<String> {
+        self.0.animation_clip_selectors().into_snapshot()
+    }
+
+    fn animation_duration(&self, selector: &str) -> f64 {
+        self.0.animation_duration(selector)
+    }
+
     fn node(&self, selector: &str) -> MeshNode3D {
         self.0.node(selector).into()
     }
@@ -486,6 +503,7 @@ impl Hit3D {
             normal: normal.0,
             local_position: local_position.0,
             local_normal: local_normal.0,
+            item: None,
             u: uv.0,
             v: uv.1,
         }))
@@ -541,6 +559,14 @@ impl Hit3D {
         self.0.local_normal.into()
     }
     #[getter]
+    fn item_source(&self) -> String {
+        self.0.item_source().to_owned()
+    }
+    #[getter]
+    fn item_position(&self) -> Point2D {
+        self.0.item_position().into()
+    }
+    #[getter]
     fn u(&self) -> f64 {
         self.0.u
     }
@@ -549,6 +575,36 @@ impl Hit3D {
         self.0.v
     }
 }
+owned_value!(TextureData2D, rt::TextureData2D);
+
+#[pymethods]
+impl TextureData2D {
+    #[new]
+    fn new() -> Self {
+        Self(Default::default())
+    }
+
+    #[staticmethod]
+    fn rgba8(width: i64, height: i64, pixels: &Bound<'_, PyBytes>) -> Self {
+        rt::TextureData2D::from_rgba8(width, height, pixels.as_bytes().to_vec()).into()
+    }
+
+    #[getter]
+    fn valid(&self) -> bool {
+        self.0.is_valid()
+    }
+
+    #[getter]
+    fn width(&self) -> i64 {
+        self.0.width()
+    }
+
+    #[getter]
+    fn height(&self) -> i64 {
+        self.0.height()
+    }
+}
+
 owned_value!(SceneModel3D, std::sync::Arc<rt::scene3d::SceneModel>);
 
 #[pymethods]
@@ -1518,6 +1574,110 @@ struct_value!(ProjectedPoint3D {
     valid: bool,
     inside: bool
 });
+owned_value!(RenderStats3D, rt::RenderStats3D);
+#[pymethods]
+impl RenderStats3D {
+    #[new]
+    fn new() -> Self {
+        Self(rt::RenderStats3D::default())
+    }
+    #[getter]
+    fn valid(&self) -> bool {
+        self.0.valid
+    }
+    #[getter]
+    fn revision(&self) -> i64 {
+        self.0.revision
+    }
+    #[getter]
+    fn frame(&self) -> i64 {
+        self.0.frame
+    }
+    #[getter]
+    fn work(&self) -> String {
+        self.0.work.clone()
+    }
+    #[getter]
+    fn output_width(&self) -> i64 {
+        self.0.output_width
+    }
+    #[getter]
+    fn output_height(&self) -> i64 {
+        self.0.output_height
+    }
+    #[getter]
+    fn raster_width(&self) -> i64 {
+        self.0.raster_width
+    }
+    #[getter]
+    fn raster_height(&self) -> i64 {
+        self.0.raster_height
+    }
+    #[getter]
+    fn samples(&self) -> i64 {
+        self.0.samples
+    }
+    #[getter]
+    fn cpu_micros(&self) -> i64 {
+        self.0.cpu_micros
+    }
+    #[getter]
+    fn mesh_draws(&self) -> i64 {
+        self.0.mesh_draws
+    }
+    #[getter]
+    fn mesh_vertices(&self) -> i64 {
+        self.0.mesh_vertices
+    }
+    #[getter]
+    fn sprite_draws(&self) -> i64 {
+        self.0.sprite_draws
+    }
+    #[getter]
+    fn sprites(&self) -> i64 {
+        self.0.sprites
+    }
+    #[getter]
+    fn shadow_passes(&self) -> i64 {
+        self.0.shadow_passes
+    }
+    #[getter]
+    fn reflection_faces(&self) -> i64 {
+        self.0.reflection_faces
+    }
+    #[getter]
+    fn capture_passes(&self) -> i64 {
+        self.0.capture_passes
+    }
+    #[getter]
+    fn depth_prepass_draws(&self) -> i64 {
+        self.0.depth_prepass_draws
+    }
+    #[getter]
+    fn mesh_upload_bytes(&self) -> i64 {
+        self.0.mesh_upload_bytes
+    }
+    #[getter]
+    fn gpu_supported(&self) -> bool {
+        self.0.gpu_supported
+    }
+    #[getter]
+    fn gpu_valid(&self) -> bool {
+        self.0.gpu_valid
+    }
+    #[getter]
+    fn gpu_nanos(&self) -> i64 {
+        self.0.gpu_nanos
+    }
+    #[getter]
+    fn gpu_passes(&self) -> i64 {
+        self.0.gpu_passes
+    }
+    #[getter]
+    fn gpu_truncated(&self) -> bool {
+        self.0.gpu_truncated
+    }
+}
 struct_value!(Vector2D {
     x: Length,
     y: Length
@@ -2249,10 +2409,12 @@ bridge_values! {
         Hit3D => Hit3D,
         Instance3D => Instance3D,
         InstanceTable3D => InstanceTable3D,
+        TextureData2D => TextureData2D,
         MeshAsset3D => MeshAsset3D,
         MeshNode3D => MeshNode3D,
         Bounds3D => Bounds3D,
         ProjectedPoint3D => ProjectedPoint3D,
+        RenderStats3D => RenderStats3D,
         WalkResult3D => WalkResult3D,
         PhysicsWorld3D => PhysicsWorld3D,
         SceneObjects => SceneModel3D,

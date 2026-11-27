@@ -1,0 +1,86 @@
+diff --git a/src/clip.rs b/src/clip.rs
+--- a/src/clip.rs
++++ b/src/clip.rs
+@@ -120,6 +120,16 @@
+     pub(crate) armed: Rect,
+ }
+ 
++/// Coverage produced by clipping an analytic rounded shape with another.
++#[doc(hidden)]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum RoundedClipComposition {
++    Outer,
++    Inner,
++    Separate,
++    Combined,
++}
++
+ impl<T> Canvas<T>
+ where
+     T: Renderer,
+@@ -191,6 +201,53 @@
+             self.clip_stack.retain(|entry| entry.target != target);
+         }
+         self.clip_planes.remove(&target);
++    }
++
++    /// Classifies the analytic shapes and bitmap generated for a pair of rounded clips.
++    #[doc(hidden)]
++    pub fn rounded_clip_composition(
++        outer: &Path,
++        inner: &Path,
++        transform: Transform2D,
++        dpi: f32,
++    ) -> RoundedClipComposition {
++        use RoundedClipComposition::{Combined, Inner, Outer, Separate};
++        let Some((outer, _, None)) = RoundedBox::fit_with_cut(outer) else {
++            return Combined;
++        };
++        let Some((inner, _, None)) = RoundedBox::fit_with_cut(inner) else {
++            return Combined;
++        };
++        let outer = outer.transformed(&transform);
++        let inner = inner.transformed(&transform);
++        let fringe = 1.0 / dpi;
++        let (Some(outer_cover), Some(inner_cover)) = (outer.coverage(fringe), inner.coverage(fringe))
++        else {
++            return Combined;
++        };
++        if let Some(both) = outer.intersection(&inner, fringe) {
++            if both == outer {
++                Outer
++            } else if both == inner {
++                Inner
++            } else {
++                Combined
++            }
++        } else if inner_cover.contains(&outer) {
++            Outer
++        } else if outer_cover.contains(&inner) {
++            Inner
++        } else if outer.radii != [0.0; 2] && inner.radii != [0.0; 2] {
++            Separate
++        } else {
++            Combined
++        }
++    }
++
++    /// Takes the path as a bitmap clip without choosing the analytic representation.
++    #[doc(hidden)]
++    pub fn clip_path_as_mask(&mut self, path: &Path, fill_rule: FillRule) -> bool {
++        !self.saturated() && self.clip_to_mask(&[(path, fill_rule)])
+     }
+ 
+     /// Intersects the clip region with `path` under the current transform,
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -55,6 +55,8 @@
+ 
+ mod budgets;
+ mod clip;
++#[doc(hidden)]
++pub use clip::RoundedClipComposition;
+ mod filters;
+ mod layers;
+ mod shadow;

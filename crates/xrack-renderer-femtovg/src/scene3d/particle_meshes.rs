@@ -62,7 +62,7 @@ impl MeshSurfaceBuffers {
                 device,
                 "XRack particle triangle sampler",
                 surface.bytes(),
-                wgpu::BufferUsages::STORAGE,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             ),
             bytes,
         };

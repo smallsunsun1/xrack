@@ -3,7 +3,7 @@ load("@crates//:defs.bzl", "aliases", "all_crate_deps")
 
 rust_library(
     name = "xrack_resources",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/*.rs", "src/environment/*.rs"]),
     aliases = aliases(),
     crate_name = "xrack_resources",
     crate_root = "src/lib.rs",

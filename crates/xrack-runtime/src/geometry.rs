@@ -1,8 +1,12 @@
-use crate::{Length, Property};
+use crate::{
+    Hit3D, Length, Point2D, Point3D, Property, RenderStats3D, Vector3D, ViewportGpuStats,
+    scene3d::{SceneTextureSources, camera::SceneViewQuery},
+};
 use std::{
     cell::{Cell, OnceCell},
     fmt,
     rc::Rc,
+    sync::Arc,
 };
 
 thread_local! {
@@ -51,10 +55,18 @@ struct ScrollInteraction {
 }
 
 #[derive(Default)]
+struct SceneViewObservation {
+    query: Property<SceneViewQuery>,
+    texture_sources: Option<Property<Option<Arc<SceneTextureSources>>>>,
+}
+
+#[derive(Default)]
 struct Geometry {
     values: [Property<Length>; 10],
     ready: Property<bool>,
-    scene_view: Option<Box<Property<crate::scene_camera::SceneViewQuery>>>,
+    scene_view: Option<Box<SceneViewObservation>>,
+    scene_texture_size: OnceCell<Box<[Property<u32>; 2]>>,
+    render_stats: OnceCell<Box<Property<RenderStats3D>>>,
     scroll_target_id: OnceCell<u64>,
     scroll_thumb: [Property<f64>; 2],
     scroll_interaction: OnceCell<ScrollInteraction>,
@@ -79,27 +91,165 @@ impl fmt::Debug for GeometryHandle {
     }
 }
 
+#[doc(hidden)]
+pub struct SceneTouchRequest {
+    pub view: GeometryHandle,
+    pub source: String,
+    pub position: Point2D,
+    pub id: i64,
+    pub pressed: bool,
+}
+
 impl GeometryHandle {
-    pub fn for_scene_view() -> Self {
+    pub fn request_scene_touch(&self, source: String, position: Point2D, id: i64, pressed: bool) {
+        crate::focus::FocusHandle::enqueue(crate::QueuedFocusRequest::SceneTouch(
+            SceneTouchRequest {
+                view: self.clone(),
+                source,
+                position,
+                id,
+                pressed,
+            },
+        ));
+    }
+
+    pub fn for_scene_view(observe_texture_sources: bool) -> Self {
         Self(Rc::new(Geometry {
-            scene_view: Some(Box::default()),
+            scene_view: Some(Box::new(SceneViewObservation {
+                texture_sources: observe_texture_sources.then(Property::default),
+                ..Default::default()
+            })),
             ..Geometry::default()
         }))
     }
 
-    pub fn publish_scene_view(&self, node: &crate::Node, viewport: [f64; 2]) {
-        if let Some(query) = &self.0.scene_view {
-            query.set_if_changed(crate::scene_camera::SceneViewQuery::for_view(
-                node, viewport,
-            ));
+    pub fn with_scene_texture_size(self) -> Self {
+        self.0.scene_texture_size.get_or_init(Box::default);
+        self
+    }
+
+    pub fn observes_scene_texture_size(&self) -> bool {
+        self.0.scene_texture_size.get().is_some()
+    }
+
+    pub fn with_render_stats(self) -> Self {
+        self.0.render_stats.get_or_init(Box::default);
+        self
+    }
+
+    pub fn render_stats(&self) -> RenderStats3D {
+        self.0
+            .render_stats
+            .get()
+            .map_or_else(Default::default, |stats| stats.get(Default::default))
+    }
+
+    pub fn needs_render_stats(&self, revision: i64) -> bool {
+        self.0.render_stats.get().is_some_and(|stats| {
+            let previous = stats.cached_value().unwrap_or_default();
+            if revision > 0 {
+                !previous.valid || previous.revision != revision
+            } else {
+                previous.valid
+            }
+        })
+    }
+
+    pub fn publish_render_stats(&self, sample: RenderStats3D) -> bool {
+        let Some(stats) = self.0.render_stats.get() else {
+            return false;
+        };
+        if stats.cached_value().unwrap_or_default() == sample {
+            return false;
+        }
+        stats.set_if_changed(sample);
+        true
+    }
+
+    pub fn publish_render_stats_gpu(
+        &self,
+        revision: i64,
+        frame: u64,
+        gpu: &ViewportGpuStats,
+        truncated: bool,
+    ) -> bool {
+        let current = self
+            .0
+            .render_stats
+            .get()
+            .and_then(|stats| stats.cached_value());
+        let Some(current) = current.filter(|sample| sample.matches(revision, frame)) else {
+            return false;
+        };
+        self.publish_render_stats(current.completed(gpu, truncated))
+    }
+
+    pub fn scene_texture_size(&self, axis: usize) -> i64 {
+        i64::from(
+            self.0
+                .scene_texture_size
+                .get()
+                .and_then(|size| size.get(axis))
+                .map_or(0, |side| side.get(|| 0)),
+        )
+    }
+
+    pub fn publish_scene_texture_size(&self, size: [u32; 2]) -> bool {
+        let Some(properties) = self.0.scene_texture_size.get() else {
+            return false;
+        };
+        let mut changed = false;
+        for (property, side) in properties.iter().zip(size) {
+            if property.cached_value().unwrap_or(0) != side {
+                property.set_if_changed(side);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    pub fn publish_scene_view(
+        &self,
+        node: &crate::Node,
+        viewport: [f64; 2],
+        texture_sources: impl FnOnce() -> Option<Arc<SceneTextureSources>>,
+    ) {
+        if let Some(view) = &self.0.scene_view {
+            view.query
+                .set_if_changed(SceneViewQuery::for_view(node, viewport));
+            if let Some(sources) = &view.texture_sources {
+                sources.set_if_changed(texture_sources());
+            }
         }
     }
 
-    pub fn scene_view(&self) -> crate::scene_camera::SceneViewQuery {
+    pub fn scene_view(&self) -> SceneViewQuery {
         self.0
             .scene_view
             .as_ref()
-            .map_or_else(Default::default, |query| query.get(Default::default))
+            .map_or_else(Default::default, |view| view.query.get(Default::default))
+    }
+
+    pub fn scene_item_hit(&self, point: Point2D) -> Hit3D {
+        self.query_item(|view, sources| view.hit_item(point, sources))
+    }
+
+    pub fn scene_item_ray_hit(&self, origin: Point3D, direction: Vector3D, max: f64) -> Hit3D {
+        self.query_item(|view, sources| view.ray_hit_item(origin, direction, max, sources))
+    }
+
+    fn query_item(
+        &self,
+        query: impl FnOnce(SceneViewQuery, &SceneTextureSources) -> Hit3D,
+    ) -> Hit3D {
+        self.0
+            .scene_view
+            .as_ref()
+            .and_then(|view| {
+                let sources = view.texture_sources.as_ref()?.get(|| None)?;
+                Some(query(view.query.get(Default::default), &sources))
+            })
+            .unwrap_or_default()
     }
 
     pub fn identity(&self) -> usize {
@@ -210,9 +360,14 @@ impl GeometryHandle {
     }
 
     pub fn clear(&self) {
-        if let Some(query) = &self.0.scene_view {
-            query.set_if_changed(Default::default());
+        if let Some(view) = &self.0.scene_view {
+            view.query.set_if_changed(Default::default());
+            if let Some(sources) = &view.texture_sources {
+                sources.set_if_changed(None);
+            }
         }
+        self.publish_scene_texture_size([0; 2]);
+        self.publish_render_stats(RenderStats3D::default());
         self.publish_scroll_interaction(false, false, false);
         self.publish_scroll_thumb(0.0, 0.0);
         self.publish([0.0; 4], [0.0; 4], false);
@@ -222,6 +377,36 @@ impl GeometryHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_stats_readback_is_scoped_to_the_committed_revision_and_frame() {
+        let handle = GeometryHandle::default().with_render_stats();
+        assert!(handle.needs_render_stats(1));
+        assert!(!handle.render_stats().valid);
+        assert!(
+            handle.publish_render_stats(RenderStats3D::from_data(crate::RenderStats3DData {
+                revision: 1,
+                frame: 2,
+                valid: true,
+                ..Default::default()
+            },))
+        );
+        let gpu = ViewportGpuStats {
+            path: Vec::new(),
+            id: None,
+            gpu_nanos: 123,
+            passes: Vec::new(),
+        };
+        assert!(!handle.publish_render_stats_gpu(1, 1, &gpu, false));
+        assert!(!handle.publish_render_stats_gpu(2, 2, &gpu, false));
+        assert!(handle.publish_render_stats_gpu(1, 2, &gpu, false));
+        assert_eq!(handle.render_stats().gpu_nanos, 123);
+        assert!(!handle.needs_render_stats(1));
+        assert!(handle.needs_render_stats(2));
+        handle.clear();
+        assert!(!handle.render_stats().valid);
+        assert!(!handle.publish_render_stats_gpu(1, 2, &gpu, false));
+    }
 
     #[test]
     fn each_geometry_field_invalidates_only_its_readers() {

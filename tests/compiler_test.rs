@@ -2105,6 +2105,576 @@ fn layout_geometry_reads_are_typed_and_only_flow_into_later_layout_phases() {
 }
 
 #[test]
+fn combine_accepts_only_prepared_scenes_and_lowers_to_the_shared_cache() {
+    let source = r#"component Demo inherits Window {
+        in property <scenemodel3d> shared;
+        in property <scenemodel3d> local;
+        out property <scenemodel3d> result: Scene3D.combine(root.shared, root.local);
+        SceneView3D { model: root.result; }
+    }"#;
+    let compiled = compile(source, "combine.xr").unwrap();
+    assert!(compiled.mlir.contains("combine-3d"));
+    assert!(compiled.rust.to_string().contains("combine_scenes"));
+    let invalid = source.replace("root.shared, root.local", "root.shared, 42");
+    assert!(analyze(&invalid).unwrap_err().contains("scenemodel3d"));
+
+    let raw = lower(source, "combine.xr");
+    let empty_local = raw.replace(
+        r#""xr.read"() <{owner = "root", value = "local"}> : () -> !xr.scenemodel3d"#,
+        r#""xr.literal"() <{value = ""}> : () -> !xr.scenemodel3d"#,
+    );
+    assert_ne!(raw, empty_local);
+    let optimized = mlir::process(&empty_local).unwrap().to_mlir();
+    assert!(!optimized.contains("combine-3d"));
+}
+
+#[test]
+fn authored_skin_requires_typed_weights_and_a_joint_list() {
+    let source = r#"struct Vertex { position: point3d }
+    struct Weight { vertex: int, joint: int, weight: float }
+    struct Joint { node: string }
+    struct Geometry { vertices: [Vertex], indices: [int], skin-weights: [Weight] }
+    struct Actor {
+        id: string, x: float, y: float, z: float,
+        scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+        color: color, geometry: Geometry, skin-joints: [Joint],
+    }
+    component Demo inherits Window {
+        in property <[Actor]> actors;
+        SceneView3D { model: Scene3D.prepare(root.actors); }
+    }"#;
+    let compiled = compile(source, "authored-skin.xr").unwrap();
+    assert!(compiled.rust.to_string().contains("deformed_geometry"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("prepare_scene_skin_joints")
+    );
+    let missing = source.replace(", skin-joints: [Joint]", "");
+    assert!(
+        analyze(&missing)
+            .unwrap_err()
+            .contains("skin-weights requires vertices and skin-joints")
+    );
+    let invalid = source.replace("weight: float", "weight: string");
+    assert!(analyze(&invalid).unwrap_err().contains("skin-weights"));
+    let raw = lower(source, "authored-skin.xr");
+    let invalid = raw.replace(
+        r#"\22joint\22,\22ty\22:\22int\22"#,
+        r#"\22joint\22,\22ty\22:\22float\22"#,
+    );
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("skin-weights")
+    );
+}
+
+#[test]
+fn authored_morph_targets_require_source_indices_and_vector_channels() {
+    let source = r#"struct Vertex { position: point3d }
+    struct Delta { target: string, vertex: int, normal: vector3d }
+    struct Geometry { vertices: [Vertex], indices: [int], morph-deltas: [Delta] }
+    struct Targets { lift: float }
+    struct Actor {
+        id: string, x: float, y: float, z: float,
+        scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+        color: color, geometry: Geometry, morph-weights: Targets,
+    }
+    component Demo inherits Window {
+        in property <[Actor]> actors;
+        SceneView3D { model: Scene3D.prepare(root.actors); }
+    }"#;
+    let compiled = compile(source, "authored-morph.xr").unwrap();
+    let rust = compiled.rust.to_string();
+    assert!(rust.contains("deformed_geometry") && rust.contains("SceneMorphDelta"));
+    let missing = source.replace("vertices: [Vertex], ", "");
+    assert!(
+        analyze(&missing)
+            .unwrap_err()
+            .contains("morph-deltas requires geometry.vertices")
+    );
+    for invalid in [
+        source.replace("target: string", "target: int"),
+        source.replace("vertex: int", "vertex: string"),
+        source.replace("normal: vector3d", "normal: point3d"),
+    ] {
+        assert!(analyze(&invalid).unwrap_err().contains("morph-deltas"));
+    }
+    let tangent = source.replace("normal: vector3d", "tangent: vector3d");
+    assert!(
+        analyze(&tangent)
+            .unwrap_err()
+            .contains("morph-deltas tangent requires a vertex tangent")
+    );
+    let tangent = tangent.replace("position: point3d", "position: point3d, tangent: vector3d");
+    assert!(compile(&tangent, "authored-morph-tangent.xr").is_ok());
+    let material = tangent.replace(
+        "tangent: vector3d }
+    struct Geometry",
+        "binormal: vector3d, u: float, v1: float, color-a: float }
+    struct Geometry",
+    );
+    assert_ne!(tangent, material);
+    assert!(compile(&material, "authored-morph-surface.xr").is_ok());
+    let missing_tangent =
+        material.replace("position: point3d, tangent: vector3d", "position: point3d");
+    assert!(
+        analyze(&missing_tangent)
+            .unwrap_err()
+            .contains("binormal requires a vertex tangent")
+    );
+    assert!(
+        analyze(&material.replace("u: float", "u: length"))
+            .unwrap_err()
+            .contains("morph-deltas")
+    );
+    let raw_surface = lower(&material, "authored-morph-surface.xr");
+    let invalid_surface = raw_surface.replace(
+        r#"\22color-a\22,\22ty\22:\22float\22"#,
+        r#"\22color-a\22,\22ty\22:\22length\22"#,
+    );
+    assert_ne!(raw_surface, invalid_surface);
+    assert!(
+        mlir::process(&invalid_surface)
+            .unwrap_err()
+            .contains("morph-deltas")
+    );
+    let raw = lower(source, "authored-morph.xr");
+    let invalid = raw.replace(
+        r#"\22normal\22,\22ty\22:\22vector3d\22"#,
+        r#"\22normal\22,\22ty\22:\22point3d\22"#,
+    );
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("morph-deltas")
+    );
+}
+
+#[test]
+fn scene_particle_model_fields_are_verified_and_passed_to_codegen() {
+    let source = r#"struct Emitter {
+        position: point3d, size: float, color: color, lifetime: float,
+        particle-model: string, particle-model-scene: scenemodel3d,
+    }
+    component Demo inherits Window {
+        in property <[Emitter]> emitters;
+        SceneView3D { particle-emitters: root.emitters; }
+    }"#;
+    let compiled = compile(source, "particle-scene.xr").unwrap();
+    assert!(compiled.rust.to_string().contains("particle_model_scene"));
+    let invalid = source.replace(
+        "particle-model-scene: scenemodel3d",
+        "particle-model-scene: string",
+    );
+    assert!(
+        analyze(&invalid)
+            .unwrap_err()
+            .contains("particle-model-scene")
+    );
+    let raw = lower(source, "particle-scene.xr");
+    let invalid = raw.replace(
+        r#"\22particle-model-scene\22,\22ty\22:\22scenemodel3d\22"#,
+        r#"\22particle-model-scene\22,\22ty\22:\22string\22"#,
+    );
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("particle-model-scene")
+    );
+}
+
+#[test]
+fn particle_instance_model_bindings_verify_the_model_and_emitter_types() {
+    let source = r#"struct Emitter {
+        position: point3d, size: float, color: color, lifetime: float, particle-instances-only: bool,
+    }
+    struct Link { emitter: string, model: scenemodel3d }
+    component Demo inherits Window {
+        in property <[Emitter]> emitters;
+        in property <[Link]> links;
+        SceneView3D { particle-emitters: root.emitters; particle-instance-models: root.links; }
+    }"#;
+    let generated = compile(source, "instance-models.xr")
+        .unwrap()
+        .rust
+        .to_string();
+    assert!(generated.contains("particle_instance_models"));
+    assert!(generated.contains("particle_instances_only"));
+    for invalid in [
+        source.replace("emitter: string", "emitter: int"),
+        source.replace("model: scenemodel3d", "model: string"),
+    ] {
+        assert!(
+            analyze(&invalid)
+                .unwrap_err()
+                .contains("particle instance models")
+        );
+    }
+    let raw = lower(source, "instance-models.xr");
+    let invalid = raw.replace(
+        r#"\22model\22,\22ty\22:\22scenemodel3d\22"#,
+        r#"\22model\22,\22ty\22:\22string\22"#,
+    );
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("particle instance models")
+    );
+}
+
+#[test]
+fn text_geometry_types_are_checked_in_the_frontend_and_mlir() {
+    let source = r#"struct LabelShape { shape: string, text: string, font: Font, text-scale: float, depth: float, asynchronous: bool }
+    struct Actor {
+        id: string, x: float, y: float, z: float,
+        scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+        color: color, geometry: LabelShape,
+    }
+    export component Demo inherits Window {
+        in property <[Actor]> rows;
+        property <scenemodel3d> model: Scene3D.prepare(root.rows);
+        out property <string> status: Scene3D.geometry-status(root.model, "label");
+        out property <string> error: Scene3D.geometry-error(root.model, "label");
+        SceneView3D { model: root.model; }
+    }"#;
+    let generated = compile(source, "raised-text.xr").unwrap().rust.to_string();
+    assert!(generated.contains("SceneTextFonts"));
+    assert!(generated.contains("geometry_status") && generated.contains("geometry_error"));
+    for invalid in [
+        source.replace("text: string", "text: int"),
+        source.replace("font: Font", "font: string"),
+        source.replace("text-scale: float", "text-scale: length"),
+        source.replace("asynchronous: bool", "asynchronous: int"),
+    ] {
+        assert!(analyze(&invalid).unwrap_err().contains("3D geometry field"));
+    }
+    let raw = lower(source, "raised-text.xr");
+    let invalid = raw.replace(
+        r#"\22font\22,\22ty\22:\22Font\22"#,
+        r#"\22font\22,\22ty\22:\22int\22"#,
+    );
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("invalid 3D geometry field font")
+    );
+}
+
+#[test]
+fn animation_node_overrides_validate_optional_channels_and_destination_name() {
+    let source = r##"struct Edit { node: string, translation: vector3d, rotation: quaternion3d, weight: float }
+    struct Actor {
+        id: string, mesh: string, x: float, y: float, z: float,
+        scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+        color: color, animation-node-overrides: [Edit],
+    }
+    component Demo inherits Window {
+        in property <[Actor]> rows;
+        SceneView3D { model: Scene3D.prepare(root.rows); }
+    }"##;
+    let compiled = compile(source, "node-overrides.xr").unwrap();
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("prepare_animation_node_overrides")
+    );
+    let invalid = source.replace("rotation: quaternion3d", "rotation: vector3d");
+    let error = analyze(&invalid).unwrap_err();
+    assert!(
+        error.contains("animation-node-overrides") && error.contains("rotation"),
+        "{error}"
+    );
+    let raw = lower(source, "node-overrides.xr");
+    let invalid = raw.replace(
+        r#"\22node\22,\22ty\22:\22string\22"#,
+        r#"\22node\22,\22ty\22:\22int\22"#,
+    );
+    assert_ne!(raw, invalid);
+    let error = mlir::process(&invalid).unwrap_err();
+    assert!(
+        error.contains("animation-node-overrides") && error.contains("node"),
+        "{error}"
+    );
+}
+
+#[test]
+fn mesh_catalog_uses_typed_results_and_fresh_model_snapshots() {
+    let source = r##"component Demo inherits Window {
+        in property <meshasset3d> loaded;
+        out property <[string]> slots: Scene3D.mesh-material-slots(root.loaded);
+        out property <[string]> variants: Scene3D.mesh-material-variants(root.loaded);
+        out property <[string]> same-query: Scene3D.mesh-material-variants(root.loaded);
+        out property <[string]> clips: Scene3D.mesh-animation-clips(root.loaded);
+        out property <float> duration: Scene3D.mesh-animation-duration(root.loaded, "#0");
+    }"##;
+    let compiled = compile(source, "asset-catalog.xr").unwrap();
+    assert_eq!(
+        compiled
+            .mlir
+            .matches("\"mesh-material-variants-3d\"")
+            .count(),
+        2
+    );
+    assert!(compiled.mlir.lines().any(|line| {
+        line.contains("mesh-animation-duration-3d") && line.contains("-> !xr.float")
+    }));
+    assert!(analyze(&source.replace("root.loaded, \"#0\"", "root.loaded, true")).is_err());
+    let raw = lower(source, "asset-catalog.xr");
+    let invalid = raw.replace(
+        "value = \"mesh-animation-duration-3d\"",
+        "value = \"mesh-material-slots-3d\"",
+    );
+    assert_ne!(raw, invalid);
+    assert!(mlir::process(&invalid).is_err());
+}
+
+#[test]
+fn scene_render_stats_read_and_field_types_survive_optimization() {
+    let source = r#"component Demo inherits Window {
+        in property <int> ticket: 1;
+        view := SceneView3D { render-stats-revision: root.ticket; }
+        out property <renderstats3d> stats: view.render-stats();
+        out property <int> draws: root.stats.mesh-draws;
+        out property <string> work-name: root.stats.work;
+        Text { text: root.stats.work; }
+    }"#;
+    let compiled = compile(source, "render-stats.xr").unwrap();
+    assert!(compiled.mlir.lines().any(|line| {
+        line.contains("xr.scene_view_query") && line.contains("-> !xr.renderstats3d")
+    }));
+    assert!(compiled.mlir.lines().any(|line| {
+        line.contains("xr.render_stats3d_field") && line.contains("-> !xr.string")
+    }));
+    assert!(compiled.mlir.lines().any(|line| {
+        line.contains("render-stats-revision") && line.contains("xr.update_effect = \"paint\"")
+    }));
+    assert!(compiled.rust.to_string().contains("with_render_stats"));
+    let invalid = source.replace(
+        "render-stats-revision: root.ticket",
+        "render-stats-revision: true",
+    );
+    assert!(analyze(&invalid).is_err());
+    let raw = lower(source, "render-stats.xr");
+    let invalid = raw.replace("value = \"mesh-draws\"", "value = \"valid\"");
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("invalid render statistics field")
+    );
+}
+
+#[test]
+fn scene_look_at_fields_keep_types_on_the_prepared_scene_path() {
+    let source = r#"struct Actor {
+        id: string, mesh: string, x: float, y: float, z: float,
+        scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+        color: color, look-at: string, look-at-up: vector3d,
+    }
+    component Demo inherits Window {
+        in property <[Actor]> actors;
+        SceneView3D { model: Scene3D.prepare(root.actors); }
+    }"#;
+    let compiled = compile(source, "scene-look-at.xr").unwrap();
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("aim_target : & object . look_at")
+    );
+    let invalid = source.replace("look-at-up: vector3d", "look-at-up: point3d");
+    let error = analyze(&invalid).unwrap_err();
+    assert!(
+        error.contains("look-at-up") && error.contains("vector3d"),
+        "{error}"
+    );
+    let raw = lower(source, "scene-look-at.xr");
+    let invalid = raw.replace(
+        r#"\22look-at\22,\22ty\22:\22string\22"#,
+        r#"\22look-at\22,\22ty\22:\22int\22"#,
+    );
+    assert_ne!(raw, invalid);
+    let error = mlir::process(&invalid).unwrap_err();
+    assert!(
+        error.contains("look-at") && error.contains("string"),
+        "{error}"
+    );
+}
+
+#[test]
+fn scene_grid_bindings_are_typed_paint_updates() {
+    let source = r#"component Demo inherits Window {
+        in property <bool> enabled-grid: true;
+        SceneView3D {
+            scene-grid: root.enabled-grid;
+            scene-grid-spacing: 2;
+            scene-grid-height: -0.5;
+            scene-grid-color: #9db8dcaa;
+            scene-grid-axes: false;
+        }
+    }"#;
+    let compiled = compile(source, "ground-grid.xr").unwrap();
+    assert!(compiled.mlir.lines().any(|line| {
+        line.contains("name = \"scene-grid\"") && line.contains("xr.update_effect = \"paint\"")
+    }));
+    let invalid = source.replace("scene-grid-axes: false", "scene-grid-axes: 1");
+    assert!(analyze(&invalid).is_err());
+    let raw = lower(source, "ground-grid.xr");
+    let invalid = raw
+        .replace("name = \"scene-grid-color\"", "name = \"ambient-color\"")
+        .replace("name = \"scene-grid-axes\"", "name = \"scene-grid-color\"");
+    assert_ne!(raw, invalid);
+    assert!(mlir::process(&invalid).is_err());
+}
+
+#[test]
+fn perspective_fov_axis_is_a_typed_scene_field() {
+    let source = r#"struct Actor {
+        id: string, mesh: string, x: float, y: float, z: float,
+        scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+        color: color, camera-kind: string, camera-fov-axis: string,
+    }
+    component Demo inherits Window {
+        in property <[Actor]> actors;
+        SceneView3D { model: Scene3D.prepare(root.actors); }
+    }"#;
+    let compiled = compile(source, "fov-axis.xr").unwrap();
+    assert!(compiled.rust.to_string().contains("with_fov_axis"));
+    let invalid = source.replace("camera-fov-axis: string", "camera-fov-axis: int");
+    let error = analyze(&invalid).unwrap_err();
+    assert!(
+        error.contains("camera-fov-axis") && error.contains("string"),
+        "{error}"
+    );
+    let raw = lower(source, "fov-axis.xr");
+    let invalid = raw.replace(
+        r#"\22camera-fov-axis\22,\22ty\22:\22string\22"#,
+        r#"\22camera-fov-axis\22,\22ty\22:\22int\22"#,
+    );
+    assert_ne!(raw, invalid);
+    let error = mlir::process(&invalid).unwrap_err();
+    assert!(
+        error.contains("camera-fov-axis") && error.contains("string"),
+        "{error}"
+    );
+}
+
+#[test]
+fn scene_view_active_camera_reads_are_typed_and_layout_observed() {
+    let source = r#"component Demo inherits Window {
+        view := SceneView3D { auto-camera: true; }
+        out property <string> selected: view.active-camera();
+        out property <int> selected-row: view.active-camera-row();
+        out property <int> selected-node: view.active-camera-node();
+        out property <bool> ready: view.has-active-camera();
+    }"#;
+    let compiled = compile(source, "active-camera.xr").unwrap();
+    for (name, ty) in [
+        ("active-camera", "string"),
+        ("active-camera-row", "int"),
+        ("active-camera-node", "int"),
+        ("has-active-camera", "bool"),
+    ] {
+        assert!(
+            compiled.mlir.lines().any(|line| {
+                line.contains("xr.scene_view_query")
+                    && line.contains(&format!("value = \"{name}\""))
+                    && line.contains(&format!("-> !xr.{ty}"))
+            }),
+            "{name}"
+        );
+    }
+    let invalid = source.replace("view.active-camera()", "view.active-camera(0)");
+    assert!(
+        analyze(&invalid)
+            .unwrap_err()
+            .contains("expected active-camera() -> string")
+    );
+    let raw = lower(source, "active-camera.xr")
+        .replace("value = \"active-camera-row\"", "value = \"active-camera\"");
+    assert!(
+        mlir::process(&raw)
+            .unwrap_err()
+            .contains("incorrect SceneView3D query signature")
+    );
+}
+
+#[test]
+fn scene_view_automatic_camera_is_a_boolean_paint_binding() {
+    let source = r#"component App inherits Window {
+        in property <bool> automatic: true;
+        SceneView3D { auto-camera: root.automatic; }
+    }"#;
+    let compiled = compile(source, "auto-camera.xr").unwrap();
+    assert!(compiled.mlir.lines().any(|line| {
+        line.contains("name = \"auto-camera\"")
+            && line.contains("xr.update_effect = \"paint\"")
+            && line.contains("!xr.bool")
+    }));
+    let invalid = source.replace("auto-camera: root.automatic", "auto-camera: 1");
+    assert!(analyze(&invalid).unwrap_err().contains("bool"));
+    let other = source.replace("SceneView3D", "Rectangle");
+    assert!(analyze(&other).unwrap_err().contains("auto-camera"));
+}
+
+#[test]
+fn scene_view_texture_size_is_read_only_and_cannot_drive_its_allocation() {
+    let source = r#"component Demo inherits Window {
+        view := SceneView3D { width: 120px; texture-width: 64; }
+        other := Rectangle { }
+        out property <int> physical-width: view.effective-texture-width;
+        out property <int> physical-height: view.effective-texture-height;
+        callback sample() -> int;
+        sample => { view.effective-texture-height }
+    }"#;
+    let compiled = compile(source, "texture-metrics.xr").unwrap();
+    let rust = compiled.rust.to_string();
+    assert!(rust.contains("with_scene_texture_size"));
+    assert!(rust.contains(". scene_texture_size (0usize)"));
+    assert!(rust.contains(". scene_texture_size (1usize)"));
+    for (invalid, expected) in [
+        (
+            source.replace("texture-width: 64", "effective-texture-width: 64"),
+            "read-only",
+        ),
+        (
+            source.replace("texture-width: 64", "texture-width: root.physical-width"),
+            "layout feedback",
+        ),
+        (
+            source.replace(
+                "view.effective-texture-width",
+                "other.effective-texture-width",
+            ),
+            "effective-texture-width",
+        ),
+    ] {
+        let error = analyze(&invalid).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "texture-metrics.xr");
+    let malformed = raw.replace(
+        "owner = \"view\", value = \"effective-texture-width\"",
+        "owner = \"other\", value = \"effective-texture-width\"",
+    );
+    assert_ne!(raw, malformed);
+    assert!(
+        mlir::process(&malformed)
+            .unwrap_err()
+            .contains("requires a SceneView3D")
+    );
+}
+
+#[test]
 fn editor_commands_keep_order_and_verify_operands_and_purity() {
     let source = r#"component Demo inherits Window {
         callback edit-range(int, int);

@@ -175,3 +175,343 @@ export component ParticleBirthVariationsDemo inherits Window {
         clicked => { root.seed += 1; }
     }
 }
+
+struct FacingEmitter {
+    position: point3d, color: color, size: float, lifetime: float, fade-out: float,
+    enabled: bool, bursts: [ParticleBurst], velocity: vector3d, gravity: vector3d,
+    sprite: image, sprite-frames: int, sprite-playback: string, sprite-billboard: bool,
+    particle-model: string, particle-align-mode: string, particle-align-target: point3d,
+    particle-rotation: vector3d,
+}
+
+struct FacingAffector { affector-kind: string, direction: vector3d, strength: float, enabled: bool }
+
+export component ParticleOrientationDemo inherits Window {
+    title <- "XRack · 粒子朝向";
+    width <- 624px; height <- 411px; background <- #182333;
+
+    in-out property <float> time: 0.25;
+    in-out property <float> yaw: 0;
+    in-out property <float> turn: 0;
+    in-out property <bool> billboard: false;
+    in-out property <bool> comparison: true;
+    in-out property <bool> textured: true;
+    in-out property <bool> models: false;
+    in-out property <bool> show-target: true;
+    in-out property <string> alignment: "target";
+    in-out property <point3d> target: Point3D.new(2, 0, 2);
+    in-out property <vector3d> velocity: Vector3D.new(2, 0, 0);
+    in-out property <vector3d> gravity: Vector3D.new(0, 0, 0);
+    in-out property <bool> force: false;
+    in-out property <string> transparency: "sorted";
+    property <image> empty-image;
+
+    property <BirthCamera> eye <- BirthCamera {
+        id: "eye", mesh: "", color: #fff,
+        x: 10 * Math.sin(root.yaw * 0.017453292519943295), y: 0,
+        z: 10 * Math.cos(root.yaw * 0.017453292519943295),
+        yaw: root.yaw, pitch: 0, roll: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, camera-kind: "orthographic", camera-height: 6,
+    };
+    property <FacingEmitter> emitter <- FacingEmitter {
+        position: Point3D.new(0, 0, 0), color: root.textured ? #ffffff : #ff42ea,
+        size: 1.25, lifetime: 4, fade-out: 0, enabled: true,
+        bursts: [ParticleBurst { time: 0, count: 1 }], velocity: root.velocity, gravity: root.gravity,
+        sprite: root.textured ? @image-url("models/particle-marks.png") : root.empty-image,
+        sprite-frames: 4, sprite-playback: "single-frame", sprite-billboard: root.billboard,
+        particle-model: root.models ? "primitive:rectangle" : "",
+        particle-align-mode: root.alignment, particle-align-target: root.target,
+        particle-rotation: Vector3D.new(0, root.turn, 0),
+    };
+    SceneView3D {
+        width <- 624px; height <- 300px; camera <- "eye"; scene-background <- #101a2c;
+        oit-method <- root.transparency;
+        model <- [
+            root.eye,
+            BirthCamera {
+                id: "target", mesh: root.show-target ? "primitive:box" : "",
+                x: root.target.x, y: root.target.y, z: root.target.z,
+                scale-x: 0.16, scale-y: 0.16, scale-z: 0.16,
+                color: #64b9ff, camera-kind: "", ..root.eye
+            },
+        ];
+        particle-time <- root.time;
+        particle-affectors <- [FacingAffector {
+            affector-kind: "gravity", direction: Vector3D.new(0, 0, 1), strength: 8, enabled: root.force,
+        }];
+        particle-emitters <- [
+            FacingEmitter {
+                enabled: root.comparison && !root.models, position: Point3D.new(-2.2, 0, 0),
+                sprite-billboard: true, velocity: Vector3D.new(0,0,0), gravity: Vector3D.new(0,0,0), ..root.emitter
+            },
+            root.emitter,
+        ];
+    }
+    Label { x <- 18px; y <- 307px; width <- 60px; height <- 33px; text <- "时间"; }
+    timeline := Slider { x <- 80px; y <- 307px; width <- 220px; height <- 33px; minimum <- 0; maximum <- 1.3; value <-> root.time; }
+    Label { x <- 319px; y <- 307px; width <- 64px; height <- 33px; text <- "镜头"; }
+    orbit := Slider { x <- 384px; y <- 307px; width <- 222px; height <- 33px; minimum <- -90; maximum <- 90; value <-> root.yaw; }
+    mode := Button {
+        x <- 18px; y <- 359px; width <- 128px; height <- 34px;
+        text <- root.alignment == "none" ? "固定" : root.alignment == "target" ? "朝向目标" :
+            root.alignment == "start-velocity" ? "沿出生速度" : "沿当前速度";
+        clicked => {
+            root.alignment = root.alignment == "none" ? "target" :
+                root.alignment == "target" ? "start-velocity" :
+                root.alignment == "start-velocity" ? "velocity" : "none";
+        }
+    }
+    billboard-choice := CheckBox { x <- 155px; y <- 359px; width <- 129px; height <- 34px; text <- "面向相机"; checked <-> root.billboard; }
+    model-choice := CheckBox { x <- 292px; y <- 359px; width <- 109px; height <- 34px; text <- "模型"; checked <-> root.models; }
+    CheckBox { x <- 411px; y <- 359px; width <- 100px; height <- 34px; text <- "目标点"; checked <-> root.show-target; }
+    CheckBox { x <- 515px; y <- 359px; width <- 92px; height <- 34px; text <- "力场"; checked <-> root.force; }
+}
+
+struct SoftEmitter {
+    position: point3d, color: color, size: float, lifetime: float, fade-out: float,
+    bursts: [ParticleBurst], velocity: vector3d, trail-segments: int,
+    trail-duration: float, trail-fade: float, trail-end-scale: float,
+    depth-fade-distance: float, particle-blend-mode: string, sprite: image,
+}
+
+struct SoftProjection {
+    m11: float, m12: float, m13: float, m14: float,
+    m21: float, m22: float, m23: float, m24: float,
+    m31: float, m32: float, m33: float, m34: float,
+    m41: float, m42: float, m43: float, m44: float,
+}
+
+struct SoftObject {
+    id: string, mesh: string, color: color, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float,
+    camera-kind: string, camera-height: float, camera-reverse-depth: bool, camera-projection: SoftProjection,
+}
+
+export component SoftParticlesDemo inherits Window {
+    title <- "XRack · 粒子相交淡化";
+    width <- 624px; height <- 412px; background <- #182333;
+
+    in-out property <float> gap: 0.18;
+    in-out property <float> fade-distance: 0.8;
+    in-out property <bool> surface: true;
+    in-out property <bool> ribbons: false;
+    in-out property <bool> msaa: false;
+    in-out property <bool> reversed: false;
+    in-out property <bool> inline: false;
+    in-out property <bool> textured: false;
+    in-out property <bool> comparison: false;
+    in-out property <string> projection-kind: "orthographic";
+    in-out property <string> transparency: "sorted";
+    in-out property <string> blend: "source-over";
+    property <image> empty-image;
+
+    property <SoftObject> eye <- SoftObject {
+        id: "eye", mesh: "", color: #ffffff, x: 0, y: 0, z: 6,
+        scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0,
+        camera-kind: root.projection-kind, camera-height: 4.5, camera-reverse-depth: root.reversed,
+        camera-projection: SoftProjection {
+            m11: 0.25, m12: 0.025, m13: 0, m14: 0,
+            m21: 0, m22: 0.45, m23: 0, m24: 0,
+            m31: 0.014, m32: -0.01, m33: -0.1, m34: -0.1,
+            m41: 0, m42: 0, m43: 0, m44: 1,
+        },
+    };
+    property <SoftEmitter> smoke <- SoftEmitter {
+        position: Point3D.new(root.ribbons ? -0.35 : 0, 0, root.gap),
+        color: root.textured ? #ffffff : #ff6a36, size: 1.65, lifetime: 4, fade-out: 0,
+        bursts: [ParticleBurst { time: 0, count: 1 }],
+        velocity: Vector3D.new(root.ribbons ? 1.5 : 0, 0, 0),
+        trail-segments: root.ribbons ? 8 : 0, trail-duration: 0.65,
+        trail-fade: 0, trail-end-scale: 1,
+        depth-fade-distance: root.fade-distance, particle-blend-mode: root.blend,
+        sprite: root.textured ? @image-url("models/particle-marks.png") : root.empty-image,
+    };
+    SceneView3D {
+        x <- 32px; y <- 8px; width <- 560px; height <- 300px;
+        camera <- "eye"; scene-background <- #101a2c;
+        render-mode <- root.inline ? "inline" : "offscreen";
+        multisampling <- root.msaa; oit-method <- root.transparency;
+        model <- [root.eye, SoftObject {
+            id: "surface", mesh: root.surface ? "primitive:rectangle" : "",
+            z: 0, scale-x: 0.45, scale-y: 3.0, color: #26374d, camera-kind: "", ..root.eye
+        }];
+        particle-time <- 0.6;
+        particle-emitters <- root.comparison ? [root.smoke, SoftEmitter {
+            position: Point3D.new(1.6, 0, root.gap), depth-fade-distance: 0, particle-blend-mode: "source-over", ..root.smoke
+        }] : [root.smoke];
+    }
+    Label { x <- 32px; y <- 318px; width <- 76px; height <- 31px; text <- "表面距离"; }
+    Slider { x <- 115px; y <- 318px; width <- 210px; height <- 31px; minimum <- -0.5; maximum <- 2; value <-> root.gap; }
+    CheckBox { x <- 336px; y <- 318px; width <- 104px; height <- 31px; text <- "表面"; checked <-> root.surface; }
+    CheckBox { x <- 456px; y <- 318px; width <- 112px; height <- 31px; text <- "拖尾"; checked <-> root.ribbons; }
+    Label { x <- 32px; y <- 364px; width <- 76px; height <- 31px; text <- "淡化范围"; }
+    Slider { x <- 115px; y <- 364px; width <- 210px; height <- 31px; minimum <- 0; maximum <- 1.6; value <-> root.fade-distance; }
+    transparency-choice := Button {
+        x <- 336px; y <- 364px; width <- 104px; height <- 31px;
+        text <- root.transparency == "sorted" ? "排序" : root.transparency == "weighted" ? "加权" : "逐像素";
+        clicked => { root.transparency = root.transparency == "sorted" ? "weighted" : root.transparency == "weighted" ? "linked-list" : "sorted"; }
+    }
+    CheckBox { x <- 456px; y <- 364px; width <- 112px; height <- 31px; text <- "MSAA"; checked <-> root.msaa; }
+}
+
+struct PivotEmitter {
+    position: point3d, color: color, size: float, lifetime: float, fade-out: float,
+    bursts: [ParticleBurst], velocity: vector3d, sprite: image, sprite-frames: int,
+    sprite-playback: string, sprite-billboard: bool, sprite-offset-x: float, sprite-offset-y: float,
+    particle-rotation: vector3d, particle-align-mode: string, particle-align-target: point3d,
+    particle-angular-velocity: vector3d, trail-segments: int, trail-duration: float,
+    trail-end-scale: float, trail-fade: float, trail-length: float,
+}
+
+struct PivotCamera {
+    id: string, mesh: string, x: float, y: float, z: float,
+    yaw: float, pitch: float, roll: float, scale-x: float, scale-y: float, scale-z: float,
+    color: color, camera-kind: string, camera-height: float,
+    camera-look-at-point: point3d, camera-up: vector3d,
+}
+
+export component ParticlePivotDemo inherits Window {
+    title <- "XRack · 精灵偏移与世界拖尾";
+    width <- 624px; height <- 416px; background <- #182333;
+    in-out property <float> offset-x: 0.5;
+    in-out property <float> offset-y: 0;
+    in-out property <float> roll: 0;
+    in-out property <float> tilt: 0;
+    in-out property <float> camera-angle: 0;
+    in-out property <float> time: 0.8;
+    in-out property <float> spin: 0;
+    in-out property <bool> billboard: true;
+    in-out property <bool> ribbons: false;
+    in-out property <bool> resample: false;
+    in-out property <bool> comparison: false;
+    in-out property <bool> textured: false;
+    in-out property <string> alignment: "none";
+    in-out property <string> transparency: "sorted";
+    property <image> empty-image;
+    property <float> sine <- Math.sin(root.camera-angle * 0.017453292519943295);
+    property <float> cosine <- Math.cos(root.camera-angle * 0.017453292519943295);
+
+    property <PivotEmitter> flame <- PivotEmitter {
+        position: Point3D.new(root.ribbons ? -1.8 : 0, 0, 0), color: root.textured ? #ffffff : #35d6ff,
+        size: root.ribbons ? 0.9 : 1.8, lifetime: 2, fade-out: 0,
+        bursts: [ParticleBurst { time: 0, count: 1 }], velocity: Vector3D.new(root.ribbons ? 3.6 : 0, 0, 0),
+        sprite: root.textured ? @image-url("models/particle-marks.png") : root.empty-image,
+        sprite-frames: 4, sprite-playback: "single-frame", sprite-billboard: root.billboard,
+        sprite-offset-x: root.offset-x, sprite-offset-y: root.offset-y,
+        particle-rotation: Vector3D.new(root.tilt, 0, root.roll), particle-align-mode: root.alignment,
+        particle-align-target: Point3D.new(0, 0, 2.5), particle-angular-velocity: Vector3D.new(0, 0, root.spin),
+        trail-segments: root.ribbons ? 8 : 0, trail-duration: 0.75, trail-end-scale: 1,
+        trail-fade: 0, trail-length: root.resample ? 1.65 : -1,
+    };
+    property <[PivotEmitter]> flames <- root.comparison ? [root.flame, PivotEmitter {
+        position: Point3D.new(root.ribbons ? -1.8 : 0, 0, -1.8),
+        sprite-billboard: true, color: #ff9447, ..root.flame
+    }] : [root.flame];
+    SceneView3D {
+        width <- 624px; height <- 300px; camera <- "eye"; scene-background <- #101a2c;
+        oit-method <- root.transparency; particle-time <- root.time; particle-emitters <- root.flames;
+        model <- [PivotCamera {
+            id: "eye", mesh: "", x: 0, y: 10 * root.sine, z: 10 * root.cosine,
+            yaw: 0, pitch: 0, roll: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+            color: #ffffff, camera-kind: "orthographic", camera-height: 6,
+            camera-look-at-point: Point3D.new(0,0,0), camera-up: Vector3D.new(0,root.cosine,-root.sine),
+        }];
+    }
+    CheckBox { x <- 18px; y <- 310px; width <- 114px; height <- 34px; text <- "面向相机"; checked <-> root.billboard; }
+    CheckBox { x <- 145px; y <- 310px; width <- 86px; height <- 34px; text <- "拖尾"; checked <-> root.ribbons; }
+    CheckBox { x <- 245px; y <- 310px; width <- 114px; height <- 34px; text <- "距离取点"; checked <-> root.resample; }
+    Label { x <- 373px; y <- 310px; width <- 56px; height <- 34px; text <- "相机"; }
+    Slider { x <- 431px; y <- 310px; width <- 174px; height <- 34px; minimum <- 0; maximum <- 90; value <-> root.camera-angle; }
+    Label { x <- 18px; y <- 365px; width <- 77px; height <- 34px; text <- "横向偏移"; }
+    Slider { x <- 97px; y <- 365px; width <- 195px; height <- 34px; minimum <- -1; maximum <- 1; value <-> root.offset-x; }
+    Label { x <- 309px; y <- 365px; width <- 65px; height <- 34px; text <- "绕轴旋转"; }
+    Slider { x <- 382px; y <- 365px; width <- 223px; height <- 34px; minimum <- 0; maximum <- 360; value <-> root.roll; }
+}
+
+struct ReversedEmitter {
+    emitter-id: string, follow-emitter: string, follow-burst-at: string, enabled: bool,
+    position: point3d, velocity: vector3d, gravity: vector3d,
+    size: float, end-size: float, color: color, lifetime: float, start-time: float,
+    fade-in: float, fade-out: float, reversed: bool, bursts: [ParticleBurst], layers: int,
+    seed: int, lifetime-variation: float, particle-angular-velocity: vector3d,
+    sprite: image, sprite-frames: int, sprite-playback: string,
+    trail-segments: int, trail-duration: float, trail-length: float, trail-eol-fade: float,
+    particle-model: string, particle-casts-shadow: bool,
+}
+
+struct ReversedField {
+    affector-kind: string, start-age: float, direction: vector3d, strength: float, enabled: bool, layers: int,
+}
+
+export component ParticleReversedLifeDemo inherits Window {
+    title <- "XRack · 粒子寿命倒放";
+    width <- 640px; height <- 408px; background <- #182333;
+    in-out property <float> time: 0.55;
+    in-out property <bool> reversed: true;
+    in-out property <bool> field: true;
+    in-out property <float> lifetime-spread: 0;
+    in-out property <int> mode: 0;
+    in-out property <bool> sparks: false;
+    in-out property <bool> playing: false;
+    in-out property <string> spark-event: "death";
+    property <image> no-image;
+
+    property <ReversedEmitter> source <- ReversedEmitter {
+        emitter-id: "source", follow-emitter: "", follow-burst-at: "", enabled: true,
+        position: Point3D.new(-2.8, -0.35, 0.4), velocity: Vector3D.new(4.7, 2.0, 0),
+        gravity: Vector3D.new(0,-2.5,0), size: 0.40, end-size: 1.10, color: #ffffff,
+        lifetime: 1.5, start-time: 0.125, fade-in: 0.6, fade-out: 0.14,
+        seed: 7, lifetime-variation: root.lifetime-spread, particle-angular-velocity: Vector3D.new(0, 0, 62),
+        reversed: root.reversed, bursts: [ParticleBurst { time: 0, count: 1 }], layers: 1,
+        sprite: root.mode == 3 ? root.no-image : @image-url("models/particle-marks.png"),
+        sprite-frames: 4, sprite-playback: "once",
+        trail-segments: root.mode == 1 || root.mode == 2 ? 10 : 0,
+        trail-duration: 0.38, trail-length: root.mode == 2 ? 1.8 : -1, trail-eol-fade: 0.25,
+        particle-model: root.mode == 3 ? "primitive:box" : "", particle-casts-shadow: true,
+    };
+
+    SceneView3D {
+        width <- 640px; height <- 320px; camera <- "eye"; layer-mask <- 3; scene-background <- #101925; cache-rendering <- true;
+        model <- [BirthCamera {
+            id: "eye", mesh: "", color: #ffffff, x: 0, y: 0, z: 10, yaw: 0, pitch: 0, roll: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, camera-kind: "orthographic", camera-height: 6.4,
+        }];
+        particle-time <- root.time;
+        particle-emitters <- [
+            root.source,
+            ReversedEmitter {
+                emitter-id: "", follow-emitter: "source", follow-burst-at: root.spark-event, enabled: root.sparks,
+                position: Point3D.new(0, 0, 0.1), velocity: Vector3D.new(0, 0, 0), gravity: Vector3D.new(0, 0, 0),
+                color: #43ffff, size: 0.26, end-size: 0.26, lifetime: 1, start-time: 0, fade-in: 0, fade-out: 0,
+                reversed: false, lifetime-variation: 0, sprite: root.no-image, trail-segments: 0, trail-length: -1,
+                particle-model: "", particle-casts-shadow: false, layers: 2, ..root.source
+            },
+        ];
+        particle-affectors <- [ReversedField {
+            affector-kind: "gravity", start-age: 0.85, direction: Vector3D.new(0,1,0),
+            strength: 3.2, enabled: root.field, layers: 1,
+        }];
+    }
+    clock := FrameAnimation {
+        running <- root.playing;
+        triggered(delta, elapsed, frame) => {
+            root.time = Math.min(root.time + delta, 1.95);
+            if root.time >= 1.95 { root.playing = false; }
+        }
+    }
+    timeline := Slider { x <- 14px; y <- 326px; width <- 612px; height <- 32px; minimum <- 0; maximum <- 1.95; value <-> root.time; }
+    playback := Button {
+        x <- 14px; y <- 364px; width <- 112px; height <- 32px; text <- root.playing ? "暂停" : "从头播放";
+        clicked => { if !root.playing { root.time = 0; } root.playing = !root.playing; }
+    }
+    mode-button := Button {
+        x <- 133px; y <- 364px; width <- 126px; height <- 32px;
+        text <- root.mode == 0 ? "精灵" : root.mode == 1 ? "定时拖尾" : root.mode == 2 ? "定长拖尾" : "模型";
+        clicked => { root.mode = (root.mode + 1) % 4; }
+    }
+    CheckBox { x <- 271px; y <- 364px; width <- 111px; height <- 32px; text <- "倒放寿命"; checked <-> root.reversed; }
+    CheckBox { x <- 386px; y <- 364px; width <- 103px; height <- 32px; text <- "影响器"; checked <-> root.field; }
+    CheckBox { x <- 489px; y <- 364px; width <- 128px; height <- 32px; text <- "到期火花"; checked <-> root.sparks; }
+}

@@ -3,7 +3,11 @@ use std::num::NonZeroU64;
 
 use super::{
     INSTANCE_STRIDE,
+    particle_affectors::AffectorBindings,
+    particle_follow::FOLLOW_BINDING,
+    particle_sort::SORT_BINDING,
     particle_tracks::{TRACK_BINDING, particles_shader},
+    particles::POSE_BINDING,
 };
 
 pub(super) struct ModelInputs<'a> {
@@ -11,16 +15,18 @@ pub(super) struct ModelInputs<'a> {
     pub motion: Option<&'a wgpu::Buffer>,
     pub surface: Option<&'a wgpu::Buffer>,
     pub track: Option<&'a wgpu::Buffer>,
-    pub affectors: Option<&'a wgpu::Buffer>,
+    pub follow: Option<&'a wgpu::Buffer>,
+    pub affectors: Option<&'a AffectorBindings>,
     pub settings: &'a wgpu::Buffer,
+    pub order: Option<&'a wgpu::Buffer>,
     pub tint: Option<(&'a wgpu::TextureView, &'a wgpu::Sampler)>,
     pub count: u32,
 }
 
 #[derive(Default)]
 pub(super) struct ModelInstanceGenerator {
-    shaders: [Option<wgpu::ShaderModule>; 2],
-    pipelines: [[Option<wgpu::ComputePipeline>; 12]; 2],
+    shaders: [Option<wgpu::ShaderModule>; 16],
+    pipelines: [[Option<wgpu::ComputePipeline>; 12]; 16],
     instances: Vec<wgpu::Buffer>,
 }
 
@@ -37,7 +43,10 @@ impl ModelInstanceGenerator {
         if limits.max_compute_invocations_per_workgroup < 64
             || limits.max_compute_workgroup_size_x < 64
             || limits.max_storage_buffers_per_shader_stage
-                < 1 + u32::from(input.surface.is_some()) + u32::from(input.track.is_some())
+                < 1 + u32::from(input.surface.is_some())
+                    + u32::from(input.track.is_some())
+                    + u32::from(input.order.is_some())
+                    + u32::from(input.follow.is_some())
             || storage > limits.max_storage_buffer_binding_size
             || storage > limits.max_buffer_size
         {
@@ -60,9 +69,20 @@ impl ModelInstanceGenerator {
         if allocation.size() < storage {
             *allocation = make_buffer();
         }
-        let track_variant = usize::from(input.track.is_some());
-        let shader = self.shaders[track_variant].get_or_insert_with(|| {
-            let mut source = particles_shader(input.track.is_some()).into_owned();
+        let mesh_targets = AffectorBindings::has_mesh(input.affectors);
+        let shader_variant = usize::from(input.track.is_some())
+            + 2 * usize::from(input.order.is_some())
+            + 4 * usize::from(input.follow.is_some())
+            + 8 * usize::from(mesh_targets);
+        let shader = self.shaders[shader_variant].get_or_insert_with(|| {
+            let mut source = particles_shader(
+                input.track.is_some(),
+                false,
+                input.order.is_some(),
+                input.follow.is_some(),
+                mesh_targets,
+            )
+            .into_owned();
             source.push_str("\n");
             source.push_str(include_str!("particle_instances.wgsl"));
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -92,7 +112,7 @@ impl ModelInstanceGenerator {
             "compute_mesh_affected",
             "compute_mesh_affected_tinted",
         ];
-        let pipeline = self.pipelines[track_variant][variant].get_or_insert_with(|| {
+        let pipeline = self.pipelines[shader_variant][variant].get_or_insert_with(|| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("XRack model particle transforms"),
                 layout: None,
@@ -117,15 +137,16 @@ impl ModelInstanceGenerator {
                 }),
             },
             wgpu::BindGroupEntry {
-                binding: 9,
+                binding: POSE_BINDING,
                 resource: input.settings.as_entire_binding(),
             },
         ]);
         for (binding, buffer) in [
             (4, input.motion),
             (5, input.surface),
-            (6, input.affectors),
             (TRACK_BINDING, input.track),
+            (FOLLOW_BINDING, input.follow),
+            (SORT_BINDING, input.order),
         ] {
             if let Some(buffer) = buffer {
                 entries.push(wgpu::BindGroupEntry {
@@ -145,6 +166,9 @@ impl ModelInstanceGenerator {
                     resource: wgpu::BindingResource::TextureView(view),
                 },
             ]);
+        }
+        if let Some(fields) = input.affectors {
+            entries.extend(fields.entries());
         }
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("XRack model particle inputs"),

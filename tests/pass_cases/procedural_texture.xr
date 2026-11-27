@@ -1,0 +1,12 @@
+// RAW-DAG: "xr.geometry_function"{{.*}}value = "texture-rgba8"
+// RAW-DAG: "xr.int_array"
+// CHECK-DAG: "xr.literal"() <{value = "1x1:11224455"}> : () -> !xr.texturedata2d
+// CHECK-DAG: "xr.literal"() <{value = ""}> : () -> !xr.texturedata2d
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "texture-rgba8"
+
+export component App inherits Window {
+    in-out property <[int]> pixels: [17, 34, 68, 85];
+    out property <texturedata2d> packed <- TextureData2D.rgba8(1, 1, [17, 34, 68, 85]);
+    out property <texturedata2d> invalid <- TextureData2D.rgba8(1, 1, [17]);
+    out property <texturedata2d> live <- TextureData2D.rgba8(1, 1, root.pixels);
+}

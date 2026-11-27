@@ -31,6 +31,8 @@ using RotationTrackKeys = llvm::SmallVector<double, 10>;
 /// Flattened keys in (seconds, x, y, z, w) order.
 std::optional<RotationTrackKeys> parseRotationTrackLiteral(llvm::StringRef spelling);
 
+inline constexpr unsigned MaxTextureDataDimension = 2048;
+
 /// Check the XR compiler's top-level contract, beyond the per-operation ODS
 /// checks.
 ::mlir::LogicalResult verifyModule(::mlir::ModuleOp module);

@@ -8,13 +8,14 @@ use crate::scene3d::{
     color_capture::{CaptureMask, attachment_format},
     material::{
         CLEARCOAT_SETTINGS_BINDING, CLEARCOAT_TEXTURES, FIRST_SHADER_TEXTURE_BINDING,
-        MATERIAL_TEXTURES, SHADER_CAPTURE_BINDING, shader_texture_slots,
+        MATERIAL_TEXTURES, MaterialProgram, SHADER_CAPTURE_BINDING, SHADER_CUBEMAP_SAMPLER_BINDING,
+        shader_texture_slots,
     },
 };
 use xrack_runtime::{
     material_shader::{
-        EMPTY_AUGMENT_TEXTURES, INTERFACE, MAX_TEXTURES, MaterialHooks, VALIDATION_TEXTURES,
-        VERTEX_APPLICATION, capture_augment_parts,
+        CUBEMAP_SAMPLING, EMPTY_AUGMENT_TEXTURES, INTERFACE, MAX_TEXTURES, MaterialHooks,
+        VALIDATION_TEXTURES, VERTEX_APPLICATION, capture_augment_parts,
     },
     scene_effect::{
         CAPTURE_DEPTH_READ, CAPTURE_POSITION, CaptureAttachment, CaptureBlend,
@@ -40,6 +41,13 @@ pub(super) enum VolumeMode {
     Dispersion,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum BinormalSource {
+    Derived,
+    Morph,
+    Vertex,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Surface {
     pub blend: bool,
@@ -54,6 +62,7 @@ pub(super) struct Surface {
     pub volume: VolumeMode,
     pub cull: MeshCullMode,
     pub vertex_tangents: bool,
+    pub binormals: BinormalSource,
     pub anisotropy: bool,
     pub clearcoat: bool,
 }
@@ -451,6 +460,7 @@ pub(super) struct Pipelines {
     shader: wgpu::ShaderModule,
     wire_shader: Option<wgpu::ShaderModule>,
     linked_shaders: [Option<wgpu::ShaderModule>; 4],
+    binormal_shaders: [Option<wgpu::ShaderModule>; 6],
     variants: [[Option<wgpu::RenderPipeline>; 64]; 24],
     weighted: [[Option<wgpu::RenderPipeline>; 32]; 24],
     skybox: [Option<wgpu::RenderPipeline>; 48 * FogMode::COUNT],
@@ -483,7 +493,7 @@ type VariantKey = (
         bool,
         RasterMode,
         Option<wgpu::TextureFormat>,
-        (bool, bool, bool, bool, bool),
+        (bool, bool, bool, bool, bool, BinormalSource),
     ),
 );
 
@@ -496,10 +506,11 @@ struct CustomMaterials {
 struct CustomProgram {
     source: Option<Arc<str>>,
     augment: Option<Arc<str>>,
-    slots: usize,
+    slots: (usize, u8),
     augment_slots: usize,
     wireframe: bool,
     linked: Option<LinkedSamples>,
+    binormals: bool,
     module: Option<wgpu::ShaderModule>,
     pipelines: HashMap<VariantKey, wgpu::RenderPipeline>,
 }
@@ -509,7 +520,8 @@ impl CustomMaterials {
         &mut self,
         device: &wgpu::Device,
         (source, augment): (Option<&Arc<str>>, Option<&Arc<str>>),
-        (slots, augment_slots, wireframe, linked): (usize, usize, bool, Option<LinkedSamples>),
+        (slots, augment_slots): ((usize, u8), usize),
+        (wireframe, linked, binormals): (bool, Option<LinkedSamples>, bool),
         key: VariantKey,
         create: impl Fn(Option<&wgpu::ShaderModule>, bool) -> wgpu::RenderPipeline,
     ) -> Option<&wgpu::RenderPipeline> {
@@ -528,7 +540,7 @@ impl CustomMaterials {
                     device,
                     wgsl,
                     slots,
-                    (wireframe, linked),
+                    (wireframe, linked, binormals),
                     (augment, bindings),
                 )
             })
@@ -538,6 +550,7 @@ impl CustomMaterials {
                 && program.augment_slots == augment_slots
                 && program.wireframe == wireframe
                 && program.linked == linked
+                && program.binormals == binormals
                 && program.source.as_ref() == source
                 && program.augment.as_ref() == augment
         });
@@ -551,6 +564,7 @@ impl CustomMaterials {
                     augment_slots,
                     wireframe,
                     linked,
+                    binormals,
                     module: load(augment.and_then(|source| capture_augment_parts(source))),
                     pipelines: HashMap::new(),
                 });
@@ -621,7 +635,12 @@ const AUGMENT_INPUTS: TextureInterface = TextureInterface {
     projections: AUGMENT_CAPTURE_BINDING,
 };
 
-fn texture_interface(interface: TextureInterface, slots: usize, positions: bool) -> String {
+fn texture_interface(
+    interface: TextureInterface,
+    slots: usize,
+    positions: bool,
+    cubemaps: u8,
+) -> String {
     let TextureInterface {
         name,
         flags,
@@ -632,8 +651,9 @@ fn texture_interface(interface: TextureInterface, slots: usize, positions: bool)
     let bindings: String = (0..slots)
         .map(|slot| {
             let binding = textures + slot as u32;
+            let dimension = if cubemaps & (1 << slot) == 0 { "2d" } else { "cube" };
             format!(
-                "@group({group}) @binding({binding}) var xr_{name}_image_{slot}: texture_2d<f32>;\n"
+                "@group({group}) @binding({binding}) var xr_{name}_image_{slot}: texture_{dimension}<f32>;\n"
             )
         })
         .collect();
@@ -642,17 +662,18 @@ fn texture_interface(interface: TextureInterface, slots: usize, positions: bool)
             format!("case {slot}u: {{ return textureDimensions(xr_{name}_image_{slot}); }}\n")
         })
         .collect();
-    let samples: String = (0..slots)
+    let planar_slots = (0..slots).filter(|slot| cubemaps & (1 << slot) == 0);
+    let samples: String = planar_slots.clone()
         .map(|slot| format!("case {slot}u: {{ return xr_material_sample(xr_{name}_image_{slot}, uv, flags); }}\n"))
         .collect();
-    let samples_lod: String = (0..slots)
+    let samples_lod: String = planar_slots.clone()
         .map(|slot| format!("case {slot}u: {{ return xr_material_sample_lod(xr_{name}_image_{slot}, uv, flags, lod); }}\n"))
         .collect();
-    let samples_grad: String = (0..slots)
+    let samples_grad: String = planar_slots.clone()
         .map(|slot| format!("case {slot}u: {{ return xr_material_sample_grad(xr_{name}_image_{slot}, uv, flags, dx, dy); }}\n"))
         .collect();
     let positions = if positions {
-        let cases: String = (0..slots).map(|slot| format!(
+        let cases: String = planar_slots.map(|slot| format!(
             "case {slot}u: {{ return xr_material_world_position(xr_{name}_image_{slot}, uv, flags, xr_{name}_inverse_clip[{slot}]); }}\n"
         )).collect();
         format!(
@@ -721,14 +742,50 @@ fn {name}_texture_grad(index: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) 
     )
 }
 
+fn material_cubemap_interface(slots: usize, cubemaps: u8) -> String {
+    let mut declarations = String::new();
+    if cubemaps != 0 {
+        declarations = format!(
+            "{CUBEMAP_SAMPLING}\n@group(1) @binding({SHADER_CUBEMAP_SAMPLER_BINDING}) var xr_material_cube_sampler: sampler;"
+        );
+    }
+    let cases: String = (0..slots)
+        .filter(|slot| cubemaps & (1 << slot) != 0)
+        .map(|slot| format!(
+            "case {slot}u: {{ return xr_sample_cubemap(xr_material_image_{slot}, xr_material_cube_sampler, direction, lod); }}\n"
+        ))
+        .collect();
+    format!(
+        r#"
+{declarations}
+fn material_has_cubemap(index: u32) -> bool {{
+    return material_has_texture(index) && ({cubemaps}u & (1u << (index & 31u))) != 0u;
+}}
+fn material_cubemap(index: u32, direction: vec3<f32>) -> vec4<f32> {{
+    return material_cubemap_lod(index, direction, 0.0);
+}}
+fn material_cubemap_lod(index: u32, direction: vec3<f32>, lod: f32) -> vec4<f32> {{
+    if !material_has_cubemap(index) {{ return vec4(0.0); }}
+    switch index {{
+        {cases}
+        default: {{ return vec4(0.0); }}
+    }}
+}}"#
+    )
+}
+
 fn mesh_shader(
     device: &wgpu::Device,
     custom: &str,
-    slots: usize,
-    (wireframe, linked): (bool, Option<LinkedSamples>),
+    (slots, cubemaps): (usize, u8),
+    (wireframe, linked, binormals): (bool, Option<LinkedSamples>, bool),
     (augment, augment_slots): (Option<(&str, &str)>, usize),
 ) -> wgpu::ShaderModule {
-    let standard = include_str!("scene.wgsl");
+    let standard = concat!(
+        include_str!("light_eval.wgsl"),
+        "\n",
+        include_str!("scene.wgsl")
+    );
     let sky_radiance = include_str!("sky_radiance.wgsl");
     let scene = if wireframe {
         std::borrow::Cow::Owned(wireframe::mesh(standard))
@@ -740,6 +797,33 @@ fn mesh_shader(
     } else {
         scene
     };
+    let scene = if binormals {
+        std::borrow::Cow::Owned(
+            scene
+                .replace(
+                    "const EXPLICIT_BINORMALS: bool = false;",
+                    "const EXPLICIT_BINORMALS: bool = true;",
+                )
+                .replace(
+                    "// XRack vertex binormal varying",
+                    "@location(14) morph_binormal: vec3<f32>,",
+                )
+                .replace("// XRack vertex binormal rest", "vec3(0.0),")
+                .replace(
+                    "// XRack write morph binormal",
+                    "result.morph_binormal = vec3(
+                dot(original.model0.xyz, binormal),
+                dot(original.model1.xyz, binormal),
+                dot(original.model2.xyz, binormal));",
+                )
+                .replace(
+                    "// XRack read morph binormal\n    return vec3(0.0);",
+                    "return vertex.morph_binormal;",
+                ),
+        )
+    } else {
+        scene
+    };
     let textures = if slots == 0 {
         VALIDATION_TEXTURES.to_owned()
     } else {
@@ -747,12 +831,13 @@ fn mesh_shader(
             MATERIAL_INPUTS,
             slots,
             MaterialHooks::from_source(custom).capture_position,
-        )
+            cubemaps,
+        ) + &material_cubemap_interface(slots, cubemaps)
     };
     let augment_textures = if augment_slots == 0 {
         std::borrow::Cow::Borrowed(EMPTY_AUGMENT_TEXTURES)
     } else {
-        std::borrow::Cow::Owned(texture_interface(AUGMENT_INPUTS, augment_slots, true))
+        std::borrow::Cow::Owned(texture_interface(AUGMENT_INPUTS, augment_slots, true, 0))
     };
     let texture_sampling = if slots != 0 || augment_slots != 0 {
         concat!(
@@ -782,11 +867,12 @@ fn mesh_shader(
     })
 }
 
-fn material_layout(
+pub(super) fn material_layout(
     device: &wgpu::Device,
     coated: bool,
     shader_slots: usize,
     positions: bool,
+    cubemaps: u8,
 ) -> wgpu::BindGroupLayout {
     let uniform = |binding, visibility| wgpu::BindGroupLayoutEntry {
         binding,
@@ -826,12 +912,17 @@ fn material_layout(
         ));
     }
     for index in 0..shader_slots {
+        let cube = cubemaps & (1 << index) != 0;
         bindings.push(wgpu::BindGroupLayoutEntry {
             binding: FIRST_SHADER_TEXTURE_BINDING + index as u32,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
+                sample_type: wgpu::TextureSampleType::Float { filterable: cube },
+                view_dimension: if cube {
+                    wgpu::TextureViewDimension::Cube
+                } else {
+                    wgpu::TextureViewDimension::D2
+                },
                 multisampled: false,
             },
             count: None,
@@ -842,6 +933,14 @@ fn material_layout(
             SHADER_CAPTURE_BINDING,
             wgpu::ShaderStages::FRAGMENT,
         ));
+    }
+    if cubemaps != 0 {
+        bindings.push(wgpu::BindGroupLayoutEntry {
+            binding: SHADER_CUBEMAP_SAMPLER_BINDING,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        });
     }
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(if coated {
@@ -991,11 +1090,11 @@ impl Pipelines {
             count: None,
         };
         let globals = global_layout(device, 0, None);
-        let materials = [false, true].map(|coated| material_layout(device, coated, 0, false));
+        let materials = [false, true].map(|coated| material_layout(device, coated, 0, false, 0));
         let shader_materials = [false, true].map(|coated| {
             let slots = shader_texture_slots(device, coated);
             [false, true].map(|positions| {
-                (slots > 0).then(|| material_layout(device, coated, slots, positions))
+                (slots > 0).then(|| material_layout(device, coated, slots, positions, 0))
             })
         });
         let environment = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1040,8 +1139,8 @@ impl Pipelines {
         let shader = mesh_shader(
             device,
             &MaterialHooks::default().prepare(""),
-            0,
-            (false, None),
+            (0, 0),
+            (false, None, false),
             (None, 0),
         );
         Self {
@@ -1054,6 +1153,7 @@ impl Pipelines {
             shader,
             wire_shader: None,
             linked_shaders: Default::default(),
+            binormal_shaders: Default::default(),
             variants: [const { [const { None }; 64] }; 24],
             weighted: [const { [const { None }; 32] }; 24],
             skybox: [const { None }; 48 * FogMode::COUNT],
@@ -1102,7 +1202,7 @@ impl Pipelines {
         surface: Surface,
         output: ColorOutput,
         deformation: Deformation,
-        custom: Option<(&Arc<str>, usize)>,
+        custom: Option<MaterialProgram<'_>>,
     ) -> &wgpu::RenderPipeline {
         let coated = usize::from(surface.clearcoat);
         let mode = usize::from(output.multisampling)
@@ -1110,9 +1210,9 @@ impl Pipelines {
             + 4 * surface.volume as usize
             + 12 * usize::from(output.reverse_winding);
         let index = surface.index() + 8 * usize::from(output.hdr) + 16 * deformation as usize;
-        let custom_slots = custom.map_or(0, |(_, slots)| slots);
-        let hooks = custom.map_or_else(MaterialHooks::default, |(source, _)| {
-            MaterialHooks::from_source(source)
+        let custom_slots = custom.map_or((0, 0), |program| (program.slots, program.cubemaps));
+        let hooks = custom.map_or_else(MaterialHooks::default, |program| {
+            MaterialHooks::from_source(program.source)
         });
         let data_formats = output.capture_geometry.map_or(
             [None; MATERIAL_DATA_ATTACHMENTS.len()],
@@ -1157,14 +1257,26 @@ impl Pipelines {
         let wireframe = output.raster == RasterMode::ShaderLine;
         let linked_samples =
             linked.then(|| LinkedSamples::from_multisampling(output.multisampling));
-        let shader = if let Some(samples) = linked_samples {
+        let shader = if surface.binormals != BinormalSource::Derived {
+            let mode =
+                usize::from(wireframe) + linked_samples.map_or(0, |samples| 2 + 2 * samples.slot());
+            self.binormal_shaders[mode].get_or_insert_with(|| {
+                mesh_shader(
+                    device,
+                    &MaterialHooks::default().prepare(""),
+                    (0, 0),
+                    (wireframe, linked_samples, true),
+                    (None, 0),
+                )
+            })
+        } else if let Some(samples) = linked_samples {
             self.linked_shaders[usize::from(wireframe) + 2 * samples.slot()].get_or_insert_with(
                 || {
                     mesh_shader(
                         device,
                         &MaterialHooks::default().prepare(""),
-                        0,
-                        (wireframe, Some(samples)),
+                        (0, 0),
+                        (wireframe, Some(samples), false),
                         (None, 0),
                     )
                 },
@@ -1174,21 +1286,18 @@ impl Pipelines {
                 mesh_shader(
                     device,
                     &MaterialHooks::default().prepare(""),
-                    0,
-                    (true, None),
+                    (0, 0),
+                    (true, None, false),
                     (None, 0),
                 )
             })
         } else {
             &self.shader
         };
+        let material_layout = custom.and_then(|program| program.layout);
         let create = |custom: Option<&wgpu::ShaderModule>, augmented: bool| {
             let custom_fragment =
                 custom.filter(|_| augmented || hooks.uses_fragment(writes_material_data));
-            let material_layout = self.shader_materials[coated]
-                [usize::from(hooks.capture_position)]
-            .as_ref()
-            .filter(|_| custom_slots > 0);
             let layout = (linked || material_layout.is_some() || augment_slots != 0).then(|| {
                 let extra = self.deformations.get(deformation);
                 let groups = [
@@ -1213,6 +1322,11 @@ impl Pipelines {
                 }),
                 SKIN_LAYOUT.filter(|_| deformation.skin()),
                 INSTANCE_DATA_LAYOUT,
+                (surface.binormals == BinormalSource::Vertex).then_some(wgpu::VertexBufferLayout {
+                    array_stride: 8,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![12 => Snorm16x4],
+                }),
             ];
             if !surface.vertex_tangents {
                 buffers[2] = None;
@@ -1387,6 +1501,11 @@ impl Pipelines {
                     module: custom.filter(|_| hooks.vertex).unwrap_or(shader),
                     entry_point: Some(
                         match (deformation, surface.vertex_tangents, output.lightmapped) {
+                            (Deformation::Rigid, true, _)
+                                if surface.binormals == BinormalSource::Vertex =>
+                            {
+                                "vertex_tangent_binormal"
+                            }
                             (Deformation::Rigid, false, true) => "vertex_lightmapped",
                             (Deformation::Rigid, true, true) => "vertex_lightmapped_tangent",
                             (Deformation::Rigid, false, false) => "vertex_main",
@@ -1547,14 +1666,20 @@ impl Pipelines {
                     output.encode_srgb,
                     output.debug_material,
                     linked,
+                    surface.binormals,
                 ),
             ),
         );
         if (custom.is_some() || augment.is_some())
             && let Some(pipeline) = self.custom.get(
                 device,
-                (custom.map(|(source, _)| source), augment),
-                (custom_slots, augment_slots, wireframe, linked_samples),
+                (custom.map(|program| program.source), augment),
+                (custom_slots, augment_slots),
+                (
+                    wireframe,
+                    linked_samples,
+                    surface.binormals != BinormalSource::Derived,
+                ),
                 key,
                 create,
             )
@@ -1562,6 +1687,7 @@ impl Pipelines {
             return pipeline;
         }
         if linked
+            || surface.binormals != BinormalSource::Derived
             || output.stenciled
             || output.reverse_depth
             || output.lod_fade

@@ -116,3 +116,82 @@ export component ContentLayersDemo inherits Window {
         empty := Button { text <- "清空视口"; width <- 120px; clicked => { root.mask = 0; } }
     }
 }
+
+struct CombinedCollider { shape: string, position: point3d, size: vector3d, mesh: string }
+struct CombinedActor {
+    id: string, mesh: string, parent: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float,
+    visible: bool, physics-body: string, lod-of: string, lod-max-size: length, collision-shapes: [CombinedCollider],
+}
+
+export component CombinedSceneDemo inherits Window {
+    title <- "XRack · 共享场景与局部模型";
+    width <- 520px; height <- 308px; background <- #141d29;
+    in-out property <bool> show-extra: true;
+
+    property <CombinedActor> unit: CombinedActor {
+        id: "", mesh: "primitive:box", parent: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, camera-kind: "", camera-height: 4,
+        visible: true, physics-body: "", lod-of: "", lod-max-size: 0px, collision-shapes: [],
+    };
+    property <CombinedActor> eye <- CombinedActor {
+        mesh: "", z: 8, camera-kind: "orthographic", ..root.unit
+    };
+    property <scenemodel3d> shared <- Scene3D.prepare([
+        CombinedActor { id: "shared-eye", ..root.eye },
+        CombinedActor { id: "hidden", visible: false, ..root.unit },
+        CombinedActor { id: "pivot", mesh: "", x: -1.25, ..root.unit },
+        CombinedActor {
+            id: "landmark", parent: "pivot", mesh: "primitive:sphere", color: #f3bd5c, ..root.unit
+        },
+        CombinedActor { lod-of: "landmark", lod-max-size: 200px, ..root.unit },
+    ]);
+    property <scenemodel3d> left-local <- Scene3D.prepare([
+        CombinedActor { id: "left-eye", ..root.eye },
+        CombinedActor { id: "pivot", mesh: "", x: 1.25, yaw: -90, ..root.unit },
+        CombinedActor { id: "left-token", parent: "pivot", color: #e87c98, ..root.unit },
+    ]);
+    property <scenemodel3d> right-local <- Scene3D.prepare([
+        CombinedActor { id: "right-eye", ..root.eye },
+        CombinedActor { id: "pivot", mesh: "", x: 1.25, yaw: 90, ..root.unit },
+        CombinedActor {
+            id: "right-token", parent: "pivot", color: #77cadd, visible: root.show-extra,
+            physics-body: "right-body",
+            collision-shapes: [CombinedCollider {
+                shape: "box", position: Point3D.new(0, 0, 0),
+                size: Vector3D.new(0.3, 0.3, 0.3), mesh: "",
+            }],
+            ..root.unit
+        },
+    ]);
+    out property <scenemodel3d> left-scene <- Scene3D.combine(root.shared, root.left-local);
+    out property <scenemodel3d> right-scene <- Scene3D.combine(root.shared, root.right-local);
+    property <vector3d> forward <- Vector3D.new(0, 0, -1);
+    property <point3d> local-ray <- Point3D.new(1.25, 0, 5);
+    out property <hit3d> left-hit <- left.ray-hit(root.local-ray, root.forward, 10);
+    out property <hit3d> right-hit <- right.ray-hit(root.local-ray, root.forward, 10);
+    out property <hit3d> shared-hit <- right.ray-hit(Point3D.new(-1.25, 0, 5), root.forward, 10);
+    out property <hit3d> right-contact <- Scene3D.sphere-cast(
+        root.right-scene, root.local-ray, root.forward, 10, 0.04);
+    out property <vector3d> right-axis <- Scene3D.map-direction(
+        root.right-scene, "right-token", "", Vector3D.new(1, 0, 0), Vector3D.new(0, 0, 0));
+
+    Text { x <- 12px; y <- 8px; text <- "共享地标 + 左侧模型"; color <- #e2eaf4; }
+    Text { x <- 268px; y <- 8px; text <- "共享地标 + 右侧模型"; color <- #e2eaf4; }
+    left := SceneView3D {
+        x <- 12px; y <- 36px; width <- 240px; height <- 220px;
+        scene-background <- #26364d; camera <- "left-eye";
+        model <- root.left-scene; cache-rendering <- true;
+    }
+    right := SceneView3D {
+        x <- 268px; y <- 36px; width <- 240px; height <- 220px;
+        scene-background <- #26364d; camera <- "right-eye";
+        model <- root.right-scene; cache-rendering <- true;
+    }
+    CheckBox {
+        x <- 268px; y <- 264px; width <- 208px; height <- 34px;
+        text <- "显示右侧局部模型"; checked <-> root.show-extra;
+    }
+}

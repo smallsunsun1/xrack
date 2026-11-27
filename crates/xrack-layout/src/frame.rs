@@ -13,7 +13,8 @@ struct FrameInput {
     horizontal_offsets: BTreeMap<Vec<usize>, f32>,
     tumbler_preview: Option<(Vec<usize>, f32)>,
     slider_preview: Option<(Vec<usize>, f64)>,
-    switch_preview: Option<(Vec<usize>, Option<RowKey>, f32)>,
+    scene_slider_previews: Vec<(Vec<usize>, Option<usize>, f64)>,
+    switch_previews: Vec<(Vec<usize>, Option<RowKey>, f32)>,
     swipe_preview: Option<(Vec<usize>, Option<RowKey>, f32)>,
     drawer_preview: Option<(Vec<usize>, f32)>,
     overscroll: OverscrollFrame,
@@ -63,6 +64,13 @@ impl FrameCache {
             .and_then(|last| last.slider_preview.as_ref())
             .map(|(path, fraction)| (path.as_slice(), *fraction))
             != input.slider_preview_position()
+            || !self
+                .input
+                .as_ref()
+                .into_iter()
+                .flat_map(|last| &last.scene_slider_previews)
+                .map(|(path, thumb, fraction)| (path.as_slice(), *thumb, *fraction))
+                .eq(input.scene_slider_previews())
     }
 
     pub fn prepare(
@@ -101,7 +109,7 @@ impl FrameCache {
         let offsets = input.scroll_offsets();
         let horizontal_offsets = input.horizontal_scroll_offsets();
         let tumbler_preview = input.tumbler_preview();
-        let switch_preview = input.switch_preview();
+        let switch_previews = input.switch_previews();
         let swipe_preview = input.swipe_preview();
         let drawer_preview = input.drawer_preview();
         let overscroll = input.overscroll_frame();
@@ -125,10 +133,10 @@ impl FrameCache {
                     .map(|(path, offset)| (path.as_slice(), *offset))
                     == tumbler_preview
                 && last
-                    .switch_preview
-                    .as_ref()
+                    .switch_previews
+                    .iter()
                     .map(|(path, key, position)| (path.as_slice(), *key, *position))
-                    == switch_preview
+                    .eq(switch_previews)
                 && last
                     .swipe_preview
                     .as_ref()
@@ -170,8 +178,14 @@ impl FrameCache {
                 slider_preview: input
                     .slider_preview_position()
                     .map(|(path, fraction)| (path.to_vec(), fraction)),
-                switch_preview: switch_preview
-                    .map(|(path, key, position)| (path.to_vec(), key, position)),
+                scene_slider_previews: input
+                    .scene_slider_previews()
+                    .map(|(path, thumb, fraction)| (path.to_vec(), thumb, fraction))
+                    .collect(),
+                switch_previews: input
+                    .switch_previews()
+                    .map(|(path, key, position)| (path.to_vec(), key, position))
+                    .collect(),
                 swipe_preview: swipe_preview
                     .map(|(path, key, offset)| (path.to_vec(), key, offset)),
                 drawer_preview: drawer_preview.map(|(path, reveal)| (path.to_vec(), reveal)),

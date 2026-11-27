@@ -1,0 +1,654 @@
+diff --git a/src/renderer/params.rs b/src/renderer/params.rs
+--- a/src/renderer/params.rs
++++ b/src/renderer/params.rs
+@@ -46,6 +46,8 @@
+     pub(crate) direct_opacity: bool,
+     /// Number of shared mesh vertices followed by the instances' attributes.
+     pub(crate) instanced_fill_vertices: u32,
++    /// The instances select meshes from a vertex buffer used as a read-only palette.
++    pub(crate) mesh_palette: bool,
+ }
+ 
+ /// Where both backends' uniform arrays keep [`Params::gradient_premultiplied`]:
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -568,12 +568,53 @@
+     sampler_cache: SamplerCache,
+     viewport_layout: wgpu::BindGroupLayout,
+     stencil_pipeline_layout: wgpu::PipelineLayout,
++    mesh_palette_layout: OnceCell<MeshPaletteLayout>,
++    mesh_palette_shader: OnceCell<wgpu::ShaderModule>,
+     draw_layouts: [DrawLayout; 2],
+     pipelines: RefCell<HashMap<PipelineState, CachedPipeline>>,
+     epoch: Cell<u64>,
+ }
+ 
++#[derive(Debug)]
++struct MeshPaletteLayout {
++    bind_group: wgpu::BindGroupLayout,
++    pipeline: wgpu::PipelineLayout,
++}
++
+ impl SharedGpuResources {
++    fn mesh_palette_shader(&self) -> &wgpu::ShaderModule {
++        self.mesh_palette_shader.get_or_init(|| self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
++            label: Some("femtovg mesh palette"),
++            source: wgpu::ShaderSource::Wgsl(concat!(
++                include_str!("wgpu/direct_opacity.wgsl"), "\n", include_str!("wgpu/mesh_palette.wgsl"),
++            ).into()),
++        }))
++    }
++
++    fn mesh_palette_layout(&self) -> &MeshPaletteLayout {
++        self.mesh_palette_layout.get_or_init(|| {
++            let bind_group = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
++                label: Some("femtovg mesh palette"),
++                entries: &[wgpu::BindGroupLayoutEntry {
++                    binding: 0,
++                    visibility: wgpu::ShaderStages::VERTEX,
++                    ty: wgpu::BindingType::Buffer {
++                        ty: wgpu::BufferBindingType::Storage { read_only: true },
++                        has_dynamic_offset: false,
++                        min_binding_size: None,
++                    },
++                    count: None,
++                }],
++            });
++            let pipeline = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
++                label: Some("femtovg mesh palette pipeline"),
++                bind_group_layouts: &[Some(&self.viewport_layout), Some(&bind_group)],
++                immediate_size: 0,
++            });
++            MeshPaletteLayout { bind_group, pipeline }
++        })
++    }
++
+     fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+         let module = wgpu::ShaderModuleDescriptor {
+             label: Some("femtovg"),
+@@ -649,6 +690,8 @@
+             sampler_cache: Rc::new(RefCell::new(HashMap::new())),
+             viewport_layout: viewport_bind_group_layout,
+             stencil_pipeline_layout,
++            mesh_palette_layout: OnceCell::new(),
++            mesh_palette_shader: OnceCell::new(),
+             draw_layouts,
+             pipelines: Default::default(),
+             epoch: Cell::new(0),
+@@ -716,6 +759,7 @@
+     uniform_buffer: wgpu::Buffer,
+     uniform_stride: u64,
+     vertex_buffer: wgpu::Buffer,
++    mesh_palette_supported: bool,
+     fan_indices: FanIndices,
+     strip_indices: StripIndices,
+     fan_index_buffer: wgpu::Buffer,
+@@ -921,6 +965,13 @@
+             usage: UNIFORM_BUFFER_USAGE,
+             mapped_at_creation: false,
+         });
++        let limits = device.limits();
++        let mesh_palette_supported = matches!(
++            device.adapter_info().backend,
++            wgpu::Backend::Metal | wgpu::Backend::Vulkan | wgpu::Backend::Dx12 | wgpu::Backend::BrowserWebGpu
++        ) && limits.max_storage_buffers_per_shader_stage != 0
++            && limits.max_storage_buffer_binding_size >= size_of::<Vertex>() as _
++            && limits.max_vertex_attributes >= 8;
+         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+             label: Some(VERTEX_BUFFER_LABEL),
+             size: MIN_VERTEX_BYTES,
+@@ -949,6 +1000,7 @@
+             uniform_buffer,
+             uniform_stride,
+             vertex_buffer,
++            mesh_palette_supported,
+             fan_indices: FanIndices::default(),
+             strip_indices: StripIndices::default(),
+             fan_index_buffer,
+@@ -959,6 +1011,19 @@
+             mipmaps: None,
+             flush_count: 0,
+             render_target_reader: RenderTargetReader::default(),
++        }
++    }
++
++    fn enable_mesh_palette_storage(&mut self) {
++        if !self.vertex_buffer.usage().contains(wgpu::BufferUsages::STORAGE) {
++            // The next flush uploads the complete frame. Existing GPU
++            // submissions retain their own references to the previous buffer.
++            self.vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
++                label: Some(VERTEX_BUFFER_LABEL),
++                size: self.vertex_buffer.size(),
++                usage: VERTEX_BUFFER_USAGE | wgpu::BufferUsages::STORAGE,
++                mapped_at_creation: false,
++            });
+         }
+     }
+ 
+@@ -1379,12 +1444,13 @@
+         let vertex_bytes: &[u8] = bytemuck::cast_slice(verts);
+         let vertex_needed =
+             (vertex_bytes.len() as u64).div_ceil(wgpu::COPY_BUFFER_ALIGNMENT) * wgpu::COPY_BUFFER_ALIGNMENT;
++        let vertex_usage = self.vertex_buffer.usage();
+         grow_buffer(
+             &self.device,
+             &mut self.vertex_buffer,
+             vertex_needed,
+             VERTEX_BUFFER_LABEL,
+-            VERTEX_BUFFER_USAGE,
++            vertex_usage,
+         );
+         // Unsliced, the copies come first in the frame's own command buffer, so a frame flushed before the one
+         // before it is submitted cannot overwrite what that one draws with. Sliced, the frame is submitted during
+@@ -2455,7 +2521,17 @@
+     );
+     if params.instanced_fill_vertices != 0 {
+         let stride = if params.direct_opacity { ISOLATED_INSTANCE_SLOTS } else { INSTANCE_SLOTS };
+-        render_pass_builder.draw_mesh_fill_instances(start, count, params.instanced_fill_vertices as usize, stride);
++        if params.mesh_palette {
++            render_pass_builder.draw_mesh_palette(
++                start,
++                count,
++                params.instanced_fill_vertices,
++                stride + 1,
++                &pipeline_and_bindgroup_mapper.shared.mesh_palette_layout().bind_group,
++            );
++        } else {
++            render_pass_builder.draw_mesh_fill_instances(start, count, params.instanced_fill_vertices as usize, stride);
++        }
+     } else if opacity_tiles {
+         render_pass_builder.draw_opacity_tiles(start, count);
+     } else {
+@@ -3120,6 +3196,7 @@
+     atlas_fills: bool,
+     direct_opacity: bool,
+     instanced_fill: bool,
++    mesh_palette: bool,
+ }
+ 
+ impl PipelineState {
+@@ -3176,6 +3253,7 @@
+             atlas_fills: false,
+             direct_opacity: false,
+             instanced_fill: false,
++            mesh_palette: false,
+         }
+     }
+ 
+@@ -3200,8 +3278,11 @@
+             atlas_fills,
+             direct_opacity,
+             instanced_fill,
++            mesh_palette,
+         } = self;
+-        let vertex_entry_point = if *instanced_fill {
++        let vertex_entry_point = if *mesh_palette {
++            if *direct_opacity { "mesh_palette_opacity_vertex" } else { "mesh_palette_vertex" }
++        } else if *instanced_fill {
+             if *direct_opacity {
+                 "mesh_opacity_vertex"
+             } else {
+@@ -3218,7 +3299,9 @@
+                 (false, false, false, false) => "vs_main",
+             }
+         };
+-        let fragment_entry_point = if *instanced_fill {
++        let fragment_entry_point = if *mesh_palette && !*direct_opacity {
++            "mesh_palette_fragment"
++        } else if *instanced_fill {
+             if *direct_opacity {
+                 "mesh_opacity_fragment"
+             } else {
+@@ -3279,7 +3362,19 @@
+         const ISOLATED_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+             2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4
+         ];
+-        let (slots, attributes) = if *direct_opacity {
++        const PALETTE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
++            2 => Float32x4, 3 => Float32x4, 7 => Uint32x4
++        ];
++        const ISOLATED_PALETTE_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
++            2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Uint32x4
++        ];
++        let (slots, attributes) = if *mesh_palette {
++            if *direct_opacity {
++                (ISOLATED_INSTANCE_SLOTS + 1, &ISOLATED_PALETTE_ATTRIBUTES[..])
++            } else {
++                (INSTANCE_SLOTS + 1, &PALETTE_ATTRIBUTES[..])
++            }
++        } else if *direct_opacity {
+             (ISOLATED_INSTANCE_SLOTS, &ISOLATED_INSTANCE_ATTRIBUTES[..])
+         } else {
+             (INSTANCE_SLOTS, &INSTANCE_ATTRIBUTES[..])
+@@ -3289,8 +3384,8 @@
+             step_mode: wgpu::VertexStepMode::Instance,
+             attributes,
+         });
+-        let buffer_count = 1 + usize::from(instances.is_some());
+-        let buffers = [Some(vertex_layout), instances];
++        let buffer_count = 1 + usize::from(instances.is_some() && !*mesh_palette);
++        let buffers = if *mesh_palette { [instances, None] } else { [Some(vertex_layout), instances] };
+         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+             label: None,
+             layout: Some(pipeline_layout),
+@@ -3795,6 +3890,7 @@
+     current_pipeline_state: Option<PipelineState>,
+     current_stencil_reference: Option<u32>,
+     current_bound_offset: Option<u32>,
++    mesh_palette_group: Option<wgpu::BindGroup>,
+     // The scissor rect set on the open pass; none is the whole target.
+     current_clip_bounds: Option<[u32; 4]>,
+     /// What the draws that follow are scissored to: what the current
+@@ -3845,6 +3941,7 @@
+             current_pipeline_state: None,
+             current_stencil_reference: None,
+             current_bound_offset: None,
++            mesh_palette_group: None,
+             current_clip_bounds: None,
+             clip_bounds: None,
+         }
+@@ -4172,6 +4269,41 @@
+         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+     }
+ 
++    fn draw_mesh_palette(
++        &mut self,
++        start: usize,
++        count: usize,
++        vertices: u32,
++        instance_stride: usize,
++        layout: &wgpu::BindGroupLayout,
++    ) {
++        self.ensure_pass();
++        let group = self.mesh_palette_group.get_or_insert_with(|| {
++            let limit = u64::from(self.device.limits().max_storage_buffer_binding_size);
++            let stride = size_of::<Vertex>() as u64;
++            let size = self.vertex_buffer.size().min(limit / stride * stride);
++            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
++                label: Some("femtovg mesh palette"),
++                layout,
++                entries: &[wgpu::BindGroupEntry {
++                    binding: 0,
++                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
++                        buffer: &self.vertex_buffer,
++                        offset: 0,
++                        size: wgpu::BufferSize::new(size),
++                    }),
++                }],
++            })
++        });
++        let vertex_stride = size_of::<Vertex>() as u64;
++        let bytes = (start as u64 * vertex_stride)..((start + count) as u64 * vertex_stride);
++        let pass = self.rpass.as_mut().unwrap();
++        pass.set_bind_group(1, &*group, &[]);
++        pass.set_vertex_buffer(0, self.vertex_buffer.slice(bytes));
++        pass.draw(0..vertices, 0..(count / instance_stride) as u32);
++        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
++    }
++
+     fn draw_opacity_tiles(&mut self, start: usize, count: usize) {
+         self.ensure_pass();
+         let stride = size_of::<Vertex>();
+@@ -4327,14 +4459,15 @@
+         pipeline_state.atlas_fills = params.atlas_fills;
+         pipeline_state.direct_opacity = params.direct_opacity;
+         pipeline_state.instanced_fill = params.instanced_fill_vertices != 0;
++        pipeline_state.mesh_palette = params.mesh_palette;
+         pipeline_state.stencil_only = matches!(params.shader_type, ShaderType::Stencil)
+             && params.stroke_thr == -1.0
+             && !pipeline_state.clip_shape
+             && !pipeline_state.clip_mask
+             && pipeline_state.color_target_state.write_mask.is_empty();
+ 
+-        if pipeline_state.stencil_only {
+-            // The stencil shaders bind only the viewport. Rebind the paint
++        if pipeline_state.stencil_only || pipeline_state.mesh_palette {
++            // These shaders use the viewport without the normal paint inputs. Rebind the paint
+             // inputs when a draw switches back to a layout that uses them.
+             render_pass_builder.current_bound_offset = None;
+         } else {
+@@ -4379,18 +4512,24 @@
+         if render_pass_builder.current_pipeline_state.as_ref() != Some(&pipeline_state) {
+             let mut pipeline_cache = self.shared.pipelines.borrow_mut();
+             let render_pipeline = pipeline_cache.entry(pipeline_state.clone()).or_insert_with(|| {
+-                let layout = if pipeline_state.stencil_only {
++                let layout = if pipeline_state.mesh_palette {
++                    &self.shared.mesh_palette_layout().pipeline
++                } else if pipeline_state.stencil_only {
+                     &self.shared.stencil_pipeline_layout
+                 } else {
+                     &self.shared.draw_layouts[usize::from(pipeline_state.clip_mask)].pipeline
+                 };
+-                let shader = self.shared.shader_for(
+-                    &self.device,
+-                    pipeline_state.opacity_tiles,
+-                    pipeline_state.atlas_fills || pipeline_state.instanced_fill,
+-                    pipeline_state.direct_opacity,
+-                    pipeline_state.stencil_only,
+-                );
++                let shader = if pipeline_state.mesh_palette {
++                    self.shared.mesh_palette_shader()
++                } else {
++                    self.shared.shader_for(
++                        &self.device,
++                        pipeline_state.opacity_tiles,
++                        pipeline_state.atlas_fills || pipeline_state.instanced_fill,
++                        pipeline_state.direct_opacity,
++                        pipeline_state.stencil_only,
++                    )
++                };
+                 let pipeline = pipeline_state.materialize(&self.device, layout, shader);
+                 CachedPipeline {
+                     pipeline,
+diff --git a/src/renderer/wgpu/mesh_instances.rs b/src/renderer/wgpu/mesh_instances.rs
+--- a/src/renderer/wgpu/mesh_instances.rs
++++ b/src/renderer/wgpu/mesh_instances.rs
+@@ -1,8 +1,8 @@
+ use super::WGPURenderer;
+ use crate::{
+-    Canvas, Color, CompositeOperationState, FillRule, LineJoin, Path, RenderTarget, Transform2D,
+     geometry::Bounds,
+     renderer::{Command, CommandType, Params, Vertex},
++    Canvas, Color, CompositeOperationState, FillRule, LineJoin, Path, RenderTarget, Transform2D,
+ };
+ 
+ pub(super) const INSTANCE_SLOTS: usize = 2;
+@@ -32,7 +32,20 @@
+     pub amount: f32,
+ }
+ 
++#[derive(Clone, Copy)]
++struct FillMesh {
++    bounds: Bounds,
++    start: u32,
++    vertices: u32,
++}
++
+ impl Canvas<WGPURenderer> {
++    /// Whether an active rounded or path clip can affect the draws.
++    #[doc(hidden)]
++    pub fn has_shaped_clip(&self) -> bool {
++        self.state().clip_depth != 0 || self.state().scissor.radius != 0.0 || self.clip_active()
++    }
++
+     /// Draws a shared, antialiased convex mesh in instance order. The ordinary
+     /// painter is required for intersecting clips or thin coverage masks.
+     #[doc(hidden)]
+@@ -41,6 +54,52 @@
+         path: &Path,
+         isolated: bool,
+         instances: impl ExactSizeIterator<Item = MeshFillInstance>,
++    ) -> Option<usize> {
++        self.draw_mesh_fills(
++            std::slice::from_ref(path),
++            isolated,
++            instances.map(|instance| (0, instance)),
++        )
++    }
++
++    /// Draws convex fills in input order using a palette of shared meshes.
++    #[doc(hidden)]
++    pub fn draw_mesh_fill_palette(
++        &mut self,
++        paths: &[Path],
++        isolated: bool,
++        instances: impl ExactSizeIterator<Item = (usize, MeshFillInstance)>,
++    ) -> Option<usize> {
++        if paths.len() < 2 || !self.renderer.mesh_palette_supported {
++            return None;
++        }
++        let uploaded = self.draw_mesh_fills(paths, isolated, instances)?;
++        if uploaded != 0 {
++            self.renderer.enable_mesh_palette_storage();
++        }
++        Some(uploaded)
++    }
++
++    fn draw_mesh_fills(
++        &mut self,
++        paths: &[Path],
++        isolated: bool,
++        instances: impl ExactSizeIterator<Item = (usize, MeshFillInstance)>,
++    ) -> Option<usize> {
++        let start = self.verts.len();
++        let result = self.record_mesh_fills(paths, isolated, instances, start);
++        if result.is_none() {
++            self.verts.truncate(start);
++        }
++        result
++    }
++
++    fn record_mesh_fills(
++        &mut self,
++        paths: &[Path],
++        isolated: bool,
++        instances: impl ExactSizeIterator<Item = (usize, MeshFillInstance)>,
++        start: usize,
+     ) -> Option<usize> {
+         let state = *self.state();
+         let Transform2D([sx, b, c, sy, tx, ty]) = state.transform;
+@@ -50,8 +109,11 @@
+             || sx != sy
+             || !sx.is_finite()
+             || sx < 1.0
+-            || tx != 0.0
+-            || ty != 0.0
++            || !tx.is_finite()
++            || !ty.is_finite()
++            || tx.fract() != 0.0
++            || ty.fract() != 0.0
++            || (isolated && (tx != 0.0 || ty != 0.0))
+             || clip_b != 0.0
+             || clip_c != 0.0
+             || state.scissor.radius != 0.0
+@@ -83,41 +145,43 @@
+             limits[2] = limits[2].min(clip_x + half_w);
+             limits[3] = limits[3].min(clip_y + half_h);
+         }
+-        let mut mesh = path.cache(&state.transform, self.tess_tol, self.dist_tol);
+-        let bounds = mesh.bounds;
+-        if self.fill_masks.enabled()
+-            && (bounds.maxx - bounds.minx) * (bounds.maxy - bounds.miny) <= crate::THIN_FILL_SPAN
+-            && crate::clip::is_thin(mesh.mean_width(FillRule::NonZero))
++        let palette = paths.len() > 1;
++        let (first_path, remaining_paths) = paths.split_first()?;
++        let first = self.append_fill_mesh(first_path)?;
++        let mut mesh_vertices = first.vertices;
++        let mut remaining = Vec::with_capacity(remaining_paths.len());
++        for path in remaining_paths {
++            let mesh = self.append_fill_mesh(path)?;
++            mesh_vertices = mesh_vertices.max(mesh.vertices);
++            remaining.push(mesh);
++        }
++        let instances_start = self.verts.len();
++        if palette
++            && instances_start as u64 * size_of::<Vertex>() as u64
++                > u64::from(
++                    self.renderer
++                        .device
++                        .limits()
++                        .max_storage_buffer_binding_size,
++                )
+         {
+-            return None;
+-        }
+-        mesh.expand_fill(self.fringe_width, LineJoin::Miter, 2.4, FillRule::NonZero);
+-        if !mesh.is_convex() {
+-            return None;
+-        }
+-        let contour = &mesh.contours[0];
+-        let (hub, rim) = contour.fill.split_first()?;
+-        let start = self.verts.len();
+-        for side in rim.windows(2) {
+-            self.verts.extend_from_slice(&[*hub, side[0], side[1]]);
+-        }
+-        for (index, strip) in contour.stroke.windows(3).enumerate() {
+-            let flip = index % 2;
+-            self.verts
+-                .extend_from_slice(&[strip[flip], strip[1 - flip], strip[2]]);
+-        }
+-        let mesh_vertices = self.verts.len() - start;
+-        if mesh_vertices == 0 {
+             return None;
+         }
+         let stride = if isolated {
+             ISOLATED_INSTANCE_SLOTS
+         } else {
+             INSTANCE_SLOTS
+-        };
++        } + usize::from(palette);
+         self.verts.reserve(instances.len() * stride);
+-        for instance in instances {
+-            let [dx, dy] = instance.origin.map(|v| v * sx);
++        for (index, instance) in instances {
++            let mesh = if index == 0 {
++                first
++            } else {
++                *remaining.get(index - 1)?
++            };
++            let bounds = mesh.bounds;
++            let [x, y] = instance.origin;
++            let [dx, dy] = [x * sx + tx, y * sy + ty];
+             // The shape's own scissor is elided by the path painter when it
+             // holds the outline. Require a fringe of clearance from its
+             // parent scissor before using that unclipped outline here.
+@@ -129,12 +193,10 @@
+                 || bounds.maxx + dx + fringe > limits[2]
+                 || bounds.maxy + dy + fringe > limits[3]
+             {
+-                self.verts.truncate(start);
+                 return None;
+             }
+             if let Some(opacity) = instance.opacity {
+                 if !isolated {
+-                    self.verts.truncate(start);
+                     return None;
+                 }
+                 let [x, y, w, h] = opacity.raster;
+@@ -164,21 +226,68 @@
+                         .extend_from_slice(&[Vertex::new(0.0, 0.0, 0.0, 0.0); 3]);
+                 }
+             }
+-        }
+-        let count = self.verts.len() - start;
+-        if count == mesh_vertices {
++            if palette {
++                self.verts.push(Vertex::new(
++                    f32::from_bits(mesh.start),
++                    f32::from_bits(mesh.vertices),
++                    0.0,
++                    0.0,
++                ));
++            }
++        }
++        if self.verts.len() == instances_start {
+             self.verts.truncate(start);
+             return Some(0);
+         }
++        let draw_start = if palette { instances_start } else { start };
+         let mut command = Command::new(CommandType::Triangles {
+             params: Params {
+-                instanced_fill_vertices: mesh_vertices as u32,
++                instanced_fill_vertices: mesh_vertices,
+                 direct_opacity: isolated,
++                mesh_palette: palette,
+                 ..Params::default()
+             },
+         });
+-        command.triangles_verts = Some((start, count));
++        command.triangles_verts = Some((draw_start, self.verts.len() - draw_start));
+         self.append_cmd(command);
+-        Some(count * size_of::<Vertex>())
+-    }
+-}
++        Some((self.verts.len() - start) * size_of::<Vertex>())
++    }
++
++    fn append_fill_mesh(&mut self, path: &Path) -> Option<FillMesh> {
++        let mut transform = self.state().transform;
++        // Shape meshes stay at the origin. The instance carries the
++        // capture's device-pixel translation together with its own position.
++        transform.0[4] = 0.0;
++        transform.0[5] = 0.0;
++        let mut mesh = path.cache(&transform, self.tess_tol, self.dist_tol);
++        let bounds = mesh.bounds;
++        if self.fill_masks.enabled()
++            && (bounds.maxx - bounds.minx) * (bounds.maxy - bounds.miny) <= crate::THIN_FILL_SPAN
++            && crate::clip::is_thin(mesh.mean_width(FillRule::NonZero))
++        {
++            return None;
++        }
++        mesh.expand_fill(self.fringe_width, LineJoin::Miter, 2.4, FillRule::NonZero);
++        if !mesh.is_convex() {
++            return None;
++        }
++        let contour = &mesh.contours[0];
++        let (hub, rim) = contour.fill.split_first()?;
++        let start = self.verts.len();
++        for side in rim.windows(2) {
++            self.verts.extend_from_slice(&[*hub, side[0], side[1]]);
++        }
++        for (index, strip) in contour.stroke.windows(3).enumerate() {
++            let flip = index % 2;
++            self.verts
++                .extend_from_slice(&[strip[flip], strip[1 - flip], strip[2]]);
++        }
++
++        let vertices = u32::try_from(self.verts.len() - start).ok()?;
++        (vertices != 0).then_some(FillMesh {
++            bounds,
++            start: u32::try_from(start).ok()?,
++            vertices,
++        })
++    }
++}
+diff --git a/src/renderer/wgpu/mesh_palette.wgsl b/src/renderer/wgpu/mesh_palette.wgsl
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/wgpu/mesh_palette.wgsl
+@@ -0,0 +1,44 @@
++@group(1) @binding(0) var<storage, read> mesh_palette: array<vec4f>;
++
++fn palette_vertex(vertex: u32, mesh: vec4u) -> vec4f {
++    if vertex >= mesh.y {
++        // Mesh lengths are multiples of three. Unused triangles collapse
++        // to one point and have no coverage.
++        return vec4f(0.0);
++    }
++    return mesh_palette[mesh.x + vertex];
++}
++
++struct MeshPaletteVertex {
++    @builtin(position) position: vec4f,
++    @location(0) uv: vec2f,
++    @location(1) @interpolate(flat) color: vec4f,
++}
++
++@vertex fn mesh_palette_vertex(
++    @builtin(vertex_index) vertex: u32,
++    @location(2) instance: vec4f, @location(3) color: vec4f,
++    @location(7) mesh: vec4u,
++) -> MeshPaletteVertex {
++    let sample = palette_vertex(vertex, mesh);
++    let point = sample.xy + instance.xy;
++    let position = vec4f(2.0 * point.x / view_size.x - 1.0, 1.0 - 2.0 * point.y / view_size.y, 0.0, 1.0);
++    return MeshPaletteVertex(position, sample.zw, color);
++}
++
++@fragment fn mesh_palette_fragment(input: MeshPaletteVertex) -> @location(0) vec4f {
++    let side = min(1.0, 1.0 - abs(input.uv.x * 2.0 - 1.0));
++    return input.color * (side * min(1.0, input.uv.y));
++}
++
++@vertex fn mesh_palette_opacity_vertex(
++    @builtin(vertex_index) vertex: u32,
++    @location(2) instance: vec4f, @location(3) color: vec4f,
++    @location(4) scissor_mat: vec4f, @location(5) scissor: vec4f,
++    @location(6) bounds: vec4f, @location(7) mesh: vec4u,
++) -> DirectVertex {
++    let sample = palette_vertex(vertex, mesh);
++    let point = sample.xy + instance.xy;
++    let p = vec4f(2.0 * point.x / view_size.x - 1.0, 1.0 - 2.0 * point.y / view_size.y, 0.0, 1.0);
++    return DirectVertex(p, point, sample.z, color, scissor_mat, scissor, bounds, instance.z);
++}

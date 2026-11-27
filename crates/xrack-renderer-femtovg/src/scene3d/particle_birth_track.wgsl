@@ -48,7 +48,7 @@ fn tracked_birth_time(particle: Particle, motion: Motion) -> f32 {
     return fma(f32(particle.tick), bitcast<f32>(motion.parent_x.w), bitcast<f32>(epoch.w));
 }
 
-fn tracked_particle_birth(particle: Particle, motion: Motion, origin: vec3<f32>, velocity: vec3<f32>) -> ParticleBirth {
+fn tracked_particle_birth(particle: Particle, motion: Motion, origin: vec3<f32>, velocity: vec3<f32>, normal: vec3<f32>) -> ParticleBirth {
     let time = tracked_birth_time(particle, motion);
     let count = arrayLength(&emission_keys);
     var low = 0u;
@@ -72,5 +72,6 @@ fn tracked_particle_birth(particle: Particle, motion: Motion, origin: vec3<f32>,
     let gravity = particle.emitter.gravity;
     var placed = particle;
     placed.emitter.gravity = vec4<f32>(birth_vector(rotation, gravity.xyz), gravity.w);
-    return ParticleBirth(placed, position + birth_vector(rotation, origin), birth_vector(rotation, velocity));
+    return ParticleBirth(placed, position + birth_vector(rotation, origin), birth_vector(rotation, velocity),
+        birth_vector(rotation, normal));
 }

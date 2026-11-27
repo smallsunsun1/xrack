@@ -520,6 +520,11 @@ impl Builder<'_> {
                         .strings(&[("owner", &command.tree_owner), ("method", &command.method)]);
                     self.emit("tree_command", command.span, &operands, &[], &attrs)?;
                 }
+                ir::Statement::SceneTouch(command) => {
+                    let operands = self.operands(&command.args)?;
+                    let attrs = self.strings(&[("owner", &command.owner)]);
+                    self.emit("scene_touch", command.span, &operands, &[], &attrs)?;
+                }
                 ir::Statement::ScrollCommand(command) => {
                     let operands = self.operands(&command.args)?;
                     let attrs =

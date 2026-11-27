@@ -2,8 +2,8 @@ use std::{collections::VecDeque, sync::Arc};
 use xrack_runtime::{
     Node,
     scene3d::{
-        LightBakeMode, MAX_SCENE_LIGHTS, SceneLight, SceneLightSource, SceneModel, ShadowRadius,
-        viewport_lighting,
+        LightBakeMode, MAX_SCENE_LIGHTS, SceneLight, SceneLightModel, SceneLightSource, SceneModel,
+        ShadowRadius, viewport_ambient, viewport_lighting,
     },
 };
 
@@ -13,7 +13,7 @@ const MAX_CACHED_LIGHT_SETS: usize = 8;
 
 pub(super) struct LightSet {
     lights: Option<Arc<[SceneLight]>>,
-    fallback: [SceneLight; 1],
+    fallback: Option<SceneLight>,
     ambient: [f32; 3],
     shadow_bias: f32,
     shadow_slots: [u8; MAX_SCENE_LIGHTS],
@@ -51,7 +51,7 @@ impl LightSet {
         Self {
             lights,
             shadow_slots: [0; MAX_SCENE_LIGHTS],
-            fallback: [fallback],
+            fallback: Some(fallback),
             shadow_bias: node
                 .float("shadow-bias")
                 .filter(|value| value.is_finite())
@@ -61,8 +61,47 @@ impl LightSet {
         }
     }
 
+    pub(super) fn for_particles(node: &Node, lights: &SceneLightModel, layers: u64) -> Self {
+        let model = match node.properties.get("model") {
+            Some(xrack_runtime::Value::SceneObjects(model)) => Some(model.as_ref()),
+            _ => None,
+        };
+        let mut lights = lights.resolve(model);
+        let mut ambient = viewport_ambient(node);
+        if lights.iter().any(|light| {
+            light.layers & layers == 0
+                || matches!(light.source, SceneLightSource::Directional { .. })
+        }) {
+            lights = lights
+                .iter()
+                .copied()
+                .filter(|light| {
+                    if light.layers & layers == 0 {
+                        return false;
+                    }
+                    // Directional illumination of a sprite is uniform. Only
+                    // punctual lights need evaluation along its trajectory.
+                    if matches!(light.source, SceneLightSource::Directional { .. }) {
+                        for (channel, radiance) in ambient.iter_mut().zip(light.radiance) {
+                            *channel += radiance;
+                        }
+                        return false;
+                    }
+                    true
+                })
+                .collect();
+        }
+        Self {
+            lights: Some(lights),
+            fallback: None,
+            ambient,
+            shadow_bias: 0.0,
+            shadow_slots: [0; MAX_SCENE_LIGHTS],
+        }
+    }
+
     pub(super) fn lights(&self) -> &[SceneLight] {
-        let lights = self.lights.as_deref().unwrap_or(&self.fallback);
+        let lights = self.lights.as_deref().unwrap_or(self.fallback.as_slice());
         &lights[..lights.len().min(MAX_SCENE_LIGHTS)]
     }
 

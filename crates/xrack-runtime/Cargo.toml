@@ -9,6 +9,12 @@ description = "Runtime types, properties, models, and controls for generated XRa
 
 [dependencies]
 flate2.workspace = true
+fontdb.workspace = true
+lyon_tessellation.workspace = true
+rustybuzz.workspace = true
+ttf-parser.workspace = true
+unicode-bidi.workspace = true
+unicode-script.workspace = true
 fluent-bundle.workspace = true
 fluent-langneg.workspace = true
 icu_decimal.workspace = true

@@ -1,0 +1,88 @@
+struct GridActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, visible: bool,
+    camera-kind: string, camera-height: float, camera-reverse-depth: bool,
+}
+
+struct GridClip {
+    x: length, y: length, width: length, height: length, enabled: bool,
+}
+
+export component GroundGridDemo inherits Window {
+    title <- "XRack · 3D 地面网格";
+    width <- 360px;
+    height <- 270px;
+    resizable <- false;
+    background <- #141d29;
+
+    in-out property <bool> grid-enabled: true;
+    in-out property <bool> axes-enabled: true;
+    in-out property <bool> orthographic: false;
+    in-out property <bool> reverse-depth: false;
+    in-out property <bool> multisampled: false;
+    in-out property <bool> clipped: false;
+    in-out property <bool> indirect: false;
+    in-out property <bool> object-visible: true;
+    in-out property <bool> cached: false;
+    in-out property <string> mode: "offscreen";
+    in-out property <float> spacing: 1;
+    in-out property <float> plane-height: 0;
+    in-out property <color> tint: #9db8dcac;
+
+    property <GridActor> defaults: GridActor {
+        id: "", mesh: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #e8ab59, visible: true,
+        camera-kind: "", camera-height: 8, camera-reverse-depth: false,
+    };
+    property <scenemodel3d> world <- Scene3D.prepare([
+        GridActor {
+            id: "camera", y: 5, z: 8, pitch: -32,
+            camera-kind: root.orthographic ? "orthographic" : "perspective",
+            camera-reverse-depth: root.reverse-depth, ..root.defaults
+        },
+        GridActor {
+            id: "block", mesh: "primitive:box", y: 0.8,
+            scale-x: 1.5, scale-y: 1.6, scale-z: 1.5,
+            visible: root.object-visible, ..root.defaults
+        },
+    ]);
+
+    out property <projectedpoint3d> origin <- view.project(Point3D.new(0, root.plane-height, 0));
+    out property <projectedpoint3d> open-point <- view.project(Point3D.new(-2, root.plane-height, 0));
+    out property <hit3d> object-hit <- view.hit(root.origin.point);
+    out property <hit3d> grid-hit <- view.hit(root.open-point.point);
+
+    view := SceneView3D {
+        width <- 360px; height <- 216px;
+        model <- root.world; camera <- "camera";
+        scene-background <- #202a38;
+        scene-grid <- root.grid-enabled;
+        scene-grid-axes <- root.axes-enabled;
+        scene-grid-color <- root.tint;
+        scene-grid-spacing <- root.spacing;
+        scene-grid-height <- root.plane-height;
+        multisampling <- root.multisampled;
+        screen-space-global-illumination <- root.indirect;
+        cache-rendering <- root.cached;
+        render-mode <- root.mode;
+        scissor-rect <- GridClip { x: 0px, y: 0px, width: 180px, height: 216px, enabled: root.clipped };
+    }
+    HorizontalLayout {
+        x <- 8px; y <- 226px; width <- 344px; height <- 36px; spacing <- 8px;
+        grid := Button {
+            width <- 106px; text <- root.grid-enabled ? "隐藏网格" : "显示网格";
+            clicked => { root.grid-enabled = !root.grid-enabled; }
+        }
+        axis := Button {
+            width <- 106px; text <- root.axes-enabled ? "隐藏坐标轴" : "显示坐标轴";
+            clicked => { root.axes-enabled = !root.axes-enabled; }
+        }
+        projection := Button {
+            width <- 106px; text <- root.orthographic ? "正交" : "透视";
+            clicked => { root.orthographic = !root.orthographic; }
+        }
+    }
+}

@@ -619,6 +619,7 @@ impl Host {
             .renderer
             .as_mut()
             .ok_or_else(|| failure("no preview renderer is active"))?;
+        renderer.poll_viewport_gpu_timing();
         instance.try_render().map_err(PreviewError::from)?;
         let png = windows
             .render(renderer, self.scale.unwrap_or(1.0), *scope)
@@ -638,7 +639,10 @@ impl Host {
                 native_dialog,
                 window_closed: windows.closed(),
                 window_minimized: scene.window_status().minimized,
-                next_frame_ms: next_frame_ms(windows),
+                next_frame_ms: next_frame_ms(windows)
+                    .into_iter()
+                    .chain(renderer.render_stats_pending().then_some(8))
+                    .min(),
                 windows: windows.descriptions(),
                 window: windows.selection(),
                 size: (!png.is_empty()).then(|| scene.logical_size()),

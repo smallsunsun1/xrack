@@ -1,6 +1,6 @@
 use crate::{
-    CalendarGeometry, ChoiceKey, ChoiceMenu, ColorPlaneGeometry, ComboCompletion, ComboGeometry,
-    DialGeometry, EditAction, EditSource, LayoutNode, MenuEntry, MenuKey, MenuPanel, MenuShortcut,
+    CalendarGeometry, ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry, DialGeometry,
+    EditAction, EditSource, LayoutNode, MenuEntry, MenuKey, MenuPanel, MenuShortcut,
     PageIndicatorGeometry, Point, Rect, ScrollBarGeometry, ScrollGestureEnd, ScrollGestureKind,
     SearchGeometry, ShortcutOutcome, SliderGeometry, SpinGeometry, SplitGeometry, SplitHandle,
     SplitHandleRange, StackTransitions, TextEdit, TextPosition, TreeRowGeometry, TumblerScroll,
@@ -15,6 +15,7 @@ use crate::{
     menu::{MenuPan, MenuPopup, NativeTextMenu, TextMenu},
     modal,
     overscroll::Overscroll,
+    range::{RangePointerAction, RangePointerMotion, RangePointerSample, has_range_pointer},
     scroll_bar::snap_fraction,
     scroll_gesture::{DRAG_THRESHOLD, DragMotion, FlingMotion, PanDevice, SCROLL_FRAME_INTERVAL},
     shortcut::{self, PendingShortcut},
@@ -32,9 +33,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use xrack_runtime::{
-    ButtonGroupMembership, CalendarAction, Component, ControlAction, Date, DialInputMode,
-    DialogRole, DrawerEdge, FocusHandle, LayoutDirection, Length, ListMetrics, Node, Orientation,
-    PageIdentity, RangeAction, RowKey, RowSelection, ScrollAction, ScrollAlignment, ScrollBarRange,
+    ButtonGroupMembership, CalendarAction, Component, ControlAction, Date, DialogRole, DrawerEdge,
+    FocusHandle, LayoutDirection, Length, ListMetrics, Node, Orientation, PageIdentity,
+    RangeAction, RowKey, RowSelection, ScrollAction, ScrollAlignment, ScrollBarRange,
     ScrollRequest, ScrollSnapMode, SelectionTarget, SliderInterval, SliderRange, SpinAction,
     SpinDecimal, StandardButtonKind, SwipePreviewHandle, SwipeSide, TableEditPosition,
     TableSelectionAction, TextCommand, TextCommandAvailability, TreeAction, TreeSelectionAction,
@@ -598,6 +599,48 @@ enum ButtonContactSource {
     Pointer,
     Gesture,
     Key(ActivationKey),
+    Scene(i64),
+}
+
+#[derive(Clone, Debug)]
+struct SceneControlVisual {
+    finger: i64,
+    target: Target,
+    pressed: bool,
+    thumb: Option<usize>,
+    preview: Option<f64>,
+    switch: Option<Box<SceneSwitch>>,
+}
+
+#[derive(Clone, Debug)]
+struct SceneSwitch {
+    drag: SwitchDrag,
+    down: Point,
+    motion: SwitchMotion,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SwitchMotion {
+    Tap,
+    Drag,
+    Reject,
+}
+
+impl SceneSwitch {
+    fn sample(&mut self, scene: &Node, layout: &LayoutNode, point: Point) {
+        if self.motion == SwitchMotion::Tap
+            && (point.x - self.down.x).hypot(point.y - self.down.y) >= DRAG_THRESHOLD
+        {
+            self.motion = if self.drag.accepts_direction(layout, point) {
+                SwitchMotion::Drag
+            } else {
+                SwitchMotion::Reject
+            };
+        }
+        if self.motion == SwitchMotion::Drag {
+            self.drag.move_thumb(scene, layout, point);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1120,6 +1163,7 @@ pub struct Interaction {
     pub pressed: Option<Target>,
     scene_texture_pointer: Option<crate::scene_texture_input::Projection>,
     pressed_scene_texture: Option<crate::scene_texture_input::Capture>,
+    scene_controls: Vec<SceneControlVisual>,
     drag: Option<crate::drag::DragSession>,
     file_drag: crate::file_drop::FileDrag,
     hovered_scroll_bar: Option<ScrollTarget>,
@@ -1145,11 +1189,9 @@ pub struct Interaction {
     pointer_activation_claimed: bool,
     key_activation_claimed: Option<ActivationKey>,
     range_keys: BTreeMap<SliderKey, Target>,
-    slider_offset: f64,
-    slider_anchor: Option<f64>,
+    range_pointer: RangePointerMotion,
     slider_fraction: Option<f64>,
     range_position_handle: Option<xrack_runtime::RangePositionHandle>,
-    dial_pointer: Option<Point>,
     touch_range: bool,
     spin_pressed: Option<SpinAction>,
     spin_draft: Option<SpinDraft>,
@@ -1658,7 +1700,9 @@ fn hit_subtree(
     if node.kind == "SceneView3D"
         && matches!(
             purpose,
-            HitPurpose::Button(_) | HitPurpose::Hover | HitPurpose::Gesture("WheelHandler")
+            HitPurpose::Button(_)
+                | HitPurpose::Hover
+                | HitPurpose::Gesture("WheelHandler" | "ScaleRotateGestureHandler")
         )
         && let Some(hit) = crate::scene_texture_input::viewport_hit(node, layout, point)
     {
@@ -1835,6 +1879,25 @@ impl crate::FileDropScope {
             is_text_input(node.kind).then_some((target, node))
         }
     }
+}
+
+pub(crate) fn pointer_range_action(
+    node: &Node,
+    fraction: f64,
+) -> (Option<f64>, Option<RangeAction>) {
+    let live = node.boolean("live", true);
+    (
+        (!live || SliderRange::from_node(node).snap_mode() == ScrollSnapMode::OnRelease)
+            .then_some(fraction),
+        live.then_some(RangeAction::SetFraction(fraction)),
+    )
+}
+
+pub(crate) fn scene_control_live(target: &Target, scene: &Node, layout: &LayoutNode) -> bool {
+    target
+        .node_in(scene)
+        .zip(layout.at_path(&target.path))
+        .is_some_and(|(node, item)| target.focusable == focusable(node) && eligible(node, item))
 }
 
 pub(crate) fn valid(target: &Target, scene: &Node, layout: &LayoutNode) -> bool {
@@ -2363,7 +2426,7 @@ fn slider_target<'a, 'b>(
     layout: &LayoutNode,
 ) -> Option<(&'a [usize], &'b Node)> {
     let leaf = scene.at_path(&target.path)?;
-    if matches!(leaf.kind, "Slider" | "RangeSlider" | "Dial" | "ColorPlane") {
+    if has_range_pointer(leaf.kind) {
         return valid(target, scene, layout).then_some((target.path.as_slice(), leaf));
     }
     if leaf.kind != "RangeThumb" || target.row_key != scene.row_key_at(&target.path) {
@@ -2435,6 +2498,36 @@ impl Interaction {
         )
     }
 
+    pub(crate) fn scene_touch_target(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        source: &[usize],
+        point: Point,
+    ) -> Option<Target> {
+        let Hit::Target(mut target) = hit_subtree(
+            scene.at_path(source)?,
+            layout.at_path(source)?,
+            point,
+            &mut source.to_vec(),
+            &self.transitioning_stacks,
+            HitPurpose::Button(xrack_runtime::PointerButton::Primary),
+        ) else {
+            return None;
+        };
+        target.row_key = scene.row_key_at(&target.path);
+        if target.node_in(scene)?.kind == "RangeThumb" {
+            let (owner, node) = slider_target(&target, scene, layout)?;
+            return Some(Target::from_node(
+                owner.to_vec(),
+                node,
+                focusable(node),
+                scene.row_key_at(owner),
+            ));
+        }
+        Some(target)
+    }
+
     pub(crate) fn sample_scene_texture(
         &self,
         capture: &crate::scene_texture_input::Capture,
@@ -2443,7 +2536,34 @@ impl Interaction {
         physical: Point,
         button: xrack_runtime::PointerButton,
     ) -> Option<Point> {
-        self.hit_at_for_position(scene, layout, physical, HitPurpose::Button(button))
+        self.sample_texture_for(capture, scene, layout, physical, HitPurpose::Button(button))
+    }
+
+    pub(crate) fn sample_scale_rotate_texture(
+        &self,
+        capture: &crate::scene_texture_input::Capture,
+        scene: &Node,
+        layout: &LayoutNode,
+        physical: Point,
+    ) -> Option<Point> {
+        self.sample_texture_for(
+            capture,
+            scene,
+            layout,
+            physical,
+            HitPurpose::Gesture("ScaleRotateGestureHandler"),
+        )
+    }
+
+    fn sample_texture_for(
+        &self,
+        capture: &crate::scene_texture_input::Capture,
+        scene: &Node,
+        layout: &LayoutNode,
+        physical: Point,
+        purpose: HitPurpose<'_>,
+    ) -> Option<Point> {
+        self.hit_at_for_position(scene, layout, physical, purpose)
             .1
             .filter(|projection| &projection.capture == capture)
             .map(|projection| projection.point)
@@ -3478,7 +3598,8 @@ impl Interaction {
         layout: &LayoutNode,
         point: Point,
     ) -> Option<crate::ScaleRotateTarget> {
-        if self.menu_open()
+        if !scene.contains_scene_feature(xrack_runtime::SceneFeature::ScaleRotateGesture)
+            || self.menu_open()
             || self.choice_open()
             || self.scroll_bar_captured()
             || self.drag_position().is_some()
@@ -3489,16 +3610,33 @@ impl Interaction {
         {
             return None;
         }
-        let (path, scope_len) =
-            self.gesture_hit_path(scene, layout, point, "ScaleRotateGestureHandler")?;
-        (scope_len..=path.len()).rev().find_map(|depth| {
+        let scope = self.pointer_scope(layout, point);
+        let (hit, projection) = self.hit_at_for_position(
+            scene,
+            layout,
+            point,
+            HitPurpose::Gesture("ScaleRotateGestureHandler"),
+        );
+        let path = match hit {
+            Hit::Target(target) | Hit::ControlPart(target, _) => target.path,
+            Hit::Blocked(path) => path,
+            _ => return None,
+        };
+        let (scope_len, point) = projection
+            .as_ref()
+            .map_or((scope.len(), point), |projection| {
+                (projection.capture.source_path().len(), projection.point)
+            });
+        let mut target = (scope_len..=path.len()).rev().find_map(|depth| {
             let target = crate::ScaleRotateTarget::new(scene, &path[..depth])?;
             let item = layout.at_path(&target.path)?;
             (item.contains_clip_point(point)
                 && item.bounds.contains(item.map_from_window(point)?)
                 && target.is_live(scene, layout, self))
             .then_some(target)
-        })
+        })?;
+        target.texture = projection.map(|projection| std::rc::Rc::new(projection.capture));
+        Some(target)
     }
 
     fn gesture_hit_path(
@@ -6757,10 +6895,31 @@ impl Interaction {
         (drag.offset != 0.0).then_some((&drag.target.path, drag.offset))
     }
 
+    fn switch_drags(&self) -> impl Iterator<Item = &SwitchDrag> {
+        self.scroll_gesture
+            .as_ref()
+            .and_then(|gesture| gesture.switch.as_ref())
+            .into_iter()
+            .chain(
+                self.scene_controls
+                    .iter()
+                    .filter_map(|control| Some(&control.switch.as_ref()?.drag)),
+            )
+    }
+
+    pub(crate) fn switch_previews(&self) -> impl Iterator<Item = (&[usize], Option<RowKey>, f32)> {
+        self.switch_drags().filter_map(|drag| {
+            Some((
+                drag.target.path.as_slice(),
+                drag.target.row_key,
+                drag.position?,
+            ))
+        })
+    }
+
     #[doc(hidden)]
     pub fn switch_preview(&self) -> Option<(&[usize], Option<RowKey>, f32)> {
-        let drag = self.scroll_gesture.as_ref()?.switch.as_ref()?;
-        Some((&drag.target.path, drag.target.row_key, drag.position?))
+        self.switch_previews().next()
     }
 
     pub fn has_switch_preview(&self) -> bool {
@@ -6768,8 +6927,8 @@ impl Interaction {
     }
 
     pub(crate) fn contains_switch_preview(&self, path: &[usize]) -> bool {
-        self.switch_preview()
-            .is_some_and(|(target, _, _)| target.starts_with(path))
+        self.switch_previews()
+            .any(|(target, _, _)| target.starts_with(path))
     }
 
     pub(crate) fn switch_position(
@@ -6780,9 +6939,10 @@ impl Interaction {
         path: &[usize],
         row: Option<RowKey>,
     ) -> Option<f32> {
-        let drag = self.scroll_gesture.as_ref()?.switch.as_ref()?;
-        drag.position
-            .filter(|_| drag.target.path == path && drag.matches(node, bounds, direction, row))
+        self.switch_drags().find_map(|drag| {
+            drag.position
+                .filter(|_| drag.target.path == path && drag.matches(node, bounds, direction, row))
+        })
     }
 
     pub fn has_swipe_preview(&self) -> bool {
@@ -9386,11 +9546,9 @@ impl Interaction {
                 height,
             })
         })();
-        self.slider_offset = 0.0;
-        self.slider_anchor = None;
+        self.range_pointer = RangePointerMotion::default();
         self.slider_fraction = None;
         self.clear_range_preview();
-        self.dial_pointer = None;
         self.spin_pressed = None;
         let focus = self.hovered.clone().and_then(|mut target| {
             if let Some((_, id)) = &self.hovered_list_row {
@@ -9579,58 +9737,11 @@ impl Interaction {
 
     pub fn slider_press(&mut self, scene: &Node, layout: &LayoutNode) -> Option<RangeInput> {
         let target = self.pressed.as_ref()?;
-        let (path, node) = slider_target(target, scene, layout)?;
-        let item = layout.at_path(path)?;
-        let bounds = item.bounds;
+        let (owner, node) = slider_target(target, scene, layout)?;
+        let item = layout.at_path(owner)?;
         let point = item.map_from_window(self.control_pointer(&target.path, self.pointer?)?)?;
-        if node.kind == "ColorPlane" {
-            return Some(RangeInput {
-                path: target.path.clone(),
-                action: ColorPlaneGeometry::new(bounds).action_at(point)?,
-            });
-        }
-        if node.kind == "Dial" {
-            self.dial_pointer = Some(point);
-            let geometry = DialGeometry::new(bounds, node);
-            let current = SliderRange::from_node(node).fraction();
-            if node.dial_input_mode() != DialInputMode::Circular
-                || geometry.contains_thumb(current, point)
-            {
-                return None;
-            }
-            return Some(RangeInput {
-                path: path.to_vec(),
-                action: RangeAction::SetFraction(geometry.fraction_at(point)?),
-            });
-        }
-        let geometry = SliderGeometry::with_layout_direction(bounds, node, item.layout_direction);
-        let fraction = geometry.fraction_at(point)?;
-        let mut path = path.to_vec();
-        let current = if node.kind == "RangeSlider" {
-            let interval = SliderInterval::from_node(node);
-            let [lower, upper] = interval.fractions();
-            let handle = geometry.interval_handle_at(point, fraction, interval);
-            path.push(handle);
-            self.focus_slider_thumb(scene, &path);
-            let current = [lower, upper][handle];
-            if lower == upper && geometry.thumb_bounds(handle, current).contains(point) {
-                self.slider_anchor = Some(fraction);
-            }
-            current
-        } else {
-            SliderRange::from_node(node).fraction()
-        };
-        let handle = if node.kind == "RangeSlider" {
-            *path.last()?
-        } else {
-            0
-        };
-        if geometry.thumb_bounds(handle, current).contains(point) {
-            self.slider_offset = current - fraction;
-            None
-        } else {
-            self.slider_pointer_action(node, path, fraction)
-        }
+        let sample = self.range_pointer.press(node, item, point)?;
+        self.apply_range_pointer_sample(scene, node, owner.to_vec(), sample)
     }
 
     fn focus_slider_thumb(&mut self, scene: &Node, path: &[usize]) {
@@ -9645,9 +9756,20 @@ impl Interaction {
         if node.boolean("live", true) {
             return None;
         }
-        let (pressed, fraction) = self.slider_preview_position()?;
-        let (&index, parent) = pressed.split_last()?;
-        (parent == path && index < Node::RANGE_THUMBS).then_some((index, fraction))
+        self.slider_preview_position()
+            .and_then(|(pressed, fraction)| {
+                let (&index, parent) = pressed.split_last()?;
+                (parent == path && index < Node::RANGE_THUMBS).then_some((index, fraction))
+            })
+            .or_else(|| {
+                self.scene_slider_previews()
+                    .find_map(|(target, thumb, fraction)| {
+                        (target == path)
+                            .then_some(thumb)
+                            .flatten()
+                            .map(|index| (index, fraction))
+                    })
+            })
     }
 
     #[doc(hidden)]
@@ -9662,56 +9784,34 @@ impl Interaction {
         let target = self.pressed.as_ref()?;
         let (owner, node) = slider_target(target, scene, layout)?;
         let item = layout.at_path(owner)?;
-        let bounds = item.bounds;
         let point = item.map_from_window(self.control_pointer(&target.path, self.pointer?)?)?;
-        if node.kind == "ColorPlane" {
-            return Some(RangeInput {
-                path: target.path.clone(),
-                action: ColorPlaneGeometry::new(bounds).action_at(point)?,
-            });
-        }
-        if node.kind == "Dial" {
-            let previous = self.dial_pointer.replace(point)?;
-            let delta = DialGeometry::new(bounds, node).drag_delta(
-                node.dial_input_mode(),
-                previous,
-                point,
-            )?;
-            let current = SliderRange::from_node(node).fraction();
-            let next = current + delta;
-            let next = if node.boolean("wrap", false) && !(0.0..=1.0).contains(&next) {
-                next.rem_euclid(1.0)
-            } else {
-                next.clamp(0.0, 1.0)
-            };
-            return (next != current).then(|| RangeInput {
-                path: target.path.clone(),
-                action: RangeAction::SetFraction(next),
-            });
-        }
-        let geometry = SliderGeometry::with_layout_direction(bounds, node, item.layout_direction);
-        let fraction = geometry.fraction_at(point)?;
+        let sample = self
+            .range_pointer
+            .move_to(node, item, point, self.touch_range)?;
         let mut path = target.path.clone();
-        if let Some(anchor) = self.slider_anchor {
-            if fraction == anchor {
-                return None;
-            }
-            if self.touch_range {
-                // Do not choose one of two coincident thumbs from a tiny
-                // initial touch displacement. Measure along the visual axis.
-                let start = item.map_to_window(geometry.position(0.0));
-                let end = item.map_to_window(geometry.position(1.0));
-                let travel = (end.x - start.x).hypot(end.y - start.y);
-                if (fraction - anchor).abs() * f64::from(travel) < f64::from(DRAG_THRESHOLD) {
-                    return None;
-                }
-            }
+        if sample.thumb.is_some() {
             path.truncate(owner.len());
-            path.push(usize::from(fraction > anchor));
-            self.focus_slider_thumb(scene, &path);
-            self.slider_anchor = None;
         }
-        self.slider_pointer_action(node, path, fraction + self.slider_offset)
+        self.apply_range_pointer_sample(scene, node, path, sample)
+    }
+
+    fn apply_range_pointer_sample(
+        &mut self,
+        scene: &Node,
+        node: &Node,
+        mut path: Vec<usize>,
+        sample: RangePointerSample,
+    ) -> Option<RangeInput> {
+        if let Some(thumb) = sample.thumb {
+            path.push(thumb);
+            self.focus_slider_thumb(scene, &path);
+        }
+        match sample.action? {
+            RangePointerAction::Direct(action) => Some(RangeInput { path, action }),
+            RangePointerAction::Fraction(fraction) => {
+                self.slider_pointer_action(node, path, fraction)
+            }
+        }
     }
 
     fn slider_pointer_action(
@@ -9720,9 +9820,9 @@ impl Interaction {
         path: Vec<usize>,
         fraction: f64,
     ) -> Option<RangeInput> {
-        let live = node.boolean("live", true);
-        if !live || SliderRange::from_node(node).snap_mode() == ScrollSnapMode::OnRelease {
-            self.slider_fraction = Some(fraction);
+        let (preview, action) = pointer_range_action(node, fraction);
+        self.slider_fraction = preview;
+        if let Some(fraction) = preview {
             if self.range_position_handle.as_ref() != node.range_position_handle.as_ref() {
                 self.clear_range_preview();
                 self.range_position_handle = node.range_position_handle.clone();
@@ -9736,17 +9836,209 @@ impl Interaction {
                 handle.publish_preview(Some((index, fraction)));
             }
         } else {
-            self.slider_fraction = None;
             self.clear_range_preview();
         }
-        live.then_some(RangeInput {
-            path,
-            action: RangeAction::SetFraction(fraction),
-        })
+        action.map(|action| RangeInput { path, action })
     }
 
     pub fn slider_preview(&self, path: &[usize]) -> Option<f64> {
-        self.slider_fraction.filter(|_| self.is_pressed(path))
+        self.slider_fraction
+            .filter(|_| self.is_physical_control_pressed(path))
+            .or_else(|| {
+                self.scene_slider_previews()
+                    .find_map(|(target, thumb, value)| {
+                        (target == path && thumb.is_none()).then_some(value)
+                    })
+            })
+    }
+
+    /// Captured range input independent of the physical cursor.
+    #[doc(hidden)]
+    pub fn scene_slider_previews(&self) -> impl Iterator<Item = (&[usize], Option<usize>, f64)> {
+        self.scene_controls.iter().filter_map(|control| {
+            control
+                .preview
+                .map(|fraction| (control.target.path.as_slice(), control.thumb, fraction))
+        })
+    }
+
+    /// Synthetic button and slider feedback painted into 3D item textures.
+    #[doc(hidden)]
+    pub fn scene_controls_below(
+        &self,
+        parent: &[usize],
+    ) -> impl Iterator<Item = (&[usize], bool, Option<usize>, Option<f64>)> {
+        self.scene_controls.iter().filter_map(move |control| {
+            let path = control.target.path.as_slice();
+            path.starts_with(parent).then_some((
+                path,
+                control.pressed,
+                control.thumb,
+                control.preview,
+            ))
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn is_scene_control_pressed(&self, path: &[usize]) -> bool {
+        self.scene_controls.iter().any(|control| {
+            control.pressed
+                && (control.target.path == path
+                    || control.thumb.is_some_and(|thumb| {
+                        path.split_last().is_some_and(|(index, parent)| {
+                            *index == thumb && parent == control.target.path
+                        })
+                    }))
+        })
+    }
+
+    pub(crate) fn scene_control_available(&self, target: &Target) -> bool {
+        !self.physical_button_pressed(target)
+            && !self
+                .scene_controls
+                .iter()
+                .any(|control| control.target == *target)
+    }
+
+    pub(crate) fn physical_button_pressed(&self, target: &Target) -> bool {
+        self.pressed.as_ref() == Some(target)
+            || self.scroll_gesture.as_ref().is_some_and(|gesture| {
+                matches!(&gesture.tap, Some(Hit::Target(pressed)) if pressed == target)
+                    || gesture
+                        .switch
+                        .as_ref()
+                        .is_some_and(|drag| &drag.target == target)
+            })
+    }
+
+    pub(crate) fn physical_range_pressed(
+        &self,
+        target: &Target,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> bool {
+        self.pressed
+            .as_ref()
+            .and_then(|pressed| slider_target(pressed, scene, layout))
+            .is_some_and(|(owner, _)| owner == target.path)
+    }
+
+    pub(crate) fn physical_range_preview(
+        &self,
+        target: &Target,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<(usize, f64)> {
+        let pressed = self.pressed.as_ref()?;
+        let (owner, _) = slider_target(pressed, scene, layout)?;
+        (owner == target.path)
+            .then(|| {
+                (
+                    pressed.path.get(owner.len()).copied().unwrap_or(0),
+                    self.slider_fraction,
+                )
+            })
+            .and_then(|(thumb, fraction)| fraction.map(|value| (thumb, value)))
+    }
+
+    pub(crate) fn begin_scene_control(
+        &mut self,
+        scene: &Node,
+        target: Target,
+        finger: i64,
+        press: Option<(&LayoutNode, Point)>,
+    ) {
+        let node = press.and_then(|_| target.node_in(scene));
+        let switch = node
+            .filter(|node| node.kind == "Switch")
+            .zip(press)
+            .and_then(|(node, (layout, point))| {
+                let item = layout.at_path(&target.path)?;
+                let drag = SwitchDrag::new(target.clone(), node, item, point)?;
+                Some(Box::new(SceneSwitch {
+                    drag,
+                    down: point,
+                    motion: SwitchMotion::Tap,
+                }))
+            });
+        if let Some(node) = node {
+            self.start_button_contact(scene, target.clone(), ButtonContactSource::Scene(finger));
+            if node.boolean("focus-on-click", true)
+                && let Some(handle) = &node.focus_handle
+            {
+                handle.request(xrack_runtime::FocusAction::Focus);
+            }
+        }
+        self.scene_controls.push(SceneControlVisual {
+            finger,
+            target,
+            pressed: true,
+            thumb: None,
+            preview: None,
+            switch,
+        });
+    }
+
+    pub(crate) fn sample_scene_button(
+        &mut self,
+        finger: i64,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        inside: bool,
+    ) -> bool {
+        let Some(control) = self
+            .scene_controls
+            .iter_mut()
+            .find(|control| control.finger == finger)
+        else {
+            return false;
+        };
+        let tap = control.switch.as_mut().is_none_or(|switch| {
+            switch.sample(scene, layout, point);
+            switch.motion == SwitchMotion::Tap
+        });
+        control.pressed = inside && tap;
+        control.pressed
+    }
+
+    pub(crate) fn scene_switch_action(
+        &self,
+        finger: i64,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<ControlInput> {
+        let switch = self
+            .scene_controls
+            .iter()
+            .find(|control| control.finger == finger)?
+            .switch
+            .as_ref()?;
+        switch.drag.finish(scene, layout)
+    }
+
+    pub(crate) fn update_scene_control(
+        &mut self,
+        finger: i64,
+        pressed: bool,
+        thumb: Option<usize>,
+        preview: Option<f64>,
+    ) {
+        if let Some(control) = self
+            .scene_controls
+            .iter_mut()
+            .find(|control| control.finger == finger)
+        {
+            control.pressed = pressed;
+            control.thumb = thumb;
+            control.preview = preview;
+        }
+    }
+
+    pub(crate) fn finish_scene_control(&mut self, finger: i64, released: bool) {
+        self.scene_controls
+            .retain(|control| control.finger != finger);
+        self.finish_button_contact(ButtonContactSource::Scene(finger), released);
     }
 
     pub fn has_slider_preview(&self) -> bool {
@@ -9765,9 +10057,7 @@ impl Interaction {
         let fraction = self.slider_fraction.take();
         self.clear_range_preview();
         slider_target(self.pressed.as_ref()?, scene, layout)?;
-        self.slider_offset = 0.0;
-        self.slider_anchor = None;
-        self.dial_pointer = None;
+        self.range_pointer = RangePointerMotion::default();
         let path = self.pressed.take()?.path;
         Some(RangeInput {
             path,
@@ -14016,11 +14306,9 @@ impl Interaction {
         self.table_row_move = None;
         self.table_drag_selection = None;
         self.clear_split_drag();
-        self.slider_offset = 0.0;
-        self.slider_anchor = None;
+        self.range_pointer = RangePointerMotion::default();
         self.slider_fraction = None;
         self.clear_range_preview();
-        self.dial_pointer = None;
         self.spin_pressed = None;
         self.key_pressed = None;
         self.range_keys.clear();
@@ -14080,6 +14368,25 @@ impl Interaction {
                     && !next.contains(handle)
                 {
                     next.push(handle.clone());
+                }
+            }
+            for contact in &self.button_contacts {
+                if let ButtonContactSource::Scene(finger) = contact.source
+                    && self.scene_controls.iter().any(|control| {
+                        control.finger == finger
+                            && control.pressed
+                            && control.target == contact.target
+                    })
+                    && contact.target.path.starts_with(scope)
+                    && scene_control_live(&contact.target, scene, layout)
+                    && contact
+                        .target
+                        .node_in(scene)
+                        .and_then(|node| node.button_press_handle.as_ref())
+                        == Some(&contact.handle)
+                    && !next.contains(&contact.handle)
+                {
+                    next.push(contact.handle.clone());
                 }
             }
         }
@@ -14160,9 +14467,14 @@ impl Interaction {
         let key_pressed = self.key_pressed.as_ref();
         let gesture = self.scroll_gesture.is_some();
         self.button_contacts.retain(|contact| {
+            let live = if matches!(contact.source, ButtonContactSource::Scene(_)) {
+                scene_control_live(&contact.target, scene, layout)
+            } else {
+                valid(&contact.target, scene, layout)
+            };
             let current = contact.target.path.starts_with(&scope)
                 && !popup
-                && valid(&contact.target, scene, layout)
+                && live
                 && contact
                     .target
                     .node_in(scene)
@@ -14171,6 +14483,11 @@ impl Interaction {
                 && match contact.source {
                     ButtonContactSource::Pointer => pointer == Some(&contact.target),
                     ButtonContactSource::Gesture => gesture,
+                    ButtonContactSource::Scene(finger) => {
+                        self.scene_controls.iter().any(|control| {
+                            control.finger == finger && control.target == contact.target
+                        })
+                    }
                     ButtonContactSource::Key(key) => {
                         focused == Some(&contact.target)
                             && key_pressed.is_some_and(|(pressed, target)| {
@@ -14205,6 +14522,10 @@ impl Interaction {
     }
 
     pub fn is_pressed(&self, path: &[usize]) -> bool {
+        self.is_scene_control_pressed(path) || self.is_physical_control_pressed(path)
+    }
+
+    fn is_physical_control_pressed(&self, path: &[usize]) -> bool {
         (self.pressed.as_ref().is_some_and(|t| t.path == path)
             && self.is_hovered(path)
             && self.pressed_list_row == self.hovered_list_row
@@ -14250,5 +14571,35 @@ impl WheelRoute {
             }
         }
         xrack_runtime::EventResult::Reject
+    }
+}
+
+#[cfg(test)]
+mod scene_control_tests {
+    use super::*;
+
+    #[test]
+    fn physical_and_scene_sliders_keep_separate_previews() {
+        let slider =
+            |slot, id| Target::from_node(vec![slot], &Node::new("Slider", Some(id)), true, None);
+        let physical = slider(0, "physical");
+        let scene = slider(1, "scene");
+        let input = Interaction {
+            hovered: Some(physical.clone()),
+            pressed: Some(physical),
+            slider_fraction: Some(0.75),
+            scene_controls: vec![SceneControlVisual {
+                finger: 30,
+                target: scene,
+                pressed: true,
+                thumb: None,
+                preview: Some(0.20),
+                switch: None,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(input.slider_preview(&[0]), Some(0.75));
+        assert_eq!(input.slider_preview(&[1]), Some(0.20));
+        assert!(input.is_pressed(&[1]));
     }
 }

@@ -1422,6 +1422,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "model" if kind == "SceneView3D" => Type::RecordList("SceneObject3D".into()),
         "preload-model" if kind == "SceneView3D" => Type::SceneModel3D,
         "camera-fit" if kind == "SceneView3D" => Type::Bounds3D,
+        "auto-camera" if kind == "SceneView3D" => Type::Bool,
         "physics-world" if kind == "SceneView3D" => Type::PhysicsWorld3D,
         "physics-debug" if kind == "SceneView3D" => Type::Bool,
         "physics-debug-body" if kind == "SceneView3D" => Type::Int,
@@ -1430,6 +1431,9 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "scene-captures" if kind == "SceneView3D" => Type::RecordList("SceneCapture3D".into()),
         "particle-emitters" if kind == "SceneView3D" => {
             Type::RecordList("ParticleEmitter3D".into())
+        }
+        "particle-instance-models" if kind == "SceneView3D" => {
+            Type::RecordList("ParticleInstanceModel3D".into())
         }
         "particle-affectors" if kind == "SceneView3D" => {
             Type::RecordList("ParticleAffector3D".into())
@@ -1471,6 +1475,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "shadow-freeze-camera"
         | "imported-lights"
         | "environment-skybox"
+        | "scene-grid"
+        | "scene-grid-axes"
         | "frustum-culling"
         | "cache-rendering"
         | "texture-input"
@@ -1516,11 +1522,16 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "fog-volume-samples"
         | "fog-volume-density-samples"
         | "scene-effect-history-revision"
+        | "render-stats-revision"
             if kind == "SceneView3D" =>
         {
             Type::Int
         }
-        "scene-background" | "ambient-color" | "fog-color" | "scene-vignette-color"
+        "scene-background"
+        | "ambient-color"
+        | "fog-color"
+        | "scene-vignette-color"
+        | "scene-grid-color"
             if kind == "SceneView3D" =>
         {
             Type::Color
@@ -1540,6 +1551,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "camera-pitch"
         | "camera-distance"
         | "camera-fit-margin"
+        | "scene-grid-height"
+        | "scene-grid-spacing"
         | "light-yaw"
         | "light-elevation"
         | "ambient-intensity"
@@ -1628,6 +1641,9 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
 }
 
 pub fn geometry_property(name: &str) -> Option<Type> {
+    if builtins::scene_texture_size_axis(name).is_some() {
+        return Some(Type::Int);
+    }
     Some(match name {
         "layout-x"
         | "layout-y"
@@ -1659,6 +1675,7 @@ fn content_geometry_owner(kind: &str) -> bool {
 fn geometry_property_for(kind: &str, name: &str) -> Option<Type> {
     if !geometry_owner(kind)
         || matches!(name, "available-width" | "available-height") && !content_geometry_owner(kind)
+        || builtins::scene_texture_size_axis(name).is_some() && kind != "SceneView3D"
     {
         return None;
     }
@@ -2533,8 +2550,7 @@ fn validate_record_fields(record_fields: &[ast::RecordField]) -> Result<()> {
         }
         if matches!(
             field.ty,
-            Type::StringList
-                | Type::DateList
+            Type::DateList
                 | Type::Hit3DList
                 | Type::PhysicsContact3DList
                 | Type::PhysicsHit3DList
@@ -2701,10 +2717,50 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
             }
         }
     }
+    if let Some(ty) = record_field_type(&scope.records, record, "animation-node-overrides") {
+        validate_scene_record_list_type(
+            &ty,
+            value.span,
+            scope,
+            "3D animation-node-overrides",
+            &[("node", Type::String)],
+            builtins::SCENE_ANIMATION_NODE_OVERRIDE_OPTIONAL_FIELDS,
+        )?;
+    }
     let collision_shapes = record_field_type(&scope.records, record, "collision-shapes");
     if let Some(ty) = &collision_shapes {
         validate_collision_shapes(ty, value.span, scope)?;
     }
+    let joints = record_field_type(&scope.records, record, "skin-joints");
+    if let Some(joints) = &joints {
+        validate_scene_record_list_type(
+            joints,
+            value.span,
+            scope,
+            "3D skin-joints",
+            &[("node", Type::String)],
+            &[],
+        )?;
+        if let Type::RecordList(joint) = joints
+            && let Some(bind) = record_field_type(&scope.records, joint, "inverse-bind")
+        {
+            let Type::Record(bind) = bind else {
+                return fail(value.span, "3D inverse-bind requires a matrix record");
+            };
+            for row in 1..=4 {
+                for column in 1..=4 {
+                    let name = format!("m{row}{column}");
+                    if record_field_type(&scope.records, &bind, &name) != Some(Type::Float) {
+                        return fail(
+                            value.span,
+                            format!("3D inverse-bind requires a float field named `{name}`"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let mut weighted_geometry = false;
     if let Some(ty) = record_field_type(&scope.records, record, "geometry") {
         let schema = match ty {
             Type::Record(ref geometry) => scope
@@ -2716,6 +2772,50 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
         let Some(schema) = schema else {
             return fail(value.span, "3D model requires geometry to be a record");
         };
+        if let Some(weights) = schema
+            .fields
+            .iter()
+            .find(|field| field.name == "skin-weights")
+        {
+            if !schema.fields.iter().any(|field| field.name == "vertices") || joints.is_none() {
+                return fail(
+                    value.span,
+                    "3D skin-weights requires vertices and skin-joints",
+                );
+            }
+            validate_scene_record_list_type(
+                &weights.ty,
+                value.span,
+                scope,
+                "3D skin-weights",
+                builtins::SCENE_SKIN_WEIGHT_FIELDS,
+                &[],
+            )?;
+            weighted_geometry = true;
+        }
+        let mut tangent_morph = false;
+        let mut binormal_morph = false;
+        if let Some(deltas) = schema
+            .fields
+            .iter()
+            .find(|field| field.name == "morph-deltas")
+        {
+            if !schema.fields.iter().any(|field| field.name == "vertices") {
+                return fail(value.span, "3D morph-deltas requires geometry.vertices");
+            }
+            validate_scene_record_list_type(
+                &deltas.ty,
+                value.span,
+                scope,
+                "3D morph-deltas",
+                builtins::SCENE_MORPH_DELTA_FIELDS,
+                builtins::SCENE_MORPH_DELTA_CHANNELS,
+            )?;
+            if let Type::RecordList(record) = &deltas.ty {
+                tangent_morph = record_field_type(&scope.records, record, "tangent").is_some();
+                binormal_morph = record_field_type(&scope.records, record, "binormal").is_some();
+            }
+        }
         if let Some(vertices) = schema.fields.iter().find(|field| field.name == "vertices") {
             if schema.fields.iter().any(|field| field.name == "shape") {
                 return fail(
@@ -2749,6 +2849,31 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
                         value.span,
                         format!("3D vertex field `{name}` requires type {}", expected.name(),),
                     );
+                }
+            }
+            if !vertex_schema
+                .fields
+                .iter()
+                .any(|field| field.name == "tangent")
+            {
+                if tangent_morph {
+                    return fail(
+                        value.span,
+                        "3D morph-deltas tangent requires a vertex tangent",
+                    );
+                }
+                if binormal_morph {
+                    return fail(
+                        value.span,
+                        "3D morph-deltas binormal requires a vertex tangent",
+                    );
+                }
+                if vertex_schema
+                    .fields
+                    .iter()
+                    .any(|field| field.name == "tangent-sign")
+                {
+                    return fail(value.span, "3D tangent-sign requires a vertex tangent");
                 }
             }
             if schema
@@ -2820,6 +2945,15 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
             format!(
                 "3D model record `{record}` requires `mesh`, `mesh-asset`, a geometry record, or a collision-shapes list",
             ),
+        );
+    }
+    if joints.is_some()
+        && !weighted_geometry
+        && record_field_type(&scope.records, record, "instance-of").is_none()
+    {
+        return fail(
+            value.span,
+            "3D skin-joints requires geometry.skin-weights or instance-of",
         );
     }
     if let Some(ty) = record_field_type(&scope.records, record, "morph-weights")
@@ -2900,13 +3034,16 @@ fn validate_shader_texture_inputs(
         return fail(value.span, format!("3D {property} requires a record list"));
     };
     let ty = |name| record_field_type(&scope.records, inputs, name);
-    if ["texture", "item", "capture"]
-        .into_iter()
-        .all(|name| ty(name) != Some(Type::String))
+    if ty("data") != Some(Type::TextureData2D)
+        && ["texture", "item", "capture"]
+            .into_iter()
+            .all(|name| ty(name) != Some(Type::String))
     {
         return fail(
             value.span,
-            format!("3D {input} requires a string field named texture, item or capture"),
+            format!(
+                "3D {input} requires a texturedata2d field named data or a string field named texture, item or capture"
+            ),
         );
     }
     for (name, expected) in [
@@ -2924,8 +3061,11 @@ fn validate_shader_texture_inputs(
     ]
     .map(|name| (name, Type::String))
     .into_iter()
-    .chain([("enabled", Type::Bool), ("max-anisotropy", Type::Int)])
-    {
+    .chain([
+        ("enabled", Type::Bool),
+        ("max-anisotropy", Type::Int),
+        ("data", Type::TextureData2D),
+    ]) {
         if ty(name).is_some_and(|actual| actual != expected) {
             return fail(
                 value.span,
@@ -2987,13 +3127,15 @@ fn validate_scene_material(value: &ir::Expr, scope: &Scope<'_>, material: &str) 
         let Some(field) = schema.fields.iter().find(|field| field.name == name) else {
             continue;
         };
-        if field.ty == Type::String {
+        if field.ty == Type::String || (name != "base-item" && field.ty == Type::TextureData2D) {
             continue;
         }
         let Type::Record(texture) = &field.ty else {
             return fail(
                 value.span,
-                format!("3D material field `{name}` requires a texture key or record"),
+                format!(
+                    "3D material field `{name}` requires a texture key, texturedata2d, or sampler record"
+                ),
             );
         };
         let Some(texture_fields) = scope
@@ -3006,12 +3148,23 @@ fn validate_scene_material(value: &ir::Expr, scope: &Scope<'_>, material: &str) 
                 format!("3D texture `{texture}` requires a record"),
             );
         };
+        let has_data = name != "base-item"
+            && texture_fields
+                .fields
+                .iter()
+                .any(|field| field.name == "data" && field.ty == Type::TextureData2D);
         for (setting, expected) in builtins::SCENE_TEXTURE_FIELDS {
             let field = texture_fields
                 .fields
                 .iter()
                 .find(|field| field.name == *setting);
-            if (*setting == "source" || field.is_some())
+            if *setting == "data" && name == "base-item" && field.is_some() {
+                return fail(
+                    value.span,
+                    "3D base-item requires a named 2D texture source",
+                );
+            }
+            if ((*setting == "source" && !has_data) || field.is_some())
                 && !field.is_some_and(|field| field.ty == *expected)
             {
                 return fail(
@@ -3034,8 +3187,26 @@ fn validate_scene_records(
     fields: &[(&str, Type)],
     optional_fields: &[(&str, Type)],
 ) -> Result<()> {
-    let Type::RecordList(record) = &value.ty else {
-        return fail(value.span, format!("{subject} requires a record list"));
+    validate_scene_record_list_type(
+        &value.ty,
+        value.span,
+        scope,
+        subject,
+        fields,
+        optional_fields,
+    )
+}
+
+fn validate_scene_record_list_type(
+    ty: &Type,
+    span: Span,
+    scope: &Scope<'_>,
+    subject: &str,
+    fields: &[(&str, Type)],
+    optional_fields: &[(&str, Type)],
+) -> Result<()> {
+    let Type::RecordList(record) = ty else {
+        return fail(span, format!("{subject} requires a record list"));
     };
     for ((name, ty), required) in fields
         .iter()
@@ -3045,7 +3216,7 @@ fn validate_scene_records(
         let actual = record_field_type(&scope.records, record, name);
         if (required || actual.is_some()) && actual.as_ref() != Some(ty) {
             return fail(
-                value.span,
+                span,
                 format!(
                     "{subject} record `{record}` requires a {} field named `{name}`",
                     ty.name()
@@ -5159,6 +5330,9 @@ impl<'a> Scope<'a> {
         if !geometry_owner(&element.kind) {
             return fail(span, "layout geometry requires a visual target");
         }
+        if builtins::scene_texture_size_axis(name).is_some() && element.kind != "SceneView3D" {
+            return Ok(None);
+        }
         let mut ancestor = Some(owner);
         while let Some(key) = ancestor {
             let target = &self.owners[key];
@@ -6351,6 +6525,37 @@ impl<'a> Scope<'a> {
                         span: call.span,
                     }
                 });
+            }
+            if method == builtins::SCENE_TOUCH_METHOD.name
+                && self.owners.get(owner).is_some_and(|target| {
+                    !target.instance
+                        && target.kind == "SceneView3D"
+                        && !target.callbacks.contains_key(method)
+                })
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        "set-touchpoint() is not allowed in a pure callback",
+                    );
+                }
+                self.require_static_viewport(owner, call.span)?;
+                let [source, position, id, pressed] = call.arguments.as_slice() else {
+                    return fail(
+                        call.span,
+                        format!("expected {}", builtins::SCENE_TOUCH_METHOD.signature()),
+                    );
+                };
+                return Ok(ir::Statement::SceneTouch(ir::SceneTouch {
+                    owner: owner.into(),
+                    args: [
+                        expression_as(source, self, current, Type::String)?,
+                        expression_as(position, self, current, Type::Point2D)?,
+                        expression_as(id, self, current, Type::Int)?,
+                        expression_as(pressed, self, current, Type::Bool)?,
+                    ],
+                    span: call.span,
+                }));
             }
             if method == builtins::POSITION_CHILD_METHOD.name
                 && let Some(view) = self.owners.get(owner)
@@ -8780,6 +8985,7 @@ fn element<'a>(
                             | "scene-effects"
                             | "scene-captures"
                             | "particle-emitters"
+                            | "particle-instance-models"
                             | "particle-affectors"
                     )
                 {
@@ -8838,6 +9044,14 @@ fn element<'a>(
                             builtins::SCENE_LIGHT_FIELDS,
                             builtins::SCENE_LIGHT_OPTIONAL_FIELDS,
                         )?;
+                    } else if b.name == "particle-instance-models" {
+                        validate_scene_records(
+                            &value,
+                            scope,
+                            "3D particle instance models",
+                            builtins::SCENE_PARTICLE_INSTANCE_MODEL_FIELDS,
+                            &[],
+                        )?;
                     } else if b.name == "particle-emitters" {
                         validate_scene_records(
                             &value,
@@ -8846,6 +9060,53 @@ fn element<'a>(
                             builtins::SCENE_PARTICLE_FIELDS,
                             builtins::SCENE_PARTICLE_OPTIONAL_FIELDS,
                         )?;
+                        if let Type::RecordList(emitter) = &value.ty
+                            && let Some(lights) =
+                                record_field_type(&scope.records, emitter, "particle-lights")
+                        {
+                            validate_scene_record_list_type(
+                                &lights,
+                                value.span,
+                                scope,
+                                "3D particle-lights",
+                                builtins::SCENE_LIGHT_FIELDS,
+                                builtins::SCENE_LIGHT_OPTIONAL_FIELDS,
+                            )?;
+                        }
+                        if let Type::RecordList(emitter) = &value.ty
+                            && let Some(variation) =
+                                record_field_type(&scope.records, emitter, "color-variation")
+                        {
+                            let schema = match variation {
+                                Type::Record(name) => scope
+                                    .records
+                                    .get(name.as_ref())
+                                    .filter(|schema| schema.variants.is_empty()),
+                                _ => None,
+                            };
+                            let Some(schema) = schema else {
+                                return fail(
+                                    value.span,
+                                    "3D particle color-variation requires an RGBA record",
+                                );
+                            };
+                            for (channel, expected) in
+                                builtins::SCENE_PARTICLE_COLOR_VARIATION_FIELDS
+                            {
+                                if let Some(field) =
+                                    schema.fields.iter().find(|field| field.name == *channel)
+                                    && field.ty != *expected
+                                {
+                                    return fail(
+                                        value.span,
+                                        format!(
+                                            "3D particle color-variation requires a {} field named `{channel}`",
+                                            expected.name()
+                                        ),
+                                    );
+                                }
+                            }
+                        }
                         if let Type::RecordList(emitter) = &value.ty
                             && let Some(bursts) =
                                 record_field_type(&scope.records, emitter, "bursts")
@@ -9112,8 +9373,10 @@ fn element<'a>(
                             && let Some(buffers) =
                                 record_field_type(&scope.records, pass, "buffers")
                             && !matches!(buffers, Type::RecordList(buffer)
-                                if ["name", "texture", "item", "capture"].iter().any(|field|
+                                if (["name", "texture", "item", "capture"].iter().any(|field|
                                         record_field_type(&scope.records, &buffer, field) == Some(Type::String))
+                                    || record_field_type(&scope.records, &buffer, "data") == Some(Type::TextureData2D))
+                                    && record_field_type(&scope.records, &buffer, "data").is_none_or(|ty| ty == Type::TextureData2D)
                                     && ["previous-frame", "enabled"].iter().all(|field|
                                         record_field_type(&scope.records, &buffer, field).is_none_or(|ty| ty == Type::Bool))
                                     && record_field_type(&scope.records, &buffer, "max-anisotropy").is_none_or(|ty| ty == Type::Int)
@@ -9123,7 +9386,7 @@ fn element<'a>(
                         {
                             return fail(
                                 value.span,
-                                "3D effect pass buffers requires a record list with a string field named `name`, `texture`, `item` or `capture`, optional bool fields `previous-frame` and `enabled`, and optional string fields `filter`, `wrap-u` and `wrap-v`, string settings for mip and texel filters, and an optional int field `max-anisotropy`",
+                                "3D effect pass buffers requires a record list with a string field named `name`, `texture`, `item` or `capture` or a texturedata2d field named `data`, optional bool fields `previous-frame` and `enabled`, and optional string fields `filter`, `wrap-u` and `wrap-v`, string settings for mip and texel filters, and an optional int field `max-anisotropy`",
                             );
                         }
                     } else if b.name == "reflection-probes" {
@@ -10773,11 +11036,16 @@ fn default(ty: Type, span: Span) -> ir::Expr {
     let value = match &ty {
         Type::MeshNode3D => "",
         Type::Bounds3D => "",
-        Type::Instance3D | Type::InstanceTable3D | Type::MeshAsset3D | Type::RotationTrack3D => "",
+        Type::Instance3D
+        | Type::InstanceTable3D
+        | Type::TextureData2D
+        | Type::MeshAsset3D
+        | Type::RotationTrack3D => "",
         Type::Point2D | Type::Vector2D => "0 0",
         Type::Point3D | Type::Vector3D => "0 0 0",
         Type::Quaternion3D => "0 0 0 1",
         Type::ProjectedPoint3D
+        | Type::RenderStats3D
         | Type::Hit3D
         | Type::WalkResult3D
         | Type::PhysicsWorld3D
@@ -11306,6 +11574,19 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 ..ir::Expr::operation("markdown", Type::StyledText, vec![], span)
             }
         }
+        ExprKind::ParticleShapeUrl(path) => {
+            let value = serde_json::from_str::<String>(path).map_err(|error| Diagnostic {
+                span,
+                message: format!("invalid particle-shape path: {error}"),
+            })?;
+            if value.is_empty() {
+                return fail(span, "particle-shape URL requires a nonempty path");
+            }
+            ir::Expr {
+                value,
+                ..ir::Expr::operation("particle_shape_url", Type::String, vec![], span)
+            }
+        }
         ExprKind::InstanceTableUrl(path) => {
             let value = serde_json::from_str::<String>(path).map_err(|error| Diagnostic {
                 span,
@@ -11641,11 +11922,8 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     FunctionKind::Math(kind) => math_call(call, scope, owner, function, kind),
                     FunctionKind::Geometry(kind) => {
                         let args = builtin_arguments(call, scope, owner, function)?;
-                        if matches!(
-                            kind,
-                            builtins::GeometryFunction::MeshNode3D
-                                | builtins::GeometryFunction::MeshNodeIndices3D
-                        ) && let Some(asset) = args.first()
+                        if kind.uses_mesh_asset()
+                            && let Some(asset) = args.first()
                         {
                             if !matches!(asset.ty, Type::MeshAsset3D | Type::String) {
                                 return fail(asset.span, "expected a meshasset3d or asset key");
@@ -11980,8 +12258,10 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                                 | Type::PhysicsContact3D
                                 | Type::PhysicsHit3D
                                 | Type::ProjectedPoint3D
+                                | Type::RenderStats3D
                                 | Type::Instance3D
                                 | Type::InstanceTable3D
+                                | Type::TextureData2D
                                 | Type::Bounds3D
                                 | Type::MeshAsset3D
                                 | Type::MeshNode3D
@@ -13121,7 +13401,8 @@ fn collect_bindings(
             };
             let target = path(owner, name);
             out.push(
-                if matches!(e.op.as_str(), "geometry_read" | "scene_view_query")
+                if e.op == "geometry_read"
+                    || e.op == "scene_view_query" && e.value != "render-stats"
                     || e.op == "scroll_control_read"
                         && (e.ty == Type::Bool || e.value.starts_with("visual-"))
                 {
@@ -13540,6 +13821,11 @@ fn collect_bindings(
                         ir::Statement::Navigate(navigation) => {
                             if let Some(page) = &navigation.page {
                                 dependencies(page, &path, &mut deps);
+                            }
+                        }
+                        ir::Statement::SceneTouch(command) => {
+                            for arg in &command.args {
+                                dependencies(arg, &path, &mut deps);
                             }
                         }
                         ir::Statement::ScrollCommand(command) => {

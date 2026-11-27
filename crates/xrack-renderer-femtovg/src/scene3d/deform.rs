@@ -209,7 +209,7 @@ struct BindingKey {
 pub(super) struct DeformationBuffers {
     layouts: DeformationLayouts,
     palettes: VecDeque<(JointPalette, wgpu::Buffer)>,
-    morphs: VecDeque<((u32, MorphWeights), wgpu::Buffer)>,
+    morphs: VecDeque<(([u32; 2], MorphWeights), wgpu::Buffer)>,
     bindings: VecDeque<(BindingKey, DeformationBinding)>,
     pub skin_uploads: u64,
     pub morph_uploads: u64,
@@ -266,7 +266,7 @@ impl DeformationBuffers {
                     let mesh = meshes.get_for_raster(device, queue, &object.mesh, raster);
                     let morph = mesh.morph.as_ref()?;
                     Some((
-                        self.morph_buffer(device, morph.record_offset, weights),
+                        self.morph_buffer(device, morph.table_layout, weights),
                         morph.entries.clone(),
                     ))
                 } else {
@@ -336,15 +336,19 @@ impl DeformationBuffers {
     fn morph_buffer(
         &mut self,
         device: &wgpu::Device,
-        offset: u32,
+        layout: [u32; 2],
         weights: &MorphWeights,
     ) -> wgpu::Buffer {
         cached(
             &mut self.morphs,
-            (offset, weights.clone()),
-            |(offset, weights)| {
+            (layout, weights.clone()),
+            |(layout, weights)| {
                 let mut bytes = Vec::with_capacity(16 + MAX_MORPH_TARGETS * 4);
-                bytes.extend([*offset, 0, 0, 0].into_iter().flat_map(u32::to_ne_bytes));
+                bytes.extend(
+                    [layout[0], layout[1], 0, 0]
+                        .into_iter()
+                        .flat_map(u32::to_ne_bytes),
+                );
                 append_floats(&mut bytes, weights.iter().copied());
                 bytes.resize(16 + MAX_MORPH_TARGETS * 4, 0);
                 self.morph_uploads = self.morph_uploads.saturating_add(1);

@@ -750,11 +750,29 @@ impl StyledTextMeasurements {
                     ))
                 },
                 |a, b, heading| {
-                    let a = a.start + heading..a.end;
-                    let b = b.start + heading..b.end;
-                    text[a.clone()] == text[b.clone()]
-                        && same_bidi_slice(&bidi, spans, &a, &b)
-                        && spans.same_style_slices(&a, &b)
+                    let suffix_a = a.start + heading..a.end;
+                    let suffix_b = b.start + heading..b.end;
+                    if text[suffix_a.clone()] != text[suffix_b.clone()]
+                        || !same_bidi_slice(&bidi, spans, &suffix_a, &suffix_b)
+                        || !spans.same_style_slices(&suffix_a, &suffix_b)
+                    {
+                        return None;
+                    }
+                    let heading_a = a.start..a.start + heading;
+                    let heading_b = b.start..b.start + heading;
+                    let matching = if heading != 0
+                        && same_bidi_slice(&bidi, spans, &heading_a, &heading_b)
+                        && spans.same_style_slices(&heading_a, &heading_b)
+                    {
+                        text[heading_a]
+                            .bytes()
+                            .zip(text[heading_b].bytes())
+                            .take_while(|(a, b)| a == b)
+                            .count()
+                    } else {
+                        0
+                    };
+                    Some(matching)
                 },
             );
         }
@@ -1688,6 +1706,9 @@ impl StyledTextLayout {
             font_size,
             node.layout_direction(),
             |range, ellipsis| {
+                if range.is_empty() && !ellipsis {
+                    return 0.0;
+                }
                 let key = LineKey::new(&range, ellipsis);
                 let source = range.clone();
                 let measure = || {
@@ -2409,6 +2430,7 @@ mod tests {
                 });
             let mut measurements = StyledTextMeasurements::new(document.clone());
             let mut calls = 0;
+            let mut heading_prefix_calls = 0;
             let (retained, _) = StyledTextLayout::indexed_with_measurements(
                 &node,
                 size,
@@ -2417,6 +2439,7 @@ mod tests {
                 &Cell::new(false),
                 |text, style| {
                     calls += 1;
+                    heading_prefix_calls += usize::from(style.bold && text == "构");
                     measure(text, style)
                 },
             );
@@ -2426,6 +2449,7 @@ mod tests {
                 "width {width}: {calls} versus {direct_calls}"
             );
             if width == 250.0 {
+                assert_eq!(heading_prefix_calls, 1);
                 assert!(
                     measurements
                         .prepared

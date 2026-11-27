@@ -1,0 +1,71 @@
+struct ShaderInput { texture: string, enabled: bool }
+struct ShaderEffect { shader: string, parameters: vector3d, buffers: [ShaderInput] }
+struct CubeStyle {
+    material-shader: string, shader-parameters: vector3d, shader-textures: [ShaderInput],
+    unlit: bool,
+}
+struct CubePreviewModel {
+    id: string, mesh: string, x: float, y: float, z: float, color: color,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    material: CubeStyle,
+}
+
+export component ShaderCubemapDemo inherits Window {
+    title <- "XRack · Shader cubemap";
+    width <- 448px; height <- 266px; background <- #172332; resizable <- false;
+    in-out property <float> face: 0;
+    in-out property <float> mip: 0;
+    in-out property <bool> cube-enabled: true;
+    in-out property <bool> use-flat: false;
+    property <vector3d> sampling <- Vector3D.new(root.face, root.mip, root.use-flat ? 1 : 0);
+    property <[ShaderInput]> inputs <- [
+        ShaderInput { texture: @texture-url("models/channel-swatch.png"), enabled: true },
+        ShaderInput { texture: @texture-url("models/shader-cube.ktx2"), enabled: root.cube-enabled },
+    ];
+
+    SceneView3D {
+        width <- 224px; height <- 200px; cache-rendering <- true;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 4;
+        scene-background <- #192b40; scene-tone-map <- none;
+        model <- [
+            CubePreviewModel {
+                id: "shader-sphere", mesh: "primitive:sphere", x: 0, y: 0, z: 0, color: #fff,
+                scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+                material: CubeStyle {
+                    material-shader: @material-shader-url("effects/cube_material.wgsl"),
+                    shader-parameters: root.sampling, shader-textures: root.inputs, unlit: true,
+                },
+            },
+        ];
+    }
+    SceneView3D {
+        x <- 224px; width <- 224px; height <- 200px; cache-rendering <- true;
+        scene-background <- #192b40; scene-tone-map <- none;
+        scene-effects <- [
+            ShaderEffect {
+                shader: @shader-url("effects/cube_effect.wgsl"),
+                parameters: root.sampling, buffers: root.inputs,
+            },
+        ];
+    }
+
+    Label { x <- 12px; y <- 202px; width <- 208px; height <- 28px; text <- "Mesh material"; }
+    Label { x <- 236px; y <- 202px; width <- 208px; height <- 28px; text <- "Post-effect"; }
+    face-button := Button {
+        x <- 10px; y <- 232px; width <- 110px; height <- 28px; text <- "Face " + root.face;
+        clicked => { root.face = root.face >= 5 ? 0 : root.face + 1; }
+    }
+    level-button := Button {
+        x <- 128px; y <- 232px; width <- 97px; height <- 28px; text <- "Mip " + root.mip;
+        clicked => { root.mip = root.mip == 0 ? 1 : 0; }
+    }
+    cube-button := Button {
+        x <- 233px; y <- 232px; width <- 102px; height <- 28px;
+        text <- root.cube-enabled ? "Cube on" : "Cube off";
+        clicked => { root.cube-enabled = !root.cube-enabled; }
+    }
+    source-button := Button {
+        x <- 343px; y <- 232px; width <- 95px; height <- 28px; text <- root.use-flat ? "2D" : "3D";
+        clicked => { root.use-flat = !root.use-flat; }
+    }
+}

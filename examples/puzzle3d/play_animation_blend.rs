@@ -1,4 +1,7 @@
 fn main() -> Result<(), String> {
+    if std::env::args_os().skip(1).any(|arg| arg == "--node-pose") {
+        return xrack_platform_winit::run(animation_blend_ui::NodePoseDemo::new());
+    }
     if std::env::args_os()
         .skip(1)
         .any(|arg| arg == "--birth-animation")

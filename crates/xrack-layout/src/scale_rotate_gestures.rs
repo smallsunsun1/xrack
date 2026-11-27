@@ -66,6 +66,11 @@ struct Capture<Device> {
 }
 
 impl<Device> Capture<Device> {
+    fn gesture_point(&self, context: &Context<'_>, point: Point) -> Option<Point> {
+        self.target
+            .gesture_point(context.scene, context.layout, context.input, point)
+    }
+
     fn delivery(&self, event: &'static str) -> Delivery {
         Delivery {
             target: self.target.clone(),
@@ -152,15 +157,30 @@ impl<Device: Copy + Eq> Gestures<Device> {
     }
 
     pub fn reconcile(&mut self, context: &Context<'_>) -> Option<Delivery> {
-        if self.capture.as_ref().is_some_and(|capture| {
+        self.cancel_unavailable(context, true)
+    }
+
+    fn cancel_unavailable(
+        &mut self,
+        context: &Context<'_>,
+        check_projection: bool,
+    ) -> Option<Delivery> {
+        let unavailable = self.capture.as_ref().is_some_and(|capture| {
             !capture
                 .target
                 .is_live(context.scene, context.layout, context.input)
-        }) {
-            self.cancel()
-        } else {
-            None
-        }
+                || (check_projection
+                    && capture.target.texture.is_some()
+                    && match &capture.source {
+                        Source::Touch { pair, .. } => pair
+                            .iter()
+                            .any(|contact| capture.gesture_point(context, contact.point).is_none()),
+                        Source::Trackpad { center, .. } => {
+                            capture.gesture_point(context, *center).is_none()
+                        }
+                    })
+        });
+        if unavailable { self.cancel() } else { None }
     }
 
     pub fn touch(
@@ -171,7 +191,7 @@ impl<Device: Copy + Eq> Gestures<Device> {
         point: Point,
     ) -> (bool, [Option<Delivery>; 2]) {
         let terminal = matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
-        if let Some(cancelled) = self.reconcile(context) {
+        if let Some(cancelled) = self.cancel_unavailable(context, false) {
             let consumed = self.held.contains(&id) || phase == TouchPhase::Started;
             if terminal {
                 self.held.retain(|held| *held != id);
@@ -203,7 +223,18 @@ impl<Device: Copy + Eq> Gestures<Device> {
                 return (true, [None, None]);
             }
             contact.point = point;
-            let points = pair.map(|contact| contact.point);
+            let points = pair.map(|contact| {
+                capture.target.gesture_point(
+                    context.scene,
+                    context.layout,
+                    context.input,
+                    contact.point,
+                )
+            });
+            let [Some(first), Some(second)] = points else {
+                return (true, [self.cancel(), None]);
+            };
+            let points = [first, second];
             let delivery = transform.update(points).and_then(|(scale, rotation)| {
                 let sample = capture.target.sample(
                     context.layout,
@@ -254,7 +285,13 @@ impl<Device: Copy + Eq> Gestures<Device> {
             {
                 return (false, [None, None]);
             }
-            let points = [first.point, point];
+            let points = [first.point, point].map(|point| {
+                target.gesture_point(context.scene, context.layout, context.input, point)
+            });
+            let [Some(start), Some(end)] = points else {
+                return (false, [None, None]);
+            };
+            let points = [start, end];
             let Some(transform) = TouchTransform::new(points) else {
                 return (false, [None, None]);
             };
@@ -293,7 +330,7 @@ impl<Device: Copy + Eq> Gestures<Device> {
         phase: TouchPhase,
         delta: TrackpadDelta,
     ) -> [Option<Delivery>; 2] {
-        if let Some(cancelled) = self.reconcile(context) {
+        if let Some(cancelled) = self.cancel_unavailable(context, false) {
             return [Some(cancelled), None];
         }
         let channel = match delta {
@@ -316,7 +353,12 @@ impl<Device: Copy + Eq> Gestures<Device> {
             else {
                 return [None, None];
             };
-            let Some(sample) = target.sample(context.layout, center, 1.0, 0.0) else {
+            let Some(point) =
+                target.gesture_point(context.scene, context.layout, context.input, center)
+            else {
+                return [None, None];
+            };
+            let Some(sample) = target.sample(context.layout, point, 1.0, 0.0) else {
                 return [None, None];
             };
             let capture = Capture {
@@ -358,7 +400,13 @@ impl<Device: Copy + Eq> Gestures<Device> {
         }
         let ending = *channels == 0;
         *center = context.input.pointer_position().unwrap_or(*center);
-        let center = *center;
+        let Some(center) =
+            capture
+                .target
+                .gesture_point(context.scene, context.layout, context.input, *center)
+        else {
+            return [started, self.cancel()];
+        };
         let values = match delta {
             TrackpadDelta::Scale(delta) if delta.is_finite() && delta > -1.0 => Some((
                 capture.sample.scale * (1.0 + delta),

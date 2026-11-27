@@ -112,25 +112,6 @@ struct ClearcoatSettings {
     fresnel: vec4<f32>,
 }
 
-struct Light {
-    position_kind: vec4<f32>,
-    axis_inverse_range: vec4<f32>,
-    // RGB radiance and the one-based index of the shadow light.
-    radiance: vec4<f32>,
-    // Cone scale, cone offset, and fully baked light flag.
-    cone: vec3<f32>,
-    scope: u32,
-}
-
-struct Lighting {
-    ambient: vec4<f32>,
-    // Active light count and explicit light list flag.
-    settings: vec4<f32>,
-    lights: array<Light, 16>,
-    // Strength, signed radius (negative for world units), taps and bias.
-    shadow_sampling: array<vec4<f32>, 4>,
-}
-
 struct ShadowLight {
     layers: array<vec4<i32>, 2>,
     // Near, far, cascade count, cascade blend (or radial limit for punctual lights).
@@ -231,6 +212,7 @@ struct VertexOut {
     @location(11) @interpolate(flat) model_z: vec3<f32>,
     @location(13) @interpolate(flat) lightmap_atlas: vec4<f32>,
     @location(15) @interpolate(flat) instance_data: vec4<f32>,
+    // XRack vertex binormal varying
     // XRack wireframe varying
     // XRack linked sample varying
 }
@@ -258,6 +240,12 @@ fn vertex_main(vertex: VertexInput) -> VertexOut {
 @vertex
 fn vertex_tangent(vertex: VertexInput, @location(10) tangent: vec4<f32>) -> VertexOut {
     return transform_vertex(vertex, tangent);
+}
+
+@vertex
+fn vertex_tangent_binormal(vertex: VertexInput, @location(10) tangent: vec4<f32>,
+                           @location(12) binormal: vec4<f32>) -> VertexOut {
+    return with_explicit_binormal(transform_vertex(vertex, tangent), vertex, binormal.xyz);
 }
 
 fn lightmapped(vertex: VertexOut, uv: vec2<f32>, instance: u32) -> VertexOut {
@@ -296,7 +284,10 @@ fn vertex_skin_tangent(vertex: VertexInput, weights: SkinWeights, @location(10) 
 }
 
 fn transform_skinned_vertex(vertex: VertexInput, weights: SkinWeights, tangent: vec4<f32>) -> VertexOut {
-    let skin = skin_transform(weights);
+    return transform_skin_pose(vertex, skin_transform(weights), tangent);
+}
+
+fn transform_skin_pose(vertex: VertexInput, skin: SkinRows, tangent: vec4<f32>) -> VertexOut {
     let linear = skin_columns(skin);
     var deformed = vertex;
     deformed.position = skin_point(skin, vertex.position);
@@ -309,33 +300,61 @@ fn morphed_vertex(vertex: VertexInput, delta: MorphDisplacement) -> VertexInput 
     var deformed = vertex;
     deformed.position += delta.position;
     deformed.normal = morph_normal(vertex.normal, delta.normal);
+    if morph_settings.geometry.y > 10u {
+        deformed.uv += delta.uvs.xy;
+        deformed.uv1 += delta.uvs.zw;
+        deformed.color = clamp(vertex.color + delta.color, vec4(0.0), vec4(1.0));
+    }
     return deformed;
 }
 
 @vertex
 fn vertex_morph(vertex: VertexInput) -> VertexOut {
-    let delta = morph_displacement(vertex.index);
+    let delta = morph_displacement(vertex.index, MORPH_FRAME | MORPH_SURFACE);
     return transform_vertex(morphed_vertex(vertex, delta), vec4<f32>(0.0));
 }
 
 @vertex
 fn vertex_morph_tangent(vertex: VertexInput,
                         @location(10) tangent: vec4<f32>) -> VertexOut {
-    let delta = morph_displacement(vertex.index);
-    return transform_vertex(morphed_vertex(vertex, delta), vec4<f32>(tangent.xyz + delta.tangent, tangent.w));
+    let delta = morph_displacement(vertex.index, MORPH_FRAME | MORPH_SURFACE | select(0u, MORPH_BINORMAL, EXPLICIT_BINORMALS));
+    let posed = transform_vertex(morphed_vertex(vertex, delta), vec4<f32>(tangent.xyz + delta.tangent, tangent.w));
+    return with_explicit_binormal(posed, vertex, rest_binormal(vertex.normal, tangent) + delta.binormal);
 }
 
 @vertex
 fn vertex_skin_morph(vertex: VertexInput, weights: SkinWeights) -> VertexOut {
-    let delta = morph_displacement(vertex.index);
+    let delta = morph_displacement(vertex.index, MORPH_FRAME | MORPH_SURFACE);
     return transform_skinned_vertex(morphed_vertex(vertex, delta), weights, vec4<f32>(0.0));
 }
 
 @vertex
 fn vertex_skin_morph_tangent(vertex: VertexInput, weights: SkinWeights,
                              @location(10) tangent: vec4<f32>) -> VertexOut {
-    let delta = morph_displacement(vertex.index);
-    return transform_skinned_vertex(morphed_vertex(vertex, delta), weights, vec4<f32>(tangent.xyz + delta.tangent, tangent.w));
+    let delta = morph_displacement(vertex.index, MORPH_FRAME | MORPH_SURFACE | select(0u, MORPH_BINORMAL, EXPLICIT_BINORMALS));
+    let skin = skin_transform(weights);
+    let posed = transform_skin_pose(morphed_vertex(vertex, delta), skin, vec4<f32>(tangent.xyz + delta.tangent, tangent.w));
+    let binormal = skin_columns(skin) * (rest_binormal(vertex.normal, tangent) + delta.binormal);
+    return with_explicit_binormal(posed, vertex, binormal);
+}
+
+const EXPLICIT_BINORMALS: bool = false;
+
+fn rest_binormal(normal: vec3<f32>, tangent: vec4<f32>) -> vec3<f32> {
+    let b = cross(normal, tangent.xyz);
+    if dot(b, b) <= 1e-16 { return vec3(0.0); }
+    return normalize(b) * tangent.w;
+}
+
+fn with_explicit_binormal(vertex: VertexOut, original: VertexInput, binormal: vec3<f32>) -> VertexOut {
+    var result = vertex;
+    // XRack write morph binormal
+    return result;
+}
+
+fn read_explicit_binormal(vertex: VertexOut) -> vec3<f32> {
+    // XRack read morph binormal
+    return vec3(0.0);
 }
 
 fn transform_vertex(vertex: VertexInput, tangent: vec4<f32>) -> VertexOut {
@@ -368,6 +387,7 @@ fn transform_vertex(vertex: VertexInput, tangent: vec4<f32>) -> VertexOut {
         vec4(select(vec3<f32>(0.0), y, VOLUME_MATERIAL || ANISOTROPIC_MATERIAL), 0.0),
         select(vec3<f32>(0.0), z, VOLUME_MATERIAL || ANISOTROPIC_MATERIAL),
         vec4<f32>(0.0), vertex.instance_data,
+        // XRack vertex binormal rest
         // XRack wireframe corner
         // XRack linked clip depth
     );
@@ -454,6 +474,20 @@ fn vertex_mask(color: vec4<f32>, role: u32) -> f32 {
 struct TangentFrame {
     tangent: vec3<f32>,
     sign: f32,
+    binormal: vec3<f32>,
+}
+
+fn tangent_frame(vertex: VertexOut) -> TangentFrame {
+    return TangentFrame(vertex.tangent_and_lightmap_u.xyz,
+        bitcast<f32>(vertex.instance_metadata.y), read_explicit_binormal(vertex));
+}
+
+fn frame_binormal(frame: TangentFrame, n: vec3<f32>, t: vec3<f32>) -> vec3<f32> {
+    let binormal = frame.binormal - n * dot(frame.binormal, n);
+    if EXPLICIT_BINORMALS && dot(binormal, binormal) > 1e-16 {
+        return normalize(binormal);
+    }
+    return cross(n, t) * frame.sign;
 }
 
 fn mapped_normal(
@@ -468,7 +502,7 @@ fn mapped_normal(
         return n;
     }
     let t = normalize(tangent);
-    let b = cross(n, t) * frame.sign;
+    let b = frame_binormal(frame, n, t);
     let sample = sample_material_map(map, filtering, vertex, uv, slot, transform).rgb;
     let local = sample * 2.0 - vec3<f32>(1.0);
     let scaled = vec3<f32>(local.xy * scale, local.z);
@@ -488,15 +522,15 @@ fn alternate_tangent_frame(vertex: VertexOut, n: vec3<f32>, uv: UvDerivatives, s
     let dy = texture_gradient(transform, select(uv.dy0, uv.dy1, slot > 0.5));
     let determinant = dx.x * dy.y - dx.y * dy.x;
     if abs(determinant) < 0.000000000001 {
-        return TangentFrame(vec3<f32>(0.0), 0.0);
+        return TangentFrame(vec3<f32>(0.0), 0.0, vec3(0.0));
     }
     let tangent = (px * dy.y - py * dx.y) * sign(determinant);
     let bitangent = (py * dx.x - px * dy.x) * sign(determinant);
     if dot(tangent, tangent) < 0.000000000001 {
-        return TangentFrame(vec3<f32>(0.0), 0.0);
+        return TangentFrame(vec3<f32>(0.0), 0.0, vec3(0.0));
     }
     let handedness = sign(dot(cross(n, tangent), bitangent));
-    return TangentFrame(normalize(tangent), handedness);
+    return TangentFrame(normalize(tangent), handedness, vec3(0.0));
 }
 
 struct AnisotropicLobe {
@@ -522,7 +556,7 @@ fn brush_direction(vertex: VertexOut, n: vec3<f32>, uv: UvDerivatives, frame: Ta
         tangent = axis - n * dot(axis, n);
     }
     let t = normalize(tangent);
-    let b = cross(n, t) * handedness;
+    let b = frame_binormal(TangentFrame(t, handedness, frame.binormal), n, t);
     var direction = vec2<f32>(1.0, 0.0);
     var strength = material.anisotropy.x;
     if material.anisotropy.w >= 0.0 {
@@ -606,7 +640,7 @@ fn coat_surface(vertex: VertexOut, uv: UvDerivatives, front_facing: bool) -> Coa
     }
     let normal = normalize(vertex.normal);
     let slot = clearcoat.map_slots.z;
-    var frame = TangentFrame(vertex.tangent_and_lightmap_u.xyz, bitcast<f32>(vertex.instance_metadata.y));
+    var frame = tangent_frame(vertex);
     let transform = clearcoat.transforms[2];
     let base_transform = material.transforms[3];
     // Offsets affect the lookup only. Different derivatives need their own frame.
@@ -624,46 +658,8 @@ fn coat_surface(vertex: VertexOut, uv: UvDerivatives, front_facing: bool) -> Coa
     return CoatSurface(select(-mapped, mapped, front_facing), amount, roughness, clearcoat.fresnel);
 }
 
-struct IncidentLight {
-    axis: vec3<f32>,
-    radiance: vec3<f32>,
-    attenuation: f32,
-}
-
 fn light_reaches(light: Light, node: u32) -> bool {
     return light.scope == 0u || (node >= (light.scope & 0xffffu) && node <= (light.scope >> 16u));
-}
-
-fn incident_light(light: Light, world: vec3<f32>) -> IncidentLight {
-    let kind = light.position_kind.w;
-    if kind == 0.0 {
-        return IncidentLight(light.axis_inverse_range.xyz, light.radiance.xyz, 1.0);
-    }
-    let delta = light.position_kind.xyz - world;
-    let distance_squared = dot(delta, delta);
-    let none = IncidentLight(vec3<f32>(0.0), vec3<f32>(0.0), 0.0);
-    if distance_squared <= 0.000001 {
-        return none;
-    }
-    var fade = 1.0;
-    if light.axis_inverse_range.w > 0.0 {
-        let fraction = distance_squared * light.axis_inverse_range.w;
-        if fraction >= 1.0 {
-            return none;
-        }
-        fade = 1.0 - fraction * fraction;
-    }
-    let axis = delta * inverseSqrt(distance_squared);
-    if kind == 2.0 {
-        let cosine = dot(axis, light.axis_inverse_range.xyz);
-        let cone = clamp(cosine * light.cone.x + light.cone.y, 0.0, 1.0);
-        if cone == 0.0 {
-            return none;
-        }
-        fade *= cone * cone;
-    }
-    let attenuation = fade / max(distance_squared, 0.0001);
-    return IncidentLight(axis, min(light.radiance.xyz * attenuation, vec3<f32>(1000000.0)), attenuation);
 }
 
 // This is the same axis and sign order used by PointShadowProjection.
@@ -1516,7 +1512,7 @@ fn debug_basis(frame: TangentFrame, normal: vec3<f32>) -> vec3<f32> {
         return vec3(0.0);
     }
     let axis = normalize(tangent);
-    return debug_direction(select(axis, cross(normal, axis) * frame.sign,
+    return debug_direction(select(axis, frame_binormal(frame, normal, axis),
         globals.material_debug == DEBUG_BINORMALS));
 }
 
@@ -2071,7 +2067,7 @@ fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, co
     let normal = normalize(vertex.normal);
     let filter_specular = material.pbr.w > 0.5 && globals.specular_aa > 0.5;
     let geometric_normal = select(-normal, normal, front_facing);
-    var tangent = TangentFrame(vertex.tangent_and_lightmap_u.xyz, bitcast<f32>(vertex.instance_metadata.y));
+    var tangent = tangent_frame(vertex);
     var brush = tangent;
     if ANISOTROPIC_MATERIAL {
         // Take derivatives before alpha-cut fragments diverge.

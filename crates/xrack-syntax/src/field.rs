@@ -73,6 +73,8 @@ macro_rules! builtin_value_fields {
                 "normal" => normal: Vector3D,
                 "local-position" => local_position: Point3D,
                 "local-normal" => local_normal: Vector3D,
+                "item-source" => item_source: String,
+                "item-position" => item_position: Point2D,
                 "u" => u: Float,
                 "v" => v: Float,
             }
@@ -98,6 +100,11 @@ macro_rules! builtin_value_fields {
                 "grounded" => grounded: Bool,
                 "hit-wall" => hit_wall: Bool,
                 "hit-ceiling" => hit_ceiling: Bool,
+            }
+            TextureData2D, "texture_data2d_field" {
+                "valid" => is_valid: Bool,
+                "width" => width: Int,
+                "height" => height: Int,
             }
             InstanceTable3D, "instance_table3d_field" {
                 "count" => count: Int,
@@ -160,6 +167,32 @@ macro_rules! builtin_value_fields {
                 "depth" => depth: Float,
                 "valid" => valid: Bool,
                 "inside" => inside: Bool,
+            }
+            RenderStats3D, "render_stats3d_field" {
+                "valid" => valid: Bool,
+                "revision" => revision: Int,
+                "frame" => frame: Int,
+                "work" => work: String,
+                "output-width" => output_width: Int,
+                "output-height" => output_height: Int,
+                "raster-width" => raster_width: Int,
+                "raster-height" => raster_height: Int,
+                "samples" => samples: Int,
+                "cpu-micros" => cpu_micros: Int,
+                "mesh-draws" => mesh_draws: Int,
+                "mesh-vertices" => mesh_vertices: Int,
+                "sprite-draws" => sprite_draws: Int,
+                "sprites" => sprites: Int,
+                "shadow-passes" => shadow_passes: Int,
+                "reflection-faces" => reflection_faces: Int,
+                "capture-passes" => capture_passes: Int,
+                "depth-prepass-draws" => depth_prepass_draws: Int,
+                "mesh-upload-bytes" => mesh_upload_bytes: Int,
+                "gpu-supported" => gpu_supported: Bool,
+                "gpu-valid" => gpu_valid: Bool,
+                "gpu-nanos" => gpu_nanos: Int,
+                "gpu-passes" => gpu_passes: Int,
+                "gpu-truncated" => gpu_truncated: Bool,
             }
             Vector2D, "vector2d_field" {
                 "x" => x: Length,

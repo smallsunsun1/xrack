@@ -153,10 +153,19 @@ pub(super) struct Solid {
 
 impl Solid {
     pub(super) fn from_node(node: &Node, layout: &LayoutNode, scale: f32) -> Option<Self> {
+        Self::from_node_with_capture_clip(node, layout, scale, false)
+    }
+
+    pub(super) fn from_node_with_capture_clip(
+        node: &Node,
+        layout: &LayoutNode,
+        scale: f32,
+        shaped_clip_on_destination: bool,
+    ) -> Option<Self> {
         if !node.children.is_empty()
             || !surface_node(node, layout)
             || !layout.local_transform().is_identity()
-            || layout.has_ancestor_clip_chain()
+            || (!shaped_clip_on_destination && layout.has_ancestor_clip_chain())
             || layout.table_pane_clip().is_some()
         {
             return None;
@@ -322,6 +331,33 @@ impl Solid {
 
     pub(super) fn visible(&self) -> bool {
         self.bounds.width > 0.0
+    }
+
+    #[cfg(xrack_femtovg_glyph_samples)]
+    fn needs_isolated_opacity(&self) -> bool {
+        self.opacity < 1.0 && self.fractional
+    }
+
+    #[cfg(xrack_femtovg_glyph_samples)]
+    fn mesh_fill_instance(&self, scale: f32) -> femtovg::renderer::MeshFillInstance {
+        let mut color = self.color;
+        let opacity = if self.needs_isolated_opacity() {
+            let as_array = |rect: Rect| [rect.x, rect.y, rect.width, rect.height];
+            let raster = logical_bounds(device_bounds(self.bounds, scale), scale);
+            Some(femtovg::renderer::MeshFillOpacity {
+                clip: as_array(self.bounds),
+                raster: as_array(raster),
+                amount: self.opacity,
+            })
+        } else {
+            color.a *= self.opacity;
+            None
+        };
+        femtovg::renderer::MeshFillInstance {
+            origin: [self.shape.x, self.shape.y],
+            color,
+            opacity,
+        }
     }
 
     pub(super) fn opacity_capture(self) -> (Rect, f32) {
@@ -1285,6 +1321,85 @@ impl RectangleBatches {
     }
 }
 
+#[cfg(xrack_femtovg_glyph_samples)]
+struct RoundedFillOrder {
+    isolated: Vec<bool>,
+    passes: Option<Vec<u8>>,
+}
+
+// A fill can move out of sequence if its raster footprint is disjoint
+// from all the others. Keep a two-device-pixel margin for the antialias
+// fringe and outward rounding used by the shape and its opacity pass.
+#[cfg(xrack_femtovg_glyph_samples)]
+fn rounded_fill_order(rectangles: &[Solid], scale: f32) -> Option<RoundedFillOrder> {
+    const MAX_ACTIVE_BOUNDS: usize = 64;
+    const COVERAGE_MARGIN: f32 = 2.0;
+
+    let mut bounds = Vec::with_capacity(rectangles.len());
+    for (index, rect) in rectangles.iter().enumerate() {
+        let raster = device_bounds(rect.shape, scale);
+        let extent = [
+            raster.x - COVERAGE_MARGIN,
+            raster.y - COVERAGE_MARGIN,
+            raster.x + raster.width + COVERAGE_MARGIN,
+            raster.y + raster.height + COVERAGE_MARGIN,
+        ];
+        if !extent.into_iter().all(f32::is_finite) {
+            return None;
+        }
+        bounds.push((index, extent));
+    }
+    bounds.sort_unstable_by(|(_, left), (_, right)| left[0].total_cmp(&right[0]));
+    let mut active = Vec::<(usize, [f32; 4])>::new();
+    let mut isolated = vec![true; rectangles.len()];
+    let edge_limit = rectangles.len().saturating_mul(4);
+    let mut edges = Vec::new();
+    for (index, extent) in bounds {
+        active.retain(|(_, other)| other[2] > extent[0]);
+        if active.len() == MAX_ACTIVE_BOUNDS {
+            return None;
+        }
+        for &(other_index, other) in &active {
+            if extent[1] < other[3] && other[1] < extent[3] {
+                isolated[index] = false;
+                isolated[other_index] = false;
+                if edges.len() < edge_limit {
+                    edges.push((index.max(other_index), index.min(other_index)));
+                }
+            }
+        }
+        active.push((index, extent));
+    }
+    let passes = (!edges.is_empty() && edges.len() < edge_limit)
+        .then(|| rounded_fill_passes(rectangles.len(), &mut edges))
+        .flatten();
+    Some(RoundedFillOrder { isolated, passes })
+}
+
+#[cfg(xrack_femtovg_glyph_samples)]
+fn rounded_fill_passes(count: usize, edges: &mut [(usize, usize)]) -> Option<Vec<u8>> {
+    const MAX_PASSES: u8 = 8;
+
+    // Process each destination after all of its predecessors. Discard the
+    // plan for a long overlap chain so it cannot create many tiny draws.
+    edges.sort_unstable();
+    let mut passes = vec![0; count];
+    for &(later, earlier) in edges.iter() {
+        let pass = passes[later].max(passes[earlier] + 1);
+        if pass >= MAX_PASSES {
+            return None;
+        }
+        passes[later] = pass;
+    }
+    Some(passes)
+}
+
+#[cfg(xrack_femtovg_glyph_samples)]
+fn rounded_fill_shape(rect: &Solid) -> [u32; 6] {
+    let [tl, tr, br, bl] = rect.radii;
+    [rect.shape.width, rect.shape.height, tl, tr, br, bl].map(f32::to_bits)
+}
+
 impl Renderer {
     #[cfg(xrack_femtovg_glyph_samples)]
     fn draw_instanced_rounded_fills(&mut self, rectangles: &[Solid], scale: f32) -> Option<usize> {
@@ -1306,31 +1421,131 @@ impl Renderer {
             Rect::new(0.0, 0.0, size[0], size[1]),
             first.radii,
         );
-        let isolated = |rect: &Solid| rect.opacity < 1.0 && rect.fractional;
-        let as_array = |rect: Rect| [rect.x, rect.y, rect.width, rect.height];
         self.canvas.draw_mesh_fill_instances(
             &path,
-            rectangles.iter().any(isolated),
-            rectangles.iter().map(|rect| {
-                let mut color = rect.color;
-                let opacity = if isolated(rect) {
-                    let raster = logical_bounds(device_bounds(rect.bounds, scale), scale);
-                    Some(femtovg::renderer::MeshFillOpacity {
-                        clip: as_array(rect.bounds),
-                        raster: as_array(raster),
-                        amount: rect.opacity,
-                    })
-                } else {
-                    color.a *= rect.opacity;
-                    None
-                };
-                femtovg::renderer::MeshFillInstance {
-                    origin: [rect.shape.x, rect.shape.y],
-                    color,
-                    opacity,
-                }
-            }),
+            rectangles.iter().any(Solid::needs_isolated_opacity),
+            rectangles.iter().map(|rect| rect.mesh_fill_instance(scale)),
         )
+    }
+
+    #[cfg(xrack_femtovg_glyph_samples)]
+    fn draw_rounded_fill_palette(&mut self, rectangles: &[Solid], scale: f32) -> Option<usize> {
+        const MAX_SHAPES: usize = 16;
+        let mut shapes = std::collections::BTreeMap::new();
+        let mut paths = Vec::new();
+        let mut indices = Vec::with_capacity(rectangles.len());
+        for rect in rectangles {
+            if !rect.fractional && rect.bounds != rect.shape {
+                return None;
+            }
+            let index = *shapes.entry(rounded_fill_shape(rect)).or_insert_with(|| {
+                let index = paths.len();
+                let mut path = Path::new();
+                append_rect(
+                    &mut path,
+                    Rect::new(0.0, 0.0, rect.shape.width, rect.shape.height),
+                    rect.radii,
+                );
+                paths.push(path);
+                index
+            });
+            if paths.len() > MAX_SHAPES {
+                return None;
+            }
+            indices.push(index);
+        }
+        self.canvas.draw_mesh_fill_palette(
+            &paths,
+            rectangles.iter().any(Solid::needs_isolated_opacity),
+            indices
+                .into_iter()
+                .zip(rectangles.iter().map(|rect| rect.mesh_fill_instance(scale))),
+        )
+    }
+
+    #[cfg(xrack_femtovg_glyph_samples)]
+    fn draw_ordered_rounded_fills(
+        &mut self,
+        rectangles: &[Solid],
+        passes: &[u8],
+        scale: f32,
+    ) -> Result<bool, String> {
+        const MAX_BATCHES: usize = 48;
+        let mut groups = std::collections::BTreeMap::<(u8, [u32; 6]), Vec<Solid>>::new();
+        for (rect, pass) in rectangles.iter().zip(passes) {
+            groups
+                .entry((*pass, rounded_fill_shape(rect)))
+                .or_default()
+                .push(*rect);
+            if groups.len() > MAX_BATCHES {
+                return Ok(false);
+            }
+        }
+        if groups
+            .values()
+            .filter(|group| group.len() >= MIN_BATCH_SIZE)
+            .map(Vec::len)
+            .sum::<usize>()
+            < rectangles.len() / 2
+        {
+            return Ok(false);
+        }
+
+        // Conflicting fills are in increasing dependency order. Shapes
+        // within each pass have disjoint raster bounds.
+        for mut group in groups.into_values() {
+            if let Some(uploaded) = self.draw_instanced_rounded_fills(&group, scale) {
+                xrack_runtime::update_profile::geometry_upload(uploaded);
+            } else {
+                let oversized = RoundedAtlas::exceeds_fractional_capacity(&group, scale, true);
+                self.draw_rounded_atlas(&mut group, scale, true, true, oversized)?;
+            }
+        }
+        Ok(true)
+    }
+
+    #[cfg(xrack_femtovg_glyph_samples)]
+    fn draw_isolated_rounded_fills(
+        &mut self,
+        rectangles: &mut Vec<Solid>,
+        isolated: &[bool],
+        scale: f32,
+    ) {
+        const MAX_SHAPES: usize = 16;
+        let mut groups = std::collections::BTreeMap::<[u32; 6], Vec<usize>>::new();
+        for (index, rect) in rectangles.iter().enumerate() {
+            if !isolated[index] || (!rect.fractional && rect.bounds != rect.shape) {
+                continue;
+            }
+            groups
+                .entry(rounded_fill_shape(rect))
+                .or_default()
+                .push(index);
+            if groups.len() > MAX_SHAPES {
+                return;
+            }
+        }
+
+        let mut drawn = vec![false; rectangles.len()];
+        let mut batch = Vec::new();
+        for indices in groups
+            .values()
+            .filter(|indices| indices.len() >= MIN_BATCH_SIZE)
+        {
+            batch.clear();
+            batch.extend(indices.iter().map(|&index| rectangles[index]));
+            if let Some(uploaded) = self.draw_instanced_rounded_fills(&batch, scale) {
+                xrack_runtime::update_profile::geometry_upload(uploaded);
+                for &index in indices {
+                    drawn[index] = true;
+                }
+            }
+        }
+
+        // The remaining fills retain their relative paint order. They can
+        // overlap one another, including across different shape groups.
+        let mut drawn = drawn.into_iter();
+        rectangles.retain(|_| !drawn.next().unwrap_or(false));
     }
 
     pub(super) fn draw_rounded_batch(
@@ -1344,8 +1559,65 @@ impl Renderer {
             }
             return Ok(());
         }
+        #[cfg(xrack_femtovg_glyph_samples)]
+        if self.using_capture_canvas()
+            && self.direct_rounded_fills_enabled()
+            && rectangles.iter().any(|rect| rect.fractional)
+            && !rectangles.iter().any(Solid::needs_isolated_opacity)
+            && let Some(uploaded) = self
+                .draw_instanced_rounded_fills(rectangles, scale)
+                .or_else(|| self.draw_rounded_fill_palette(rectangles, scale))
+        {
+            xrack_runtime::update_profile::geometry_upload(uploaded);
+            rectangles.clear();
+            return Ok(());
+        }
+
         let capture = self.can_capture_transient_rectangles(scale);
         let direct = capture && self.direct_rounded_fills_enabled();
+        let exceeds_direct_capacity =
+            direct && RoundedAtlas::exceeds_fractional_capacity(rectangles, scale, true);
+        #[cfg(xrack_femtovg_glyph_samples)]
+        let exceeds_direct_capacity = if exceeds_direct_capacity {
+            if let Some(uploaded) = self
+                .draw_instanced_rounded_fills(rectangles, scale)
+                .or_else(|| self.draw_rounded_fill_palette(rectangles, scale))
+            {
+                xrack_runtime::update_profile::geometry_upload(uploaded);
+                rectangles.clear();
+                return Ok(());
+            }
+            let count = rectangles.len();
+            if let Some(RoundedFillOrder { isolated, passes }) =
+                rounded_fill_order(rectangles, scale)
+            {
+                if let Some(passes) = passes
+                    && self.draw_ordered_rounded_fills(rectangles, &passes, scale)?
+                {
+                    rectangles.clear();
+                    return Ok(());
+                }
+                self.draw_isolated_rounded_fills(rectangles, &isolated, scale);
+            }
+            if rectangles.is_empty() {
+                return Ok(());
+            }
+            rectangles.len() == count
+                || RoundedAtlas::exceeds_fractional_capacity(rectangles, scale, true)
+        } else {
+            false
+        };
+        self.draw_rounded_atlas(rectangles, scale, capture, direct, exceeds_direct_capacity)
+    }
+
+    fn draw_rounded_atlas(
+        &mut self,
+        rectangles: &mut Vec<Solid>,
+        scale: f32,
+        capture: bool,
+        direct: bool,
+        exceeds_direct_capacity: bool,
+    ) -> Result<(), String> {
         let atlas_plan = if capture {
             self.plan_opacity_atlas_for_rectangles(
                 rectangles
@@ -1359,17 +1631,10 @@ impl Renderer {
         };
         // Keep existing hits when there are too many unique shapes to admit.
         let planned_capture = atlas_plan.as_ref().is_some_and(|plan| plan.covers_batch);
-        let oversized = (direct || planned_capture)
-            && RoundedAtlas::exceeds_fractional_capacity(rectangles, scale, direct);
-        #[cfg(xrack_femtovg_glyph_samples)]
-        if direct
-            && oversized
-            && let Some(uploaded) = self.draw_instanced_rounded_fills(rectangles, scale)
-        {
-            xrack_runtime::update_profile::geometry_upload(uploaded);
-            rectangles.clear();
-            return Ok(());
-        }
+        let oversized = exceeds_direct_capacity
+            || (!direct
+                && planned_capture
+                && RoundedAtlas::exceeds_fractional_capacity(rectangles, scale, false));
 
         let capturing = self.using_capture_canvas();
         if self.rectangle_batches.rounded.is_none() {

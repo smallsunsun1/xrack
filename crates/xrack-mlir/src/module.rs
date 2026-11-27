@@ -265,7 +265,8 @@ impl Module {
                 | "xr.texture_url"
                 | "xr.shader_url"
                 | "xr.material_shader_url"
-                | "xr.environment_url" => Some("value"),
+                | "xr.environment_url"
+                | "xr.particle_shape_url" => Some("value"),
                 _ => None,
             };
             if let Some(attribute) = attribute {

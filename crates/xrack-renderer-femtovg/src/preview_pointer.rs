@@ -65,7 +65,11 @@ impl Captures {
         }
         self.active.remove(&contact.id);
         if contact.event.is_touch {
-            let Some(id) = self.next_touch.checked_add(1) else {
+            let Some(id) = self
+                .next_touch
+                .checked_add(1)
+                .filter(|id| *id < xrack_runtime::FIRST_SCENE_TOUCH_FINGER_ID)
+            else {
                 return false;
             };
             contact.event.touch_finger_id = id;

@@ -73,3 +73,274 @@ export component ParticleMeshEmittersDemo inherits Window {
     Label { x <- 16px; y <- 418px; width <- 54px; height <- 33px; text <- "时间"; }
     time-slider := Slider { x <- 72px; y <- 418px; width <- 579px; height <- 33px; minimum <- 0; maximum <- 1.25; value <-> root.time; }
 }
+
+struct BounceObject {
+    id: string, parent: string, mesh: string, color: color,
+    x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, camera-kind: string, camera-height: float,
+}
+
+struct BounceEmitter {
+    parent: string, position: point3d, color: color, size: float, lifetime: float, fade-out: float,
+    bursts: [ParticleBurst], seed: int,
+    emitter-shape: string, emitter-mesh: string, emitter-extents: vector3d, emitter-fill: bool,
+    emitter-pitch: float, velocity-mode: string, velocity: vector3d, velocity-spread: vector3d,
+    trail-segments: int, trail-duration: float, trail-end-scale: float,
+    particle-model: string, particle-casts-shadow: bool,
+}
+
+export component ParticleSurfaceBounceDemo inherits Window {
+    title <- "XRack · 粒子表面反射";
+    width <- 624px; height <- 408px; background <- #182333;
+
+    in-out property <float> time: 0.8;
+    in-out property <string> shape: "point";
+    in-out property <string> mode: "surface-reflected";
+    in-out property <bool> nonuniform: true;
+    in-out property <bool> mirror: false;
+    in-out property <bool> panel: true;
+    in-out property <bool> spread: true;
+    in-out property <bool> fill: true;
+    in-out property <bool> ribbons: false;
+    in-out property <bool> model-particles: false;
+    in-out property <int> count: 38;
+    in-out property <float> tilt: 45;
+    in-out property <vector3d> incoming: Vector3D.new(0, 0, -2);
+
+    property <BounceObject> base: BounceObject {
+        id: "", parent: "", mesh: "", color: #405878,
+        x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, camera-kind: "", camera-height: 6,
+    };
+    SceneView3D {
+        width <- 624px; height <- 284px;
+        camera <- "eye"; scene-background <- #101a2c;
+        shadows <- root.model-particles; shadow-map-size <- 128;
+        model <- [
+            BounceObject { id: "eye", z: 10, camera-kind: "orthographic", ..root.base },
+            BounceObject {
+                id: "mount", scale-y: (root.nonuniform ? 2 : 1) * (root.mirror ? -1 : 1),
+                scale-z: root.nonuniform ? 0.5 : 1, ..root.base
+            },
+            BounceObject {
+                id: "plane", parent: "mount", mesh: root.panel ? "primitive:rectangle" : "",
+                pitch: root.tilt, scale-x: 6, scale-y: 2.4, ..root.base
+            },
+        ];
+        particle-time <- root.time;
+        particle-emitters <- [
+            BounceEmitter {
+                parent: "mount", position: Point3D.new(0, 0, 0.32),
+                color: #ff42ea, size: 0.18, lifetime: 3, fade-out: 0,
+                seed: 67, bursts: [ParticleBurst { time: 0, count: root.count }],
+                emitter-shape: root.shape, emitter-extents: Vector3D.new(1.1, 0.7, 0.55),
+                emitter-mesh: @mesh-url("models/particle-surface.gltf"), emitter-fill: root.fill,
+                emitter-pitch: root.tilt, velocity-mode: root.mode, velocity: root.incoming,
+                velocity-spread: root.spread ? Vector3D.new(0.9, 0.28, 0.2) : Vector3D.new(0, 0, 0),
+                trail-segments: root.ribbons ? 8 : 0, trail-duration: 0.4, trail-end-scale: 0.2,
+                particle-model: root.model-particles ? "primitive:box" : "",
+                particle-casts-shadow: root.model-particles,
+            },
+        ];
+    }
+    Label { x <- 18px; y <- 292px; width <- 62px; height <- 34px; text <- "时间"; }
+    timeline := Slider {
+        x <- 82px; y <- 292px; width <- 524px; height <- 34px;
+        minimum <- 0; maximum <- 2; value <-> root.time;
+    }
+    mode := Button {
+        x <- 18px; y <- 349px; width <- 112px; height <- 34px;
+        text <- root.mode == "surface-reflected" ? "镜面反射" : "沿法线发射";
+        clicked => { root.mode = root.mode == "surface-reflected" ? "surface-normal" : "surface-reflected"; }
+    }
+    shape := Button {
+        x <- 142px; y <- 349px; width <- 103px; height <- 34px;
+        text <- root.shape == "point" ? "点" : root.shape == "box" ? "盒体" :
+            root.shape == "sphere" ? "椭球" : root.shape == "cylinder" ? "圆柱" : "网格";
+        clicked => {
+            root.shape = root.shape == "point" ? "box" : root.shape == "box" ? "sphere" :
+                root.shape == "sphere" ? "cylinder" : root.shape == "cylinder" ? "mesh" : "point";
+        }
+    }
+    CheckBox { x <- 258px; y <- 349px; width <- 125px; height <- 34px; text <- "非均匀缩放"; checked <-> root.nonuniform; }
+    CheckBox { x <- 389px; y <- 349px; width <- 83px; height <- 34px; text <- "镜像"; checked <-> root.mirror; }
+    CheckBox { x <- 475px; y <- 349px; width <- 77px; height <- 34px; text <- "拖尾"; checked <-> root.ribbons; }
+    CheckBox { x <- 553px; y <- 349px; width <- 70px; height <- 34px; text <- "模型"; checked <-> root.model-particles; }
+}
+
+struct SceneShapeActor {
+    id: string, parent: string, mesh: string, visible: bool, layers: int,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, camera-kind: string, camera-height: float,
+}
+
+struct SceneSampler {
+    position: point3d, color: color, size: float, lifetime: float, seed: int, fade-out: float,
+    bursts: [ParticleBurst], emitter-shape: string, emitter-scene-root: string,
+    emitter-scene-exclude: [string], emitter-scene-center: point3d, emitter-scene-extents: vector3d,
+}
+
+struct SceneShapeAttractor {
+    affector-kind: string, position: point3d, duration: float, enabled: bool, seed: int,
+    attractor-shape: string, attractor-scene-root: string, attractor-scene-exclude: [string],
+    attractor-scene-center: point3d, attractor-scene-extents: vector3d,
+}
+
+export component ParticleSceneShapeDemo inherits Window {
+    title <- "XRack · 场景表面粒子";
+    width <- 640px; height <- 438px;
+    background <- #182333;
+
+    in-out property <float> time: 0.82;
+    in-out property <bool> attract: false;
+    in-out property <bool> exclude-right: false;
+    in-out property <bool> crop: false;
+    in-out property <bool> hide-right: false;
+    in-out property <bool> show-source: false;
+    in-out property <float> move-root: 0;
+    in-out property <string> root-id: "rig";
+    in-out property <int> population: 950;
+
+    property <[string]> excluded <- root.exclude-right ? ["right-group"] : [];
+    property <vector3d> crop-extents <- root.crop ? Vector3D.new(0.42, 1.2, 0.9) : Vector3D.new(0,0,0);
+    property <point3d> crop-center <- Point3D.new(-1.75, 0.42, 0);
+    property <SceneShapeActor> defaults: SceneShapeActor {
+        id: "", parent: "", mesh: "", visible: true, layers: 2,
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #445870, camera-kind: "", camera-height: 6,
+    };
+    property <[SceneShapeActor]> model <- [
+        SceneShapeActor { id: "eye", layers: 1, z: 10, camera-kind: "orthographic", ..root.defaults },
+        SceneShapeActor { id: "rig", x: root.move-root, ..root.defaults },
+        SceneShapeActor {
+            id: "left-wing", parent: "rig", mesh: "primitive:rectangle",
+            x: -1.45, y: 0.42, scale-x: 1.8, scale-y: 1.2, ..root.defaults
+        },
+        SceneShapeActor { id: "right-group", parent: "rig", x: 1.45, ..root.defaults },
+        SceneShapeActor {
+            id: "right-wing", parent: "right-group", mesh: "primitive:rectangle",
+            visible: !root.hide-right, y: 0.42, scale-x: 0.9, scale-y: 0.65, ..root.defaults
+        },
+        SceneShapeActor {
+            id: "hidden-panel", parent: "rig", visible: false, mesh: "primitive:rectangle",
+            y: 0.42, scale-x: 0.7, ..root.defaults
+        },
+        SceneShapeActor {
+            id: "unrelated-panel", mesh: "primitive:rectangle", x: 3.75, y: 0.42, ..root.defaults
+        },
+    ];
+
+    SceneView3D {
+        width <- 640px; height <- 340px; camera <- "eye"; model <- root.model;
+        scene-background <- #101925; cache-rendering <- true; layer-mask <- root.show-source ? 3 : 1;
+        particle-time <- root.time;
+        particle-emitters <- [SceneSampler {
+            position: root.attract ? Point3D.new(0,-1.55,0.2) : Point3D.new(0,0,0.2),
+            color: #ffb649, size: 0.083, lifetime: 4, seed: 71, fade-out: 0,
+            bursts: [ParticleBurst { time: 0, count: root.population }],
+            emitter-shape: root.attract ? "point" : "scene", emitter-scene-root: root.root-id,
+            emitter-scene-exclude: root.excluded, emitter-scene-center: root.crop-center,
+            emitter-scene-extents: root.crop-extents,
+        }];
+        particle-affectors <- [SceneShapeAttractor {
+            affector-kind: "attractor", position: Point3D.new(0,0,0.2), enabled: root.attract,
+            duration: 0.66, seed: 13, attractor-shape: "scene", attractor-scene-root: root.root-id,
+            attractor-scene-exclude: root.excluded, attractor-scene-center: root.crop-center,
+            attractor-scene-extents: root.crop-extents,
+        }];
+    }
+    mode-button := Button {
+        x <- 18px; y <- 354px; width <- 121px; height <- 36px;
+        text <- root.attract ? "吸引到场景" : "从场景发射";
+        clicked => { root.attract = !root.attract; }
+    }
+    CheckBox { x <- 153px; y <- 354px; width <- 116px; height <- 36px; text <- "排除右子树"; checked <-> root.exclude-right; }
+    CheckBox { x <- 278px; y <- 354px; width <- 101px; height <- 36px; text <- "局部裁剪"; checked <-> root.crop; }
+    CheckBox { x <- 388px; y <- 354px; width <- 104px; height <- 36px; text <- "隐藏右侧"; checked <-> root.hide-right; }
+    CheckBox { x <- 504px; y <- 354px; width <- 117px; height <- 36px; text <- "显示网格"; checked <-> root.show-source; }
+    Label { x <- 18px; y <- 394px; width <- 55px; height <- 34px; text <- "时间"; }
+    time-slider := Slider { x <- 78px; y <- 394px; width <- 543px; height <- 34px; minimum <- 0; maximum <- 2; value <-> root.time; }
+}
+
+struct PointCloudEmitter {
+    position: point3d, color: color, size: float, lifetime: float, fade-out: float,
+    seed: int, particle-group: string, enabled: bool, bursts: [ParticleBurst], rate: float,
+    emitter-shape: string, emitter-point-source: string, emitter-point-randomize: bool,
+    emitter-point-scale: vector3d, velocity: vector3d, velocity-mode: string,
+}
+
+struct PointCloudAttractor {
+    affector-kind: string, position: point3d, duration: float, enabled: bool,
+    seed: int, particle-group: string, attractor-shape: string, attractor-mesh: string,
+    attractor-point-source: string, attractor-point-randomize: bool, attractor-point-scale: vector3d,
+}
+
+export component ParticlePointCloudDemo inherits Window {
+    title <- "XRack · CBOR 粒子点集";
+    width <- 640px; height <- 438px; background <- #182333;
+    in-out property <float> time: 0.81;
+    in-out property <int> population: 259;
+    in-out property <int> seed: 71;
+    in-out property <bool> attract: false;
+    in-out property <bool> shuffle: false;
+    in-out property <bool> mixed: false;
+    in-out property <bool> radial: false;
+    in-out property <bool> stream: false;
+    in-out property <float> stretch: 1.0;
+    property <string> shape-file: @particle-shape-url("models/particle-orbits.cbor");
+    property <vector3d> scaling <- Vector3D.new(root.stretch, 1, 1);
+    property <[ParticleBurst]> no-bursts: [];
+    property <PointCloudEmitter> first <- PointCloudEmitter {
+        position: root.attract ? Point3D.new(0,-1.56,0.15) : Point3D.new(0,0,0.15),
+        color: #ffba4f, size: 0.090, lifetime: 4, fade-out: 0, seed: root.seed, particle-group: "points",
+        enabled: true, bursts: root.stream ? root.no-bursts : [ParticleBurst { time: 0, count: root.population }],
+        rate: root.stream ? 120 : 0,
+        emitter-shape: root.attract ? "point" : "points", emitter-point-source: root.shape-file,
+        emitter-point-randomize: root.shuffle, emitter-point-scale: root.scaling,
+        velocity: root.radial ? Vector3D.new(0,0,1) : Vector3D.new(0,0,0),
+        velocity-mode: root.radial ? "surface-normal" : "vector",
+    };
+    SceneView3D {
+        width <- 640px; height <- 340px; camera <- "eye"; scene-background <- #101925; cache-rendering <- true;
+        model <- [SurfaceCamera {
+            id: "eye", mesh: "", x: 0, y: 0, z: 10,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+            color: #ffffff, camera-kind: "orthographic", camera-height: 6,
+        }];
+        particle-time <- root.time;
+        particle-emitters <- [
+            root.first,
+            PointCloudEmitter {
+                position: Point3D.new(3.2,-1.55,0.15), color: #50d9ff, particle-group: "mesh",
+                enabled: root.mixed, emitter-shape: "point", velocity: Vector3D.new(0,0,0),
+                bursts: [ParticleBurst { time: 0, count: 120 }], rate: 0, ..root.first
+            },
+        ];
+        particle-affectors <- [
+            PointCloudAttractor {
+                affector-kind: "attractor", enabled: root.mixed, particle-group: "mesh",
+                position: Point3D.new(3.65,-0.75,0.15), duration: 0.65, seed: 133,
+                attractor-shape: "mesh", attractor-mesh: "primitive:rectangle",
+                attractor-point-source: "", attractor-point-randomize: false, attractor-point-scale: Vector3D.new(1,1,1),
+            },
+            PointCloudAttractor {
+                affector-kind: "attractor", enabled: root.attract, particle-group: "points",
+                position: Point3D.new(0,0,0.15), duration: 0.65, seed: root.seed,
+                attractor-shape: "points", attractor-mesh: "",
+                attractor-point-source: root.shape-file, attractor-point-randomize: root.shuffle,
+                attractor-point-scale: root.scaling,
+            },
+        ];
+    }
+    mode-button := Button {
+        x <- 18px; y <- 354px; width <- 118px; height <- 36px;
+        text <- root.attract ? "吸引到点集" : "从点集发射";
+        clicked => { root.attract = !root.attract; }
+    }
+    CheckBox { x <- 149px; y <- 354px; width <- 110px; height <- 36px; text <- "种子打乱"; checked <-> root.shuffle; }
+    CheckBox { x <- 270px; y <- 354px; width <- 104px; height <- 36px; text <- "径向发射"; checked <-> root.radial; }
+    CheckBox { x <- 387px; y <- 354px; width <- 107px; height <- 36px; text <- "网格混合"; checked <-> root.mixed; }
+    CheckBox { x <- 508px; y <- 354px; width <- 112px; height <- 36px; text <- "持续发射"; checked <-> root.stream; }
+    Label { x <- 18px; y <- 394px; width <- 55px; height <- 34px; text <- "时间"; }
+    time-slider := Slider { x <- 78px; y <- 394px; width <- 543px; height <- 34px; minimum <- 0; maximum <- 2; value <-> root.time; }
+}

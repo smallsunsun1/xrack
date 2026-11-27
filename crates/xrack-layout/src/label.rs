@@ -302,7 +302,7 @@ impl LabelMeasurements {
         // Identical plain paragraphs share the complete width proof.
         prepared.prepare_repeated(
             |range| (!range.is_empty()).then(|| (0, hasher.hash_one(&text[range.clone()]))),
-            |left, right, _| text[left.clone()] == text[right.clone()],
+            |left, right, _| (text[left.clone()] == text[right.clone()]).then_some(0),
         );
         Some(Self {
             source: text.into(),
@@ -540,7 +540,6 @@ impl RetainedLineBreaks {
     const SLOTS: usize = 32_768;
 
     fn prepare(&mut self, generation: u32) {
-        self.entries.resize(Self::SLOTS, None);
         if self.generation != generation {
             self.entries.fill(None);
             self.generation = generation;
@@ -548,6 +547,9 @@ impl RetainedLineBreaks {
     }
 
     fn slot(&mut self, position: NonZeroU32) -> &mut Option<LineBreak> {
+        if self.entries.is_empty() {
+            self.entries.resize(Self::SLOTS, None);
+        }
         let index =
             (position.get() - 1).wrapping_mul(0x9e3779b1) >> (u32::BITS - Self::SLOTS.ilog2());
         &mut self.entries[index as usize]
@@ -570,6 +572,7 @@ struct ParagraphShape {
     group: usize,
     heading_bytes: usize,
     heading_graphemes: usize,
+    common_heading_bytes: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -611,6 +614,8 @@ impl RawLine {
 
 struct RepeatedWrap {
     source: usize,
+    paragraph: usize,
+    common_heading_bytes: usize,
     lines: Range<usize>,
     heading_probes: u32,
     one_line: bool,
@@ -624,6 +629,8 @@ struct PreparedParagraph {
     trimmed_end: usize,
     rtl: bool,
     graphemes: Range<usize>,
+    // Width probes belong to this paragraph even when its boundaries are shared.
+    probe_start: u32,
     one_line: Cell<Option<OneLineFit>>,
 }
 
@@ -650,6 +657,19 @@ impl FirstLineProbes {
         }
     }
 
+    fn slot(index: usize, last: usize) -> Option<usize> {
+        // The first line probes powers of two, capped at the last grapheme.
+        // Probes made by binary search can have other indices.
+        (index.is_power_of_two() || index == last)
+            .then(|| index.next_power_of_two().trailing_zeros() as usize)
+            .filter(|slot| *slot < FIRST_LINE_PROBE_COUNT)
+    }
+
+    fn cached(&self, index: usize, last: usize, generation: u32) -> Option<f32> {
+        let width = self.widths[Self::slot(index, last)?];
+        (self.font_generation == generation && !width.is_nan()).then_some(width)
+    }
+
     fn measure(
         &mut self,
         index: usize,
@@ -660,13 +680,8 @@ impl FirstLineProbes {
         if self.font_generation != font_generation {
             *self = Self::new(font_generation);
         }
-        // The first line always probes the same powers of two, capped at
-        // the last grapheme. Binary search can then explore other boundaries.
-        if (index.is_power_of_two() || index == last)
-            && let Some(width) = self
-                .widths
-                .get_mut(index.next_power_of_two().trailing_zeros() as usize)
-        {
+        if let Some(slot) = Self::slot(index, last) {
+            let width = &mut self.widths[slot];
             if width.is_nan() {
                 *width = advance();
             }
@@ -705,6 +720,7 @@ impl PreparedLabel {
             replayed_paragraph_at: Cell::new(None),
         };
         let mut word_count = 0;
+        let mut grapheme_count = 0;
         let mut previous_nonempty: Option<(usize, usize)> = None;
         for source in paragraphs(text) {
             let content = &text[source.clone()];
@@ -718,17 +734,11 @@ impl PreparedLabel {
                 .filter(|(previous, _)| {
                     same_break_characters(content, &text[previous.source.clone()])
                 });
-            let rtl = if let Some((previous, count)) = template {
+            let (graphemes, rtl) = if let Some((previous, count)) = template {
                 // ASCII digits share Unicode word, grapheme and bidi classes.
                 // Width probes still measure the original text of each paragraph.
-                result
-                    .graphemes
-                    .extend_from_within(previous.graphemes.clone());
-                result
-                    .word_ends
-                    .extend_from_within(previous.graphemes.clone());
                 word_count += count;
-                previous.rtl
+                (previous.graphemes.clone(), previous.rtl)
             } else {
                 if is_basic_han_text(content) {
                     // Each character is a three-byte grapheme and a complete word.
@@ -757,9 +767,14 @@ impl PreparedLabel {
                         result.word_ends.push(end);
                     }
                 }
-                get_base_direction(content) == Direction::Rtl
+                (
+                    grapheme_start..result.graphemes.len(),
+                    get_base_direction(content) == Direction::Rtl,
+                )
             };
-            if result.graphemes.len() + word_count > MAX_BOUNDARIES {
+            let probe_start = grapheme_count as u32;
+            grapheme_count += graphemes.len();
+            if grapheme_count + word_count > MAX_BOUNDARIES {
                 return None;
             }
             if !content.is_empty() {
@@ -769,7 +784,8 @@ impl PreparedLabel {
                 trimmed_end: source.start + content.trim_end().len(),
                 source,
                 rtl,
-                graphemes: grapheme_start..result.graphemes.len(),
+                graphemes,
+                probe_start,
                 one_line: Cell::new(None),
             });
         }
@@ -783,10 +799,12 @@ impl PreparedLabel {
         Some(result)
     }
 
+    // Equivalence certifies the suffix and reports how many leading bytes
+    // share the source paragraph's text, styles and direction.
     pub(crate) fn prepare_repeated(
         &mut self,
         mut key: impl FnMut(&Range<usize>) -> Option<(usize, u64)>,
-        mut equivalent: impl FnMut(&Range<usize>, &Range<usize>, usize) -> bool,
+        mut equivalent: impl FnMut(&Range<usize>, &Range<usize>, usize) -> Option<usize>,
     ) {
         if self.paragraphs.len() < 128 {
             return;
@@ -808,7 +826,8 @@ impl PreparedLabel {
             }
             if let Some(&old) = candidates.get(&signature) {
                 let reference = &self.paragraphs[old];
-                if equivalent(&reference.source, &paragraph.source, heading_bytes)
+                if let Some(common_heading_bytes) =
+                    equivalent(&reference.source, &paragraph.source, heading_bytes)
                     && self.graphemes[reference.graphemes.clone()] == *boundaries
                     && self.word_ends[reference.graphemes.clone()]
                         == self.word_ends[paragraph.graphemes.clone()]
@@ -817,9 +836,13 @@ impl PreparedLabel {
                         group: old,
                         heading_bytes,
                         heading_graphemes,
+                        common_heading_bytes,
                     };
                     shapes[index] = Some(shape);
-                    shapes[old] = Some(shape);
+                    shapes[old] = Some(ParagraphShape {
+                        common_heading_bytes: heading_bytes,
+                        ..shape
+                    });
                     reused = true;
                     continue;
                 }
@@ -1092,24 +1115,28 @@ impl LabelPlan {
             {
                 let cache = &prepared.first_line_probes[paragraph_index];
                 let mut probes = cache.get();
-                let mask = saved.heading_probes;
+                let mut mask = saved.heading_probes & !1;
                 let last = paragraph.graphemes.len() - 1;
+                // Both paragraphs were compared with the same group source.
+                let common_heading = shape.common_heading_bytes.min(saved.common_heading_bytes);
+                let reference_probes = prepared.first_line_probes[saved.paragraph].get();
                 let mut interval = saved.interval;
                 let mut matches = true;
                 let graphemes = &prepared.graphemes[paragraph.graphemes.clone()];
-                for (offset, &end) in graphemes
-                    .iter()
-                    .enumerate()
-                    .take(shape.heading_graphemes)
-                    .skip(1)
-                {
-                    if mask & (1 << offset) == 0 {
-                        continue;
-                    }
-                    let width =
-                        probes.measure(offset, last, prepared.font_generation.get(), || {
+                while mask != 0 {
+                    let offset = mask.trailing_zeros() as usize;
+                    mask &= mask - 1;
+                    let end = graphemes[offset];
+                    let generation = prepared.font_generation.get();
+                    let width = probes.measure(offset, last, generation, || {
+                        if end <= common_heading
+                            && let Some(width) = reference_probes.cached(offset, last, generation)
+                        {
+                            width
+                        } else {
                             advance(range.start..range.start + end, false)
-                        });
+                        }
+                    });
                     let fits = width <= available.width;
                     if !fits {
                         matches = false;
@@ -1208,8 +1235,7 @@ impl LabelPlan {
                             && Some(prepared.font_generation.get()) == font_generation_at_start
                     })
                     .and_then(|(prepared, paragraph)| {
-                        let position =
-                            NonZeroU32::new((paragraph.graphemes.start + start) as u32 + 1)?;
+                        let position = NonZeroU32::new(paragraph.probe_start + start as u32 + 1)?;
                         let slot = line_breaks.as_mut()?.slot(position);
                         Some((slot, position, prepared))
                     });
@@ -1445,6 +1471,8 @@ impl LabelPlan {
                         shape.group,
                         RepeatedWrap {
                             source: range.start,
+                            paragraph: paragraph_index,
+                            common_heading_bytes: shape.common_heading_bytes,
                             lines: first_raw..raw.len(),
                             heading_probes,
                             one_line,
@@ -1696,7 +1724,9 @@ mod tests {
         let mut prepared = PreparedLabel::new(&text).unwrap();
         prepared.prepare_repeated(
             |range| (range.len() > 2).then_some((2, 0)),
-            |a, b, heading| text[a.start + heading..a.end] == text[b.start + heading..b.end],
+            |a, b, heading| {
+                (text[a.start + heading..a.end] == text[b.start + heading..b.end]).then_some(0)
+            },
         );
 
         let layout = |width, prepared, calls: &mut usize| {
@@ -1845,6 +1875,42 @@ mod tests {
         assert_eq!(&prepared.word_ends[first], &[0, 0, 0, 3]);
         let second = prepared.paragraphs[1].graphemes.clone();
         assert_eq!(&prepared.word_ends[second], &[0, 0, 2, 3, 3, 3, 3, 3, 8]);
+    }
+
+    #[test]
+    fn shared_paragraph_boundaries_keep_separate_wrap_measurements() {
+        let text = "构建 1111 other words\r\n\n构建 8888 other words";
+        let mut prepared = PreparedLabel::new(text).unwrap();
+        prepared.retain_plain_wraps = true;
+        assert_eq!(
+            prepared.paragraphs[0].graphemes,
+            prepared.paragraphs[2].graphemes
+        );
+        let mut node = Node::new("Label", None);
+        node.properties.insert("text", text.to_owned().into());
+        node.properties.insert("wrap", TextWrap::WordWrap.into());
+        for width in [48.0, 32.0, 82.0, 48.0, 32.0] {
+            let layout = |prepared| {
+                LabelPlan::with_widths(
+                    &node,
+                    Size::new(width, f32::INFINITY),
+                    12.0,
+                    None,
+                    |range, _| {
+                        text[range]
+                            .chars()
+                            .map(|character| if character == '8' { 12.0 } else { 5.0 })
+                            .sum()
+                    },
+                    None,
+                    prepared,
+                )
+            };
+            let fresh = layout(None);
+            let cached = layout(Some(&prepared));
+            assert_eq!(fresh.lines, cached.lines, "width {width}");
+            assert_eq!(fresh.size, cached.size);
+        }
     }
 
     #[test]

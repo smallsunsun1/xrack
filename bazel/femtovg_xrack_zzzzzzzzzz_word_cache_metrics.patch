@@ -1,0 +1,254 @@
+diff --git a/src/text.rs b/src/text.rs
+--- a/src/text.rs
++++ b/src/text.rs
+@@ -257,6 +257,8 @@
+     #[cfg(feature = "textlayout")]
+     prepared_words: textlayout::PreparedWords,
+     #[cfg(feature = "textlayout")]
++    ink_prefixes: [Option<textlayout::InkPrefix>; 8],
++    #[cfg(feature = "textlayout")]
+     word_slice_hints: Vec<u64>,
+     #[cfg(feature = "textlayout")]
+     prepared_ideographs: Option<textlayout::PreparedIdeographs>,
+@@ -292,6 +294,8 @@
+             #[cfg(feature = "textlayout")]
+             prepared_words: Default::default(),
+             #[cfg(feature = "textlayout")]
++            ink_prefixes: Default::default(),
++            #[cfg(feature = "textlayout")]
+             word_slice_hints: Vec::new(),
+             #[cfg(feature = "textlayout")]
+             prepared_ideographs: None,
+@@ -376,14 +380,22 @@
+     }
+ 
+     #[cfg(feature = "textlayout")]
+-    pub fn find_font<F, T>(&mut self, font_ids: &[Option<FontId>; 8], mut callback: F) -> Result<T, ErrorKind>
++    pub fn find_font<F, T>(&mut self, font_ids: &[Option<FontId>; 8], callback: F) -> Result<T, ErrorKind>
++    where
++        F: FnMut((FontId, &mut Font)) -> (bool, T),
++    {
++        Self::find_registered_font(&mut self.fonts, font_ids, callback)
++    }
++
++    #[cfg(feature = "textlayout")]
++    fn find_registered_font<F, T>(fonts: &mut SlotMap<DefaultKey, Font>, font_ids: &[Option<FontId>; 8], mut callback: F) -> Result<T, ErrorKind>
+     where
+         F: FnMut((FontId, &mut Font)) -> (bool, T),
+     {
+         // Try each font in the paint
+         for maybe_font_id in font_ids {
+             if let &Some(font_id) = maybe_font_id {
+-                if let Some(font) = self.fonts.get_mut(font_id.0) {
++                if let Some(font) = fonts.get_mut(font_id.0) {
+                     let (has_missing, result) = callback((font_id, font));
+ 
+                     if !has_missing {
+@@ -397,7 +409,7 @@
+ 
+         // Try each registered font
+         // An optimisation here would be to skip fonts that were tried by the paint
+-        for (id, font) in &mut self.fonts {
++        for (id, font) in &mut *fonts {
+             let (has_missing, result) = callback((FontId(id), font));
+ 
+             if !has_missing {
+@@ -406,7 +418,7 @@
+         }
+ 
+         // Just return the first font at this point and let it render .nodef glyphs
+-        if let Some((id, font)) = self.fonts.iter_mut().next() {
++        if let Some((id, font)) = fonts.iter_mut().next() {
+             return Ok(callback((FontId(id), font)).1);
+         }
+ 
+@@ -420,6 +432,7 @@
+         {
+             self.shaped_words_cache.clear();
+             self.prepared_words.clear();
++            self.ink_prefixes = Default::default();
+             if let Some(prepared) = self.prepared_ideographs.take() {
+                 let capacity = self.shaped_words_cache.cap().get() + prepared.len();
+                 if let Some(capacity) = std::num::NonZeroUsize::new(capacity) {
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -90,6 +90,7 @@
+         || matches!(unicode_bidi::bidi_class(character), L | EN | ES | ET | CS | NSM | ON | WS | S)
+ }
+ 
++#[derive(Clone, Copy)]
+ struct AlphabeticInk {
+     cursor: f32,
+     top: f32,
+@@ -184,6 +185,60 @@
+         // Equality still compares the complete ordered font list.
+         state.write_u64(self.hash);
+     }
++}
++
++// Resume accumulation at an exact word boundary. The ink cursor and
++// horizontal advance retain the same floating-point addition order.
++pub(super) struct InkPrefix {
++    bytes: [u8; 32],
++    len: usize,
++    fonts: FontList,
++    variations: FontVariations,
++    size: u32,
++    spacing: u32,
++    advance: f32,
++    ink: AlphabeticInk,
++}
++
++impl InkPrefix {
++    fn matches(&self, prefix: &str, settings: &TextSettings, style: &WordStyle<'_>) -> bool {
++        self.fonts == style.fonts
++            && self.size == settings.font_size.to_bits()
++            && self.spacing == settings.letter_spacing.to_bits()
++            && &self.bytes[..self.len] == prefix.as_bytes()
++            && self.variations.iter().eq(style.variations.iter())
++    }
++
++    fn new(prefix: &str, settings: &TextSettings, style: &WordStyle<'_>, advance: f32, ink: AlphabeticInk) -> Self {
++        let mut bytes = [0; 32];
++        bytes[..prefix.len()].copy_from_slice(prefix.as_bytes());
++        Self {
++            bytes,
++            len: prefix.len(),
++            fonts: style.fonts,
++            variations: style.variations.clone(),
++            size: settings.font_size.to_bits(),
++            spacing: settings.letter_spacing.to_bits(),
++            advance,
++            ink,
++        }
++    }
++}
++
++fn split_ink_prefix(text: &str) -> Option<usize> {
++    let bytes = text.as_bytes();
++    if !(4..=40).contains(&bytes.len()) {
++        return None;
++    }
++    // The trailing word is independent of the prefix after an ASCII space.
++    let tail = bytes
++        .iter()
++        .rev()
++        .take(9)
++        .take_while(|byte| byte.is_ascii_alphanumeric())
++        .count();
++    let end = bytes.len() - tail;
++    ((2..=8).contains(&tail) && (2..=32).contains(&end) && bytes[end - 1] == b' ').then_some(end)
+ }
+ 
+ struct WordStyle<'a> {
+@@ -455,9 +510,22 @@
+         let style = WordStyle::new(settings.font_ids, &settings.font_variations);
+         let mut width = 0.0;
+         let mut ink = AlphabeticInk::new(0.0);
++        let prefix = split_ink_prefix(text).map(|end| &text[..end]);
++        let index = ((style.fonts.hash ^ style.variation_hash) as usize) & 7;
++        let mut consumed = 0;
++        let mut capture = prefix.is_some();
++        let cached = prefix.and_then(|prefix| {
++            context.ink_prefixes[index].as_ref().filter(|cached| cached.matches(prefix, settings, &style))
++        });
++        if let Some(cached) = cached {
++            consumed = cached.len;
++            width = cached.advance;
++            ink = cached.ink;
++            capture = false;
++        }
+         // Match measure_text_width's word advances and alphabetic_ink_bounds's
+         // glyph placement. Leave word-slice shortcuts to the width-only path.
+-        for text in text.split_word_bounds() {
++        for text in text[consumed..].split_word_bounds() {
+             if sliced_word_width(&context, text, settings, &style).is_some() {
+                 return None;
+             }
+@@ -472,6 +540,16 @@
+                 width += word.width(scale, settings.letter_spacing);
+                 for glyph in &word.glyphs {
+                     ink.add(glyph, scale);
++                }
++            }
++            if capture {
++                consumed += text.len();
++                // Keep words that can consume or supply slicing hints on
++                // the ordinary lookup path.
++                capture = !((4..=24).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_alphanumeric()));
++                if let Some(prefix) = prefix.filter(|prefix| capture && consumed == prefix.len()) {
++                    context.ink_prefixes[index] = Some(InkPrefix::new(prefix, settings, &style, width, ink));
++                    capture = false;
+                 }
+             }
+         }
+@@ -982,24 +1060,26 @@
+         return word_with_metrics(word, metrics, &context.fonts, variations);
+     }
+     let id = WordId::new(word, style, direction == rustybuzz::Direction::RightToLeft);
+-    if !context.shaped_words_cache.contains(&id) {
+-        let prepared = context.prepared_words.remove(&id)
++    let hints = &mut context.word_slice_hints;
++    let fonts = &mut context.fonts;
++    let prepared_words = &mut context.prepared_words;
++    let word = context.shaped_words_cache.get_or_insert_mut(id, || {
++        let prepared = prepared_words.remove(&id)
+             .filter(|prepared| &prepared.text[..usize::from(prepared.len)] == word.as_bytes());
+         let shaped = prepared.map_or_else(
+-            || shape_word(word, direction, context, font_ids, variations),
++            || shape_word(word, direction, fonts, font_ids, variations, !hints.is_empty()),
+             |prepared| Ok(prepared.shaped),
+         );
+         if shaped.as_ref().is_ok_and(|word| word.ascii_slice.is_some()) {
+             for suffix in [false, true] {
+                 if let Some(slot) = word_slice_hint(word.as_bytes(), suffix) {
+-                    context.word_slice_hints[slot] = id.word_hash;
++                    hints[slot] = id.word_hash;
+                 }
+             }
+         }
+-        context.shaped_words_cache.put(id, shaped);
+-    }
+-    let word = context.shaped_words_cache.get_mut(&id)?.as_mut().ok()?;
+-    word_with_metrics(word, metrics, &context.fonts, variations)
++        shaped
++    }).as_mut().ok()?;
++    word_with_metrics(word, metrics, fonts, variations)
+ }
+ 
+ fn word_with_metrics<'a>(
+@@ -1021,13 +1101,14 @@
+ fn shape_word(
+     word: &str,
+     hb_direction: rustybuzz::Direction,
+-    context: &mut super::TextContextImpl,
++    fonts: &mut slotmap::SlotMap<slotmap::DefaultKey, super::font::Font>,
+     font_ids: &[Option<FontId>; 8],
+     variations: &FontVariations,
++    slice_hints: bool,
+ ) -> Result<ShapedWord, ErrorKind> {
+     // find_font will call the closure with each font matching the provided style
+     // until a font capable of shaping the word is found
+-    let might_slice = !context.word_slice_hints.is_empty()
++    let might_slice = slice_hints
+         && hb_direction == rustybuzz::Direction::LeftToRight
+         && (9..=24).contains(&word.len())
+         && word.bytes().all(|byte| byte.is_ascii_alphanumeric());
+@@ -1088,14 +1169,13 @@
+ 
+         (has_missing, Some(shaped_word))
+     };
+-    if let Some(word) = context.find_font(font_ids, |font| shape(font, false))? {
++    if let Some(word) = super::TextContextImpl::find_registered_font(fonts, font_ids, |font| shape(font, false))? {
+         return Ok(word);
+     }
+ 
+     // Preserve the first registered font's .notdef glyph when every face
+     // fails, including when the paint lists a different face first.
+-    context
+-        .find_font(&[None; 8], |font| (false, shape(font, true).1))?
++    super::TextContextImpl::find_registered_font(fonts, &[None; 8], |font| (false, shape(font, true).1))?
+         .ok_or(ErrorKind::UnknownError)
+ }
+ 

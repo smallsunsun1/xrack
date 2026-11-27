@@ -12,7 +12,7 @@
       "label": "Bazel: Generate rust-project.json",
       "type": "process",
       "command": "bazel",
-      "args": ["run", "//:rust_project", "--", "//...", "//tests:gpu_test"],
+      "args": ["run", "//:rust_project", "--", "//...", "//tests:gpu_test", "//tests:scene3d_test"],
       "problemMatcher": []
     },
     {

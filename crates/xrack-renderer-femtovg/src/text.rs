@@ -1213,6 +1213,7 @@ struct FontCatalog {
     outline_faces: HashMap<FontId, FontSource>,
     parsed_outlines: RefCell<HashMap<FontId, ParsedOutlineFace>>,
     matches: HashMap<FontRequest, Option<FontId>>,
+    match_generation: u64,
 }
 
 type OutlineFace<'a> = ttf_parser::Face<'a>;
@@ -1361,6 +1362,7 @@ impl FontCatalog {
             outline_faces,
             parsed_outlines: RefCell::default(),
             matches: HashMap::new(),
+            match_generation: 0,
         }
     }
 
@@ -1412,6 +1414,7 @@ impl FontCatalog {
         // Bound memoization of requests supplied by dynamic application bindings.
         if self.matches.len() >= 128 {
             self.matches.clear();
+            self.match_generation = self.match_generation.wrapping_add(1);
         }
         self.matches.insert(request.clone(), font);
         font
@@ -1496,8 +1499,19 @@ struct NativeFallback {
     bold_fonts: Vec<FontId>,
 }
 
+#[derive(Default)]
+struct KnownStyledFonts {
+    family: String,
+    weight: u16,
+    italic: bool,
+    system_bold: bool,
+    catalog_generations: [u64; 2],
+    styles: u8,
+}
+
 struct FontContext {
     identity: Rc<()>,
+    known_styled_fonts: RefCell<KnownStyledFonts>,
     families: Vec<String>,
     context: TextContext,
     fallback: Vec<FontId>,
@@ -1564,6 +1578,7 @@ impl FontContext {
         )));
         let result = Self {
             identity: Rc::new(()),
+            known_styled_fonts: RefCell::default(),
             families,
             context,
             fallback,
@@ -1893,6 +1908,7 @@ impl TextSystem {
         Self {
             base: FontContext {
                 identity: Rc::new(()),
+                known_styled_fonts: RefCell::default(),
                 families,
                 context,
                 fallback,
@@ -2208,6 +2224,14 @@ impl TextSystem {
         document: [(usize, usize); 3],
     ) -> Option<crate::styled_text::ReusedPrefix> {
         self.styled_layouts.borrow().reused_prefix(plan, document)
+    }
+
+    #[cfg(xrack_femtovg_glyph_samples)]
+    pub(super) fn cached_styled_ink(
+        &self,
+        node: &Node,
+    ) -> Option<crate::styled_text::CachedStyledInk<'_>> {
+        crate::styled_text::LayoutCache::cached_ink(self.styled_layouts.borrow(), self, node)
     }
 
     pub(crate) fn registered_font_counts(&self) -> [usize; 2] {
@@ -2959,32 +2983,56 @@ impl TextMeasurer for TextSystem {
         let fonts = self.font_context();
         let base = fonts.catalog.borrow();
         let bundled = fonts.bundled.as_ref().map(|catalog| catalog.borrow());
-        let mut checked = 0_u8;
-        std::iter::once(TextStyle::default())
-            .chain(document.runs().iter().map(|run| run.style))
-            .all(|style| {
-                let bit = 1
-                    << (u8::from(style.bold)
-                        | u8::from(style.italic) << 1
-                        | u8::from(style.monospace) << 2);
-                if checked & bit != 0 {
-                    return true;
-                }
-                checked |= bit;
-                let Some(request) = self.font_request(attributes, style) else {
-                    return true;
-                };
+        let (family, weight, italic) = attributes;
+        let catalog_generations = [
+            base.match_generation,
+            bundled
+                .as_ref()
+                .map_or(0, |catalog| catalog.match_generation),
+        ];
+        // Adjacent clipped rows often use the same fonts. Preserve successful
+        // checks while the catalogs still retain their matching decisions.
+        let mut known = fonts.known_styled_fonts.borrow_mut();
+        if known.family != family
+            || known.weight != weight
+            || known.italic != italic
+            || known.system_bold != self.system_bold_text
+            || known.catalog_generations != catalog_generations
+        {
+            family.clone_into(&mut known.family);
+            known.weight = weight;
+            known.italic = italic;
+            known.system_bold = self.system_bold_text;
+            known.catalog_generations = catalog_generations;
+            known.styles = 0;
+        }
+        for style in
+            std::iter::once(TextStyle::default()).chain(document.runs().iter().map(|run| run.style))
+        {
+            let bit = 1 << crate::styled_text::shaping_style_index(style);
+            if known.styles & bit != 0 {
+                continue;
+            }
+            if let Some(request) = self.font_request(attributes, style) {
                 if let Some(bundled) = &bundled
                     && (!request.family.is_empty() || fonts.fallback.is_empty())
                 {
                     match bundled.matches.get(&request) {
-                        Some(Some(_)) => return true,
+                        Some(Some(_)) => {
+                            known.styles |= bit;
+                            continue;
+                        }
                         Some(None) => {}
                         None => return false,
                     }
                 }
-                base.matches.contains_key(&request)
-            })
+                if !base.matches.contains_key(&request) {
+                    return false;
+                }
+            }
+            known.styles |= bit;
+        }
+        true
     }
 
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
@@ -3045,6 +3093,41 @@ fn weight(value: Option<i64>, fallback: u16) -> u16 {
 }
 
 mod word_advances_tests {
+    #[test]
+    fn styled_text_deferral_rechecks_font_matches_after_eviction() {
+        use super::{Node, TextMeasurer, TextStyle, TextSystem};
+        use xrack_runtime::StyledText;
+
+        let system = TextSystem::bundled_only();
+        let mut node = Node::new("StyledText", None);
+        node.properties
+            .insert("font-family", "History Family".to_owned().into());
+        node.properties.insert(
+            "text",
+            StyledText::from_markdown("normal **bold**").unwrap().into(),
+        );
+        let attributes = system.font_attributes(Some(&node));
+        let regular = TextStyle::default();
+        let bold = TextStyle {
+            bold: true,
+            ..regular
+        };
+
+        assert!(!system.can_defer_styled_text(&node));
+        let _ = system.resolve_face(attributes, regular);
+        assert!(!system.can_defer_styled_text(&node));
+        let _ = system.resolve_face(attributes, bold);
+        assert!(system.can_defer_styled_text(&node));
+
+        for weight in 100..228 {
+            let _ = system.resolve_face(("Other Family", weight, false), regular);
+        }
+        assert!(!system.can_defer_styled_text(&node));
+        let _ = system.resolve_face(attributes, regular);
+        let _ = system.resolve_face(attributes, bold);
+        assert!(system.can_defer_styled_text(&node));
+    }
+
     #[test]
     fn ideograph_widths_are_reused_until_the_font_size_changes() {
         use super::{LabelAdvanceFont, LabelAdvances, TextContext};

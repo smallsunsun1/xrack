@@ -83,3 +83,487 @@ export component AuthoredMeshDemo inherits Window {
     }
     CheckBox { x <- 357px; y <- 334px; width <- 135px; text <- "Instance"; checked <-> root.duplicate; }
 }
+struct SkinVertex { position: point3d }
+export struct SkinWeight { vertex: int, joint: int, weight: float }
+struct SkinGeometry { vertices: [SkinVertex], indices: [int], skin-weights: [SkinWeight] }
+struct SkinMatrix {
+    m11: float, m12: float, m13: float, m14: float,
+    m21: float, m22: float, m23: float, m24: float,
+    m31: float, m32: float, m33: float, m34: float,
+    m41: float, m42: float, m43: float, m44: float,
+}
+struct SkinJoint { node: string, inverse-bind: SkinMatrix }
+struct SkinActor {
+    id: string, parent: string, mesh: string, visible: bool,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    geometry: SkinGeometry, skin-joints: [SkinJoint],
+}
+
+export component AuthoredSkinDemo inherits Window {
+    title <- "XRack · 自定义蒙皮";
+    width <- 460px; height <- 324px; background <- #141d29;
+    resizable <- false;
+    in-out property <float> bend: 0;
+    in-out property <string> joint-name: "hinge";
+    in-out property <[SkinWeight]> weights: [
+        SkinWeight { vertex: 0, joint: 0, weight: 1 },
+        SkinWeight { vertex: 1, joint: 0, weight: 1 },
+        SkinWeight { vertex: 2, joint: 0, weight: 0.5 },
+        SkinWeight { vertex: 2, joint: 1, weight: 0.5 },
+        SkinWeight { vertex: 3, joint: 0, weight: 0.5 },
+        SkinWeight { vertex: 3, joint: 1, weight: 0.5 },
+        SkinWeight { vertex: 4, joint: 1, weight: 1 },
+        SkinWeight { vertex: 5, joint: 1, weight: 1 },
+    ];
+    property <[SkinVertex]> positions <- [
+        SkinVertex { position: Point3D.new(-1.6, -0.36, 0) },
+        SkinVertex { position: Point3D.new(-1.6, 0.36, 0) },
+        SkinVertex { position: Point3D.new(0, -0.36, 0) },
+        SkinVertex { position: Point3D.new(0, 0.36, 0) },
+        SkinVertex { position: Point3D.new(1.6, -0.36, 0) },
+        SkinVertex { position: Point3D.new(1.6, 0.36, 0) },
+    ];
+    property <[int]> triangles: [0, 2, 1, 1, 2, 3, 2, 4, 3, 3, 4, 5];
+    property <SkinMatrix> identity: SkinMatrix {
+        m11: 1, m12: 0, m13: 0, m14: 0,
+        m21: 0, m22: 1, m23: 0, m24: 0,
+        m31: 0, m32: 0, m33: 1, m34: 0,
+        m41: 0, m42: 0, m43: 0, m44: 1,
+    };
+    property <SkinActor> base: SkinActor {
+        id: "", parent: "", mesh: "", visible: true, x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #ffffff,
+        geometry: SkinGeometry { vertices: [], indices: [], skin-weights: [] },
+        skin-joints: [],
+    };
+    out property <scenemodel3d> world <- Scene3D.prepare([
+        SkinActor { id: "rig", x: 0.4, y: 0.3, ..root.base },
+        SkinActor { id: "root-bone", parent: "rig", ..root.base },
+        SkinActor { id: "hinge", parent: "root-bone", x: 0.5, roll: root.bend, ..root.base },
+        SkinActor {
+            id: "ribbon", parent: "rig", color: #67d2c0,
+            geometry: SkinGeometry { vertices: root.positions, indices: root.triangles, skin-weights: root.weights },
+            skin-joints: [
+                SkinJoint { node: "root-bone", inverse-bind: root.identity },
+                SkinJoint { node: root.joint-name, inverse-bind: SkinMatrix { m14: -0.5, ..root.identity } },
+            ],
+            ..root.base
+        },
+        SkinActor { id: "marker", parent: "hinge", x: 1.10, z: 0.06, mesh: "primitive:sphere",
+            scale-x: 0.10, scale-y: 0.10, scale-z: 0.10, color: #ffd978, ..root.base },
+    ]);
+    out property <hit3d> right-hit <- Scene3D.ray-hit-row(root.world,
+        Point3D.new(1.85, 0.30, 5), Vector3D.new(0, 0, -1), 10, 3);
+    out property <hit3d> bent-hit <- Scene3D.ray-hit-row(root.world,
+        Point3D.new(0.90, 1.25, 5), Vector3D.new(0, 0, -1), 10, 3);
+    SceneView3D {
+        width <- 460px; height <- 240px; model <- root.world;
+        scene-background <- #23354b; camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 6;
+        light-yaw <- 10; light-elevation <- 35;
+    }
+    Text {
+        x <- 12px; y <- 247px; width <- 436px; color <- #d9efff;
+        text <- "关节 " + root.bend + "°  ·  " + (root.bent-hit.valid ? "命中上方"
+            : root.right-hit.valid ? "命中右侧" : "未命中");
+    }
+    bend := Button {
+        x <- 12px; y <- 280px; width <- 436px; height <- 32px;
+        text <- root.bend == 0 ? "弯曲网格" : "恢复初始姿态";
+        clicked => { root.bend = root.bend == 0 ? 90 : 0; }
+    }
+}
+
+struct RibbonVertex { position: point3d, tangent: vector3d, u: float, v: float }
+struct RibbonDelta {
+    target: string, vertex: int, position: vector3d, normal: vector3d, tangent: vector3d,
+}
+struct RibbonFinish { anisotropy-strength: float, roughness: float }
+struct RibbonTargets { extend: float, target-0: float }
+struct RibbonGeometry {
+    vertices: [RibbonVertex], indices: [int], skin-weights: [SkinWeight], morph-deltas: [RibbonDelta],
+}
+struct RibbonJoint { node: string }
+struct RibbonActor {
+    id: string, mesh: string, roll: float,
+    x: float, y: float, z: float, yaw: float, pitch: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color,
+    geometry: RibbonGeometry, skin-joints: [RibbonJoint], morph-weights: RibbonTargets, material: RibbonFinish,
+}
+
+export component AuthoredMorphDemo inherits Window {
+    title <- "XRack · 自定义形变";
+    width <- 460px; height <- 324px; background <- #141d29; resizable <- false;
+    in-out property <float> extend: 0;
+    in-out property <float> bend: 0;
+    in-out property <bool> tangent-debug: false;
+    property <vector3d> zero <- Vector3D.new(0, 0, 0);
+    property <vector3d> axis <- Vector3D.new(1, 0, 0);
+    in-out property <[RibbonDelta]> deltas: [
+        RibbonDelta { target: "extend", vertex: 2, position: root.axis, normal: Vector3D.new(0, 0.3, 0), tangent: Vector3D.new(0, 0.8, 0) },
+        RibbonDelta { target: "extend", vertex: 3, position: root.axis, normal: Vector3D.new(0, 0.3, 0), tangent: Vector3D.new(0, 0.8, 0) },
+        RibbonDelta { target: "lift", vertex: 0, position: Vector3D.new(0, 0.4, 0), normal: root.zero, tangent: root.zero },
+    ];
+    property <RibbonActor> base: RibbonActor {
+        id: "", mesh: "", roll: 0, x: 0, y: 0, z: 0, yaw: 0, pitch: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, color: #67d2c0,
+        geometry: RibbonGeometry { vertices: [], indices: [], skin-weights: [], morph-deltas: [] },
+        skin-joints: [], morph-weights: RibbonTargets { extend: 0, target-0: 0 },
+        material: RibbonFinish { anisotropy-strength: 0.6, roughness: 0.35 },
+    };
+    out property <scenemodel3d> world <- Scene3D.prepare([
+        RibbonActor { id: "hinge", roll: root.bend, ..root.base },
+        RibbonActor {
+            id: "panel",
+            geometry: RibbonGeometry {
+                vertices: [
+                    RibbonVertex { position: Point3D.new(-0.7, -0.35, 0), tangent: root.axis, u: 0, v: 0 },
+                    RibbonVertex { position: Point3D.new(-0.7, 0.35, 0), tangent: root.axis, u: 0, v: 1 },
+                    RibbonVertex { position: Point3D.new(1, -0.35, 0), tangent: root.axis, u: 1, v: 0 },
+                    RibbonVertex { position: Point3D.new(1, 0.35, 0), tangent: root.axis, u: 1, v: 1 },
+                ],
+                indices: [0, 2, 1, 1, 2, 3],
+                skin-weights: [
+                    SkinWeight { vertex: 0, joint: 0, weight: 1 },
+                    SkinWeight { vertex: 1, joint: 0, weight: 1 },
+                    SkinWeight { vertex: 2, joint: 0, weight: 1 },
+                    SkinWeight { vertex: 3, joint: 0, weight: 1 },
+                ],
+                morph-deltas: root.deltas,
+            },
+            skin-joints: [RibbonJoint { node: "hinge" }],
+            morph-weights: RibbonTargets { extend: root.extend, target-0: 0.25 },
+            ..root.base
+        },
+    ]);
+    out property <hit3d> right-hit <- Scene3D.ray-hit-row(root.world,
+        Point3D.new(1.8, 0, 5), Vector3D.new(0, 0, -1), 10, 1);
+    out property <hit3d> bent-hit <- Scene3D.ray-hit-row(root.world,
+        Point3D.new(0, 1.8, 5), Vector3D.new(0, 0, -1), 10, 1);
+    SceneView3D {
+        width <- 460px; height <- 240px; model <- root.world;
+        scene-background <- #23354b; camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 6;
+        light-yaw <- 10; light-elevation <- 35;
+        material-debug <- root.tangent-debug ? "tangents" : "none";
+    }
+    Text {
+        x <- 12px; y <- 247px; width <- 436px; color <- #d9efff;
+        text <- root.bent-hit.valid ? "形变后命中上方" : root.right-hit.valid ? "形变后命中右侧" : "未命中";
+    }
+    extend := Button {
+        x <- 12px; y <- 280px; width <- 212px; height <- 32px;
+        text <- root.extend == 0 ? "伸长网格" : "恢复长度";
+        clicked => { root.extend = root.extend == 0 ? 1 : 0; }
+    }
+    bend := Button {
+        x <- 236px; y <- 280px; width <- 212px; height <- 32px;
+        text <- root.bend == 0 ? "转动关节" : "恢复姿态";
+        clicked => { root.bend = root.bend == 0 ? 90 : 0; }
+    }
+}
+
+struct MorphSurfaceVertex {
+    position: point3d, tangent: vector3d, u: float, v: float, u1: float, v1: float,
+}
+struct MorphSurfaceDelta {
+    target: string, vertex: int, u: float, v1: float,
+    color-r: float, color-g: float, color-a: float, binormal: vector3d,
+}
+struct MorphSurfaceGeometry { vertices: [MorphSurfaceVertex], morph-deltas: [MorphSurfaceDelta] }
+struct MorphSurfaceWeights { primary: float, secondary: float, tint: float, erase: float, bend: float }
+struct MorphSurfaceFinish {
+    vertex-colors: bool, alpha-mode: string, alpha-cutoff: float,
+    material-shader: string, shader-parameters: vector3d, depth-draw-mode: string, unlit: bool,
+}
+struct MorphSurfaceActor {
+    id: string, mesh: string, pickable: bool, x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color,
+    geometry: MorphSurfaceGeometry, morph-weights: MorphSurfaceWeights, material: MorphSurfaceFinish,
+}
+
+export component MorphSurfaceDemo inherits Window {
+    title <- "XRack · Surface morph targets";
+    width <- 460px; height <- 324px; background <- #141d29; resizable <- false;
+    in-out property <float> primary: 0;
+    in-out property <float> secondary: 0;
+    in-out property <float> tint: 0;
+    in-out property <float> erase: 0;
+    in-out property <float> bend: 0;
+    in-out property <bool> pattern: false;
+    in-out property <string> debug: "none";
+    in-out property <bool> wireframe: false;
+    property <vector3d> tangent <- Vector3D.new(1, 0, 0);
+    property <MorphSurfaceDelta> zero <- MorphSurfaceDelta {
+        target: "", vertex: 0, u: 0, v1: 0, color-r: 0, color-g: 0, color-a: 0,
+        binormal: Vector3D.new(0, 0, 0),
+    };
+    property <[MorphSurfaceDelta]> deltas <- [
+        MorphSurfaceDelta { target: "primary", vertex: 0, u: 0.0625, ..root.zero },
+        MorphSurfaceDelta { target: "primary", vertex: 1, u: 0.0625, ..root.zero },
+        MorphSurfaceDelta { target: "primary", vertex: 2, u: 0.0625, ..root.zero },
+        MorphSurfaceDelta { target: "secondary", vertex: 0, v1: 0.75, ..root.zero },
+        MorphSurfaceDelta { target: "secondary", vertex: 1, v1: 0.75, ..root.zero },
+        MorphSurfaceDelta { target: "secondary", vertex: 2, v1: 0.75, ..root.zero },
+        MorphSurfaceDelta { target: "tint", vertex: 0, color-r: -0.95, color-g: -0.65, ..root.zero },
+        MorphSurfaceDelta { target: "tint", vertex: 1, color-r: -0.95, color-g: -0.65, ..root.zero },
+        MorphSurfaceDelta { target: "tint", vertex: 2, color-r: -0.95, color-g: -0.65, ..root.zero },
+        MorphSurfaceDelta { target: "erase", vertex: 0, color-a: -1, ..root.zero },
+        MorphSurfaceDelta { target: "erase", vertex: 1, color-a: -1, ..root.zero },
+        MorphSurfaceDelta { target: "erase", vertex: 2, color-a: -1, ..root.zero },
+        MorphSurfaceDelta { target: "bend", vertex: 0, binormal: Vector3D.new(0.85, 0, 0), ..root.zero },
+        MorphSurfaceDelta { target: "bend", vertex: 1, binormal: Vector3D.new(0.85, 0, 0), ..root.zero },
+        MorphSurfaceDelta { target: "bend", vertex: 2, binormal: Vector3D.new(0.85, 0, 0), ..root.zero },
+    ];
+    out property <scenemodel3d> world <- Scene3D.prepare([
+        MorphSurfaceActor {
+            id: "panel", mesh: "", pickable: true, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
+            geometry: MorphSurfaceGeometry {
+                vertices: [
+                    MorphSurfaceVertex { position: Point3D.new(-1.5, -0.9, 0), tangent: root.tangent, u: 0, v: 0, u1: 0, v1: 0 },
+                    MorphSurfaceVertex { position: Point3D.new(1.5, -0.9, 0), tangent: root.tangent, u: 1, v: 0, u1: 1, v1: 0 },
+                    MorphSurfaceVertex { position: Point3D.new(0, 1.2, 0), tangent: root.tangent, u: 0.5, v: 1, u1: 0.5, v1: 1 },
+                ],
+                morph-deltas: root.deltas,
+            },
+            morph-weights: MorphSurfaceWeights {
+                primary: root.primary, secondary: root.secondary, tint: root.tint,
+                erase: root.erase, bend: root.bend,
+            },
+            material: MorphSurfaceFinish {
+                vertex-colors: true, alpha-mode: "mask", alpha-cutoff: 0.5,
+                depth-draw-mode: "opaque-prepass", unlit: false,
+                material-shader: root.pattern ? @material-shader-url("effects/material_surface.wgsl") : "",
+                shader-parameters: Vector3D.new(1, 0, 0),
+            },
+        },
+        MorphSurfaceActor {
+            id: "backing", mesh: "primitive:rectangle", pickable: false, x: 0, y: 0, z: -0.3,
+            yaw: 0, pitch: 0, roll: 0, scale-x: 3.6, scale-y: 2.6, scale-z: 1, color: #29c561,
+            geometry: MorphSurfaceGeometry { vertices: [], morph-deltas: [] },
+            morph-weights: MorphSurfaceWeights { primary: 0, secondary: 0, tint: 0, erase: 0, bend: 0 },
+            material: MorphSurfaceFinish {
+                vertex-colors: false, alpha-mode: "opaque", alpha-cutoff: 0.5,
+                material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
+                depth-draw-mode: "opaque-only", unlit: true,
+            },
+        },
+    ]);
+    out property <hit3d> hit <- Scene3D.ray-hit(root.world, Point3D.new(0, 0, 4), Vector3D.new(0, 0, -1), 8);
+    SceneView3D {
+        width <- 460px; height <- 240px; model <- root.world; material-debug <- root.debug; debug-wireframe <- root.wireframe;
+        scene-background <- #23354b; camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 4;
+        light-yaw <- 10; light-elevation <- 35;
+    }
+    Text {
+        x <- 12px; y <- 247px; width <- 436px; color <- #d9efff;
+        text <- root.hit.valid ? "Hit · U = " + root.hit.u : "Masked out";
+    }
+    primary-toggle := Button {
+        x <- 12px; y <- 280px; width <- 88px; height <- 32px; text <- "UV 0";
+        clicked => { root.pattern = true; root.debug = "none"; root.primary = root.primary == 0 ? 1 : 0; }
+    }
+    secondary-toggle := Button {
+        x <- 106px; y <- 280px; width <- 88px; height <- 32px; text <- "UV 1";
+        clicked => { root.pattern = true; root.debug = "none"; root.secondary = root.secondary == 0 ? 1 : 0; }
+    }
+    tint-toggle := Button {
+        x <- 200px; y <- 280px; width <- 76px; height <- 32px; text <- "Color";
+        clicked => { root.pattern = false; root.debug = "base-color"; root.tint = root.tint == 0 ? 1 : 0; }
+    }
+    erase-toggle := Button {
+        x <- 282px; y <- 280px; width <- 72px; height <- 32px; text <- "Alpha";
+        clicked => { root.erase = root.erase == 0 ? 1 : 0; }
+    }
+    bend-toggle := Button {
+        x <- 360px; y <- 280px; width <- 88px; height <- 32px; text <- "Binormal";
+        clicked => { root.pattern = false; root.debug = "binormals"; root.bend = root.bend == 0 ? 1 : 0; }
+    }
+}
+
+struct SceneParticleBurst { time: float, count: int }
+struct SceneParticleEmitter {
+    position: point3d, color: color, size: float, lifetime: float,
+    bursts: [SceneParticleBurst], particle-model: string, particle-model-scene: scenemodel3d,
+    velocity: vector3d, emitter-shape: string, emitter-extents: vector3d, seed: int,
+    fade-in: float, fade-out: float, particle-casts-shadow: bool,
+}
+
+export component SceneParticleDemo inherits Window {
+    title <- "XRack · Scene model particles";
+    width <- 460px; height <- 324px; background <- #141d29; resizable <- false;
+    in-out property <float> time: 0.7;
+    in-out property <float> weight: 0;
+    in-out property <int> count: 6;
+    in-out property <bool> from-scene: true;
+    in-out property <string> debug: "none";
+    in-out property <scenemodel3d> prototype: root.authored;
+    property <scenemodel3d> empty;
+    property <MorphSurfaceDelta> delta <- MorphSurfaceDelta {
+        target: "bend", vertex: 0, u: 0.5, v1: 0.6,
+        color-r: -0.65, color-g: -0.15, color-a: 0, binormal: Vector3D.new(0.8, 0, 0),
+    };
+    property <vector3d> tangent <- Vector3D.new(1, 0, 0);
+    property <MorphSurfaceWeights> weights <- MorphSurfaceWeights {
+        primary: 0, secondary: 0, tint: 0, erase: 0, bend: root.weight,
+    };
+    property <MorphSurfaceFinish> finish <- MorphSurfaceFinish {
+        vertex-colors: true, alpha-mode: "opaque", alpha-cutoff: 0.5,
+        material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
+        depth-draw-mode: "opaque-only", unlit: true,
+    };
+    property <MorphSurfaceActor> panel <- MorphSurfaceActor {
+        id: "panel", mesh: "", pickable: true, x: -0.4, y: 0, z: 0, yaw: 0, pitch: 0, roll: 15,
+        scale-x: 1, scale-y: 1, scale-z: 1, color: #ffd875,
+        geometry: MorphSurfaceGeometry {
+            vertices: [
+                MorphSurfaceVertex { position: Point3D.new(-0.55, -0.35, 0), tangent: root.tangent, u: 0, v: 0, u1: 0, v1: 0 },
+                MorphSurfaceVertex { position: Point3D.new(0.55, -0.35, 0), tangent: root.tangent, u: 1, v: 0, u1: 1, v1: 0 },
+                MorphSurfaceVertex { position: Point3D.new(0, 0.58, 0), tangent: root.tangent, u: 0.5, v: 1, u1: 0.5, v1: 1 },
+            ],
+            morph-deltas: [
+                MorphSurfaceDelta { ..root.delta },
+                MorphSurfaceDelta { vertex: 1, ..root.delta },
+                MorphSurfaceDelta { vertex: 2, ..root.delta },
+            ],
+        },
+        morph-weights: root.weights, material: root.finish,
+    };
+    out property <scenemodel3d> authored <- Scene3D.prepare([
+        root.panel,
+        MorphSurfaceActor {
+            id: "chip", mesh: "primitive:box", x: 0.28, y: -0.1,
+            scale-x: 0.32, scale-y: 0.32, scale-z: 0.32, roll: 25, color: #72c7f5,
+            geometry: MorphSurfaceGeometry { vertices: [], morph-deltas: [] },
+            ..root.panel
+        },
+    ]);
+    property <[SceneParticleEmitter]> emitters <- [
+        SceneParticleEmitter {
+            position: Point3D.new(0, -0.1, 0), color: #fff, size: 0.8, lifetime: 4,
+            bursts: [SceneParticleBurst { time: 0, count: root.count }],
+            particle-model: root.from-scene ? "" : "primitive:box",
+            particle-model-scene: root.from-scene ? root.prototype : root.empty,
+            velocity: Vector3D.new(0.15, 0.15, 0),
+            emitter-shape: "box", emitter-extents: Vector3D.new(1.7, 0.8, 0.1), seed: 59,
+            fade-in: 0, fade-out: 0, particle-casts-shadow: true,
+        },
+    ];
+    SceneView3D {
+        width <- 460px; height <- 240px; particle-emitters <- root.emitters; particle-time <- root.time;
+        material-debug <- root.debug; scene-background <- #23354b;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 5;
+    }
+    Text {
+        x <- 12px; y <- 247px; width <- 436px; color <- #d9efff;
+        text <- root.from-scene ? "Scene particles · Weight " + root.weight : "Built-in cube";
+    }
+    pose-toggle := Button {
+        x <- 12px; y <- 280px; width <- 108px; height <- 32px; text <- "Morph";
+        clicked => { root.weight = root.weight == 0 ? 1 : 0; }
+    }
+    basis-toggle := Button {
+        x <- 126px; y <- 280px; width <- 106px; height <- 32px; text <- "Binormal";
+        clicked => { root.debug = root.debug == "none" ? "binormals" : "none"; }
+    }
+    time-step := Button {
+        x <- 238px; y <- 280px; width <- 94px; height <- 32px; text <- "Time +";
+        clicked => { root.time = root.time < 2 ? root.time + 0.4 : 0.7; }
+    }
+    source-toggle := Button {
+        x <- 338px; y <- 280px; width <- 110px; height <- 32px; text <- "Source";
+        clicked => { root.from-scene = !root.from-scene; root.debug = "none"; }
+    }
+}
+
+struct ParticleStreamActor {
+    id: string, mesh: string, color: color, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, pitch: float, yaw: float, roll: float,
+}
+struct ParticleStreamEmitter {
+    emitter-id: string, follow-emitter: string, parent: string, particle-instances-only: bool,
+    position: point3d, color: color, size: float, lifetime: float, rate: float,
+    bursts: [SceneParticleBurst], particle-model: string, velocity: vector3d,
+    emitter-shape: string, emitter-extents: vector3d, seed: int, fade-in: float, fade-out: float,
+}
+struct ParticleStreamModel { emitter: string, model: scenemodel3d }
+struct ParticleStreamAffector { affector-kind: string, enabled: bool, direction: vector3d, strength: float }
+
+export component ParticleInstanceDemo inherits Window {
+    title <- "XRack · Shared particle instances";
+    width <- 460px; height <- 324px; background <- #141d29; resizable <- false;
+    in-out property <float> time: 0.7;
+    in-out property <string> source: "stream";
+    in-out property <bool> second-model: true;
+    in-out property <bool> own-model: false;
+    in-out property <bool> duplicate: false;
+    in-out property <bool> affected: true;
+    in-out property <float> anchor-x: 0;
+    property <ParticleStreamActor> base: ParticleStreamActor {
+        id: "", mesh: "", color: #fff, x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        pitch: 0, yaw: 0, roll: 0,
+    };
+    property <scenemodel3d> primary <- Scene3D.prepare([
+        ParticleStreamActor {
+            id: "box", mesh: "primitive:box", color: #efa062, x: -0.26,
+            scale-x: 0.31, scale-y: 0.31, scale-z: 0.31, roll: 17, ..root.base
+        },
+    ]);
+    property <scenemodel3d> secondary <- Scene3D.prepare([
+        ParticleStreamActor {
+            id: "sphere", mesh: "primitive:sphere", color: #4dd1ea, x: 0.23,
+            scale-x: 0.29, scale-y: 0.29, scale-z: 0.29, ..root.base
+        },
+    ]);
+    property <scenemodel3d> empty;
+    property <ParticleStreamEmitter> stream <- ParticleStreamEmitter {
+        emitter-id: "stream", follow-emitter: "", parent: "anchor", particle-instances-only: true,
+        position: Point3D.new(0, 0, 0), color: #fff, size: 1, lifetime: 4, rate: 0,
+        bursts: [SceneParticleBurst { time: 0, count: 5 }],
+        particle-model: root.own-model ? "primitive:cone" : "", velocity: Vector3D.new(0.4, 0.35, 0),
+        emitter-shape: "box", emitter-extents: Vector3D.new(1.2, 0.7, 0.1), seed: 73,
+        fade-in: 0, fade-out: 0,
+    };
+    property <ParticleStreamEmitter> follower <- ParticleStreamEmitter {
+        emitter-id: "follower", follow-emitter: "stream", parent: "", bursts: [], rate: 3,
+        particle-model: "", velocity: Vector3D.new(0, 0.12, 0), emitter-shape: "point",
+        ..root.stream
+    };
+    property <[ParticleStreamEmitter]> emitters <- root.duplicate
+        ? [root.stream, root.stream, root.follower] : [root.stream, root.follower];
+    SceneView3D {
+        width <- 460px; height <- 240px; scene-background <- #23354b;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 5;
+        model <- [ParticleStreamActor { id: "anchor", x: root.anchor-x, ..root.base }];
+        particle-time <- root.time; particle-emitters <- root.emitters;
+        particle-instance-models <- [
+            ParticleStreamModel { emitter: root.source, model: root.primary },
+            ParticleStreamModel { emitter: root.source, model: root.second-model ? root.secondary : root.empty },
+        ];
+        particle-affectors <- [
+            ParticleStreamAffector { affector-kind: "gravity", enabled: root.affected,
+                direction: Vector3D.new(0, -1, 0), strength: 0.9 },
+        ];
+    }
+    Text {
+        x <- 12px; y <- 247px; width <- 436px; color <- #d9efff;
+        text <- "Source " + root.source + " · Time " + root.time;
+    }
+    time-step := Button {
+        x <- 12px; y <- 280px; width <- 104px; height <- 32px; text <- "Time +";
+        clicked => { root.time = root.time < 2 ? root.time + 0.4 : 0.7; }
+    }
+    model-toggle := Button {
+        x <- 122px; y <- 280px; width <- 104px; height <- 32px; text <- root.second-model ? "One model" : "Two models";
+        clicked => { root.second-model = !root.second-model; }
+    }
+    source-toggle := Button {
+        x <- 232px; y <- 280px; width <- 104px; height <- 32px; text <- root.source == "stream" ? "Follow" : "Direct";
+        clicked => { root.source = root.source == "stream" ? "follower" : "stream"; }
+    }
+    anchor-toggle := Button {
+        x <- 342px; y <- 280px; width <- 106px; height <- 32px; text <- "Move anchor";
+        clicked => { root.anchor-x = root.anchor-x == 0 ? 0.8 : 0; }
+    }
+}

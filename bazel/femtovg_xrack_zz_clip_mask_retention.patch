@@ -1,0 +1,129 @@
+diff --git a/src/clip.rs b/src/clip.rs
+--- a/src/clip.rs
++++ b/src/clip.rs
+@@ -316,6 +316,13 @@
+     /// frame; past either a thin fill is filled as any other.
+     pub fn set_thin_fill_masks(&mut self, enabled: bool) {
+         self.fill_masks.set_enabled(enabled);
++    }
++
++    /// Keeps idle clip coverage masks for up to this many flushed frames.
++    /// The clip mask byte budget still limits storage.
++    #[doc(hidden)]
++    pub fn set_clip_mask_retention_frames(&mut self, frames: u64) {
++        self.clip_masks.set_idle_frames(frames);
+     }
+ 
+     /// Intersects the stencil clip plane of the current render target with
+diff --git a/src/clip/mask.rs b/src/clip/mask.rs
+--- a/src/clip/mask.rs
++++ b/src/clip/mask.rs
+@@ -265,8 +265,7 @@
+ }
+ 
+ /// The masks in use and in reach: found by key, counted against a budget,
+-/// and let go once two frames have gone by without a clip that took them -
+-/// a clip that moves leaves a mask a frame behind it. The images of masks
++/// and let go once the configured retention period has passed. The images of masks
+ /// let go wait, a few of them, for a mask of their size to come.
+ #[derive(Debug)]
+ pub(crate) struct ClipMasks {
+@@ -276,6 +275,7 @@
+     pub(crate) request: Vec<u32>,
+     bytes: usize,
+     budget: usize,
++    idle_frames: u64,
+     frame: u64,
+     next_id: u64,
+     spare: Vec<(ImageId, [usize; 2])>,
+@@ -326,6 +326,7 @@
+             request: Vec::new(),
+             bytes: 0,
+             budget: DEFAULT_MASK_BUDGET,
++            idle_frames: IDLE_FRAMES,
+             frame: 0,
+             next_id: 1,
+             spare: Vec::new(),
+@@ -348,6 +349,10 @@
+     /// under them; none at all clips every path on the stencil.
+     pub(crate) fn set_budget(&mut self, bytes: usize) {
+         self.budget = bytes;
++    }
++
++    pub(crate) fn set_idle_frames(&mut self, frames: u64) {
++        self.idle_frames = frames;
+     }
+ 
+     /// The mask of `key`, if it is kept, marked as used in this frame.
+@@ -457,12 +462,12 @@
+         mask
+     }
+ 
+-    /// A frame has been flushed: the masks it drew under are no longer held
+-    /// by it, and those no clip has taken for two frames are let go. Their
+-    /// images are spare, but for the ones that come back, to be deleted.
++    /// A frame has been flushed. Idle masks past the retention period
++    /// are let go, and their images may serve a new mask.
+     pub(crate) fn end_frame(&mut self) -> Vec<ImageId> {
+         self.frame += 1;
+         let frame = self.frame;
++        let idle_frames = self.idle_frames;
+         let mut dropped = Vec::new();
+         let (spare, bytes) = (&mut self.spare, &mut self.bytes);
+         // What was spare for a frame found no mask of its size.
+@@ -471,7 +476,8 @@
+             dropped.push(image);
+         }
+         self.masks.retain(|_, mask| {
+-            let keep = mask.used.get() + IDLE_FRAMES > frame || Rc::strong_count(mask) > 1;
++            let keep = frame.saturating_sub(mask.used.get()) < idle_frames
++                || Rc::strong_count(mask) > 1;
+             if !keep {
+                 *bytes -= mask.bytes();
+                 let size = image_size(mask.size());
+@@ -486,8 +492,9 @@
+         });
+         // A request goes with its mask, or after as long unasked: a clip
+         // that moves asks anew every frame.
+-        self.asked
+-            .retain(|_, asked| asked.used.get() + IDLE_FRAMES > frame && asked.mask.strong_count() > 0);
++        self.asked.retain(|_, asked| {
++            frame.saturating_sub(asked.used.get()) < idle_frames && asked.mask.strong_count() > 0
++        });
+         dropped
+     }
+ 
+@@ -606,6 +613,33 @@
+         masks.end_frame();
+         assert_eq!((masks.len(), masks.asked_len()), (0, 0), "a frame unasked");
+         assert!(masks.asked(&[1, 2, 3]).is_none());
++    }
++
++    #[test]
++    fn mask_retention_keeps_the_request_until_the_mask_expires() {
++        let mut canvas = crate::Canvas::new(crate::RecordingRenderer::default()).unwrap();
++        let image = canvas
++            .create_image_empty(64, 64, crate::PixelFormat::Gray8, crate::ImageFlags::empty())
++            .unwrap();
++        let mut masks = ClipMasks::default();
++        masks.set_idle_frames(8);
++        let mut outline = MaskOutline::default();
++        outline.child(FillRule::NonZero, std::iter::once(square(1.25, 1.0, 8.0)));
++        let key = outline.key(outline.rect([0, 0, 100, 100]), None);
++        let pixels = key.rasterize(&mut Coverage::default());
++        let mask = masks.keep(key, image, pixels);
++        masks.remember(vec![1, 2, 3], &mask, [4, 5]);
++        drop(mask);
++        for _ in 0..6 {
++            masks.end_frame();
++        }
++        let (mask, origin) = masks.asked(&[1, 2, 3]).unwrap();
++        assert_eq!((mask.image, origin), (image, [4, 5]));
++        drop(mask);
++        for _ in 0..8 {
++            masks.end_frame();
++        }
++        assert_eq!((masks.len(), masks.asked_len()), (0, 0));
+     }
+ 
+     /// Masks are kept up to the budget: one that no clip holds and this

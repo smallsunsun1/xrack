@@ -1,0 +1,64 @@
+struct ProbeMaterial { metalness: float, roughness: float }
+struct CubeActor {
+    id: string, mesh: string, x: float, y: float, z: float, color: color,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    material: ProbeMaterial, visible: bool,
+}
+struct CubeProbe { position: point3d, box-size: vector3d, source: string, yaw: float, visible: bool }
+
+export component CubeEnvironmentDemo inherits Window {
+    title <- "XRack · KTX cube environment";
+    width <- 448px; height <- 300px; background <- #162235; resizable <- false;
+    in-out property <bool> version-two: false;
+    in-out property <bool> show-model: true;
+    in-out property <bool> light-from-cube: true;
+    in-out property <bool> local-probe: false;
+    in-out property <float> angle: 0;
+    in-out property <float> tilt: 0;
+    property <string> cube <- root.version-two
+        ? @environment-url("models/direction-cube.ktx2")
+        : @environment-url("models/direction-cube.ktx");
+    property <[CubeActor]> models <- [
+        CubeActor {
+            id: "mirror", mesh: "primitive:sphere", x: 0, y: 0, z: 0, color: #fff,
+            scale-x: 0.94, scale-y: 0.94, scale-z: 0.94, yaw: 0, pitch: 0, roll: 0,
+            material: ProbeMaterial { metalness: 1, roughness: 0.16 }, visible: root.show-model,
+        },
+    ];
+
+    SceneView3D {
+        width <- 448px; height <- 224px; model <- root.models;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 5.5;
+        scene-background <- #192b40; ambient-intensity <- 0;
+        environment <- root.light-from-cube ? root.cube : "";
+        environment-skybox <- true; skybox-source <- root.cube; skybox-yaw <- root.angle; skybox-pitch <- root.tilt;
+        reflection-probes <- [
+            CubeProbe { position: Point3D.new(0, 0, 0), box-size: Vector3D.new(6, 6, 6),
+                        source: root.cube, yaw: 90, visible: root.local-probe }
+        ];
+    }
+    Text {
+        x <- 12px; y <- 231px; width <- 424px; color <- #e8f4ff;
+        text <- (root.version-two ? "KTX2 · ZLIB" : "KTX · RGBA8") + " · Sky " + root.angle + "°";
+    }
+    format-toggle := Button {
+        x <- 10px; y <- 260px; width <- 80px; height <- 31px; text <- "Format";
+        clicked => { root.version-two = !root.version-two; }
+    }
+    rotate-sky := Button {
+        x <- 98px; y <- 260px; width <- 82px; height <- 31px; text <- "Turn";
+        clicked => { root.angle = root.angle == 270 ? 0 : root.angle + 90; }
+    }
+    model-toggle := Button {
+        x <- 188px; y <- 260px; width <- 80px; height <- 31px; text <- "Model";
+        clicked => { root.show-model = !root.show-model; }
+    }
+    light-toggle := Button {
+        x <- 276px; y <- 260px; width <- 78px; height <- 31px; text <- "IBL";
+        clicked => { root.light-from-cube = !root.light-from-cube; }
+    }
+    probe-toggle := Button {
+        x <- 362px; y <- 260px; width <- 76px; height <- 31px; text <- "Probe";
+        clicked => { root.local-probe = !root.local-probe; }
+    }
+}

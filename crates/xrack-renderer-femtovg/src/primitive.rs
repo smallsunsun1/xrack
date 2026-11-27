@@ -9,7 +9,7 @@ use std::{
     rc::{Rc, Weak},
 };
 use xrack_runtime::{Color as UiColor, ImageAsset, ImageFit};
-use xrack_runtime::{ViewportRenderWork, scene_effect::SceneScissor, scene3d::SceneCamera};
+use xrack_runtime::{Value, ViewportRenderWork, scene_effect::SceneScissor, scene3d::SceneCamera};
 
 pub(super) fn scene_view_content(
     node: &Node,
@@ -510,6 +510,7 @@ impl Renderer {
 
         let bounds = item.bounds;
         if !usable_rect(bounds) {
+            self.scene_texture_sizes.record(node, [0; 2], false);
             return Ok(());
         }
         let (camera, content, scissor) = scene_view_content(node, bounds);
@@ -549,6 +550,7 @@ impl Renderer {
             }
         }
         if !usable_rect(content) {
+            self.scene_texture_sizes.record(node, [0; 2], false);
             return Ok(());
         }
         if let Some(texture) = self.scene_item_textures.viewport_output(node, path) {
@@ -591,7 +593,7 @@ impl Renderer {
             && let Some(geometry) =
                 crate::scene3d::prepare_inline_geometry(node, &camera, target.format())
         {
-            let recording = self.scene3d.begin_viewport_recording();
+            let recording = self.scene3d.begin_viewport_recording(node);
             self.scene3d.visit_viewport(effect_owner, node, false);
             self.viewport_textures
                 .clear_disabled_temporal((path, self.scene_generation, scope), Sampling::default());
@@ -600,9 +602,13 @@ impl Renderer {
             self.rectangle_batches.upload(&mut self.canvas)?;
             self.submit_canvas(&target);
             let view = target.create_view(&Default::default());
-            let _gpu_scope = recording.as_ref().and_then(|_| {
-                self.viewport_gpu_timing
-                    .enter(&self.device, effect_owner.path, effect_owner.id)
+            let _gpu_scope = recording.as_ref().and_then(|recording| {
+                self.viewport_gpu_timing.enter(
+                    &self.device,
+                    effect_owner.path,
+                    effect_owner.id,
+                    &recording.samples,
+                )
             });
             let encoder = native_encoder(&mut self.custom_encoder, &self.device);
             self.scene3d.draw_inline(
@@ -626,6 +632,7 @@ impl Renderer {
                 ViewportRenderWork::Inline,
                 extent,
             );
+            self.scene_texture_sizes.record(node, [0; 2], false);
             return Ok(());
         }
         let size = ViewSize {
@@ -643,6 +650,11 @@ impl Renderer {
             pixel_scale,
             false,
         )? {
+            self.scene_texture_sizes.record(
+                node,
+                [output.texture.width(), output.texture.height()],
+                false,
+            );
             let texture = self.viewport_display_texture(output.texture);
             self.composite_native_texture(content, texture)?;
             self.scene3d.stats.viewport_texture_composites += 1;
@@ -669,10 +681,14 @@ impl Renderer {
             pixel_scale,
             self.device.limits().max_texture_dimension_2d,
         )?;
-        let recording = self.scene3d.begin_viewport_recording();
-        let _gpu_scope = recording.as_ref().and_then(|_| {
-            self.viewport_gpu_timing
-                .enter(&self.device, effect_owner.path, effect_owner.id)
+        let recording = self.scene3d.begin_viewport_recording(node);
+        let _gpu_scope = recording.as_ref().and_then(|recording| {
+            self.viewport_gpu_timing.enter(
+                &self.device,
+                effect_owner.path,
+                effect_owner.id,
+                &recording.samples,
+            )
         });
         let feedback = crate::scene3d::has_effect_history(node);
         let animate_feedback = feedback && node.boolean("scene-effect-animate", false);
@@ -708,6 +724,14 @@ impl Renderer {
         self.viewport_textures
             .clear_disabled_temporal(owner, sampling);
         let cached = if export || sampling.is_active() || node.boolean("cache-rendering", false) {
+            let automatic_camera = if node.boolean("auto-camera", false)
+                && node.text("camera").is_none_or(str::is_empty)
+                && let Some(Value::SceneObjects(model)) = node.properties.get("model")
+            {
+                model.automatic_camera_source()
+            } else {
+                None
+            };
             let target = self.viewport_textures.get(
                 &self.device,
                 node,
@@ -721,6 +745,7 @@ impl Renderer {
                             .map_or(0, |cube| cube.revision)
                     }),
                     items: self.scene3d.item_texture_revision(node),
+                    automatic_camera,
                 },
                 sampling,
             );

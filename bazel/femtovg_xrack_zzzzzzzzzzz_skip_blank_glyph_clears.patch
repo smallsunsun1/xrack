@@ -1,0 +1,134 @@
+diff --git a/src/renderer.rs b/src/renderer.rs
+--- a/src/renderer.rs
++++ b/src/renderer.rs
+@@ -361,6 +361,12 @@
+     /// Whether internal glyph atlas writes can be grouped before scene draws.
+     #[doc(hidden)]
+     fn groups_glyph_atlas_writes(&self) -> bool {
++        false
++    }
++
++    /// Whether a newly allocated private glyph atlas image is zero initialized.
++    #[doc(hidden)]
++    fn zeroed_glyph_atlas_images(&self) -> bool {
+         false
+     }
+ 
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -1408,6 +1408,10 @@
+     type CommandBuffer = Option<wgpu::CommandBuffer>;
+ 
+     fn groups_glyph_atlas_writes(&self) -> bool {
++        true
++    }
++
++    fn zeroed_glyph_atlas_images(&self) -> bool {
+         true
+     }
+ 
+diff --git a/src/text.rs b/src/text.rs
+--- a/src/text.rs
++++ b/src/text.rs
+@@ -151,6 +151,54 @@
+ pub struct FontTexture {
+     pub atlas: Atlas,
+     pub(crate) image_id: ImageId,
++    zeroed_unused_cells: bool,
++}
++
++impl FontTexture {
++    fn skip_redundant_clear(
++        &mut self,
++        confined: bool,
++        first: Option<&mut crate::renderer::Command>,
++    ) {
++        // An unconfined path or stroke may leave color and stencil in cells
++        // that are not reserved yet. Keep their clears for the rest of this page.
++        self.zeroed_unused_cells &= confined;
++        if !self.zeroed_unused_cells {
++            return;
++        }
++        if let Some(command) = first.filter(|command| {
++            matches!(command.cmd_type, crate::renderer::CommandType::ClearRect { keep_clip: false, .. })
++        }) {
++            // The fresh cell is already blank and its mask samples use red only.
++            // Keep the command slot until the batch has grouped the glyph samples.
++            command.triangles_verts = None;
++        }
++    }
++}
++
++#[cfg(test)]
++#[test]
++fn glyph_atlas_clear_is_retained_after_an_unconfined_mask() {
++    use crate::renderer::{Command, CommandType};
++
++    let mut canvas = Canvas::new(crate::RecordingRenderer::default()).unwrap();
++    let image_id = canvas
++        .create_image_empty(16, 16, PixelFormat::Rgba8, ImageFlags::empty())
++        .unwrap();
++    let mut texture = FontTexture {
++        atlas: Atlas::new(16, 16),
++        image_id,
++        zeroed_unused_cells: true,
++    };
++    for (confined, keep_clear) in [(true, false), (false, true), (true, true)] {
++        let mut clear = Command::new(CommandType::ClearRect {
++            color: Color::black(),
++            keep_clip: false,
++        });
++        clear.triangles_verts = Some((0, 6));
++        texture.skip_redundant_clear(confined, Some(&mut clear));
++        assert_eq!(clear.triangles_verts.is_some(), keep_clear);
++    }
+ }
+ 
+ impl RenderedGlyph {
+@@ -644,7 +692,9 @@
+         for (index, mut command) in masks.enumerate() {
+             let sample = index % COMMANDS_PER_MASK;
+             if sample == 0 {
+-                canvas.commands.push(command);
++                if command.triangles_verts.is_some() {
++                    canvas.commands.push(command);
++                }
+             } else if let Some((cover, _)) = command.triangles_verts {
+                 match &mut samples[sample - 1] {
+                     Some((first, covers)) => {
+@@ -969,11 +1019,17 @@
+                         f32::from(subpixel_location) / 10.0,
+                         normalized_coords,
+                     )?;
+-                    if let Some((_, Some(mask))) = &placed {
++                    if let Some((glyph, Some(mask))) = &placed {
+                         // The masks of one run can be in different atlas textures.
+                         canvas.set_render_target(RenderTarget::Image(mask.image_id));
+                         let first_command = canvas.commands.len();
+                         let confined = mask.draw(canvas, mode);
++                        if let Some(texture) = self.glyph_textures.borrow_mut().get_mut(glyph.texture_index) {
++                            texture.skip_redundant_clear(
++                                confined,
++                                canvas.commands.get_mut(first_command),
++                            );
++                        }
+                         if mode == RenderMode::Fill {
+                             batches.record(canvas, first_command, confined);
+                         }
+@@ -1418,7 +1474,14 @@
+                 }
+             }
+ 
+-            self.glyph_textures.borrow_mut().push(FontTexture { atlas, image_id });
++            // The debug inspector can upload a background and display atlas alpha directly.
++            let zeroed_unused_cells =
++                !cfg!(feature = "debug_inspector") && canvas.renderer.zeroed_glyph_atlas_images();
++            self.glyph_textures.borrow_mut().push(FontTexture {
++                atlas,
++                image_id,
++                zeroed_unused_cells,
++            });
+ 
+             let index = self.glyph_textures.borrow().len() - 1;
+             texture_search_result = Some((index, image_id, loc));

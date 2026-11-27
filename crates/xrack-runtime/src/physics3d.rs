@@ -839,7 +839,7 @@ fn scene_pose(center: Point3D, rotation: Vector3D) -> Option<Pose> {
     }
     let angles = angles.map(|angle| angle.rem_euclid(360.0) as f32);
     let rotation =
-        UnitQuaternion::from_rotation_matrix(&crate::scene_hierarchy::euler_rotation(angles));
+        UnitQuaternion::from_rotation_matrix(&crate::scene3d::hierarchy::euler_rotation(angles));
     let q = rotation.quaternion();
     Some(Pose::from_parts(
         center,

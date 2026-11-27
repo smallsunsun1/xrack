@@ -241,6 +241,15 @@ struct Feedback {
     pressed: Option<Target>,
     focused: Option<Target>,
     range: Option<f64>,
+    scene_controls: Vec<SceneFeedback>,
+}
+
+#[derive(PartialEq)]
+struct SceneFeedback {
+    path: Vec<usize>,
+    pressed: bool,
+    thumb: Option<usize>,
+    preview: Option<f64>,
 }
 
 impl Feedback {
@@ -258,6 +267,15 @@ impl Feedback {
             range: input
                 .slider_preview_position()
                 .and_then(|(target, value)| target.starts_with(path).then_some(value)),
+            scene_controls: input
+                .scene_controls_below(path)
+                .map(|(target, pressed, thumb, preview)| SceneFeedback {
+                    path: target.to_vec(),
+                    pressed,
+                    thumb,
+                    preview,
+                })
+                .collect(),
         }
     }
 }
@@ -674,6 +692,11 @@ impl Renderer {
                     changed |= old.is_some();
                     continue;
                 };
+                self.scene_texture_sizes.record(
+                    node,
+                    [output.texture.width(), output.texture.height()],
+                    true,
+                );
                 let mut capture = match old {
                     Some(old)
                         if old.output.revision == output.revision

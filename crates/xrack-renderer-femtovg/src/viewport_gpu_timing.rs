@@ -3,6 +3,8 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::mpsc};
 
 use xrack_runtime::{ViewportGpuFrame, ViewportGpuPass, ViewportGpuStats};
 
+use crate::scene3d::RenderSampleTarget;
+
 const MAX_PASSES: usize = 512;
 const QUERY_COUNT: u32 = 2 * MAX_PASSES as u32;
 
@@ -36,9 +38,15 @@ struct Pending {
 
 struct Passes {
     queries: wgpu::QuerySet,
-    viewports: Vec<(Vec<usize>, Option<String>)>,
+    viewports: Vec<Viewport>,
     entries: Vec<(usize, String)>,
     truncated: bool,
+}
+
+struct Viewport {
+    path: Vec<usize>,
+    id: Option<String>,
+    samples: Vec<RenderSampleTarget>,
 }
 
 struct ActiveViewport {
@@ -104,6 +112,7 @@ impl ViewportGpuTimer {
         device: &wgpu::Device,
         path: &[usize],
         id: Option<&str>,
+        samples: &[RenderSampleTarget],
     ) -> Option<ViewportScope> {
         let frame = self.frame?;
         if self.recording.is_none() {
@@ -126,9 +135,11 @@ impl ViewportGpuTimer {
         let passes = self.recording.as_ref()?.passes.clone();
         let mut collection = passes.borrow_mut();
         let view = collection.viewports.len();
-        collection
-            .viewports
-            .push((path.to_vec(), id.map(str::to_owned)));
+        collection.viewports.push(Viewport {
+            path: path.to_vec(),
+            id: id.map(str::to_owned),
+            samples: samples.to_vec(),
+        });
         drop(collection);
         Some(ViewportScope(ACTIVE.with(|active| {
             active.replace(Some(ActiveViewport { view, passes }))
@@ -181,12 +192,31 @@ impl ViewportGpuTimer {
             .any(|slot| slot.pending.is_some())
     }
 
-    pub fn poll(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Option<ViewportGpuFrame> {
+    pub fn sample_pending(&self) -> bool {
+        self.slots
+            .iter()
+            .flatten()
+            .filter_map(|slot| slot.pending.as_ref())
+            .any(|pending| {
+                pending
+                    .passes
+                    .viewports
+                    .iter()
+                    .any(|viewport| !viewport.samples.is_empty())
+            })
+    }
+
+    pub fn poll(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> (Option<ViewportGpuFrame>, bool) {
         if !self.pending() {
-            return None;
+            return (None, false);
         }
         let _ = device.poll(wgpu::PollType::Poll);
         let mut latest: Option<ViewportGpuFrame> = None;
+        let mut sampled = false;
         for slot in self.slots.iter_mut().flatten() {
             let Some(readiness) = slot
                 .pending
@@ -204,28 +234,31 @@ impl ViewportGpuTimer {
             if !matches!(readiness, Ok(Ok(()))) {
                 continue;
             }
-            if pending.epoch == self.epoch
-                && latest
-                    .as_ref()
-                    .is_none_or(|latest| latest.frame < pending.frame)
-            {
+            if pending.epoch == self.epoch {
                 let bytes = pending.passes.entries.len() as u64 * 2 * u64::from(wgpu::QUERY_SIZE);
                 if let Ok(mapped) = slot.readback.slice(0..bytes).get_mapped_range() {
-                    latest = Some(sum_passes(
+                    let (frame, published) = sum_passes(
                         pending.frame,
                         pending.passes,
                         &mapped,
                         queue.get_timestamp_period(),
-                    ));
+                    );
+                    sampled |= published;
+                    if latest
+                        .as_ref()
+                        .is_none_or(|latest| latest.frame < frame.frame)
+                    {
+                        latest = Some(frame);
+                    }
                 }
             }
             slot.readback.unmap();
         }
-        latest
+        (latest, sampled)
     }
 }
 
-fn sum_passes(frame: u64, passes: Passes, bytes: &[u8], period: f32) -> ViewportGpuFrame {
+fn sum_passes(frame: u64, passes: Passes, bytes: &[u8], period: f32) -> (ViewportGpuFrame, bool) {
     let mut totals: Vec<BTreeMap<String, (u32, u64)>> = (0..passes.viewports.len())
         .map(|_| BTreeMap::new())
         .collect();
@@ -245,12 +278,13 @@ fn sum_passes(frame: u64, passes: Passes, bytes: &[u8], period: f32) -> Viewport
         result.0 += 1;
         result.1 = result.1.saturating_add(nanos);
     }
+    let mut sampled = false;
     let views = passes
         .viewports
         .into_iter()
         .zip(totals)
         .filter(|(_, totals)| !totals.is_empty())
-        .map(|((path, id), totals)| {
+        .map(|(viewport, totals)| {
             let gpu_nanos = totals
                 .values()
                 .map(|&(_, nanos)| nanos)
@@ -263,19 +297,31 @@ fn sum_passes(frame: u64, passes: Passes, bytes: &[u8], period: f32) -> Viewport
                     gpu_nanos,
                 })
                 .collect();
-            ViewportGpuStats {
-                path,
-                id,
+            let stats = ViewportGpuStats {
+                path: viewport.path,
+                id: viewport.id,
                 gpu_nanos,
                 passes,
+            };
+            for sample in viewport.samples {
+                sampled |= sample.handle.publish_render_stats_gpu(
+                    sample.revision,
+                    frame,
+                    &stats,
+                    truncated,
+                );
             }
+            stats
         })
         .collect();
-    ViewportGpuFrame {
-        frame,
-        truncated,
-        views,
-    }
+    (
+        ViewportGpuFrame {
+            frame,
+            truncated,
+            views,
+        },
+        sampled,
+    )
 }
 
 fn timestamp_pair(label: Option<&str>) -> Option<(wgpu::QuerySet, u32)> {

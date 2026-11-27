@@ -1322,6 +1322,18 @@ pub(crate) fn complete_with_imports(
     if let Some(scopes) = imports::scene_light_scope_values(&source, &tokens, cursor) {
         return scopes;
     }
+    if let Some(nodes) = imports::particle_scene_shape_values(&source, &tokens, cursor) {
+        return nodes;
+    }
+    if let Some(nodes) = imports::model_blend_node_values(&source, &tokens, cursor) {
+        return nodes;
+    }
+    if let Some(nodes) = imports::look_at_node_values(&source, &tokens, cursor) {
+        return nodes;
+    }
+    if let Some(nodes) = imports::skin_joint_values(&source, &tokens, cursor) {
+        return nodes;
+    }
     if let Some(references) = imports::scene_instance_reference_values(&source, &tokens, cursor) {
         return references;
     }
@@ -1333,6 +1345,9 @@ pub(crate) fn complete_with_imports(
     if let Some(groups) = imports::scene_particle_group_values(&source, &tokens, cursor) {
         return groups;
     }
+    if let Some(emitters) = imports::scene_particle_emitter_values(&source, &tokens, cursor) {
+        return emitters;
+    }
     if let Some(nodes) = imports::scene_particle_parent_values(&source, &tokens, cursor, workspace)
     {
         return nodes;
@@ -1342,8 +1357,8 @@ pub(crate) fn complete_with_imports(
     }) {
         return nodes;
     }
-    if let Some(nodes) = imports::mesh_node_query_values(&source, &tokens, cursor, workspace) {
-        return nodes;
+    if let Some(selectors) = imports::mesh_asset_query_values(&source, &tokens, cursor, workspace) {
+        return selectors;
     }
     if let Some(slots) = imports::scene_material_slot_values(&source, &tokens, cursor, workspace) {
         return slots;
@@ -2639,6 +2654,15 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 PROPERTY, "read-only length",
             );
             items.add("layout-ready", PROPERTY, "read-only bool");
+            if kind == "SceneView3D" {
+                for property in builtins::SCENE_TEXTURE_SIZE_PROPERTIES {
+                    items.add(
+                        property,
+                        PROPERTY,
+                        "read-only int · offscreen texture pixels",
+                    );
+                }
+            }
             if matches!(kind, "Pane" | "ControlFrame" | "ApplicationWindow") {
                 items.words(
                     "available-width available-height",

@@ -55,6 +55,9 @@ macro_rules! read_member {
     (WalkResult3D, $input:ident, contacts) => {
         $input.contacts()
     };
+    (TextureData2D, $input:ident, $member:ident) => {
+        $input.$member()
+    };
     (InstanceTable3D, $input:ident, count) => {
         $input.count()
     };
@@ -64,8 +67,17 @@ macro_rules! read_member {
     (Instance3D, $input:ident, object_id) => {
         $input.object_id.clone()
     };
+    (RenderStats3D, $input:ident, work) => {
+        $input.work.clone()
+    };
     (Hit3D, $input:ident, object_id) => {
         $input.object_id.clone()
+    };
+    (Hit3D, $input:ident, item_source) => {
+        $input.item_source().to_owned()
+    };
+    (Hit3D, $input:ident, item_position) => {
+        $input.item_position()
     };
     ($owner:ident, $input:ident, $member:ident) => {
         $input.$member

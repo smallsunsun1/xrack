@@ -9,6 +9,7 @@ mod lightmap_samples;
 pub mod literal;
 mod localization;
 mod material_shader;
+mod particle_shape;
 mod scene_effect;
 mod scene_plan;
 pub mod visual;
@@ -18,7 +19,7 @@ pub use assets::{
     check_loaded_image_sources, collect_missing_vector_paths, collect_vector_paths,
     require_scene_assets, resolve_assets,
 };
-pub use environment::pack_environment;
+pub use environment::{pack_cubemap, pack_environment};
 pub use localization::{
     ResolvedTranslations, check_missing_translation_catalog, check_translation_sources,
     resolve_translations,

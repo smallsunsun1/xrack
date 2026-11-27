@@ -1,7 +1,8 @@
 use std::time::Instant;
 
 use xrack_runtime::{
-    ViewportGpuFrame, ViewportRenderStats, ViewportRenderWork, ViewportStatistics,
+    GeometryHandle, Node, RenderStats3D, ViewportGpuFrame, ViewportRenderStats, ViewportRenderWork,
+    ViewportStatistics,
 };
 
 use super::{SceneDrawStats, SceneRenderer, effect_history::Owner};
@@ -11,7 +12,15 @@ const MAX_VIEWPORT_REPORTS: usize = 64;
 #[derive(Default)]
 pub(crate) struct ViewportCollector {
     enabled: bool,
+    inspector_first_frame: u64,
     statistics: ViewportStatistics,
+    pending: Vec<(GeometryHandle, RenderStats3D)>,
+}
+
+#[derive(Clone)]
+pub(crate) struct RenderSampleTarget {
+    pub handle: GeometryHandle,
+    pub revision: i64,
 }
 
 pub(crate) struct RecordedViewport {
@@ -19,24 +28,63 @@ pub(crate) struct RecordedViewport {
     counters: SceneDrawStats,
     shadows: u64,
     mesh_bytes: u64,
+    inspector: bool,
+    pub samples: Vec<RenderSampleTarget>,
 }
 
 impl ViewportCollector {
-    pub fn enable(&mut self, enabled: bool, gpu_timing_supported: bool) {
-        self.enabled = enabled;
-        self.statistics.gpu_timing_supported = gpu_timing_supported;
-        self.clear();
+    pub fn enable(&mut self, enabled: bool, gpu_supported: bool) {
+        self.statistics.gpu_timing_supported = gpu_supported;
+        if self.enabled != enabled {
+            self.enabled = enabled;
+            self.inspector_first_frame = self.statistics.frame.saturating_add(1);
+            self.statistics.gpu = None;
+            self.clear();
+        }
     }
 
     pub fn set_gpu(&mut self, frame: Option<ViewportGpuFrame>) {
         self.statistics.gpu = frame;
     }
 
-    pub fn begin_frame(&mut self) {
+    pub fn report_gpu(&mut self, frame: ViewportGpuFrame) -> bool {
+        if self.enabled
+            && frame.frame >= self.inspector_first_frame
+            && self
+                .statistics
+                .gpu
+                .as_ref()
+                .is_none_or(|previous| previous.frame < frame.frame)
+        {
+            self.set_gpu(Some(frame));
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn begin_frame(&mut self, gpu_supported: bool) {
+        self.statistics.frame = self.statistics.frame.wrapping_add(1);
+        self.statistics.gpu_timing_supported = gpu_supported;
         if self.enabled {
-            self.statistics.frame = self.statistics.frame.wrapping_add(1);
             self.clear();
         }
+    }
+
+    pub fn gpu_frame(&self) -> Option<u64> {
+        self.statistics
+            .gpu_timing_supported
+            .then_some(self.statistics.frame)
+    }
+
+    pub fn finish_samples(&mut self, submitted: bool) -> bool {
+        let mut changed = false;
+        for (handle, sample) in self.pending.drain(..) {
+            if submitted {
+                changed |= handle.publish_render_stats(sample);
+            }
+        }
+        changed
     }
 
     pub fn clear(&mut self) {
@@ -50,13 +98,37 @@ impl ViewportCollector {
 }
 
 impl SceneRenderer {
-    pub(crate) fn begin_viewport_recording(&mut self) -> Option<RecordedViewport> {
-        if !self.viewport_collector.enabled {
-            return None;
+    pub(crate) fn begin_viewport_recording(&mut self, node: &Node) -> Option<RecordedViewport> {
+        let collector = &mut self.viewport_collector;
+        let revision = node.int("render-stats-revision").unwrap_or(0);
+        let mut samples = Vec::new();
+        for handle in node
+            .geometry_handle
+            .iter()
+            .chain(node.instance_geometry_handle.iter())
+        {
+            if handle.needs_render_stats(revision)
+                && !collector.pending.iter().any(|(old, _)| old == handle)
+                && !samples
+                    .iter()
+                    .any(|sample: &RenderSampleTarget| &sample.handle == handle)
+            {
+                if revision > 0 {
+                    samples.push(RenderSampleTarget {
+                        handle: handle.clone(),
+                        revision,
+                    });
+                } else {
+                    collector
+                        .pending
+                        .push((handle.clone(), RenderStats3D::default()));
+                }
+            }
         }
-        let statistics = &mut self.viewport_collector.statistics;
-        if statistics.views.len() == MAX_VIEWPORT_REPORTS {
-            statistics.truncated = true;
+        let room = collector.statistics.views.len() < MAX_VIEWPORT_REPORTS;
+        let inspector = collector.enabled && room;
+        collector.statistics.truncated |= collector.enabled && !room;
+        if !inspector && samples.is_empty() {
             return None;
         }
         Some(RecordedViewport {
@@ -64,6 +136,8 @@ impl SceneRenderer {
             counters: self.stats,
             shadows: self.shadow_passes(),
             mesh_bytes: self.mesh_bytes_uploaded(),
+            inspector,
+            samples,
         })
     }
 
@@ -89,8 +163,12 @@ impl SceneRenderer {
         ) && after.last_raster_size != [0, 0])
         .then_some(after.last_raster_size);
         let item = ViewportRenderStats {
-            path: owner.path.to_vec(),
-            id: owner.id.map(str::to_owned),
+            path: if before.inspector {
+                owner.path.to_vec()
+            } else {
+                Vec::new()
+            },
+            id: owner.id.filter(|_| before.inspector).map(str::to_owned),
             work,
             output_size,
             raster_size,
@@ -124,7 +202,19 @@ impl SceneRenderer {
             linked_resolves: linked,
             linked_working_bytes: (linked != 0).then_some(after.linked_transparency_bytes),
         };
-        self.viewport_collector.statistics.views.push(item);
+        let collector = &mut self.viewport_collector;
+        for sample in before.samples {
+            let stats = RenderStats3D::recorded(
+                sample.revision,
+                collector.statistics.frame,
+                &item,
+                collector.statistics.gpu_timing_supported,
+            );
+            collector.pending.push((sample.handle, stats));
+        }
+        if before.inspector {
+            collector.statistics.views.push(item);
+        }
     }
 
     fn mesh_bytes_uploaded(&self) -> u64 {

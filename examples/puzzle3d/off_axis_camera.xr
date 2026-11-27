@@ -107,3 +107,63 @@ export component OffAxisCameraDemo inherits Window {
         shift := Slider { width <- 80px; minimum <- -0.4; maximum <- 0.4; value <-> root.horizontal; }
     }
 }
+
+struct FieldOfViewActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-fov: float, camera-fov-axis: string,
+    lod-of: string, lod-max-size: length,
+}
+
+export component FieldOfViewDemo inherits Window {
+    title <- "XRack · 透视视角";
+    width <- 320px;
+    height <- 216px;
+    resizable <- false;
+    background <- #141d29;
+
+    in-out property <string> fov-axis: "vertical";
+    in-out property <bool> wide: true;
+    property <FieldOfViewActor> defaults: FieldOfViewActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1.4, scale-y: 1.4, scale-z: 1.4, yaw: 0, pitch: 0, roll: 0,
+        color: #ff784d, camera-kind: "", camera-fov: 90, camera-fov-axis: "",
+        lod-of: "", lod-max-size: 0px,
+    };
+    property <scenemodel3d> scene <- Scene3D.prepare([
+        FieldOfViewActor { id: "lens", mesh: "", z: 8, camera-kind: "perspective",
+            camera-fov-axis: root.fov-axis, ..root.defaults },
+        FieldOfViewActor { id: "side", mesh: "primitive:sphere", x: 4, y: 3, ..root.defaults },
+        FieldOfViewActor { lod-of: "side", lod-max-size: 96px, ..root.defaults },
+        FieldOfViewActor { id: "top", y: 6, color: #5addae, ..root.defaults },
+    ]);
+    property <point3d> reference <- Point3D.new(4, 3, 0);
+    property <point2d> dimensions <- Point2D.new(root.wide ? 320px : 160px, 160px);
+    out property <projectedpoint3d> side-point <- view.project(root.reference);
+    out property <projectedpoint3d> top-point <- view.project(Point3D.new(0, 6, 0));
+    out property <projectedpoint3d> direct-point <-
+        Scene3D.project-camera(root.scene, "lens", root.dimensions, root.reference);
+    out property <point3d> unprojected <- view.unproject(root.side-point.point, root.side-point.depth,
+        Point3D.new(-1, -1, -1));
+    out property <hit3d> surface-hit <- view.hit(root.side-point.point);
+
+    view := SceneView3D {
+        width <- root.dimensions.x; height <- root.dimensions.y;
+        model <- root.scene; camera <- "lens";
+        scene-background <- #172333;
+    }
+    HorizontalLayout {
+        x <- 10px; y <- 170px; width <- 300px; height <- 36px; spacing <- 8px;
+        axis-button := Button {
+            width <- 148px;
+            text <- root.fov-axis == "horizontal" ? "水平视角" : "垂直视角";
+            clicked => { root.fov-axis = root.fov-axis == "horizontal" ? "vertical" : "horizontal"; }
+        }
+        resize-button := Button {
+            width <- 144px; text <- root.wide ? "宽画幅" : "方画幅";
+            clicked => { root.wide = !root.wide; }
+        }
+    }
+}

@@ -60,4 +60,4 @@
 
 GPU 测试带有 `manual` 标签，按需显式运行 `bazel test //tests:gpu_test` 并使用可用的图形适配器和系统字体。仅由 Bazel 管理的手写 Rust 示例和测试文件可单独用 `rustfmt --edition 2024 --config skip_children=true --check` 验证。
 
-依赖或构建规则变化后，用 `bazel run //:rust_project -- //... //tests:gpu_test` 更新 Rust Analyzer 项目图。C++ 编译动作变化后运行 `python3 tools/compile_commands.py`。编辑器配置与静态检查环境见 [VS Code 与预览](docs/editor.md) 和 [项目构建与验证](docs/development.md)。
+依赖或构建规则变化后，用 `bazel run //:rust_project -- //... //tests:gpu_test //tests:scene3d_test` 更新 Rust Analyzer 项目图。C++ 编译动作变化后运行 `python3 tools/compile_commands.py`。编辑器配置与静态检查环境见 [VS Code 与预览](docs/editor.md) 和 [项目构建与验证](docs/development.md)。

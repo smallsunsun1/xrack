@@ -476,6 +476,82 @@ fn window_damage_keeps_direct_frames_off_the_backing() -> TestResult {
 }
 
 #[test]
+fn an_idle_scroll_view_repaints_after_programmatic_scroll_and_a_late_child_edit() -> TestResult {
+    use std::cell::Cell;
+    use xrack_runtime::{Color, Orientation, ScrollBarPolicy, ViewportHandle};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut harness = Harness {
+        incremental: Renderer::with_device(gpu.clone())?,
+        reference: Renderer::with_device(gpu)?,
+        scale: 1.0,
+        width: 320,
+        height: 200,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        sample: Default::default(),
+    };
+    harness.incremental.set_window_damage_forced(true);
+    let offset = Rc::new(Cell::new(0.0));
+    let requested = offset.clone();
+    let viewport = ViewportHandle::default();
+    viewport.bind_offset(
+        Orientation::Vertical,
+        move || Length(-requested.get()),
+        |_| {},
+    );
+    let mut view = Node::new("ScrollView", None);
+    view.viewport_handle = Some(viewport);
+    view.properties.insert("width", Length(96.0).into());
+    view.properties.insert("height", Length(64.0).into());
+    for name in ["horizontal-scroll-bar-policy", "vertical-scroll-bar-policy"] {
+        view.properties
+            .insert(name, ScrollBarPolicy::AlwaysOff.into());
+    }
+    for index in 0..128_u32 {
+        let mut row = Node::new("Rectangle", None);
+        row.properties
+            .insert("y", Length(f64::from(index) * 16.0).into());
+        row.properties.insert("width", Length(96.0).into());
+        row.properties.insert("height", Length(16.0).into());
+        row.properties
+            .insert("background", Color(0x214078ff + (index << 16)).into());
+        row.mark_paint_only_background();
+        view.children.push(row);
+    }
+    let mut scene = Node::new("Window", None);
+    scene.children.push(view);
+    let input = Interaction::default();
+    let (work, first) = harness.compare(&scene, &input, true)?;
+    assert_eq!(work, WindowDamage::Full);
+
+    offset.set(1984.0);
+    let layout = Rc::new(harness.incremental.layout_with_input(
+        &scene,
+        Size::new(320.0, 200.0),
+        &input,
+    ));
+    assert_eq!(layout.children[0].scroll.unwrap().offset, 1984.0);
+    let (work, scrolled) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert_small(work, [320, 200]);
+    assert_ne!(first, scrolled);
+
+    scene.children[0].children[127]
+        .properties
+        .insert("background", Color(0x4332f8ff).into());
+    let (work, edited) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert_small(work, [320, 200]);
+    assert_ne!(scrolled, edited);
+    assert_eq!(
+        harness.compare_prepared(&scene, &layout, &input, true)?.0,
+        WindowDamage::Unchanged,
+    );
+    Ok(())
+}
+
+#[test]
 fn prepared_geometry_reuse_keeps_disjoint_damage_out_of_idle_viewports() -> TestResult {
     let compiled = xrack_compiler::compile(include_str!("window_damage.xr"), "window_damage.xr")?;
     let interpreted = xrack_interpreter::load_mlir(&compiled.mlir)?.create("MixedDamageDemo")?;

@@ -351,13 +351,15 @@ impl Scene {
                 }
                 let active = self.active_viewports.binary_search(&position).is_ok()
                     || after.active_viewports.binary_search(&position).is_ok();
+                // Scrolling changes the viewport's placement even when
+                // its large scene subtree is mostly unchanged.
                 let unchanged = !active
-                    && (before.node.shares_storage_with(&current.node)
-                        || before.node == current.node)
                     && (same_layout
                         || self.layout.as_ref().zip(after.layout.as_ref()).is_some_and(
                             |(old, new)| old.at_path(&before.path) == new.at_path(&current.path),
-                        ));
+                        ))
+                    && (before.node.shares_storage_with(&current.node)
+                        || before.node == current.node);
                 unchanged || damage.insert(before.extent) && damage.insert(current.extent)
             })
     }
@@ -761,9 +763,8 @@ fn static_viewport_work(node: &Node, layout: &LayoutNode) -> Option<u32> {
     }
     // An empty content scissor skips the subtree's paint work. Keep the
     // viewport's painter eligibility checks independent of that estimate.
-    let clip = layout.bounds.intersect(layout.clip);
     if !layout.allows_overflow()
-        && (clip.width <= 0.0 || clip.height <= 0.0)
+        && super::is_clipped_out(layout.bounds, layout.clip)
         && !node
             .properties
             .keys()

@@ -556,6 +556,10 @@ fn measure_ink_runs<'a>(
     let hasher = spans
         .as_ref()
         .map_or_else(RandomState::new, |spans| spans.entries.hasher().clone());
+    #[cfg(xrack_femtovg_glyph_samples)]
+    let cached_ink = (document.text().len() >= 64 * 1024)
+        .then(|| system.cached_styled_ink(node))
+        .flatten();
     let mut seen = HashMap::<u64, (Cow<'_, str>, TextStyle)>::new();
     for fragment in fragments {
         let style = ink_style(fragment);
@@ -571,9 +575,16 @@ fn measure_ink_runs<'a>(
         let measure = || {
             let context = system.context();
             #[cfg(xrack_femtovg_glyph_samples)]
-            let [top, bottom] = context
-                .alphabetic_ink_bounds(baseline, text.as_ref(), paint)
-                .ok()?;
+            let [top, bottom] = if let Some(ink) = cached_ink
+                .as_ref()
+                .and_then(|cache| cache.get(text.as_ref(), style))
+            {
+                [baseline + ink[0], baseline + ink[1]]
+            } else {
+                context
+                    .alphabetic_ink_bounds(baseline, text.as_ref(), paint)
+                    .ok()?
+            };
             #[cfg(not(xrack_femtovg_glyph_samples))]
             let [top, bottom] = {
                 let metrics = context

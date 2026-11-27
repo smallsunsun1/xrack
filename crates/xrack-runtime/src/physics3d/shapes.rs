@@ -5,8 +5,8 @@ use rapier3d::prelude::{ColliderBuilder, Pose, RigidBodyBuilder, SharedShape, Ve
 use super::mesh_shapes::{MeshShapeKind, prepare_mesh_shape};
 use super::{PhysicsWorld3D, collider_material, scene_pose, vector};
 use crate::{
-    Point3D, RecordList, VecModel, Vector3D, scene_hierarchy::CollisionShapeSpec,
-    scene3d::MeshAsset,
+    Point3D, RecordList, VecModel, Vector3D, scene3d::MeshAsset,
+    scene3d::hierarchy::CollisionShapeSpec,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]

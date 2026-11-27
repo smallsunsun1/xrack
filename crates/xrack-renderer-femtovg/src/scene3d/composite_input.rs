@@ -27,6 +27,10 @@ pub(super) struct CompositeInput<'a> {
 }
 
 impl<'a> CompositeInput<'a> {
+    pub fn has_depth(self) -> bool {
+        self.depth.is_some()
+    }
+
     pub fn from_node(node: &Node, camera: SceneCamera, captures: &'a CaptureViews) -> Option<Self> {
         Self::from_reads(&capture_reads(node), camera, captures)
     }

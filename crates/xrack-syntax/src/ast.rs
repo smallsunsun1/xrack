@@ -261,8 +261,10 @@ pub enum Type {
     PhysicsContact3DList,
     PhysicsHit3DList,
     ProjectedPoint3D,
+    RenderStats3D,
     Instance3D,
     InstanceTable3D,
+    TextureData2D,
     MeshAsset3D,
     MeshNode3D,
     Bounds3D,
@@ -356,8 +358,10 @@ impl Type {
             | Self::PhysicsContact3D
             | Self::PhysicsHit3D
             | Self::ProjectedPoint3D
+            | Self::RenderStats3D
             | Self::Instance3D
             | Self::InstanceTable3D
+            | Self::TextureData2D
             | Self::MeshAsset3D
             | Self::MeshNode3D
             | Self::Bounds3D
@@ -403,8 +407,10 @@ impl Type {
             Self::PhysicsContact3DList => "physicscontact3dlist",
             Self::PhysicsHit3DList => "physicshit3dlist",
             Self::ProjectedPoint3D => "projectedpoint3d",
+            Self::RenderStats3D => "renderstats3d",
             Self::Instance3D => "instance3d",
             Self::InstanceTable3D => "instancetable3d",
+            Self::TextureData2D => "texturedata2d",
             Self::MeshAsset3D => "meshasset3d",
             Self::MeshNode3D => "meshnode3d",
             Self::Bounds3D => "bounds3d",
@@ -505,8 +511,10 @@ impl Type {
             "physicshit3d" | "PhysicsHit3D" => Self::PhysicsHit3D,
             "physicshit3dlist" | "[physicshit3d]" | "[PhysicsHit3D]" => Self::PhysicsHit3DList,
             "projectedpoint3d" | "ProjectedPoint3D" => Self::ProjectedPoint3D,
+            "renderstats3d" | "RenderStats3D" => Self::RenderStats3D,
             "instance3d" | "Instance3D" => Self::Instance3D,
             "instancetable3d" | "InstanceTable3D" => Self::InstanceTable3D,
+            "texturedata2d" | "TextureData2D" => Self::TextureData2D,
             "meshasset3d" | "MeshAsset3D" => Self::MeshAsset3D,
             "meshnode3d" | "MeshNode3D" => Self::MeshNode3D,
             "bounds3d" | "Bounds3D" => Self::Bounds3D,
@@ -1036,6 +1044,7 @@ pub enum ExprKind {
     ShaderUrl(String),
     MaterialShaderUrl(String),
     InstanceTableUrl(String),
+    ParticleShapeUrl(String),
     SlicedImageUrl {
         path: String,
         slice: String,

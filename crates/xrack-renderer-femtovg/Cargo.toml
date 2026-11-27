@@ -13,7 +13,7 @@ xrack-layout.workspace = true
 xrack-assets.workspace = true
 femtovg.workspace = true
 parley = { version = "=0.12.0", features = ["complex-scripts"] }
-rustybuzz = "=0.20.1"
+rustybuzz.workspace = true
 self_cell = "=1.3.0"
 unicode-bidi.workspace = true
 unicode-segmentation.workspace = true

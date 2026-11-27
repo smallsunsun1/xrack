@@ -249,6 +249,17 @@ crate.annotation(
         "//bazel:femtovg_xrack_word_keys.patch",
         "//bazel:femtovg_xrack_word_ltr.patch",
         "//bazel:femtovg_xrack_word_positions.patch",
+        "//bazel:femtovg_xrack_z_ordered_meshes.patch",
+        "//bazel:femtovg_xrack_zz_clip_mask_retention.patch",
+        "//bazel:femtovg_xrack_zzz_opaque_clip_tiles.patch",
+        "//bazel:femtovg_xrack_zzzz_premultiplied_mask_shader.patch",
+        "//bazel:femtovg_xrack_zzzzz_solid_color_shader.patch",
+        "//bazel:femtovg_xrack_zzzzzz_split_clip_masks.patch",
+        "//bazel:femtovg_xrack_zzzzzzz_joint_text_metrics.patch",
+        "//bazel:femtovg_xrack_zzzzzzzz_glyph_pipelines.patch",
+        "//bazel:femtovg_xrack_zzzzzzzzz_batch_short_words.patch",
+        "//bazel:femtovg_xrack_zzzzzzzzzz_word_cache_metrics.patch",
+        "//bazel:femtovg_xrack_zzzzzzzzzzz_skip_blank_glyph_clears.patch",
     ],
 )
 

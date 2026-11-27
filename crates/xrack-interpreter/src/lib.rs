@@ -146,6 +146,10 @@ impl Program {
                 imported,
                 |key| self.scene_assets.textures.get(key).cloned(),
                 |key| self.scene_assets.material_shaders.get(key).cloned(),
+                self.fonts.as_ref().map_or(
+                    xrack_runtime::scene3d::SceneTextFonts::System,
+                    xrack_runtime::scene3d::SceneTextFonts::Loaded,
+                ),
             )
         } else {
             self.scene_projections.record_cameras(model, imported)
@@ -321,8 +325,10 @@ pub enum ValueType {
     PhysicsContact3DList,
     PhysicsHit3DList,
     ProjectedPoint3D,
+    RenderStats3D,
     Instance3D,
     InstanceTable3D,
+    TextureData2D,
     MeshAsset3D,
     MeshNode3D,
     Bounds3D,
@@ -470,6 +476,7 @@ enum Expression {
     TextAccepts(String),
     TextValidity(String),
     GeometryRead(String, Option<xrack_runtime::GeometryMetric>),
+    SceneTextureSize(String, usize),
     SceneViewQuery(String, String, Vec<Expr>),
     ViewportRead(String, viewport::Metric),
     ListSelectionRead(String),
@@ -585,6 +592,7 @@ enum Statement {
         span: xrack_syntax::ast::Span,
     },
     Scroll(String, xrack_runtime::ScrollCommandMethod, Vec<Expr>),
+    SceneTouch(String, [Expr; 4]),
     PositionChild {
         view: String,
         target: String,
@@ -691,6 +699,9 @@ struct Definition {
     selectors: Vec<StateSelector>,
     geometry_targets: BTreeSet<String>,
     scene_view_targets: BTreeSet<String>,
+    scene_item_targets: BTreeSet<String>,
+    scene_texture_size_targets: BTreeSet<String>,
+    render_stats_targets: BTreeSet<String>,
     viewport_targets: BTreeSet<String>,
     source_scroll_targets: BTreeSet<String>,
     key_scroll_targets: BTreeSet<String>,

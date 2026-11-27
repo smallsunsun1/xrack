@@ -11850,6 +11850,113 @@ fn instanced_rounded_fills_keep_overlapping_colors_in_paint_order()
 }
 
 #[test]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn mixed_instanced_rounded_fills_preserve_overlapping_siblings()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut renderer = Renderer::with_device(gpu.clone())?;
+    let mut painter = Renderer::with_device(gpu)?;
+    painter.set_rectangle_optimization_enabled(false);
+    let input = Interaction::default();
+    // Reverse draw order on alternating rows while keeping their geometry.
+    for spacing in [21, 14, 9] {
+        let mut scene = Node::new("Window", None);
+        scene
+            .properties
+            .insert("background", Color(0xffffffff).into());
+        for index in 0..600 {
+            if index == 300 && spacing == 9 {
+                // Exercise the normal paint bindings between two palette draws.
+                let mut path = Node::new("Path", None);
+                for (name, value) in [("x", 8.0), ("y", 450.0), ("width", 32.0), ("height", 24.0)] {
+                    path.properties.insert(name, Length(value).into());
+                }
+                path.properties
+                    .insert("commands", "M2 2 H30 V10 H13 V20 H2 Z".to_owned().into());
+                path.properties.insert("fill", Color(0x5678adff).into());
+                scene.children.push(path);
+            }
+            let mut tile = Node::new("Rectangle", None);
+            let row = index / 30;
+            let column = if row % 2 == 0 {
+                index % 30
+            } else {
+                29 - index % 30
+            };
+            let slot = row * 30 + column;
+            let overlap = if spacing == 21 && slot % 37 == 8 && column != 0 {
+                12.0
+            } else {
+                0.0
+            };
+            let shift = (slot * 27 % 1000) as f64 / 1000.0;
+            for (name, value) in [
+                (
+                    "x",
+                    (column * spacing + 3 + slot % 5) as f64 + shift - overlap,
+                ),
+                ("y", (row * 22 + 3 + (slot * 3) % 5) as f64 + shift),
+                ("width", 12.0 + (slot % 3) as f64),
+                ("height", 14.0 + (slot / 3 % 2) as f64),
+                ("border-radius", 1.5 + (slot % 2) as f64),
+            ] {
+                tile.properties.insert(name, Length(value).into());
+            }
+            let colors = [0x2868_d4c8, 0xb83c_5ade, 0x25a7_6aff, 0xdd9b_28e6];
+            tile.properties
+                .insert("background", Color(colors[index % 4]).into());
+            scene.children.push(tile);
+        }
+
+        for fading in [false, true] {
+            if fading {
+                for (index, tile) in scene.children.iter_mut().enumerate() {
+                    if tile.kind != "Rectangle" {
+                        continue;
+                    }
+                    tile.properties
+                        .insert("opacity", (0.50 + (index % 8) as f64 * 0.05).into());
+                }
+            }
+            let [width, height] = [1280, 960];
+            let mut output = None;
+            let profile = xrack_runtime::update_profile::measure(|| {
+                output = Some(renderer.snapshot(&scene, width, height, 2.0, &input));
+            })
+            .ok_or("missing profile of mixed rounded fills")?;
+            let output = output.ok_or("missing mixed rounded frame")??;
+            let reference = painter.snapshot(&scene, width, height, 2.0, &input)?;
+            assert_eq!(output.layout, reference.layout);
+            assert_eq!(output.rgba.len(), reference.rgba.len());
+            if !fading && renderer.device.adapter_info().backend == wgpu::Backend::Metal {
+                assert!(
+                    profile.geometry_upload_bytes >= 600 * 32,
+                    "spacing={spacing}"
+                );
+            }
+            for (index, (&actual, &expected)) in output.rgba.iter().zip(&reference.rgba).enumerate()
+            {
+                assert!(
+                    actual.abs_diff(expected) <= 2,
+                    "mixed rounded fill with spacing {spacing} at ({}, {}), channel {}: {actual} vs {expected}",
+                    index / 4 % width as usize,
+                    index / 4 / width as usize,
+                    index % 4,
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
 #[ignore = "manual GPU measurement of rectangle motion and opacity"]
 fn benchmark_rectangle_animation() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
@@ -11858,6 +11965,13 @@ fn benchmark_rectangle_animation() -> Result<(), Box<dyn std::error::Error>> {
     let viewport = Size::new(640.0, 480.0);
     let rounded = std::env::var_os("XRACK_RECTANGLE_BENCH_ROUNDED").is_some();
     let subpixel = std::env::var_os("XRACK_RECTANGLE_BENCH_SUBPIXEL").is_some();
+    let mixed = std::env::var_os("XRACK_RECTANGLE_BENCH_MIXED").is_some();
+    let overlap = std::env::var("XRACK_RECTANGLE_BENCH_OVERLAP").ok();
+    let column_spacing = match overlap.as_deref() {
+        Some("tight") => 9,
+        Some(_) => 14,
+        None => 21,
+    };
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
         None,
@@ -11883,10 +11997,20 @@ fn benchmark_rectangle_animation() -> Result<(), Box<dyn std::error::Error>> {
         .insert("background", Color(0xffff_ffff).into());
     for index in 0..600 {
         let mut tile = Node::new("Rectangle", None);
-        tile.properties.insert("width", Length(16.0).into());
-        tile.properties.insert("height", Length(14.0).into());
+        let (width, height, radius) = if mixed {
+            (
+                12.0 + (index % 3) as f64,
+                14.0 + (index / 3 % 2) as f64,
+                1.5 + (index % 2) as f64,
+            )
+        } else {
+            (16.0, 14.0, 2.0)
+        };
+        tile.properties.insert("width", Length(width).into());
+        tile.properties.insert("height", Length(height).into());
         if rounded {
-            tile.properties.insert("border-radius", Length(2.0).into());
+            tile.properties
+                .insert("border-radius", Length(radius).into());
         }
         tile.properties.insert(
             "background",
@@ -11901,7 +12025,7 @@ fn benchmark_rectangle_animation() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 0.0
             };
-            let x = ((n % 30) * 21 + 3 + (phase + n) % 5) as f64 + shift;
+            let x = ((n % 30) * column_spacing + 3 + (phase + n) % 5) as f64 + shift;
             let y = ((n / 30) * 22 + 3 + (phase / 3 + n * 3) % 5) as f64 + shift;
             tile.properties.insert("x", Length(x).into());
             tile.properties.insert("y", Length(y).into());
@@ -12016,6 +12140,75 @@ fn opaque_window_background_clear_matches_the_regular_painter() {
             assert_eq!(solid.pixel(159, 50), Some(color.0.to_be_bytes()));
         }
     }
+}
+
+#[test]
+fn rounded_viewport_background_preserves_paint_order() -> Result<(), Box<dyn std::error::Error>> {
+    use xrack_runtime::{Color, Length, Node};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    renderer.set_cached_layer_compositing_enabled(false);
+    let input = Interaction::default();
+    let size = Size::new(80.0, 48.0);
+    let background = Color(0x225588ff);
+    let accent = Color(0xdb5628ff);
+    let rectangle = |[x, y, width, height]: [f64; 4], color: Color| {
+        let mut node = Node::new("Rectangle", None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            node.properties.insert(name, Length(value).into());
+        }
+        node.properties.insert("background", color.into());
+        node
+    };
+
+    let mut scene = Node::new("Window", None);
+    scene.properties.insert("background", background.into());
+    let mut viewport = rectangle([8.0, 4.0, 44.0, 36.0], background);
+    viewport.properties.insert("clip", true.into());
+    viewport
+        .properties
+        .insert("border-radius", Length(8.0).into());
+    viewport
+        .children
+        .push(rectangle([0.0, 0.0, 12.0, 12.0], accent));
+    scene.children.push(viewport);
+
+    let mut layout = renderer.layout_with_input(&scene, size, &input);
+    let actual = renderer.snapshot_prepared(&scene, layout.clone(), 160, 96, 2.0, &input)?;
+    assert_eq!(actual.pixel(16, 8), Some(background.0.to_be_bytes()));
+    assert_eq!(actual.pixel(30, 22), Some(accent.0.to_be_bytes()));
+
+    // Force the root brush through the regular painter on the reference.
+    layout.clip.width = 79.5;
+    let expected = renderer.snapshot_prepared(&scene, layout, 160, 96, 2.0, &input)?;
+    for (actual, expected) in actual
+        .rgba
+        .chunks_exact(640)
+        .zip(expected.rgba.chunks_exact(640))
+    {
+        assert_eq!(&actual[..636], &expected[..636]);
+    }
+
+    let mut sibling = rectangle([24.0, 16.0, 12.0, 12.0], accent);
+    sibling.properties.insert("z", (-1.0_f64).into());
+    scene.children.push(sibling);
+    let behind = renderer.snapshot(&scene, 160, 96, 2.0, &input)?;
+    assert_eq!(behind.pixel(54, 40), Some(background.0.to_be_bytes()));
+
+    scene.children[1].properties.insert("z", 1.0_f64.into());
+    let in_front = renderer.snapshot(&scene, 160, 96, 2.0, &input)?;
+    assert_eq!(in_front.pixel(54, 40), Some(accent.0.to_be_bytes()));
+
+    let panel_color = Color(0x154b37ff);
+    scene.children[0]
+        .properties
+        .insert("background", panel_color.into());
+    let colored = renderer.snapshot(&scene, 160, 96, 2.0, &input)?;
+    assert_eq!(colored.pixel(90, 40), Some(panel_color.0.to_be_bytes()));
+    Ok(())
 }
 
 #[test]
@@ -15017,13 +15210,13 @@ fn translated_rounded_viewport_reuses_mask_and_subtree_rasters()
     }
 
     let mut previous = None;
-    for (x, y, inner_x, reuse) in [
-        (8.5, 6.5, 4.0, true),
-        (11.0, 8.0, 4.0, true),
-        (13.0, 9.0, 4.0, true),
-        (8.0, 6.0, 4.0, true),
-        (13.0, 9.0, 4.5, false),
-        (10.5, 7.5, 4.5, true),
+    for (x, y, inner_x) in [
+        (8.5, 6.5, 4.0),
+        (11.0, 8.0, 4.0),
+        (13.0, 9.0, 4.0),
+        (8.0, 6.0, 4.0),
+        (13.0, 9.0, 4.5),
+        (10.5, 7.5, 4.5),
     ] {
         let outer = &mut scene.children[0];
         outer.properties.insert("x", Length(x).into());
@@ -15042,8 +15235,7 @@ fn translated_rounded_viewport_reuses_mask_and_subtree_rasters()
         assert_eq!(actual.layout, expected.layout);
         assert!(sample.quad_batches > 0);
         assert_eq!(
-            sample.gpu_submissions == 1,
-            reuse,
+            sample.gpu_submissions, 1,
             "position={x},{y} inner={inner_x}"
         );
         assert_eq!(retained.opacity_layer_stats().rasterized, before.rasterized);
@@ -15055,6 +15247,22 @@ fn translated_rounded_viewport_reuses_mask_and_subtree_rasters()
         }
         if let Some(last) = previous.replace(actual.rgba) {
             assert_ne!(previous.as_ref(), Some(&last));
+        }
+    }
+    // Fractional clips over explicitly resampled layers use the canvas's
+    // sampling rules. Give both renderers the same retained-layer history.
+    let mut fractional = scene.clone();
+    let mut with_hint = Renderer::with_device(gpu.clone())?;
+    let mut canvas_hint = Renderer::with_device(gpu.clone())?;
+    canvas_hint.set_cached_layer_compositing_enabled(false);
+    for inner_x in [4.5, 4.5, 4.25, 4.25] {
+        fractional.children[0].children[0]
+            .properties
+            .insert("x", Length(inner_x).into());
+        let actual = with_hint.snapshot(&fractional, 240, 180, 2.0, &input)?;
+        let expected = canvas_hint.snapshot(&fractional, 240, 180, 2.0, &input)?;
+        if inner_x == 4.25 {
+            assert_same_pixels(&actual, &expected);
         }
     }
     // Two viewports with distinct card textures share a batch and use
@@ -15388,6 +15596,9 @@ fn moving_opacity_tiles_require_equal_paint_and_pixel_phase() {
     .unwrap();
     let mut shared = Renderer::with_device(gpu.clone()).unwrap();
     let mut separate = Renderer::with_device(gpu).unwrap();
+    // This test isolates sharing within one temporary atlas submission.
+    shared.set_cached_layer_compositing_enabled(false);
+    separate.set_cached_layer_compositing_enabled(false);
     separate.set_opacity_tile_sharing_enabled(false);
     let input = Interaction::default();
     let rect = |kind, [x, y, width, height]: [f64; 4]| {
@@ -15993,6 +16204,385 @@ fn transient_opacity_atlas_preserves_order_across_an_interleaved_capture()
 }
 
 #[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn moving_groups_share_an_opacity_atlas_under_a_rounded_viewport()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node, Orientation};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut optimized = Renderer::with_device(gpu.clone())?;
+    let mut reference = Renderer::with_device(gpu)?;
+    optimized.set_cached_layer_compositing_enabled(false);
+    reference.set_cached_layer_compositing_enabled(false);
+    reference.set_opacity_atlas_enabled(false);
+
+    let place = |kind, [x, y, width, height]: [f64; 4]| {
+        let mut node = Node::new(kind, None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            node.properties.insert(name, Length(value).into());
+        }
+        node
+    };
+    let mut viewport = place("Rectangle", [6.0, 8.0, 160.0, 96.0]);
+    viewport.properties.insert("clip", true.into());
+    viewport
+        .properties
+        .insert("border-radius", Length(28.0).into());
+    let mut scroll = place("Flickable", [0.0, 0.0, 160.0, 96.0]);
+    scroll
+        .properties
+        .insert("content-height", Length(144.0).into());
+    for index in 0..9 {
+        let x = (index % 3 * 45) as f64;
+        let y = (index / 3 * 39) as f64;
+        let mut card = place("Rectangle", [x, y, 49.0, 34.0]);
+        card.properties
+            .insert("opacity", (0.55 + (index % 3) as f64 * 0.1).into());
+        let color = [0x263854ff, 0x6b2434ff, 0x226241ff][index % 3];
+        card.properties.insert("background", Color(color).into());
+        if index == 4 {
+            // This card has an active shaped clip even in the capture.
+            card.properties.insert("clip", true.into());
+            card.properties.insert("border-radius", Length(8.0).into());
+        }
+        for slot in 0..12 {
+            let mut swatch = place(
+                "Rectangle",
+                [
+                    4.0 + (slot % 4 * 10) as f64,
+                    4.0 + (slot / 4 * 8) as f64,
+                    7.0,
+                    5.0,
+                ],
+            );
+            swatch
+                .properties
+                .insert("border-radius", Length(1.5).into());
+            swatch
+                .properties
+                .insert("background", Color(0x86dbbcff).into());
+            card.children.push(swatch);
+        }
+        scroll.children.push(card);
+    }
+    viewport.children.push(scroll);
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xffffffff).into());
+    scene.children.push(viewport);
+
+    let mut input = Interaction::default();
+    let mut layout = optimized.layout_with_input(&scene, Size::new(172.0, 112.0), &input);
+    let mut batched = false;
+    let mut used_mesh = false;
+    let offsets = [0.0, 0.25, 0.5, 0.75, 1.5, 2.25, 2.0, 0.0, 0.5];
+    for (frame, offset) in offsets.into_iter().enumerate() {
+        let changes_paint = frame + 1 == offsets.len();
+        if changes_paint {
+            // Keep the same device-pixel phase as earlier while changing
+            // one fully visible card's paint.
+            scene.children[0].children[0].children[3].children[0]
+                .properties
+                .insert("background", Color(0xfe8240ff).into());
+            scene.children[0].children[0].children[4]
+                .properties
+                .insert("border-radius", Length(12.0).into());
+        }
+        input.accessibility_scroll_to(&layout, &[0, 0], Orientation::Vertical, offset);
+        let before = optimized.opacity_atlas_stats();
+        let layers_before = optimized.opacity_layer_stats();
+        let mut actual = None;
+        let sample = xrack_runtime::update_profile::measure(|| {
+            actual = Some(optimized.snapshot(&scene, 344, 224, 2.0, &input));
+        })
+        .ok_or("missing capture profile")?;
+        let actual = actual.ok_or("missing capture frame")??;
+        used_mesh |= sample.geometry_upload_bytes > 0;
+        let expected = reference.snapshot(&scene, 344, 224, 2.0, &input)?;
+        if frame == 0 {
+            // Two fully covered cards can share captures with the row above.
+            // The inner rounded clip on the middle card keeps its own image.
+            assert_eq!(
+                optimized.opacity_layer_stats().rasterized + 2,
+                reference.opacity_layer_stats().rasterized
+            );
+        }
+        let after = optimized.opacity_atlas_stats();
+        if !changes_paint && offset == 0.5 {
+            // The three fully covered cards return to their initial phase.
+            // Their textures remain reusable even with the center card's clip.
+            let reused = optimized.opacity_layer_stats().reused - layers_before.reused;
+            assert!(reused >= 3, "only {reused} exact captures reused");
+        }
+        if !changes_paint && after.groups > before.groups {
+            batched = true;
+            assert_eq!(after.submissions - before.submissions, 1, "offset={offset}");
+        }
+        assert_eq!(actual.layout, expected.layout);
+        assert_eq!(
+            actual
+                .layout
+                .at_path(&[0, 0])
+                .unwrap()
+                .scroll
+                .unwrap()
+                .offset,
+            offset
+        );
+        assert_eq!(actual.pixel(12, 16), Some([255; 4]));
+        assert_ne!(actual.pixel(60, 50), Some([255; 4]));
+        for (byte, (&a, &b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                a.abs_diff(b) <= 1,
+                "offset={offset} byte={byte}: {a} vs {b}"
+            );
+        }
+        layout = actual.layout;
+    }
+    assert!(batched);
+    assert!(used_mesh);
+
+    // The text input keeps the window on the normal painter. Its cards still
+    // use the retained atlas while the ancestor's shape is applied live.
+    scene
+        .children
+        .push(place("TextInput", [20.0, 106.0, 72.0, 6.0]));
+    optimized.set_cached_layer_compositing_enabled(true);
+    let retained = optimized.opacity_atlas_stats().retained_hits;
+    let offsets = [0.0, 0.25, 0.5, 0.75, 1.5, 2.25, 2.0];
+    for (frame, offset) in offsets.repeat(3).into_iter().enumerate() {
+        input.accessibility_scroll_to(&layout, &[0, 0], Orientation::Vertical, offset);
+        let captures = optimized.opacity_layer_stats().rasterized;
+        let actual = optimized.snapshot(&scene, 344, 224, 2.0, &input)?;
+        let expected = reference.snapshot(&scene, 344, 224, 2.0, &input)?;
+        if frame == 2 * offsets.len() + 1 {
+            // Reenter the same half-device-pixel crop after the first row
+            // was fully visible. Its earlier isolated capture is reusable.
+            assert_eq!(optimized.opacity_layer_stats().rasterized, captures);
+        }
+        assert_eq!(actual.layout, expected.layout);
+        for (byte, (&a, &b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                a.abs_diff(b) <= 1,
+                "offset={offset} byte={byte}: {a} vs {b}"
+            );
+        }
+        layout = actual.layout;
+    }
+    assert!(optimized.opacity_atlas_stats().retained_hits > retained);
+
+    // Changing every card's paint invalidates the retained captures. The
+    // ordinary painter can still capture those groups together, then replay
+    // them through the rounded viewport and its fractional scroll clip.
+    let mut live_batches = 0;
+    for (frame, offset) in [0.25, 2.0, 1.5, 0.75, 2.25, 0.0].into_iter().enumerate() {
+        for (index, card) in scene.children[0].children[0]
+            .children
+            .iter_mut()
+            .enumerate()
+        {
+            let red = ((frame * 41 + index * 17) % 256) as u32;
+            card.children[0]
+                .properties
+                .insert("background", Color((red << 24) | 0x8240ff).into());
+        }
+        input.accessibility_scroll_to(&layout, &[0, 0], Orientation::Vertical, offset);
+        let before = optimized.opacity_atlas_stats();
+        let actual = optimized.snapshot(&scene, 344, 224, 2.0, &input)?;
+        let expected = reference.snapshot(&scene, 344, 224, 2.0, &input)?;
+        let after = optimized.opacity_atlas_stats();
+        if after.groups > before.groups {
+            live_batches += 1;
+            assert_eq!(after.submissions - before.submissions, 1, "frame={frame}");
+        }
+        assert_eq!(actual.layout, expected.layout);
+        for (byte, (&a, &b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(a.abs_diff(b) <= 2, "frame={frame} byte={byte}: {a} vs {b}");
+        }
+        layout = actual.layout;
+    }
+    assert!(
+        live_batches >= 5,
+        "live paint batched on {live_batches} frames"
+    );
+    Ok(())
+}
+
+#[test]
+fn window_compositor_combines_retained_and_clipped_opacity_groups()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node, Orientation, update_profile};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut composited = Renderer::with_device(gpu.clone())?;
+    let mut canvas = Renderer::with_device(gpu)?;
+    canvas.set_cached_layer_compositing_enabled(false);
+
+    let place = |kind, [x, y, width, height]: [f64; 4]| {
+        let mut node = Node::new(kind, None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            node.properties.insert(name, Length(value).into());
+        }
+        node
+    };
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xffffffff).into());
+    let mut viewport = place("Rectangle", [4.0, 8.0, 196.0, 106.0]);
+    viewport.properties.insert("clip", true.into());
+    viewport
+        .properties
+        .insert("border-radius", Length(24.0).into());
+    let mut scroll = place("Flickable", [0.0, 0.0, 196.0, 106.0]);
+    scroll
+        .properties
+        .insert("content-height", Length(132.0).into());
+    for index in 0..16 {
+        let x = f64::from(index % 4 * 47 + 2);
+        let y = f64::from(index / 4 * 26 + 2);
+        let mut card = place("Rectangle", [x, y, 42.0, 23.0]);
+        card.properties.insert("opacity", 0.61_f64.into());
+        card.properties.insert("border-radius", Length(4.0).into());
+        card.properties.insert(
+            "background",
+            Color([0x253c57ff, 0x376143ff, 0x683e66ff, 0x674323ff][index as usize % 4]).into(),
+        );
+        let mut child = place("Rectangle", [7.0, 8.0, 14.0, 10.0]);
+        child
+            .properties
+            .insert("background", Color(0xb7e5cdff).into());
+        card.children.push(child);
+        scroll.children.push(card);
+    }
+    // Overlap a cropped card with a later draw, whose paint order must remain
+    // unchanged even when one group is captured and the other is retained.
+    let mut progress = place("ProgressIndicator", [8.0, 6.0, 94.0, 7.0]);
+    progress.properties.insert("progress", 0.5_f64.into());
+    progress.properties.insert("animated", false.into());
+    scroll.children.push(progress);
+    viewport.children.push(scroll);
+    scene.children.push(viewport);
+
+    let mut input = Interaction::default();
+    let mut placement = composited.layout_with_input(&scene, Size::new(208.0, 120.0), &input);
+    let mut used_both_sources = false;
+    let offsets = [
+        0.0, 0.25, 0.5, 0.75, 1.5, 2.25, 3.0, 3.75, 4.0, 4.25, 4.5, 0.0,
+    ];
+    for (frame, offset) in offsets
+        .into_iter()
+        .cycle()
+        .take(offsets.len() * 3)
+        .enumerate()
+    {
+        if frame == offsets.len() * 2 {
+            // Invalidate one cached tile while keeping the neighboring cards
+            // and the composition order unchanged.
+            scene.children[0].children[0].children[0].children[0]
+                .properties
+                .insert("background", Color(0xeda854ff).into());
+        }
+        input.accessibility_scroll_to(&placement, &[0, 0], Orientation::Vertical, offset);
+        let layers = composited.opacity_layer_stats();
+        let atlas = composited.opacity_atlas_stats();
+        let mut actual = None;
+        let profile = update_profile::measure(|| {
+            actual = Some(composited.snapshot(&scene, 416, 240, 2.0, &input));
+        })
+        .ok_or("missing window composite profile")?;
+        let actual = actual.ok_or("missing window composite frame")??;
+        let expected = canvas.snapshot(&scene, 416, 240, 2.0, &input)?;
+        used_both_sources |= profile.quad_batches > 0
+            && composited.opacity_layer_stats().reused >= layers.reused + 8
+            && composited.opacity_atlas_stats().groups > atlas.groups;
+        assert_eq!(actual.layout, expected.layout);
+        for (byte, (&a, &b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                a.abs_diff(b) <= 1,
+                "offset={offset}, byte={byte}: {a} vs {b}"
+            );
+        }
+        placement = actual.layout;
+    }
+    assert!(used_both_sources);
+
+    // The later progress paint above exercises ordering. With just the
+    // cards left, both kinds of cached texture should use one draw.
+    scene.children[0].children[0].children.pop();
+    let mut shared_draw = false;
+    for offset in offsets {
+        input.accessibility_scroll_to(&placement, &[0, 0], Orientation::Vertical, offset);
+        let before = composited.opacity_atlas_stats();
+        let layers = composited.opacity_layer_stats();
+        let mut actual = None;
+        let profile = update_profile::measure(|| {
+            actual = Some(composited.snapshot(&scene, 416, 240, 2.0, &input));
+        })
+        .ok_or("missing shared atlas profile")?;
+        placement = actual.ok_or("missing shared atlas frame")??.layout;
+        let after = composited.opacity_atlas_stats();
+        if after.retained_hits > before.retained_hits
+            && after.groups == before.groups
+            && composited.opacity_layer_stats().reused >= layers.reused + 8
+        {
+            assert_eq!(profile.quad_batches, 1, "offset={offset}");
+            shared_draw = true;
+        }
+    }
+    assert!(shared_draw);
+
+    // A scrolling inner clip can alternate between an analytic shape and
+    // a raster mask under the stationary outer clip.
+    let scroll = &mut scene.children[0].children[0];
+    let mut panel = place("Rectangle", [0.0, 0.0, 188.0, 126.0]);
+    panel.properties.insert("clip", true.into());
+    panel
+        .properties
+        .insert("border-radius", Length(24.0).into());
+    panel.children = std::mem::take(&mut scroll.children);
+    let mut label = place("Label", [42.0, 25.0, 71.0, 14.0]);
+    label.properties.insert("text", "Scroll".to_owned().into());
+    panel.children.push(label);
+    scroll.children.push(panel);
+    for offset in offsets.into_iter().cycle().take(offsets.len() * 2) {
+        input.accessibility_scroll_to(&placement, &[0, 0], Orientation::Vertical, offset);
+        let actual = composited.snapshot(&scene, 416, 240, 2.0, &input)?;
+        let expected = canvas.snapshot(&scene, 416, 240, 2.0, &input)?;
+        assert_eq!(actual.layout, expected.layout);
+        for (byte, (&a, &b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                a.abs_diff(b) <= 1,
+                "with nested clips, offset={offset}, byte={byte}: {a} vs {b}"
+            );
+        }
+        placement = actual.layout;
+    }
+
+    let retained_hits = composited.opacity_atlas_stats().retained_hits;
+    assert!(
+        retained_hits > 0,
+        "the recurring clips should reuse a captured tile"
+    );
+    composited.set_layer_budget(0);
+    composited.snapshot(&scene, 416, 240, 2.0, &input)?;
+    assert_eq!(
+        composited.opacity_atlas_stats().retained_hits,
+        retained_hits
+    );
+    Ok(())
+}
+
+#[test]
 #[ignore = "manual GPU measurement of animated groups with static contents"]
 fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Error>> {
     use std::{
@@ -16014,6 +16604,7 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
         }
     }
 
+    let window_entry = std::env::var_os("XRACK_CARD_BENCH_WINDOW_ENTRY").is_some();
     let sample_frames = std::env::var_os("XRACK_CARD_BENCH_SAMPLE_FRAMES").is_some();
     if sample_frames {
         println!(
@@ -16047,6 +16638,7 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
         scroll_progress || std::env::var_os("XRACK_CARD_BENCH_LIVE_PROGRESS").is_some();
     let live_stripe = std::env::var_os("XRACK_CARD_BENCH_LIVE_STRIPE").is_some();
     let cache_layers = std::env::var_os("XRACK_CARD_BENCH_CACHE_LAYERS").is_some();
+    println!("card animation cache_rendering_hint={cache_layers} window_entry={window_entry}");
     let rounded_clip = std::env::var_os("XRACK_CARD_BENCH_ROUNDED_CLIP").is_some();
     let clipped = rounded_clip || std::env::var_os("XRACK_CARD_BENCH_CLIPPED").is_some();
     let nested = clipped || std::env::var_os("XRACK_CARD_BENCH_NESTED").is_some();
@@ -16471,7 +17063,7 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
         );
     }
     let mut base = Rc::new(scene);
-    let mut previous_layout = proof.layout;
+    let mut previous_layout = Rc::new(proof.layout);
     let mut paint_frame = |renderer: &mut Renderer,
                            base: &mut Rc<Node>,
                            frame,
@@ -16498,8 +17090,20 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
             Duration::ZERO
         };
         let (scene, layout) = renderer.prepare_scene(&Cards, base.clone(), viewport, &input);
+        let layout = Rc::new(layout);
         let prepared = start.elapsed();
-        renderer.draw_with_layout(&scene, &layout, &texture, 2.0, &input)?;
+        if window_entry {
+            renderer.draw_window_prepared(
+                &scene,
+                &layout,
+                &texture,
+                2.0,
+                &input,
+                &Default::default(),
+            )?;
+        } else {
+            renderer.draw_with_layout(&scene, &layout, &texture, 2.0, &input)?;
+        }
         let submitted = start.elapsed();
         renderer.device.poll(wgpu::PollType::Wait {
             submission_index: None,
@@ -16573,6 +17177,10 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
         println!(
             "card animation moving={moving} opacity tiles reused={}",
             after_atlas.reused_tiles - before_atlas.reused_tiles,
+        );
+        println!(
+            "card animation moving={moving} retained opacity tiles reused={}",
+            after_atlas.retained_hits - before_atlas.retained_hits,
         );
         for (stage, samples) in ["prepare", "submit", "total"].into_iter().zip(&mut samples) {
             samples.sort_unstable();
@@ -23154,6 +23762,103 @@ fn custom_scroll_thumb_repaints_while_captured() {
         thumb_pixel(&mut renderer, &ui),
         Some([0x59, 0xbf, 0x94, 0xff])
     );
+}
+
+#[test]
+fn long_scroll_viewports_preserve_shadows_and_returning_layers()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node, Orientation, ScrollBarPolicy, ViewportHandle};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    for kind in ["ScrollView", "Flickable"] {
+        let mut full = Renderer::with_device(gpu.clone())?;
+        let mut reference = Renderer::with_device(gpu.clone())?;
+        full.set_cached_layer_compositing_enabled(false);
+        reference.set_cached_layer_compositing_enabled(false);
+
+        let mut view = Node::new(kind, None);
+        view.properties.insert("width", Length(120.0).into());
+        view.properties.insert("height", Length(96.0).into());
+        view.properties
+            .insert("content-height", Length(1024.0).into());
+        for name in ["horizontal-scroll-bar-policy", "vertical-scroll-bar-policy"] {
+            view.properties
+                .insert(name, ScrollBarPolicy::AlwaysOff.into());
+        }
+        let position = Rc::new(Cell::new(0.0));
+        let current = position.clone();
+        let handle = ViewportHandle::default();
+        handle.bind_offset(
+            Orientation::Vertical,
+            move || Length(-current.get()),
+            |_| {},
+        );
+        view.viewport_handle = Some(handle);
+        for index in 0..64 {
+            let mut card = Node::new("Rectangle", None);
+            card.properties.insert("width", Length(92.0).into());
+            card.properties.insert("height", Length(14.0).into());
+            card.properties
+                .insert("background", Color(0x224060ff + (index << 16)).into());
+            let mut group = if index == 31 {
+                card.properties
+                    .insert("drop-shadow-color", Color(0x102030bb).into());
+                card.properties
+                    .insert("drop-shadow-offset-y", Length(12.0).into());
+                card.properties
+                    .insert("drop-shadow-blur", Length(6.0).into());
+                card
+            } else {
+                let mut group = Node::new("VerticalLayout", None);
+                group.properties.insert("width", Length(92.0).into());
+                group.properties.insert("height", Length(14.0).into());
+                if index == 5 {
+                    group.properties.insert("cache-rendering-hint", true.into());
+                }
+                group.children.push(card);
+                group
+            };
+            group
+                .properties
+                .insert("y", Length(f64::from(index) * 16.0).into());
+            view.children.push(group);
+        }
+        let mut short = view.clone();
+        short.children = view
+            .children
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index < 12 || (31..44).contains(index))
+            .map(|(_, child)| child.clone())
+            .collect();
+        let mut scene = Node::new("Window", None);
+        scene.children.push(view);
+        let mut control = Node::new("Window", None);
+        control.children.push(short);
+        let input = Interaction::default();
+        for offset in [0.0, 512.0, 0.0] {
+            position.set(offset);
+            let actual = full.snapshot(&scene, 120, 96, 1.0, &input)?;
+            let expected = reference.snapshot(&control, 120, 96, 1.0, &input)?;
+            assert_eq!(
+                actual.layout.children[0]
+                    .scroll_on(Orientation::Vertical)
+                    .unwrap()
+                    .offset,
+                offset as f32
+            );
+            if offset > 0.0 {
+                assert_ne!(actual.pixel(94, 3), actual.pixel(111, 3));
+            }
+            assert_eq!(actual.rgba, expected.rgba, "{kind} at {offset}");
+        }
+    }
+    Ok(())
 }
 
 #[test]

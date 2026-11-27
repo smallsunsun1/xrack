@@ -290,12 +290,20 @@ fn adjacent_text_fields_skip_unavailable_controls_and_stop_in_the_dialog() {
 fn leaf_placement_matches_general_placement() {
     let bounds = Rect::new(16.0, 14.0, 38.0, 27.0);
     let viewport = Rect::new(0.0, 0.0, 80.0, 64.0);
-    for kind in ["Rectangle", "TableCell", "TreeCell"] {
-        for (scale, clipping, visible, enabled) in [
-            (1.0, None, true, true),
-            (1.25, Some(true), true, false),
-            (0.0, Some(false), true, true),
-            (1.0, Some(false), false, true),
+    for kind in [
+        "Rectangle",
+        "TableCell",
+        "TreeCell",
+        "Label",
+        "Text",
+        "StyledText",
+    ] {
+        for (scale, clipping, visible, enabled, defer_styled_text) in [
+            (1.0, None, true, true, false),
+            (1.25, Some(true), true, false, false),
+            (0.0, Some(false), true, true, false),
+            (1.0, Some(false), false, true, false),
+            (1.0, None, true, true, true),
         ] {
             let mut parent = node("Rectangle", "panel");
             parent.properties.insert("transform-scale-x", scale.into());
@@ -320,6 +328,13 @@ fn leaf_placement_matches_general_placement() {
             length(&mut leaf, "font-size", 18.0);
             boolean(&mut leaf, "mouse-drag-pan-enabled", true);
             boolean(&mut leaf, "pull-to-refresh", true);
+            if kind == "StyledText" {
+                let text = xrack_runtime::StyledText::from_markdown(
+                    "**字** [לינק](https://example.invalid)",
+                )
+                .unwrap();
+                leaf.properties.insert("text", text.into());
+            }
             if let Some(clipping) = clipping {
                 boolean(&mut leaf, "clip", clipping);
                 leaf.properties
@@ -328,7 +343,7 @@ fn leaf_placement_matches_general_placement() {
                     .insert("layout-direction", LayoutDirection::LeftToRight.into());
             }
             let mut context = LayoutContext {
-                defer_styled_text: false,
+                defer_styled_text,
                 text: &mut Text,
                 layout_direction: Some(LayoutDirection::RightToLeft),
                 offsets: &BTreeMap::new(),
@@ -1077,7 +1092,7 @@ fn fixed_plain_text_boxes_skip_intrinsic_text_measurement() {
     let viewport = Size::new(180.0, 120.0);
     let fixed = layout(&root, viewport, &mut measure);
     assert_eq!(measure.0, 0);
-    for child in fixed.children {
+    for child in fixed.into_children() {
         assert_eq!((child.bounds.width, child.bounds.height), (100.0, 24.0));
     }
 
@@ -1452,6 +1467,118 @@ fn preparing_virtual_rows_keeps_unrelated_shared_branches_intact() {
         Some("virtual-row")
     );
     assert!(layout.at_path(&[1, 1, 0, 0]).is_some());
+}
+
+#[test]
+fn scroll_measurements_reuse_unchanged_children_and_recompute_the_extent() {
+    struct View;
+    impl Component for View {
+        fn render(&self) -> Node {
+            Node::hidden()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    #[derive(Default)]
+    struct Measured {
+        calls: usize,
+        typography: Rc<()>,
+    }
+    impl TextMeasurer for Measured {
+        fn measure(&mut self, text: &str, size: f32, width: f32) -> Size {
+            self.calls += 1;
+            Text.measure(text, size, width)
+        }
+
+        fn typography_revision(&self) -> Option<Rc<()>> {
+            Some(self.typography.clone())
+        }
+    }
+
+    let mut view = node("ScrollView", "viewport");
+    let mut stretch = node("Rectangle", "stretch");
+    length(&mut stretch, "width", 2.0);
+    view.children.push(stretch);
+    for index in 0..66 {
+        let mut label = node("Label", "history");
+        length(&mut label, "y", f64::from(index) * 20.0);
+        label
+            .properties
+            .insert("width", xrack_runtime::Percent(0.8).into());
+        label
+            .properties
+            .insert("text", "Measured text".to_owned().into());
+        view.children.push(label);
+    }
+    let mut tail = node("Rectangle", "tail");
+    length(&mut tail, "y", 1320.0);
+    length(&mut tail, "width", 54.0);
+    length(&mut tail, "height", 20.0);
+    view.children.push(tail);
+    let mut window = node("Window", "root");
+    window.children.push(view);
+    let mut scene = Rc::new(window.into_shared());
+    let viewport = Size::new(140.0, 100.0);
+    let input = Interaction::default();
+    let mut text = Measured::default();
+    let mut cache = RowLayoutCache::default();
+    let mut previous = None;
+    for _ in 0..2 {
+        let (_, layout) = prepare_scene_with_row_cache(
+            &View,
+            scene.clone(),
+            viewport,
+            &mut text,
+            &input,
+            &mut cache,
+        );
+        previous = Some(layout);
+    }
+    assert!(text.calls > 0);
+
+    for (height, z) in [(90.0, -1.0_f64), (40.0, -1.0), (12.0, 0.0)] {
+        let view = &mut Rc::make_mut(&mut scene).children[0];
+        let tail = view.children.last_mut().unwrap();
+        length(tail, "height", height);
+        tail.properties.insert("z", z.into());
+        let layout = previous.take().unwrap();
+        let old_buffer = layout.children[0].children.as_ptr();
+        cache.use_recycled_layout(Some(layout));
+        text.calls = 0;
+        let (_, cached) = prepare_scene_with_row_cache(
+            &View,
+            scene.clone(),
+            viewport,
+            &mut text,
+            &input,
+            &mut cache,
+        );
+        let (_, fresh) =
+            prepare_scene_with_input(&View, scene.clone(), viewport, &mut Text, &input);
+        assert_eq!(cached, fresh);
+        assert_eq!(
+            cached.children[0].paint_order().map(|order| order[0]),
+            (z < 0.0).then_some(67),
+        );
+        assert_eq!(cached.children[0].children.as_ptr(), old_buffer);
+        assert_eq!(text.calls, 0);
+        previous = Some(cached);
+    }
+
+    let narrower = Size::new(86.0, viewport.height);
+    let (_, cached) = prepare_scene_with_row_cache(
+        &View,
+        scene.clone(),
+        narrower,
+        &mut text,
+        &input,
+        &mut cache,
+    );
+    let (_, fresh) = prepare_scene_with_input(&View, scene, narrower, &mut Text, &input);
+    assert_eq!(cached, fresh);
 }
 
 #[test]
@@ -3737,7 +3864,7 @@ fn flexbox_grows_to_caps_and_shrinks_in_proportion_to_preferred_size() {
     }
     let widths = |size| {
         layout(&flex, Size::new(size, 50.0), &mut Text)
-            .children
+            .into_children()
             .into_iter()
             .map(|child| child.bounds.width)
             .collect::<Vec<_>>()
@@ -5693,6 +5820,45 @@ fn removing_an_opted_in_drag_source_cancels_against_the_live_row_model() {
             .finish_drag(&list, &frame, end, None)
             .events
             .is_empty()
+    );
+}
+
+#[test]
+fn paint_edge_trimming_preserves_middle_slots_and_explicit_order() {
+    let mut window = Node::new("Window", None);
+    window.children = ["prefix", "first", "middle", "last", "suffix"]
+        .map(|id| Node::new("Rectangle", Some(id)))
+        .into();
+    let viewport = Size::new(120.0, 80.0);
+    let discard = |child: &Node, _: &LayoutNode| {
+        matches!(child.element_id(), Some("prefix" | "middle" | "suffix"))
+    };
+    let frame = layout(&window, viewport, &mut Text);
+    let trimmed = frame
+        .children_in_paint_order_trimming_edges(&window, true, discard)
+        .map(|(index, _, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(trimmed, [1, 2, 3]);
+
+    window.set_static_paint_order(&[4, 3, 2, 1, 0]);
+    let frame = layout(&window, viewport, &mut Text);
+    let ordered = frame
+        .children_in_paint_order_trimming_edges(&window, true, discard)
+        .map(|(index, _, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(ordered, [3, 2, 1]);
+    assert_eq!(
+        frame
+            .children_in_paint_order_trimming_edges(&window, false, discard)
+            .map(|(index, _, _)| index)
+            .collect::<Vec<_>>(),
+        [4, 3, 2, 1, 0]
+    );
+    assert!(
+        frame
+            .children_in_paint_order_trimming_edges(&window, true, |_, _| true)
+            .next()
+            .is_none()
     );
 }
 

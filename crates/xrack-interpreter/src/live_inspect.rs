@@ -558,6 +558,8 @@ fn describe_hit(value: &xrack_runtime::Hit3D) -> Json {
         "normal": {"x": value.normal.x, "y": value.normal.y, "z": value.normal.z},
         "local-position": {"x": value.local_position.x, "y": value.local_position.y, "z": value.local_position.z},
         "local-normal": {"x": value.local_normal.x, "y": value.local_normal.y, "z": value.local_normal.z},
+        "item-source": shortened(value.item_source()),
+        "item-position": {"x": value.item_position().x.0, "y": value.item_position().y.0},
         "u": value.u, "v": value.v,
     })
 }
@@ -631,6 +633,12 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
             }),
         ),
         Value::MeshAsset3D(value) => ("MeshAsset3D", json!({"loaded": value.is_loaded()})),
+        Value::TextureData2D(value) => (
+            "TextureData2D",
+            json!({
+                "valid": value.is_valid(), "width": value.width(), "height": value.height(),
+            }),
+        ),
         Value::Instance3D(value) => (
             "Instance3D",
             json!({
@@ -651,6 +659,35 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
             json!({
                 "point": {"x": value.point.x.0, "y": value.point.y.0},
                 "depth": value.depth, "valid": value.valid, "inside": value.inside,
+            }),
+        ),
+        Value::RenderStats3D(value) => (
+            "RenderStats3D",
+            json!({
+                "valid": value.valid,
+                "revision": value.revision,
+                "frame": value.frame,
+                "work": value.work,
+                "output-width": value.output_width,
+                "output-height": value.output_height,
+                "raster-width": value.raster_width,
+                "raster-height": value.raster_height,
+                "samples": value.samples,
+                "cpu-micros": value.cpu_micros,
+                "mesh-draws": value.mesh_draws,
+                "mesh-vertices": value.mesh_vertices,
+                "sprite-draws": value.sprite_draws,
+                "sprites": value.sprites,
+                "shadow-passes": value.shadow_passes,
+                "reflection-faces": value.reflection_faces,
+                "capture-passes": value.capture_passes,
+                "depth-prepass-draws": value.depth_prepass_draws,
+                "mesh-upload-bytes": value.mesh_upload_bytes,
+                "gpu-supported": value.gpu_supported,
+                "gpu-valid": value.gpu_valid,
+                "gpu-nanos": value.gpu_nanos,
+                "gpu-passes": value.gpu_passes,
+                "gpu-truncated": value.gpu_truncated,
             }),
         ),
         Value::Point2D(value) => ("Point2D", json!({"x": value.x.0, "y": value.y.0})),

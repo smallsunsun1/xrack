@@ -8,7 +8,7 @@ use rapier3d::{
 };
 
 use crate::{
-    scene_hierarchy::rest_mesh_objects,
+    scene3d::hierarchy::rest_mesh_objects,
     scene3d::{MAX_IMPORTED_VERTICES, MeshAsset, MeshHeightField},
 };
 

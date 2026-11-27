@@ -585,6 +585,7 @@ pub struct FocusRequest {
 #[doc(hidden)]
 pub enum QueuedFocusRequest {
     Focus(FocusRequest),
+    SceneTouch(crate::SceneTouchRequest),
     ReplaceText {
         target: FocusHandle,
         replacement: TextReplacement,
@@ -611,7 +612,7 @@ impl FocusRequests {
             .into_iter()
             .filter_map(|command| match command {
                 QueuedFocusRequest::Focus(request) => Some(request),
-                QueuedFocusRequest::ReplaceText { .. } => None,
+                QueuedFocusRequest::ReplaceText { .. } | QueuedFocusRequest::SceneTouch(_) => None,
             })
             .collect()
     }
@@ -809,7 +810,7 @@ impl FocusHandle {
         });
     }
 
-    fn enqueue(request: QueuedFocusRequest) {
+    pub(crate) fn enqueue(request: QueuedFocusRequest) {
         ACTIVE.with(|active| {
             if let Some(requests) = &*active.borrow() {
                 requests.0.borrow_mut().push(request);

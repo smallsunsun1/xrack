@@ -52,8 +52,10 @@ from ._native import (
     Point2D,
     Point3D,
     ProjectedPoint3D,
+    RenderStats3D,
     Instance3D,
     InstanceTable3D,
+    TextureData2D,
     MeshAsset3D,
     MeshNode3D,
     Bounds3D,
@@ -145,8 +147,10 @@ __all__ = [
     "Point2D",
     "Point3D",
     "ProjectedPoint3D",
+    "RenderStats3D",
     "Instance3D",
     "InstanceTable3D",
+    "TextureData2D",
     "MeshAsset3D",
     "MeshNode3D",
     "Bounds3D",
@@ -243,8 +247,10 @@ Value: TypeAlias = (
     | Point2D
     | Point3D
     | ProjectedPoint3D
+    | RenderStats3D
     | Instance3D
     | InstanceTable3D
+    | TextureData2D
     | MeshAsset3D
     | MeshNode3D
     | Bounds3D

@@ -1,6 +1,6 @@
 use crate::{LayoutNode, view_cells::ViewCells};
 use std::collections::BTreeMap;
-use xrack_runtime::{ListMetrics, Node, Orientation, RowKey};
+use xrack_runtime::{ListMetrics, Node, Orientation, RowKey, SceneFeature};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ListAnchor {
@@ -134,6 +134,9 @@ pub(crate) fn capture_list_anchors(
         previous: &BTreeMap<Vec<usize>, ListAnchor>,
         anchors: &mut BTreeMap<Vec<usize>, ListAnchor>,
     ) {
+        if !scene.contains_scene_feature(SceneFeature::VirtualList) {
+            return;
+        }
         if scene.list.is_some() {
             if let Some(renderer) = layout.nested_list_renderer()
                 && layout.visible

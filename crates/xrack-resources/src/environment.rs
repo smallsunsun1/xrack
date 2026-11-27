@@ -1,4 +1,6 @@
 //! Decode Radiance environment images and prefilter them in linear light.
+mod ktx;
+
 use crate::assets::read_asset;
 use flate2::{Compression, write::ZlibEncoder};
 use nalgebra::{Matrix3, RowVector3, Vector3};
@@ -8,30 +10,32 @@ use std::{
     hash::{DefaultHasher, Hash, Hasher},
     io::{BufRead, Cursor, Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 use xrack_runtime::scene3d::{
-    EnvironmentProbe, EnvironmentSource, SkySettings, ViewportEnvironment,
+    CubeTexture3D, EnvironmentProbe, EnvironmentSource, SkySettings, ViewportEnvironment,
 };
 
 const MAX_PIXELS: usize = 8192 * 1024;
 const FILTER_SAMPLES: u32 = 64;
 const MAX_CACHED_PROBES: usize = 4;
 type ProbeCache = VecDeque<(PathBuf, u64, Arc<EnvironmentProbe>)>;
+type CubemapCache = VecDeque<(PathBuf, u64, Weak<CubeTexture3D>)>;
 
 static CACHE: Mutex<ProbeCache> = Mutex::new(VecDeque::new());
+static CUBEMAPS: Mutex<CubemapCache> = Mutex::new(VecDeque::new());
 
 pub(crate) fn load(path: &Path) -> Result<Arc<EnvironmentProbe>, String> {
-    if !path
+    let extension = path
         .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("hdr"))
-    {
-        return Err("expected a Radiance .hdr environment".into());
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    let packed_cube = matches!(extension.as_deref(), Some("ktx" | "ktx2"));
+    if !packed_cube && extension.as_deref() != Some("hdr") {
+        return Err("expected a Radiance .hdr environment or a .ktx/.ktx2 cubemap".into());
     }
     let bytes = read_asset(path, "environment probe")?;
-    let mut fingerprint = DefaultHasher::new();
-    bytes.hash(&mut fingerprint);
-    let fingerprint = fingerprint.finish();
+    let fingerprint = fingerprint(&bytes);
     {
         let mut cache = CACHE
             .lock()
@@ -46,11 +50,17 @@ pub(crate) fn load(path: &Path) -> Result<Arc<EnvironmentProbe>, String> {
             return Ok(probe);
         }
     }
-    let probe = Arc::new(
+    let input = if packed_cube {
+        let (side, rgb) = ktx::decode(&bytes)?;
+        RadianceImage {
+            size: [side, side * 6],
+            layout: RadianceLayout::Faces(side),
+            rgb,
+        }
+    } else {
         RadianceImage::decode(&bytes)?
-            .prepare()
-            .ok_or("invalid prepared environment")?,
-    );
+    };
+    let probe = Arc::new(input.prepare().ok_or("invalid prepared environment")?);
     let mut cache = CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -63,9 +73,55 @@ pub(crate) fn load(path: &Path) -> Result<Arc<EnvironmentProbe>, String> {
 /// Compress already prepared texels so generated binaries carry the lighting
 /// data without having to read or prefilter an environment image at startup.
 pub fn pack_environment(probe: &EnvironmentProbe) -> Result<Vec<u8>, String> {
+    pack_texels(probe.texels())
+}
+
+/// Reuse unchanged pixels across scene reloads while a scene still owns them.
+pub(crate) fn decode_cubemap(path: &Path, bytes: &[u8]) -> Result<Arc<CubeTexture3D>, String> {
+    let fingerprint = fingerprint(bytes);
+    let lookup = |cache: &CubemapCache| {
+        cache
+            .iter()
+            .find(|(key, hash, _)| key == path && *hash == fingerprint)
+            .and_then(|(_, _, texture)| texture.upgrade())
+    };
+    if let Some(texture) = lookup(
+        &CUBEMAPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    ) {
+        return Ok(texture);
+    }
+    let (side, levels, texels) = ktx::decode_texture(bytes)?;
+    let texture = Arc::new(
+        CubeTexture3D::new(side as u32, levels as u32, texels).ok_or("invalid prepared cubemap")?,
+    );
+    let mut cache = CUBEMAPS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing) = lookup(&cache) {
+        return Ok(existing);
+    }
+    cache.retain(|(key, _, texture)| key != path && texture.strong_count() != 0);
+    cache.truncate(15);
+    cache.push_front((path.to_owned(), fingerprint, Arc::downgrade(&texture)));
+    Ok(texture)
+}
+
+fn fingerprint(bytes: &[u8]) -> u64 {
+    let mut fingerprint = DefaultHasher::new();
+    bytes.hash(&mut fingerprint);
+    fingerprint.finish()
+}
+
+pub fn pack_cubemap(texture: &CubeTexture3D) -> Result<Vec<u8>, String> {
+    pack_texels(texture.texels())
+}
+
+fn pack_texels(texels: &[u8]) -> Result<Vec<u8>, String> {
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
     encoder
-        .write_all(probe.texels())
+        .write_all(texels)
         .map_err(|error| error.to_string())?;
     encoder.finish().map_err(|error| error.to_string())
 }
@@ -81,12 +137,13 @@ enum RadianceLayout {
     Equirectangular,
     Cross(usize),
     Strip(usize),
+    Faces(usize),
 }
 
 impl RadianceLayout {
     fn face_size(self) -> Option<usize> {
         match self {
-            Self::Cross(side) | Self::Strip(side) => Some(side),
+            Self::Cross(side) | Self::Strip(side) | Self::Faces(side) => Some(side),
             Self::Equirectangular => None,
         }
     }
@@ -97,6 +154,7 @@ impl RadianceLayout {
         match self {
             Self::Cross(side) => CROSS[face as usize].map(|coordinate| coordinate * side),
             Self::Strip(side) => [face as usize * side, 0],
+            Self::Faces(side) => [0, face as usize * side],
             Self::Equirectangular => [0, 0],
         }
     }

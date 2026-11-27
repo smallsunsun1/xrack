@@ -199,3 +199,268 @@ export component ParticleWavesDemo inherits Window {
     trail-toggle := CheckBox { x <- 342px; y <- 357px; width <- 100px; text <- "拖尾"; checked <-> root.trail; }
     mesh-toggle := CheckBox { x <- 448px; y <- 357px; width <- 110px; text <- "模型"; checked <-> root.model-particles; }
 }
+
+struct ParticleColorSpread {
+    red: float, green: float, blue: float, alpha: float,
+}
+
+struct AppearanceEmitter {
+    position: point3d, color: color, size: float, lifetime: float,
+    color-variation: ParticleColorSpread, unified-color-variation: bool,
+    fade-in: float, fade-out: float, fade-in-effect: string, fade-out-effect: string,
+    bursts: [ParticleBurst], seed: int, emitter-shape: string, emitter-extents: vector3d,
+    velocity: vector3d, trail-segments: int, trail-duration: float, trail-end-scale: float,
+    trail-fade: float, trail-eol-fade: float,
+    particle-model: string, particle-casts-shadow: bool,
+}
+
+export component ParticleAppearanceDemo inherits Window {
+    title <- "XRack · 粒子颜色与淡入淡出";
+    width <- 624px; height <- 408px; background <- #182333;
+    in-out property <float> time: 0.35;
+    in-out property <float> fade-start: 0.7;
+    in-out property <float> fade-end: 0.6;
+    in-out property <string> appear: "scale";
+    in-out property <string> disappear: "opacity";
+    in-out property <color> tint: #ffe642;
+    in-out property <float> rgb-spread: 0.64;
+    in-out property <float> alpha-spread: 0;
+    in-out property <bool> unified: true;
+    in-out property <bool> ribbons: false;
+    in-out property <bool> models: false;
+    in-out property <int> count: 60;
+    in-out property <int> seed: 71;
+
+    property <FieldCamera> eye: FieldCamera {
+        id: "eye", mesh: "", color: #fff, x: 0, y: 0, z: 10, yaw: 0, pitch: 0, roll: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, camera-kind: "orthographic", camera-height: 6,
+    };
+    SceneView3D {
+        width <- 624px; height <- 300px; camera <- "eye"; scene-background <- #101a2c;
+        order-independent-transparency <- true; shadows <- root.models; shadow-map-size <- 128;
+        model <- [
+            root.eye,
+            FieldCamera {
+                id: "floor", mesh: root.models ? "primitive:box" : "",
+                z: 0, y: -1.95, scale-x: 9, scale-y: 0.15, scale-z: 3,
+                camera-kind: "", color: #3b526d, ..root.eye
+            },
+        ];
+        particle-time <- root.time;
+        particle-emitters <- [
+            AppearanceEmitter {
+                position: Point3D.new(0, 0, 0.4), size: root.count > 1 ? 0.24 : 0.84,
+                color: root.tint, lifetime: 2,
+                color-variation: ParticleColorSpread { red: root.rgb-spread, green: root.rgb-spread, blue: 0, alpha: root.alpha-spread },
+                unified-color-variation: root.unified,
+                fade-in: root.fade-start, fade-out: root.fade-end,
+                fade-in-effect: root.appear, fade-out-effect: root.disappear,
+                bursts: [ParticleBurst { time: 0, count: root.count }], seed: root.seed,
+                emitter-shape: root.count > 1 ? "box" : "point", emitter-extents: Vector3D.new(2.9, 1.3, 0.05),
+                velocity: root.ribbons ? Vector3D.new(1.2, 0.33, 0) : Vector3D.new(0,0,0),
+                trail-segments: root.ribbons ? 8 : 0, trail-duration: 0.36,
+                trail-fade: 0, trail-end-scale: 1, trail-eol-fade: 0.25,
+                particle-model: root.models ? "primitive:box" : "", particle-casts-shadow: root.models,
+            },
+        ];
+    }
+    Label { x <- 18px; y <- 304px; width <- 62px; height <- 34px; text <- "时间"; }
+    timeline := Slider { x <- 82px; y <- 304px; width <- 524px; height <- 34px; minimum <- 0; maximum <- 2.24; value <-> root.time; }
+    enter-mode := Button {
+        x <- 18px; y <- 353px; width <- 116px; height <- 34px;
+        text <- root.appear == "scale" ? "淡入尺寸" : root.appear == "opacity" ? "淡入透明度" : "直接出现";
+        clicked => { root.appear = root.appear == "scale" ? "opacity" : root.appear == "opacity" ? "none" : "scale"; }
+    }
+    leave-mode := Button {
+        x <- 145px; y <- 353px; width <- 116px; height <- 34px;
+        text <- root.disappear == "scale" ? "淡出尺寸" : root.disappear == "opacity" ? "淡出透明度" : "直接消失";
+        clicked => { root.disappear = root.disappear == "scale" ? "opacity" : root.disappear == "opacity" ? "none" : "scale"; }
+    }
+    unified-choice := CheckBox { x <- 270px; y <- 353px; width <- 136px; height <- 34px; text <- "共用随机量"; checked <-> root.unified; }
+    CheckBox { x <- 415px; y <- 353px; width <- 78px; height <- 34px; text <- "拖尾"; checked <-> root.ribbons; }
+    CheckBox { x <- 502px; y <- 353px; width <- 84px; height <- 34px; text <- "模型"; checked <-> root.models; }
+}
+
+struct OrderedEmitter {
+    position: point3d, color: color, size: float, lifetime: float, fade-out: float,
+    bursts: [ParticleBurst], particle-sort-mode: string, depth-bias: float, particle-group: string,
+    velocity: vector3d, trail-segments: int, trail-duration: float, trail-fade: float, trail-end-scale: float,
+    particle-model: string, emitter-shape: string, emitter-mesh: string,
+}
+
+struct OrderField {
+    affector-kind: string, particle-group: string, direction: vector3d, strength: float, enabled: bool,
+}
+
+export component ParticleOrderDemo inherits Window {
+    title <- "XRack · 透明粒子画序";
+    width <- 624px; height <- 412px; background <- #182333;
+    in-out property <string> sort-mode: "distance";
+    in-out property <float> bias: 0;
+    in-out property <float> time: 0.8;
+    in-out property <float> yaw: 0;
+    in-out property <bool> weighted: false;
+    in-out property <bool> affected: false;
+    in-out property <bool> ribbons: false;
+    in-out property <bool> models: false;
+    in-out property <bool> occluder: false;
+    in-out property <bool> mesh-launch: false;
+    in-out property <int> population: 1;
+
+    property <FieldCamera> eye <- FieldCamera {
+        id: "eye", mesh: "", color: #fff,
+        x: 10 * Math.sin(root.yaw * 0.017453292519943295), y: 0,
+        z: 10 * Math.cos(root.yaw * 0.017453292519943295),
+        yaw: root.yaw, pitch: 0, roll: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, camera-kind: "orthographic", camera-height: 6,
+    };
+    property <OrderedEmitter> red <- OrderedEmitter {
+        position: Point3D.new(0, 0, 0.8), color: root.population == 1 ? #ff354899 : #ff354808,
+        size: 1.28, lifetime: 4, fade-out: 0,
+        particle-group: "red", bursts: [ParticleBurst { time: 0, count: root.population }],
+        particle-sort-mode: root.sort-mode, depth-bias: root.bias,
+        velocity: root.ribbons ? Vector3D.new(0.9, 0, 0) : Vector3D.new(0, 0, 0),
+        trail-segments: root.ribbons ? 8 : 0, trail-duration: 0.75, trail-fade: 0, trail-end-scale: 1,
+        particle-model: root.models ? "primitive:box" : "",
+        emitter-shape: root.mesh-launch ? "mesh" : "point", emitter-mesh: "primitive:rectangle",
+    };
+    view := SceneView3D {
+        width <- 624px; height <- 300px; scene-background <- #101a2c; camera <- "eye";
+        oit-method <- root.weighted ? "weighted" : "sorted";
+        model <- [
+            root.eye,
+            FieldCamera {
+                id: "occluder", mesh: root.occluder ? "primitive:box" : "",
+                x: 0, y: 0, z: 0, scale-x: 0.34, scale-y: 2, scale-z: 0.2,
+                color: #7893a2, yaw: 0, camera-kind: "", ..root.eye
+            },
+        ];
+        particle-time <- root.time;
+        particle-emitters <- [
+            root.red,
+            OrderedEmitter {
+                position: Point3D.new(0, 0, -0.8), color: root.population == 1 ? #36b1ff99 : #36b1ff08,
+                particle-group: "blue", bursts: [ParticleBurst { time: 0.5, count: root.population }],
+                depth-bias: 0, ..root.red
+            },
+        ];
+        particle-affectors <- [
+            OrderField {
+                affector-kind: "gravity", particle-group: "red", enabled: root.affected,
+                direction: Vector3D.new(0, 0, -1), strength: 8,
+            },
+        ];
+    }
+    sort-choice := Button {
+        x <- 16px; y <- 311px; width <- 112px; height <- 32px;
+        text <- root.sort-mode == "none" ? "默认顺序" : root.sort-mode == "newest" ? "较新的先画" :
+            root.sort-mode == "oldest" ? "较早的先画" : "从远到近";
+        clicked => {
+            root.sort-mode = root.sort-mode == "none" ? "newest" :
+                root.sort-mode == "newest" ? "oldest" : root.sort-mode == "oldest" ? "distance" : "none";
+        }
+    }
+    weighted-choice := CheckBox { x <- 140px; y <- 311px; width <- 106px; height <- 32px; text <- "加权"; checked <-> root.weighted; }
+    affected-choice := CheckBox { x <- 252px; y <- 311px; width <- 109px; height <- 32px; text <- "深度加速"; checked <-> root.affected; }
+    CheckBox { x <- 368px; y <- 311px; width <- 86px; height <- 32px; text <- "拖尾"; checked <-> root.ribbons; }
+    CheckBox { x <- 456px; y <- 311px; width <- 79px; height <- 32px; text <- "模型"; checked <-> root.models; }
+    Label { x <- 16px; y <- 360px; width <- 112px; height <- 33px; text <- "红色深度偏移"; }
+    bias-slider := Slider { x <- 132px; y <- 360px; width <- 174px; height <- 33px; minimum <- -4; maximum <- 4; value <-> root.bias; }
+    Label { x <- 322px; y <- 360px; width <- 67px; height <- 33px; text <- "镜头"; }
+    orbit := Slider { x <- 390px; y <- 360px; width <- 214px; height <- 33px; minimum <- 0; maximum <- 180; value <-> root.yaw; }
+}
+
+struct TargetEmitter {
+    emitter-id: string, follow-emitter: string, particle-group: string,
+    position: point3d, color: color, size: float, lifetime: float, seed: int,
+    rate: float, bursts: [ParticleBurst], fade-out: float,
+    emitter-shape: string, emitter-extents: vector3d, velocity: vector3d,
+    particle-sort-mode: string, particle-model: string,
+    trail-segments: int, trail-duration: float, trail-length: float,
+}
+
+struct ShapeField {
+    affector-kind: string, particle-group: string, position: point3d, position-variation: vector3d,
+    duration: float, seed: int, enabled: bool,
+    attractor-shape: string, attractor-fill: bool, attractor-extents: vector3d,
+    attractor-roll: float, attractor-mesh: string, attractor-mesh-scale: vector3d,
+    attractor-samples: int,
+}
+
+export component ParticleShapeAttractorDemo inherits Window {
+    title <- "XRack · 粒子形状吸引器";
+    width <- 600px; height <- 396px; background <- #182333;
+
+    in-out property <float> time: 0.92;
+    in-out property <string> shape: "sphere";
+    in-out property <string> second-shape: "cylinder";
+    in-out property <string> mesh-source: @mesh-url("models/particle-surface.gltf");
+    in-out property <float> rotation: 0;
+    in-out property <bool> filled: false;
+    in-out property <bool> others: true;
+    in-out property <bool> model: false;
+    in-out property <bool> ribbons: false;
+    in-out property <bool> following: false;
+    in-out property <int> samples: 0;
+    in-out property <int> population: 256;
+
+    property <ShapeField> target <- ShapeField {
+        affector-kind: "attractor", particle-group: "amber", position: Point3D.new(-2.35, 0.75, 0),
+        position-variation: Vector3D.new(0.25, 0.25, 0), duration: 0.75, seed: 13, enabled: true,
+        attractor-shape: root.shape, attractor-fill: root.filled, attractor-extents: Vector3D.new(1.02, 0.75, 0.55),
+        attractor-roll: root.rotation, attractor-mesh: root.mesh-source,
+        attractor-mesh-scale: Vector3D.new(0.81, 1, 1), attractor-samples: root.samples,
+    };
+    property <TargetEmitter> cloud <- TargetEmitter {
+        emitter-id: "amber", follow-emitter: "", particle-group: "amber",
+        position: Point3D.new(-2.35, -1.75, 0), color: #ffb73f, size: 0.083, lifetime: 2.6, seed: 41,
+        rate: 0, bursts: [ParticleBurst { time: 0, count: root.population }], fade-out: 0,
+        emitter-shape: "box", emitter-extents: Vector3D.new(0.08, 0.08, 0.08), velocity: Vector3D.new(0,0,0),
+        particle-sort-mode: "distance", particle-model: "", trail-segments: root.ribbons ? 8 : 0,
+        trail-duration: 0.32, trail-length: 0.65,
+    };
+    view := SceneView3D {
+        width <- 600px; height <- 300px; camera <- "eye";
+        scene-background <- #101925; cache-rendering <- true;
+        model <- [FieldCamera {
+            id: "eye", mesh: "", x: 0, y: 0, z: 12, scale-x: 1, scale-y: 1, scale-z: 1,
+            yaw: 0, pitch: 0, roll: 0, color: #ffffff, camera-kind: "orthographic", camera-height: 6,
+        }];
+        particle-time <- root.time;
+        particle-affectors <- [root.target, ShapeField {
+            particle-group: "cyan", position: Point3D.new(2.3, 0.75, 0), enabled: root.others,
+            attractor-shape: root.second-shape, attractor-extents: Vector3D.new(0.76, 0.94, 0.55),
+            attractor-mesh: "primitive:rectangle", attractor-mesh-scale: Vector3D.new(1.6, 0.5, 1),
+            ..root.target
+        }];
+        particle-emitters <- [
+            root.cloud,
+            TargetEmitter {
+                emitter-id: "", particle-group: "cyan", position: Point3D.new(2.3, -1.75, 0),
+                color: #46daff, particle-model: root.model ? "primitive:box" : "",
+                ..root.cloud
+            },
+            TargetEmitter {
+                emitter-id: "", follow-emitter: "amber", particle-group: "tail", rate: root.following ? 4 : 0,
+                position: Point3D.new(0,0,0), velocity: Vector3D.new(-0.1,-0.5,0),
+                color: #f058de, size: 0.045, lifetime: 0.58, bursts: [], seed: 64,
+                emitter-shape: "point", trail-segments: 0, ..root.cloud
+            },
+        ];
+    }
+    Label { x <- 18px; y <- 307px; width <- 58px; height <- 34px; text <- "时间"; }
+    time-slider := Slider { x <- 78px; y <- 307px; width <- 502px; height <- 34px;
+        minimum <- 0; maximum <- 1.8; value <-> root.time;
+    }
+    shape-picker := Button { x <- 18px; y <- 352px; width <- 110px; height <- 34px;
+        text <- root.shape == "sphere" ? "椭球" : root.shape == "box" ? "盒体" : root.shape == "cylinder" ? "圆柱" : "网格";
+        clicked => {
+            root.shape = root.shape == "sphere" ? "box" : root.shape == "box" ? "cylinder" :
+                root.shape == "cylinder" ? "mesh" : "sphere";
+        }
+    }
+    CheckBox { x <- 145px; y <- 352px; width <- 100px; height <- 34px; text <- "填充体积"; checked <-> root.filled; }
+    CheckBox { x <- 257px; y <- 352px; width <- 110px; height <- 34px; text <- "右侧模型"; checked <-> root.model; }
+    CheckBox { x <- 372px; y <- 352px; width <- 87px; height <- 34px; text <- "拖尾"; checked <-> root.ribbons; }
+    CheckBox { x <- 463px; y <- 352px; width <- 113px; height <- 34px; text <- "跟随发射"; checked <-> root.following; }
+}

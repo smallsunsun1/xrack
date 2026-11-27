@@ -84,9 +84,19 @@ impl Handles {
             .filter(|key| keys.contains(key.as_str()))
             .map(|key| {
                 let handle = if definition.scene_view_targets.contains(key) {
-                    GeometryHandle::for_scene_view()
+                    GeometryHandle::for_scene_view(definition.scene_item_targets.contains(key))
                 } else {
                     GeometryHandle::default()
+                };
+                let handle = if definition.scene_texture_size_targets.contains(key) {
+                    handle.with_scene_texture_size()
+                } else {
+                    handle
+                };
+                let handle = if definition.render_stats_targets.contains(key) {
+                    handle.with_render_stats()
+                } else {
+                    handle
                 };
                 (key.clone(), handle)
             })
@@ -191,8 +201,33 @@ impl Instance {
         method: &str,
         inputs: &[Value],
     ) -> Result<Value> {
+        match (method, inputs) {
+            ("render-stats", []) => {
+                return self.geometry_value(key, |handle| handle.render_stats().into());
+            }
+            ("hit-item", [Value::Point2D(point)]) => {
+                return self.geometry_value(key, |handle| handle.scene_item_hit(*point).into());
+            }
+            (
+                "ray-hit-item",
+                [
+                    Value::Point3D(origin),
+                    Value::Vector3D(direction),
+                    Value::Float(max),
+                ],
+            ) => {
+                return self.geometry_value(key, |handle| {
+                    handle.scene_item_ray_hit(*origin, *direction, *max).into()
+                });
+            }
+            _ => {}
+        }
         let view = self.geometry_value(key, GeometryHandle::scene_view)?;
         Ok(match (method, inputs) {
+            ("has-active-camera", []) => view.has_active_camera().into(),
+            ("active-camera", []) => view.active_camera().into(),
+            ("active-camera-row", []) => view.active_camera_row().into(),
+            ("active-camera-node", []) => view.active_camera_node().into(),
             ("project", [Value::Point3D(point)]) => view.project(*point).into(),
             (
                 "unproject",
@@ -277,7 +312,7 @@ impl Instance {
         })
     }
 
-    fn geometry_value<T>(
+    pub(crate) fn geometry_value<T>(
         &self,
         key: &str,
         read: impl FnOnce(&xrack_runtime::GeometryHandle) -> T,

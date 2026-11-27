@@ -90,7 +90,30 @@ struct SelectionDocument {
 
 const SHORT_WIDTH_CACHE_SLOTS: usize = 4096;
 
-type SpanWidths = HashMap<u64, (TextStyle, Box<str>, f32)>;
+type SpanWidths = HashMap<u64, SpanMeasurement>;
+
+#[cfg(xrack_femtovg_glyph_samples)]
+pub(super) struct CachedStyledInk<'a>(std::cell::Ref<'a, SpanWidths>);
+
+#[cfg(xrack_femtovg_glyph_samples)]
+impl CachedStyledInk<'_> {
+    pub(super) fn get(&self, text: &str, style: TextStyle) -> Option<[f32; 2]> {
+        let style = shaping_style_index(style);
+        let key = self.0.hasher().hash_one((style, text));
+        let measurement = self.0.get(&key)?;
+        (measurement.style == style && measurement.text.as_ref() == text)
+            .then_some(measurement.ink)
+            .flatten()
+    }
+}
+
+struct SpanMeasurement {
+    style: usize,
+    text: Box<str>,
+    width: f32,
+    #[cfg(xrack_femtovg_glyph_samples)]
+    ink: Option<[f32; 2]>,
+}
 #[derive(Clone, Copy, Default)]
 struct ShortWidth {
     bytes: u64,
@@ -116,7 +139,7 @@ fn short_width_key(text: &str, style_index: usize, capacity: usize) -> Option<(u
 
 type ShapingPaints = [Option<Paint>; 8];
 
-fn shaping_style_index(style: TextStyle) -> usize {
+pub(super) fn shaping_style_index(style: TextStyle) -> usize {
     usize::from(style.bold) | (usize::from(style.italic) << 1) | (usize::from(style.monospace) << 2)
 }
 
@@ -605,6 +628,33 @@ impl LayoutCache {
         true
     }
 
+    #[cfg(xrack_femtovg_glyph_samples)]
+    pub(super) fn cached_ink<'a>(
+        cache: std::cell::Ref<'a, Self>,
+        system: &TextSystem,
+        node: &Node,
+    ) -> Option<CachedStyledInk<'a>> {
+        let typography = system.typography_revision()?;
+        let context = system.context_key();
+        let (family, weight, italic) = system.font_attributes(Some(node));
+        let size = system.font_size(node).to_bits();
+        let fonts = system.registered_font_counts();
+        std::cell::Ref::filter_map(cache, |cache| {
+            let spans = cache.shaped_spans.as_ref()?;
+            let font = &spans.scope.font;
+            (spans.registered_fonts == fonts
+                && Rc::ptr_eq(&spans.scope.context, context)
+                && Rc::ptr_eq(&spans.scope.typography, &typography)
+                && font.size == size
+                && font.family == family
+                && font.weight == weight
+                && font.italic == italic)
+                .then_some(&spans.span_widths)
+        })
+        .ok()
+        .map(CachedStyledInk)
+    }
+
     fn prepare_reflow(
         &mut self,
         system: &TextSystem,
@@ -924,6 +974,8 @@ fn layout(
     } else {
         None
     };
+    #[cfg(xrack_femtovg_glyph_samples)]
+    let share_ink = spans.is_some();
     let mut local_widths;
     let mut local_short = Vec::new();
     let (mut widths, short) = if let Some(spans) = &mut spans {
@@ -932,6 +984,12 @@ fn layout(
         local_widths = (document.text().len() >= 4096).then(SpanWidths::new);
         (local_widths.as_mut(), &mut local_short)
     };
+    // Long clipped documents use these measurements again to bound their
+    // visible ink. Small labels only pay for their advances.
+    #[cfg(xrack_femtovg_glyph_samples)]
+    let joint_ink = share_ink && document.text().len() >= 64 * 1024;
+    #[cfg(xrack_femtovg_glyph_samples)]
+    let mut span_misses = [0; 8];
     let mut unretained_widths = 0_usize;
     let advance = |text: &str, style| {
         let style_index = shaping_style_index(style);
@@ -971,16 +1029,54 @@ fn layout(
                 return previous.width;
             }
         }
-        let key = widths.hasher().hash_one((style, text));
-        let width = if let Some((cached_style, cached_text, width)) = widths.get(&key)
-            && *cached_style == style
-            && cached_text.as_ref() == text
+        let key = widths.hasher().hash_one((style_index, text));
+        let width = if let Some(measurement) = widths.get(&key)
+            && measurement.style == style_index
+            && measurement.text.as_ref() == text
         {
-            *width
+            measurement.width
         } else {
+            #[cfg(xrack_femtovg_glyph_samples)]
+            if joint_ink && reflow && style_index != 0 {
+                span_misses[style_index] += 1;
+                // Wait until the layout has used this face repeatedly. This
+                // preserves the normal order of font registration and skips
+                // speculative work when the span cache is already warm.
+                if span_misses[style_index] == 24 {
+                    let words = document
+                        .runs()
+                        .iter()
+                        .filter(|run| shaping_style_index(run.style) == style_index)
+                        .flat_map(|run| {
+                            document.text()[run.start..run.end].split_ascii_whitespace()
+                        });
+                    system.context().prepare_short_ltr_words(words, paint);
+                }
+            }
+            #[cfg(xrack_femtovg_glyph_samples)]
+            let measurement = if joint_ink && widths.len() < max_widths {
+                system.context().measure_ltr_width_and_ink(text, paint)
+            } else {
+                None
+            };
+            #[cfg(not(xrack_femtovg_glyph_samples))]
             let width = system.advance_painted(text, paint);
+            #[cfg(xrack_femtovg_glyph_samples)]
+            let (width, ink) = measurement.map_or_else(
+                || (system.advance_painted(text, paint), None),
+                |(width, ink)| (width, Some(ink)),
+            );
             if widths.len() < max_widths {
-                widths.insert(key, (style, text.into(), width));
+                widths.insert(
+                    key,
+                    SpanMeasurement {
+                        style: style_index,
+                        text: text.into(),
+                        width,
+                        #[cfg(xrack_femtovg_glyph_samples)]
+                        ink,
+                    },
+                );
             } else {
                 unretained_widths += 1;
                 if reflow && unretained_widths == REFLOW_WIDTH_CACHE_PRESSURE {

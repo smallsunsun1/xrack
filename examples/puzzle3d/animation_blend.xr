@@ -1,5 +1,17 @@
 struct ParticleBurst { time: float, count: int }
 
+export struct NodePoseEdit {
+    node: string, rotation: quaternion3d, weight: float,
+}
+
+struct PoseActor {
+    id: string, parent: string, parent-node: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    animation: string, animation-time: float, animation-node-overrides: [NodePoseEdit],
+}
+
 export struct BlendLayer {
     clip: string, time: float, looping: bool, weight: float, root-node: string, mode: string,
 }
@@ -183,6 +195,61 @@ export component AnimationBlendDemo inherits Window {
                 width <- 112px;
                 clicked => { root.sparks = !root.sparks; }
             }
+        }
+    }
+}
+
+export component NodePoseDemo inherits Window {
+    title <- "XRack · glTF 关节覆盖";
+    width <- 460px; height <- 310px;
+    resizable <- false; background <- #141d29;
+
+    in-out property <float> angle: 0;
+    in-out property <float> time: 0.5;
+    in-out property <[NodePoseEdit]> edits: [
+        NodePoseEdit {
+            node: "#2",
+            rotation: Quaternion3D.from-axis-angle(Vector3D.new(0, 0, 1), root.angle),
+            weight: 1,
+        },
+    ];
+    property <PoseActor> base <- PoseActor {
+        id: "", parent: "", parent-node: "", mesh: "",
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff,
+        animation: "", animation-time: root.time, animation-node-overrides: [],
+    };
+    out property <scenemodel3d> world <- Scene3D.prepare([
+        PoseActor { id: "panel", mesh: @mesh-url("models/skinned-panel.glb"), x: -1.5,
+            animation: "Bend", animation-node-overrides: root.edits, color: #78d4bd, ..root.base },
+        PoseActor { id: "marker", mesh: "primitive:sphere", parent: "panel", parent-node: "#2",
+            x: 0.34, z: 0.16, scale-x: 0.12, scale-y: 0.12, scale-z: 0.12,
+            color: #f6c75b, ..root.base },
+    ]);
+    out property <meshnode3d> joint <- Scene3D.scene-node(root.world, "panel", "#2");
+    out property <point3d> marker-position <- Scene3D.map-position(root.world, "marker", "",
+        Point3D.new(0, 0, 0), Point3D.new(100, 100, 100));
+    property <projectedpoint3d> marker-pixel <- view.project(root.marker-position);
+    out property <hit3d> marker-hit <- view.hit-row(root.marker-pixel.point, 1);
+
+    view := SceneView3D {
+        width <- 460px; height <- 232px; model <- root.world;
+        scene-background <- #22344b; camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 5.5;
+        light-yaw <- 20; light-elevation <- 35;
+    }
+    Text {
+        x <- 12px; y <- 240px; width <- 436px; color <- #d9efff;
+        text <- "Bend " + root.time + " s  ·  关节覆盖 " + root.angle + "°";
+    }
+    HorizontalLayout {
+        x <- 12px; y <- 268px; width <- 436px; height <- 32px; spacing <- 8px;
+        bend := Button {
+            text <- root.angle == 0 ? "转动关节" : "恢复关节";
+            clicked => { root.angle = root.angle == 0 ? 90 : 0; }
+        }
+        step-clip := Button {
+            text <- "切换片段时刻";
+            clicked => { root.time = root.time == 0 ? 0.5 : 0; }
         }
     }
 }

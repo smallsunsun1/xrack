@@ -1,0 +1,73 @@
+import "fonts/xrack-outline-example.ttf";
+
+struct RaisedText {
+    shape: string, text: string, font: Font, text-scale: float, depth: float, asynchronous: bool,
+}
+struct LetterModel {
+    id: string, geometry: RaisedText, color: color, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, pitch: float, yaw: float, roll: float,
+}
+
+export component TextGeometryDemo inherits Window {
+    title <- "XRack · Extruded text";
+    width <- 460px; height <- 324px; background <- #162333; resizable <- false;
+
+    in-out property <string> letters: "O";
+    in-out property <float> depth: 0.38;
+    in-out property <float> angle: 0;
+    in-out property <color> tint: #69d5cf;
+    in-out property <length> detail: 32px;
+    in-out property <bool> async-geometry: false;
+    property <Font> outline-font <- Font {
+        family: "XRack Outline Example", size: root.detail, weight: 400, italic: false,
+    };
+    property <[LetterModel]> objects <- [
+        LetterModel {
+            id: "letters", color: root.tint, x: root.letters == "O" ? -0.8 : -1.65, y: -0.8, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, pitch: 0, yaw: root.angle, roll: 0,
+            geometry: RaisedText {
+                shape: "text", text: root.letters, font: root.outline-font,
+                text-scale: 2, depth: root.depth, asynchronous: root.async-geometry,
+            },
+        },
+    ];
+    out property <scenemodel3d> world <- Scene3D.prepare(root.objects);
+    out property <string> geometry-state <- Scene3D.geometry-status(root.world, "letters");
+    out property <string> geometry-error-text <- Scene3D.geometry-error(root.world, "letters");
+    out property <hit3d> counter-hit <- Scene3D.ray-hit(
+        root.world, Point3D.new(0, 0, 4), Vector3D.new(0, 0, -1), 10);
+    out property <hit3d> face-hit <- Scene3D.ray-hit(
+        root.world, Point3D.new(0.67, 0, 4), Vector3D.new(0, 0, -1), 10);
+    out property <hit3d> side-hit <- Scene3D.ray-hit(
+        root.world, Point3D.new(1.4, 0, 0.2), Vector3D.new(-1, 0, 0), 10);
+
+    SceneView3D {
+        width <- 460px; height <- 240px; model <- root.world; scene-background <- #223750;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 4.4;
+        light-yaw <- 14; light-elevation <- 35;
+    }
+    Text {
+        x <- 12px; y <- 246px; width <- 302px; color <- #e0f4ff;
+        text <- root.letters + " · Depth " + root.depth + (root.side-hit.valid ? " · wall hit" : "");
+    }
+    async-toggle := CheckBox {
+        x <- 326px; y <- 243px; width <- 122px; height <- 28px;
+        text <- "Async · " + root.geometry-state; checked <-> root.async-geometry;
+    }
+    text-toggle := Button {
+        x <- 12px; y <- 280px; width <- 102px; height <- 32px; text <- "Text";
+        clicked => { root.letters = root.letters == "O" ? "XR" : "O"; }
+    }
+    depth-toggle := Button {
+        x <- 122px; y <- 280px; width <- 102px; height <- 32px; text <- "Depth";
+        clicked => { root.depth = root.depth > 0.2 ? 0.12 : 0.38; }
+    }
+    rotate-toggle := Button {
+        x <- 232px; y <- 280px; width <- 102px; height <- 32px; text <- "Rotate";
+        clicked => { root.angle = root.angle == 0 ? 46 : 0; }
+    }
+    color-toggle := Button {
+        x <- 342px; y <- 280px; width <- 106px; height <- 32px; text <- "Color";
+        clicked => { root.tint = root.tint == #69d5cf ? #fac67e : #69d5cf; }
+    }
+}

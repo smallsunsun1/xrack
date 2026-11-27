@@ -11,7 +11,7 @@ use super::{
     joints::{JointKind, distance_coupling, set_distance_axis},
     scene_pose, sensor_collider,
 };
-use crate::scene_hierarchy::CollisionShapeSpec;
+use crate::scene3d::hierarchy::CollisionShapeSpec;
 use crate::{Point3D, RecordList, RecordValue, Value, Vector3D, scene3d::MeshAsset};
 
 #[derive(Clone, Debug, PartialEq)]

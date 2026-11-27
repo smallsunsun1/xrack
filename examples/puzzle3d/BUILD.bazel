@@ -1162,14 +1162,14 @@ rust_binary(
 )
 
 exports_files(
-    ["particle_mesh_emitters.xr", "models/particle-surface.gltf"],
+    ["particle_mesh_emitters.xr", "models/particle-surface.gltf", "models/particle-orbits.cbor"],
     visibility = ["//tests:__pkg__"],
 )
 
 xr_ui_library(
     name = "particle_mesh_emitters_ui",
     src = "particle_mesh_emitters.xr",
-    assets = ["models/particle-surface.gltf"],
+    assets = ["models/particle-orbits.cbor", "models/particle-surface.gltf"],
     visibility = ["//tests:__pkg__"],
 )
 
@@ -1188,6 +1188,7 @@ exports_files(["particle_affectors.xr"], visibility = ["//tests:__pkg__"])
 xr_ui_library(
     name = "particle_affectors_ui",
     src = "particle_affectors.xr",
+    assets = ["models/particle-surface.gltf"],
     visibility = ["//tests:__pkg__"],
 )
 
@@ -1206,6 +1207,7 @@ exports_files(["particle_trails.xr"], visibility = ["//tests:__pkg__"])
 xr_ui_library(
     name = "particle_trails_ui",
     src = "particle_trails.xr",
+    assets = ["models/particle-marks.png"],
     visibility = ["//tests:__pkg__"],
 )
 
@@ -1224,7 +1226,10 @@ exports_files(["particle_lighting.xr", "particle_models.xr"], visibility = ["//t
 xr_ui_library(
     name = "particle_lighting_ui",
     src = "particle_lighting.xr",
-    assets = ["models/probe-sphere.gltf"],
+    assets = [
+        "models/particle-marks.png",
+        "models/probe-sphere.gltf",
+    ],
     visibility = ["//tests:__pkg__"],
 )
 
@@ -1251,6 +1256,30 @@ rust_binary(
     edition = "2024",
     deps = [
         ":particle_models_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+MODEL_BLEND_ASSETS = [
+    "models/brushed-direction.png",
+    "models/brushed-panel.gltf",
+]
+
+exports_files(["model_blend.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "model_blend_ui",
+    src = "model_blend.xr",
+    assets = MODEL_BLEND_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_model_blend",
+    srcs = ["play_model_blend.rs"],
+    edition = "2024",
+    deps = [
+        ":model_blend_ui",
         "//crates/xrack-platform-winit:xrack_platform_winit",
     ],
 )
@@ -1524,6 +1553,7 @@ rust_binary(
 )
 
 exports_files(["off_axis_camera.xr"], visibility = ["//tests:__pkg__"])
+exports_files(["ground_grid.xr"], visibility = ["//tests:__pkg__"])
 
 exports_files(["camera_aim.xr"], visibility = ["//tests:__pkg__"])
 
@@ -1610,6 +1640,22 @@ rust_binary(
     edition = "2024",
     deps = [
         ":off_axis_camera_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+xr_ui_library(
+    name = "ground_grid_ui",
+    src = "ground_grid.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_ground_grid",
+    srcs = ["play_ground_grid.rs"],
+    edition = "2024",
+    deps = [
+        ":ground_grid_ui",
         "//crates/xrack-platform-winit:xrack_platform_winit",
     ],
 )
@@ -2169,6 +2215,7 @@ xr_ui_library(
 rust_binary(
     name = "play_gpu_instancing",
     srcs = ["play_gpu_instancing.rs"],
+    data = ["models/gpu-instances.gltf"],
     edition = "2024",
     deps = [
         ":gpu_instancing_ui",
@@ -2555,11 +2602,113 @@ rust_binary(
     ],
 )
 
+CUBE_ENVIRONMENT_ASSETS = ["models/direction-cube.ktx", "models/direction-cube.ktx2"]
+
+exports_files(["cube_environment.xr"] + CUBE_ENVIRONMENT_ASSETS, visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "cube_environment_ui",
+    src = "cube_environment.xr",
+    assets = CUBE_ENVIRONMENT_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_cube_environment",
+    srcs = ["play_cube_environment.rs"],
+    edition = "2024",
+    deps = [
+        ":cube_environment_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+SHADER_CUBEMAP_ASSETS = [
+    "effects/cube_effect.wgsl",
+    "effects/cube_material.wgsl",
+    "models/channel-swatch.png",
+    "models/shader-cube.ktx2",
+]
+
+exports_files(
+    [
+        "shader_cubemap.xr",
+        "effects/cube_effect.wgsl",
+        "effects/cube_material.wgsl",
+        "models/shader-cube.ktx2",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "shader_cubemap_ui",
+    src = "shader_cubemap.xr",
+    assets = SHADER_CUBEMAP_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_shader_cubemap",
+    srcs = ["play_shader_cubemap.rs"],
+    edition = "2024",
+    deps = [
+        ":shader_cubemap_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+PROCEDURAL_TEXTURE_ASSETS = [
+    "effects/procedural_texture_effect.wgsl",
+    "effects/procedural_texture_material.wgsl",
+]
+
+exports_files(
+    ["procedural_texture.xr"] + PROCEDURAL_TEXTURE_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "procedural_texture_ui",
+    src = "procedural_texture.xr",
+    assets = PROCEDURAL_TEXTURE_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_procedural_texture",
+    srcs = ["play_procedural_texture.rs"],
+    edition = "2024",
+    deps = [
+        ":procedural_texture_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["text_geometry.xr", "fonts/xrack-outline-example.ttf"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "text_geometry_ui",
+    src = "text_geometry.xr",
+    assets = ["fonts/xrack-outline-example.ttf"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_text_geometry",
+    srcs = ["play_text_geometry.rs"],
+    edition = "2024",
+    deps = [
+        ":text_geometry_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
 exports_files(["authored_mesh.xr"], visibility = ["//tests:__pkg__"])
 
 xr_ui_library(
     name = "authored_mesh_ui",
     src = "authored_mesh.xr",
+    assets = ["effects/material_surface.wgsl"],
     visibility = ["//tests:__pkg__"],
 )
 

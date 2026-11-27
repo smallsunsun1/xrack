@@ -9,7 +9,7 @@
 打开仓库根目录，安装推荐的 Rust Analyzer 和 CodeLLDB 扩展。用 **Terminal → Run Task → Bazel: Generate rust-project.json** 生成本机项目图，或在终端运行：
 
 ```sh
-bazel run //:rust_project -- //... //tests:gpu_test
+bazel run //:rust_project -- //... //tests:gpu_test //tests:scene3d_test
 ```
 
 Rust Analyzer 读取 Bazel 的 crate 图、标准库源码、生成的 Rust 文件和过程宏。项目图包含本机路径，由 Git 忽略。更改 `BUILD.bazel`、依赖或工具链后重新生成；如果编辑器仍显示旧图，运行 **Rust Analyzer: Reload Workspace**。

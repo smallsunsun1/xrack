@@ -10,7 +10,7 @@ use xrack_runtime::Color;
 
 const IMAGE_INSTANCE_STRIDE: usize = 9 * size_of::<f32>();
 const LAYER_INSTANCE_STRIDE: usize =
-    IMAGE_INSTANCE_STRIDE + size_of::<u32>() + size_of::<[i32; 2]>();
+    IMAGE_INSTANCE_STRIDE + size_of::<u32>() + size_of::<[i32; 4]>() + size_of::<[f32; 4]>();
 pub(super) const MAX_INSTANCES: usize = 1024;
 pub(super) const MAX_IMAGE_INSTANCES: usize = 4096;
 pub(super) const MIN_IMAGE_INSTANCES: usize = 64;
@@ -22,22 +22,25 @@ const SHADER: &str = r#"
 @group(0) @binding(0) var layer_texture: texture_2d<f32>;
 @group(0) @binding(1) var layer_sampler: sampler;
 @group(1) @binding(0) var clip_texture: texture_2d<f32>;
+@group(2) @binding(0) var second_clip_texture: texture_2d<f32>;
 
 struct Vertex {
     @builtin(position) position: vec4f,
     @location(0) uv: vec2f,
     @location(1) @interpolate(flat) paint_parameter: f32,
-    @location(2) @interpolate(flat) sample_mask: u32,
+    @location(2) @interpolate(flat) clip_flags: u32,
     @location(3) @interpolate(flat) clip_origin: vec2i,
+    @location(4) @interpolate(flat) edge_clip: vec4f,
+    @location(5) @interpolate(flat) second_origin: vec2i,
 }
 
 fn quad_vertex(
-    index: u32, position: vec4f, uv_bounds: vec4f, paint_parameter: f32, sample_mask: u32, clip_origin: vec2i,
+    index: u32, position: vec4f, uv_bounds: vec4f, paint_parameter: f32, clip_flags: u32, clip_origin: vec2i, edge_clip: vec4f, second_origin: vec2i,
 ) -> Vertex {
     let corner = vec2f(f32(index & 1u), f32(index >> 1u));
     let p = mix(position.xy, position.zw, corner);
     let uv = mix(uv_bounds.xy, uv_bounds.zw, corner);
-    return Vertex(vec4f(p, 0.0, 1.0), uv, paint_parameter, sample_mask, clip_origin);
+    return Vertex(vec4f(p, 0.0, 1.0), uv, paint_parameter, clip_flags, clip_origin, edge_clip, second_origin);
 }
 
 @vertex fn vertex(
@@ -45,10 +48,12 @@ fn quad_vertex(
     @location(0) position: vec4f,
     @location(1) uv_bounds: vec4f,
     @location(2) paint_parameter: f32,
-    @location(3) sample_mask: u32,
+    @location(3) clip_flags: u32,
     @location(4) clip_origin: vec2i,
+    @location(5) edge_clip: vec4f,
+    @location(6) second_origin: vec2i,
 ) -> Vertex {
-    return quad_vertex(index, position, uv_bounds, paint_parameter, sample_mask, clip_origin);
+    return quad_vertex(index, position, uv_bounds, paint_parameter, clip_flags, clip_origin, edge_clip, second_origin);
 }
 
 @vertex fn image_vertex(
@@ -57,7 +62,7 @@ fn quad_vertex(
     @location(1) uv_bounds: vec4f,
     @location(2) paint_parameter: f32,
 ) -> Vertex {
-    return quad_vertex(index, position, uv_bounds, paint_parameter, 0u, vec2i(0));
+    return quad_vertex(index, position, uv_bounds, paint_parameter, 0u, vec2i(0), vec4f(0.0), vec2i(0));
 }
 
 struct SolidVertex {
@@ -110,7 +115,7 @@ fn rgb_tint(tint: u32) -> vec3f {
 }
 
 @fragment fn fragment(input: Vertex) -> @location(0) vec4f {
-    return textureSampleLevel(layer_texture, layer_sampler, input.uv, 0.0) * input.paint_parameter;
+    return textureSampleLevel(layer_texture, layer_sampler, input.uv, 0.0) * (input.paint_parameter * rectangular_coverage(input));
 }
 
 @fragment fn image_fragment(input: Vertex) -> @location(0) vec4f {
@@ -119,7 +124,7 @@ fn rgb_tint(tint: u32) -> vec3f {
 }
 
 fn clip_coverage(input: Vertex) -> f32 {
-    if input.sample_mask == 0u {
+    if (input.clip_flags & 1u) == 0u {
         return 1.0;
     }
     let pixel = vec2i(input.position.xy) - input.clip_origin;
@@ -130,9 +135,42 @@ fn clip_coverage(input: Vertex) -> f32 {
     return 0.0;
 }
 
+fn split_clip_coverage(input: Vertex) -> f32 {
+    let outer = clip_coverage(input);
+    if outer == 0.0 || (input.clip_flags & 4u) == 0u {
+        return outer;
+    }
+    let pixel = vec2i(input.position.xy) - input.second_origin;
+    let size = vec2i(textureDimensions(second_clip_texture));
+    if all(pixel >= vec2i(0)) && all(pixel < size) {
+        return outer * textureLoad(second_clip_texture, pixel, 0).r;
+    }
+    return 0.0;
+}
+
+@fragment fn split_masked_fragment(input: Vertex) -> @location(0) vec4f {
+    return textureSampleLevel(layer_texture, layer_sampler, input.uv, 0.0)
+        * (input.paint_parameter * rectangular_coverage(input) * split_clip_coverage(input));
+}
+
+@fragment fn split_masked_alpha_fragment(input: Vertex) -> @location(0) vec4f {
+    return tint_alpha(input) * split_clip_coverage(input);
+}
+
+fn rectangular_coverage(input: Vertex) -> f32 {
+    if (input.clip_flags & 2u) == 0u {
+        return 1.0;
+    }
+    let coverage = clamp(
+        vec2f(0.5) + min(input.position.xy - input.edge_clip.xy, input.edge_clip.zw - input.position.xy),
+        vec2f(0.0), vec2f(1.0),
+    );
+    return coverage.x * coverage.y;
+}
+
 @fragment fn masked_fragment(input: Vertex) -> @location(0) vec4f {
     return textureSampleLevel(layer_texture, layer_sampler, input.uv, 0.0)
-        * (input.paint_parameter * clip_coverage(input));
+        * (input.paint_parameter * rectangular_coverage(input) * clip_coverage(input));
 }
 
 fn tint_alpha(input: Vertex) -> vec4f {
@@ -166,7 +204,7 @@ var<immediate> motion: ImageMotion;
     @location(2) paint_parameter: f32,
 ) -> Vertex {
     let moved = (position + motion.offset.xyxy) * motion.scale.xyxy + vec4f(-1.0, 1.0, -1.0, 1.0);
-    return quad_vertex(index, moved, uv_bounds, paint_parameter, 0u, vec2i(0));
+    return quad_vertex(index, moved, uv_bounds, paint_parameter, 0u, vec2i(0), vec4f(0.0), vec2i(0));
 }
 "#;
 
@@ -174,10 +212,12 @@ var<immediate> motion: ImageMotion;
 enum LayerShader {
     Retained,
     Masked,
+    SplitMasked,
     Image,
     ScrollImage,
     Alpha,
     MaskedAlpha,
+    SplitMaskedAlpha,
     Solid,
     OpaqueSolid,
     CoveredSolid,
@@ -185,11 +225,17 @@ enum LayerShader {
 
 impl LayerShader {
     fn for_layer(layer: &WindowLayer) -> Self {
+        let split = layer
+            .mask
+            .as_ref()
+            .is_some_and(|clip| clip.second.is_some());
         match &layer.source {
+            WindowLayerSource::TintedAlpha { .. } if split => Self::SplitMaskedAlpha,
             WindowLayerSource::TintedAlpha { .. } if layer.mask.is_some() => Self::MaskedAlpha,
             WindowLayerSource::TintedAlpha { .. } => Self::Alpha,
             WindowLayerSource::Solid(_) => Self::Solid,
             WindowLayerSource::CoveredSolid { .. } => Self::CoveredSolid,
+            WindowLayerSource::Texture(_) if split => Self::SplitMasked,
             WindowLayerSource::Texture(_) if layer.mask.is_some() => Self::Masked,
             WindowLayerSource::Texture(_) => Self::Retained,
         }
@@ -421,6 +467,7 @@ pub(super) struct LayerCompositor {
     solid_pipeline_layout: wgpu::PipelineLayout,
     mask_layout: wgpu::BindGroupLayout,
     masked_pipeline_layout: wgpu::PipelineLayout,
+    split_mask_pipeline_layout: wgpu::PipelineLayout,
     shader: wgpu::ShaderModule,
     sampler: wgpu::Sampler,
     instances: InstanceBuffer<LAYER_INSTANCE_STRIDE>,
@@ -494,6 +541,12 @@ impl LayerCompositor {
                 bind_group_layouts: &[Some(&layout), Some(&mask_layout)],
                 immediate_size: 0,
             });
+        let split_mask_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("XRack split mask compositor"),
+                bind_group_layouts: &[Some(&layout), Some(&mask_layout), Some(&mask_layout)],
+                immediate_size: 0,
+            });
         let source = if scroll_pipeline_layout.is_some() {
             format!("{SHADER}{SCROLL_SHADER}").into()
         } else {
@@ -516,6 +569,7 @@ impl LayerCompositor {
             solid_pipeline_layout,
             mask_layout,
             masked_pipeline_layout,
+            split_mask_pipeline_layout,
             shader,
             sampler,
             instances,
@@ -564,7 +618,7 @@ impl LayerCompositor {
     ) -> &wgpu::RenderPipeline {
         self.pipelines.entry((format, flavor)).or_insert_with(|| {
             let attributes =
-                wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Uint32, 4 => Sint32x2];
+                wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Uint32, 4 => Sint32x2, 5 => Float32x4, 6 => Sint32x2];
             let (stride, attributes) = if matches!(flavor, LayerShader::Image | LayerShader::ScrollImage) {
                 (IMAGE_INSTANCE_STRIDE, &attributes[..3])
             } else {
@@ -574,6 +628,7 @@ impl LayerCompositor {
                 label: Some("XRack cached layer compositor"),
                 layout: Some(match flavor {
                     LayerShader::Masked | LayerShader::MaskedAlpha => &self.masked_pipeline_layout,
+                    LayerShader::SplitMasked | LayerShader::SplitMaskedAlpha => &self.split_mask_pipeline_layout,
                     LayerShader::Solid | LayerShader::OpaqueSolid | LayerShader::CoveredSolid => &self.solid_pipeline_layout,
                     LayerShader::ScrollImage => self.scroll_pipeline_layout.as_ref().unwrap_or(&self.pipeline_layout),
                     _ => &self.pipeline_layout,
@@ -605,9 +660,11 @@ impl LayerCompositor {
                     entry_point: Some(match flavor {
                         LayerShader::Retained => "fragment",
                         LayerShader::Masked => "masked_fragment",
+                        LayerShader::SplitMasked => "split_masked_fragment",
                         LayerShader::Image | LayerShader::ScrollImage => "image_fragment",
                         LayerShader::Alpha => "alpha_fragment",
                         LayerShader::MaskedAlpha => "masked_alpha_fragment",
+                        LayerShader::SplitMaskedAlpha => "split_masked_alpha_fragment",
                         LayerShader::Solid | LayerShader::OpaqueSolid => "solid_fragment",
                         LayerShader::CoveredSolid => "covered_fragment",
                     }),
@@ -802,7 +859,10 @@ impl Renderer {
                 width,
                 height,
             } = layer.bounds;
-            let flags = u32::from(layer.sample_mask);
+            let [outer, inner] = layer.clip_samples;
+            let flags = u32::from(outer)
+                | (u32::from(layer.edge_clip.is_some()) << 1)
+                | (u32::from(inner) << 2);
             let (attributes, paint_parameter, flags) = match &layer.source {
                 WindowLayerSource::Texture(_) => (layer.uv, layer.opacity, flags),
                 // RGB8 fits exactly in one f32 and stays flat across the quad.
@@ -831,7 +891,16 @@ impl Renderer {
             let (geometry_bytes, clip_bytes) = bytes.split_at_mut(IMAGE_INSTANCE_STRIDE);
             geometry_bytes.copy_from_slice(geometry.map(f32::to_ne_bytes).as_flattened());
             clip_bytes[..4].copy_from_slice(&flags.to_ne_bytes());
-            clip_bytes[4..].copy_from_slice(origin.map(i32::to_ne_bytes).as_flattened());
+            clip_bytes[4..12].copy_from_slice(origin.map(i32::to_ne_bytes).as_flattened());
+            if let Some(clip) = layer.edge_clip {
+                let clip = [clip.x, clip.y, clip.x + clip.width, clip.y + clip.height]
+                    .map(|edge| (edge * scale).to_ne_bytes());
+                clip_bytes[12..28].copy_from_slice(clip.as_flattened());
+            }
+            if let Some(second) = layer.mask.as_ref().and_then(|clip| clip.second.as_ref()) {
+                clip_bytes[28..]
+                    .copy_from_slice(second.origin.map(i32::to_ne_bytes).as_flattened());
+            }
             bytes
         });
         let view = target.create_view(&wgpu::TextureViewDescriptor {
@@ -900,18 +969,27 @@ impl Renderer {
                     pass.set_bind_group(0, bind_group, &[]);
                 }
                 if let Some(clip) = &layer.mask {
-                    let binding = clip.mask.binding.get_or_init(|| {
-                        let view = clip.mask.texture.create_view(&Default::default());
-                        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("XRack cached layer clip"),
-                            layout: &compositor.mask_layout,
-                            entries: &[wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(&view),
-                            }],
-                        })
-                    });
-                    pass.set_bind_group(1, binding, &[]);
+                    let masks = [
+                        Some(&clip.mask),
+                        clip.second.as_ref().map(|second| &second.mask),
+                    ];
+                    for (index, mask) in masks.into_iter().enumerate() {
+                        let Some(mask) = mask else {
+                            continue;
+                        };
+                        let binding = mask.binding.get_or_init(|| {
+                            let view = mask.texture.create_view(&Default::default());
+                            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("XRack cached layer clip"),
+                                layout: &compositor.mask_layout,
+                                entries: &[wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(&view),
+                                }],
+                            })
+                        });
+                        pass.set_bind_group(index as u32 + 1, binding, &[]);
+                    }
                 }
                 pass.draw(0..4, index..end);
                 xrack_runtime::update_profile::quad_batch_upload(std::mem::take(
@@ -993,6 +1071,7 @@ fn material_key(
 ) -> (
     Option<*const CachedLayerImage>,
     Option<*const crate::retained_layers::WindowClipMask>,
+    Option<*const crate::retained_layers::WindowClipMask>,
 ) {
     let image = match &layer.source {
         WindowLayerSource::Texture(image) | WindowLayerSource::TintedAlpha { image, .. } => {
@@ -1003,6 +1082,11 @@ fn material_key(
     (
         image,
         layer.mask.as_ref().map(|clip| Rc::as_ptr(&clip.mask)),
+        layer
+            .mask
+            .as_ref()
+            .and_then(|clip| clip.second.as_ref())
+            .map(|sample| Rc::as_ptr(&sample.mask)),
     )
 }
 

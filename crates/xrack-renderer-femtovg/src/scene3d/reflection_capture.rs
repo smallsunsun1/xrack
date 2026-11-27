@@ -744,22 +744,36 @@ pub(super) fn capture_node(view: &Node, layers: u64) -> Node {
         }
     }
     if let Some(Value::SceneParticleEmitters(emitters)) = view.properties.get("particle-emitters") {
-        let eligible = |emitter: &&xrack_runtime::scene3d::ParticleEmitter| {
+        let casts = |emitter: &xrack_runtime::scene3d::ParticleEmitter| {
             emitter.layers & layers != 0
-                && emitter
-                    .model
-                    .as_ref()
-                    .is_some_and(|model| model.casts_reflections)
+                && emitter.casts_reflections
+                && (emitter.follow_emitter.is_empty() || emitter.follow_source(emitters).is_some())
         };
-        let reflected_layers = emitters
+        let sources: Vec<_> = emitters
             .iter()
-            .filter(eligible)
-            .fold(0, |mask, emitter| mask | emitter.layers);
-        if reflected_layers != 0 {
-            scene.properties.insert(
-                "particle-emitters",
-                Value::SceneParticleEmitters(emitters.iter().filter(eligible).cloned().collect()),
-            );
+            .filter(|emitter| casts(emitter))
+            .filter_map(|emitter| emitter.follow_source(emitters))
+            .collect();
+        let reflected: Arc<[_]> = emitters
+            .iter()
+            .filter(|emitter| {
+                casts(emitter) || sources.iter().any(|source| std::ptr::eq(*emitter, *source))
+            })
+            .cloned()
+            .collect();
+        if !reflected.is_empty() {
+            // Cubemap capture supports ordinary blending and weighted accumulation.
+            // Linked-list transparency uses the weighted path on capture targets.
+            if reflected
+                .iter()
+                .any(|emitter| casts(emitter) && emitter.model.is_none())
+                && let Some(mode) = view.text("oit-method")
+            {
+                scene.properties.insert(
+                    "order-independent-transparency",
+                    Value::Bool(matches!(mode, "weighted" | "linked-list")),
+                );
+            }
             if let Some(time) = view.properties.get("particle-time") {
                 scene.properties.insert("particle-time", time.clone());
             }
@@ -771,12 +785,24 @@ pub(super) fn capture_node(view: &Node, layers: u64) -> Node {
                     Value::SceneParticleAffectors(
                         affectors
                             .iter()
-                            .filter(|affector| affector.layers & reflected_layers & layers != 0)
+                            .filter(|affector| {
+                                reflected.iter().any(|emitter| {
+                                    let mask = if emitter.layers & layers == 0 {
+                                        emitter.layers
+                                    } else {
+                                        layers
+                                    };
+                                    affector.matches_emitter(emitter, mask)
+                                })
+                            })
                             .cloned()
                             .collect(),
                     ),
                 );
             }
+            scene
+                .properties
+                .insert("particle-emitters", Value::SceneParticleEmitters(reflected));
         }
     }
     scene

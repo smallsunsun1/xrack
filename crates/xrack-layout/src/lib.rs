@@ -24,7 +24,7 @@ mod label;
 mod linear;
 mod scene_texture_input;
 pub use linear::IntrinsicMeasurements;
-pub use scene_texture_input::scene_texture_source_active;
+pub use scene_texture_input::{SceneTouches, scene_texture_source_active};
 mod list_anchor;
 mod menu;
 mod modal;
@@ -277,6 +277,38 @@ struct LayoutDetails {
 }
 
 impl LayoutDetails {
+    fn matches_clip_translation(&self, other: &Self, offset: Point) -> bool {
+        macro_rules! compare {
+            ($($field:ident),+ $(,)?) => {{
+                let Self { child_shape, $($field,)+ } = self;
+                let shapes_match = match (*child_shape, other.child_shape) {
+                    (Some(before), Some(after)) => before.translates_to(after, offset),
+                    (None, None) => true,
+                    _ => false,
+                };
+                shapes_match $(&& *$field == other.$field)+
+            }};
+        }
+        compare!(
+            texture_only,
+            content_bounds,
+            list_section_headers,
+            horizontal_scroll,
+            horizontal_scroll_reversed,
+            nested_list,
+            attached_scroll_bar,
+            elastic,
+            tab_strip,
+            modal_title,
+            group_title,
+            overlays,
+            paint_order,
+            viewport_handle,
+            transform,
+            table_pane,
+        )
+    }
+
     fn into_shared(self) -> Option<Rc<Self>> {
         (self != Self::default()).then(|| Rc::new(self))
     }
@@ -317,14 +349,30 @@ pub struct LayoutNode {
     ancestor_shapes: Option<Rc<ClipChain>>,
     space: Option<Rc<TransformSpace>>,
     table_column_window: xrack_runtime::TableColumnWindow,
-    pub children: Vec<LayoutNode>,
+    child_storage: row_layout::ChildStorage,
+}
+
+pub use row_layout::LayoutNodeChildren;
+
+impl std::ops::Deref for LayoutNode {
+    type Target = LayoutNodeChildren;
+
+    fn deref(&self) -> &Self::Target {
+        self.child_storage.children()
+    }
+}
+
+impl std::ops::DerefMut for LayoutNode {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.child_storage.children_mut()
+    }
 }
 
 impl PartialEq for LayoutNode {
     fn eq(&self, other: &Self) -> bool {
         self.bounds == other.bounds
             && self.clip == other.clip
-            && self.same_placement_state(other)
+            && self.same_placement_state(other, None)
             && self.ancestor_shapes == other.ancestor_shapes
             && self.children == other.children
     }
@@ -374,7 +422,9 @@ impl<'a> WindowEffects<'a> {
     }
 
     fn extend(&mut self, node: &'a Node, layout: &LayoutNode) {
-        if node.expander_collapsed() {
+        if node.expander_collapsed()
+            || !node.contains_scene_feature(xrack_runtime::SceneFeature::WindowEffects)
+        {
             return;
         }
         if let Some(handle) = node
@@ -420,7 +470,7 @@ macro_rules! layout_placement_fields {
                 font_size,
                 overflow,
             ]
-            clone [
+            optional [
                 details,
                 table,
                 split,
@@ -429,21 +479,70 @@ macro_rules! layout_placement_fields {
                 swipe_preview,
                 styled_text,
                 space,
-                table_column_window,
             ]
         }
     };
 }
 
 impl LayoutNode {
-    fn same_placement_state(&self, other: &Self) -> bool {
+    fn same_plain_scroll_template(&self, other: &Self) -> bool {
+        // Plain descendants carry geometry and scalar flags. Compare exact
+        // coordinates to preserve signed zero when copying a template.
+        macro_rules! has_optional_geometry {
+            (copy [$($copy:ident,)*] optional [$($optional:ident,)*]) => {{
+                $(self.$optional.is_some())||+
+            }};
+        }
+        let rect_bits = |rect: Rect| [rect.x, rect.y, rect.width, rect.height].map(f32::to_bits);
+        !layout_placement_fields!(has_optional_geometry)
+            && self.scroll.is_none()
+            && self.tab_header.is_none()
+            && self.tab_close.is_none()
+            && self.switch_position.is_none()
+            && self.ancestor_shapes.is_none()
+            && other.ancestor_shapes.is_none()
+            && self.table_column_window == xrack_runtime::TableColumnWindow::default()
+            && self.same_placement_state(other, None)
+            && rect_bits(self.bounds) == rect_bits(other.bounds)
+            && rect_bits(self.clip) == rect_bits(other.clip)
+            && self.font_size.to_bits() == other.font_size.to_bits()
+            && self.children.len() == other.children.len()
+            && self
+                .children
+                .iter()
+                .zip(&other.children)
+                .all(|(left, right)| left.same_plain_scroll_template(right))
+    }
+
+    fn same_placement_state(&self, other: &Self, clip_offset: Option<Point>) -> bool {
+        macro_rules! same_optional {
+            (details) => {
+                match (
+                    self.details.as_deref(),
+                    other.details.as_deref(),
+                    clip_offset,
+                ) {
+                    (Some(before), Some(after), Some(offset))
+                        if before.child_shape.is_some() || after.child_shape.is_some() =>
+                    {
+                        before.matches_clip_translation(after, offset)
+                    }
+                    _ => self.details == other.details,
+                }
+            };
+            ($field:ident) => {
+                self.$field == other.$field
+            };
+        }
         macro_rules! compare {
-            (copy [$($copy:ident,)*] clone [$($clone:ident,)*]) => {{
+            (copy [$($copy:ident,)*] optional [$($optional:ident,)*]) => {{
                 let Self {
-                    bounds: _, clip: _, children: _, ancestor_shapes: _,
-                    $($copy: _,)* $($clone: _,)*
+                    bounds: _, clip: _, child_storage: _, ancestor_shapes: _,
+                    table_column_window: _, $($copy: _,)* $($optional: _,)*
                 } = self;
-                $(self.$copy == other.$copy &&)* $(self.$clone == other.$clone)&&+
+                $(self.$copy == other.$copy &&)*
+                $(same_optional!($optional) &&)*
+                self.table_column_window == other.table_column_window
             }};
         }
         layout_placement_fields!(compare)
@@ -458,14 +557,15 @@ impl LayoutNode {
         children: Vec<Self>,
     ) -> Self {
         macro_rules! clone_placed {
-            (copy [$($copy:ident,)*] clone [$($clone:ident,)*]) => {
+            (copy [$($copy:ident,)*] optional [$($optional:ident,)*]) => {
                 Self {
                     bounds,
                     clip,
                     ancestor_shapes: ancestors.or(self.ancestor_shapes.as_ref()).cloned(),
-                    children,
+                    child_storage: children.into(),
+                    table_column_window: self.table_column_window.clone(),
                     $($copy: self.$copy,)*
-                    $($clone: self.$clone.clone(),)*
+                    $($optional: self.$optional.clone(),)*
                 }
             };
         }
@@ -484,12 +584,71 @@ impl LayoutNode {
         self.clip = clip;
         self.ancestor_shapes = ancestors.or(template.ancestor_shapes.as_ref()).cloned();
         macro_rules! copy_placed {
-            (copy [$($copy:ident,)*] clone [$($clone:ident,)*]) => {{
+            (copy [$($copy:ident,)*] optional [$($optional:ident,)*]) => {{
                 $(self.$copy = template.$copy;)*
-                $(self.$clone.clone_from(&template.$clone);)*
+                // Most scroll descendants carry none of the optional
+                // geometry. Test these fields together before cloning any.
+                if $(self.$optional.is_some() | template.$optional.is_some())|+ {
+                    self.clone_optional_placement_from(template);
+                }
             }};
         }
-        layout_placement_fields!(copy_placed)
+        layout_placement_fields!(copy_placed);
+        self.table_column_window
+            .clone_from(&template.table_column_window);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn clone_optional_placement_from(&mut self, template: &Self) {
+        macro_rules! clone_optional {
+            (copy [$($copy:ident,)*] optional [$($optional:ident,)*]) => {{
+                $(self.$optional.clone_from(&template.$optional);)*
+            }};
+        }
+        layout_placement_fields!(clone_optional)
+    }
+
+    #[inline]
+    fn clone_plain_placement_from(
+        &mut self,
+        template: &Self,
+        bounds: Rect,
+        clip: Rect,
+        ancestors: Option<&Rc<ClipChain>>,
+    ) {
+        self.bounds = bounds;
+        self.clip = clip;
+        self.ancestor_shapes = ancestors.cloned();
+        // Shared templates have verified these fields. Recycled rows can
+        // still carry geometry from an earlier placement.
+        macro_rules! copy_value {
+            (scroll) => {
+                self.scroll = None
+            };
+            (tab_header) => {
+                self.tab_header = None
+            };
+            (tab_close) => {
+                self.tab_close = None
+            };
+            (switch_position) => {
+                self.switch_position = None
+            };
+            ($field:ident) => {
+                self.$field = template.$field
+            };
+        }
+        macro_rules! copy_placed {
+            (copy [$($copy:ident,)*] optional [$($optional:ident,)*]) => {{
+                $(copy_value!($copy);)*
+                if $(self.$optional.is_some())|+ {
+                    self.clone_optional_placement_from(template);
+                }
+            }};
+        }
+        layout_placement_fields!(copy_placed);
+        self.table_column_window = Default::default();
     }
 
     /// Compare a retained layout with a new placement in one traversal.
@@ -501,42 +660,87 @@ impl LayoutNode {
         rebind_outer_clip: bool,
         mut geometry_matches: impl FnMut(&Self, &Self) -> bool,
     ) -> bool {
-        fn shares_clip(node: &LayoutNode, ancestor: Option<&Rc<ClipChain>>) -> bool {
-            match (node.ancestor_shapes.as_ref(), ancestor) {
-                (Some(node), Some(ancestor)) => Rc::ptr_eq(node, ancestor),
+        type ClipPair<'a> = [Option<&'a ClipChain>; 2];
+
+        fn same_clip_pointer(left: Option<&ClipChain>, right: Option<&ClipChain>) -> bool {
+            match (left, right) {
+                (Some(left), Some(right)) => std::ptr::eq(left, right),
                 (None, None) => true,
                 _ => false,
             }
         }
 
+        fn clips_match(clips: ClipPair<'_>, outer: ClipPair<'_>, offset: Point) -> bool {
+            let reached_outer = [
+                same_clip_pointer(clips[0], outer[0]),
+                same_clip_pointer(clips[1], outer[1]),
+            ];
+            if reached_outer[0] || reached_outer[1] {
+                return reached_outer == [true; 2];
+            }
+            let [Some(before), Some(after)] = clips else {
+                return false;
+            };
+            // Clips introduced inside the capture must move rigidly with it.
+            before.space.is_none()
+                && after.space.is_none()
+                && before.shape.translates_to(after.shape, offset)
+                && clips_match(
+                    [before.parent.as_deref(), after.parent.as_deref()],
+                    outer,
+                    offset,
+                )
+        }
+
         fn compare(
             left: &LayoutNode,
             right: &LayoutNode,
-            outer: Option<[Option<&Rc<ClipChain>>; 2]>,
+            external_clip: Option<(Point, ClipPair<'_>)>,
             geometry_matches: &mut impl FnMut(&LayoutNode, &LayoutNode) -> bool,
         ) -> bool {
-            let outer = outer.filter(|[previous, next]| {
-                shares_clip(left, *previous) && shares_clip(right, *next)
-            });
-            geometry_matches(left, right)
-                && left.same_placement_state(right)
-                && (outer.is_some() || left.ancestor_shapes == right.ancestor_shapes)
-                && left.children.len() == right.children.len()
-                && left
-                    .children
-                    .iter()
-                    .zip(&right.children)
-                    .all(|(left, right)| compare(left, right, outer, geometry_matches))
+            if !geometry_matches(left, right)
+                || !left.same_placement_state(right, external_clip.map(|(offset, _)| offset))
+                || left.children.len() != right.children.len()
+            {
+                return false;
+            }
+            let children_clip = if let Some((offset, outer)) = external_clip {
+                let clips = [
+                    left.ancestor_shapes.as_deref(),
+                    right.ancestor_shapes.as_deref(),
+                ];
+                if !clips_match(clips, outer, offset) {
+                    return false;
+                }
+                Some((offset, clips))
+            } else {
+                if left.ancestor_shapes != right.ancestor_shapes {
+                    return false;
+                }
+                None
+            };
+            left.children
+                .iter()
+                .zip(&right.children)
+                .all(|(left, right)| compare(left, right, children_clip, geometry_matches))
         }
 
-        let outer =
-            (rebind_outer_clip && self.ancestor_shapes != other.ancestor_shapes).then(|| {
+        // The enclosing clip is applied when compositing the texture.
+        // Compare only those clips that were actually drawn into it.
+        let external_clip = rebind_outer_clip.then(|| {
+            let offset = Point {
+                x: other.bounds.x - self.bounds.x,
+                y: other.bounds.y - self.bounds.y,
+            };
+            (
+                offset,
                 [
-                    self.ancestor_shapes.as_ref(),
-                    other.ancestor_shapes.as_ref(),
-                ]
-            });
-        compare(self, other, outer, &mut geometry_matches)
+                    self.ancestor_shapes.as_deref(),
+                    other.ancestor_shapes.as_deref(),
+                ],
+            )
+        });
+        compare(self, other, external_clip, &mut geometry_matches)
     }
 
     fn leaf(
@@ -577,7 +781,7 @@ impl LayoutNode {
             ancestor_shapes: None,
             space: None,
             table_column_window: node.table_column_window.clone(),
-            children: Vec::new(),
+            child_storage: Default::default(),
         }
     }
 
@@ -861,8 +1065,15 @@ impl LayoutNode {
 
     /// Back to front. Scene indices stay in declaration order for routing.
     pub fn child_paint_order(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        self.child_paint_range(0..self.children.len())
+    }
+
+    fn child_paint_range(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> impl DoubleEndedIterator<Item = usize> + '_ {
         let paint_order = self.paint_order();
-        (0..self.children.len()).map(move |index| {
+        range.map(move |index| {
             let dense = paint_order.map_or(index, |order| order[index]);
             self.table_column_window.logical_index(dense)
         })
@@ -873,6 +1084,54 @@ impl LayoutNode {
         node: &'a Node,
     ) -> impl DoubleEndedIterator<Item = (usize, &'a Node, &'a LayoutNode)> + 'a {
         self.child_paint_order()
+            .filter_map(move |index| Some((index, node.child_at(index)?, self.child_at(index)?)))
+    }
+
+    #[doc(hidden)]
+    pub fn children_in_paint_order_trimming_edges<'a>(
+        &'a self,
+        node: &'a Node,
+        trim: bool,
+        discard: impl Fn(&Node, &Self) -> bool,
+    ) -> impl DoubleEndedIterator<Item = (usize, &'a Node, &'a Self)> + 'a {
+        let mut range = 0..self.children.len();
+        if trim
+            && node.children.len() == self.children.len()
+            && self.table_column_window == xrack_runtime::TableColumnWindow::default()
+            && node.table_column_window == xrack_runtime::TableColumnWindow::default()
+        {
+            // Trim the edges of the paint order to keep batch boundaries
+            // among retained children, including when z changes their order.
+            if let Some(order) = self.paint_order() {
+                if order.len() == range.end {
+                    let keep = |&dense: &usize| {
+                        node.children
+                            .get(dense)
+                            .zip(self.children.get(dense))
+                            .is_some_and(|(child, layout)| !discard(child, layout))
+                    };
+                    range.start = order.iter().position(keep).unwrap_or(range.end);
+                    if let Some(last) = order[range.start..].iter().rposition(keep) {
+                        range.end = range.start + last + 1;
+                    }
+                }
+            } else {
+                range.start = node
+                    .children
+                    .iter()
+                    .zip(&self.children)
+                    .position(|(child, layout)| !discard(child, layout))
+                    .unwrap_or(range.end);
+                if let Some(last) = node.children[range.start..]
+                    .iter()
+                    .zip(&self.children[range.start..])
+                    .rposition(|(child, layout)| !discard(child, layout))
+                {
+                    range.end = range.start + last + 1;
+                }
+            }
+        }
+        self.child_paint_range(range)
             .filter_map(move |index| Some((index, node.child_at(index)?, self.child_at(index)?)))
     }
 
@@ -1023,6 +1282,11 @@ impl LayoutNode {
                         && modal::drawer_margin(node, modal::drawer_bounds(node, viewport)) > 0.0
                 })
         })
+    }
+
+    /// Take the owned children, resolving any deferred coordinates.
+    pub fn into_children(self) -> Vec<Self> {
+        self.child_storage.into_children()
     }
 
     /// Look up a laid-out child by its logical scene index.
@@ -1562,7 +1826,40 @@ fn populate_font_choices(node: &Node, families: &[String]) -> Option<Node> {
 
 struct ScrollContent {
     extent: Size,
-    children: Vec<Option<(f32, f32, f32, linear::AxisInfo)>>,
+    children: Vec<Option<ScrollChildMeasurement>>,
+}
+
+#[derive(Clone, Copy)]
+struct ScrollChildMeasurement {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: ScrollChildHeight,
+}
+
+#[derive(Clone, Copy)]
+enum ScrollChildHeight {
+    Preferred(f32),
+    Available(linear::AxisInfo),
+}
+
+impl ScrollChildMeasurement {
+    fn bounds(self, content_height: f32) -> Rect {
+        let height = match self.height {
+            ScrollChildHeight::Preferred(height) => height,
+            ScrollChildHeight::Available(info) => {
+                info.clamp((content_height - self.y.max(0.0)).max(0.0))
+            }
+        };
+        Rect::new(self.x, self.y, self.width, height)
+    }
+
+    fn preferred_height(self) -> f32 {
+        match self.height {
+            ScrollChildHeight::Preferred(height) => height,
+            ScrollChildHeight::Available(info) => info.preferred,
+        }
+    }
 }
 
 struct ScrollPlacement {
@@ -1913,7 +2210,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         for (index, (child, item)) in node
             .children
             .iter_mut()
-            .zip(&mut layout.children)
+            .zip(&mut layout.child_storage.children_mut().children)
             .enumerate()
         {
             self.path.push(columns.logical_index(index));
@@ -2012,14 +2309,21 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             self.layout_direction = previous_direction;
             return layout;
         }
+        // Text with a row key can reuse its layout through the row cache below.
         if row_children.is_none()
-            && matches!(
+            && (matches!(
                 node.kind,
                 "Rectangle" | "Image" | "AnimatedImage" | "TableCell" | "TreeCell"
-            )
+            ) || node.row_key.is_none() && matches!(node.kind, "Label" | "Text" | "StyledText"))
             && self.can_place_leaf(node)
         {
-            return self.place_leaf(node, bounds, clip, parent_visible, parent_enabled);
+            let mut leaf = self.place_leaf(node, bounds, clip, parent_visible, parent_enabled);
+            if leaf.visible && node.kind == "StyledText" && !self.defer_styled_text {
+                leaf.styled_text = styled_text_at(node, bounds, leaf.direction_override, |size| {
+                    self.text.shared_styled_text_layout(node, size)
+                });
+            }
+            return leaf;
         }
         let outer_key = self.row_key;
         let outer_direction = self.layout_direction;
@@ -2198,13 +2502,18 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         }
         let depth = if slot.column.is_some() { 3 } else { 1 };
         let path_len = self.path.len().saturating_sub(depth);
-        let path = &self.path[..path_len];
-        if let Some(layout) = self
+        if let Some((layout, reuse)) = self
             .row_layouts
             .as_deref_mut()
-            .and_then(|cache| cache.get(path, slot, node, inputs))
+            .and_then(|cache| cache.get(&self.path, path_len, slot, node, inputs))
         {
-            return row_layout::clone_in_view(layout, bounds, clip, self.ancestor_shapes.as_ref());
+            return row_layout::clone_in_view_reusing(
+                layout,
+                bounds,
+                clip,
+                self.ancestor_shapes.as_ref(),
+                reuse,
+            );
         }
         if !row_layout::cacheable(node) {
             return self.place_node(node, bounds, clip, inputs.visible, inputs.enabled, None);
@@ -2232,6 +2541,24 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             .as_deref_mut()?
             .scroll_geometry(&self.path[..path_len], view)
             .map(|geometry| (geometry, self.ancestor_shapes.as_ref()))
+    }
+
+    fn child_paint_order(
+        &mut self,
+        node: &Node,
+        count: usize,
+        cached_scroll_children: bool,
+    ) -> Option<xrack_runtime::ScenePlanSlice<usize>> {
+        if cached_scroll_children
+            && count >= 64
+            && count == node.children.len()
+            && !node.has_natural_paint_order()
+            && node.paint_order_plan().is_none()
+            && let Some((geometry, _)) = self.scroll_geometry(node, self.path.len())
+        {
+            return geometry.paint_order(node);
+        }
+        sibling_paint_order(node, count)
     }
 
     fn place_local_subtree(
@@ -2329,20 +2656,21 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         if self.row_key.is_some() || self.space.is_some() {
             return self.place(child, bounds, clip, visible, enabled, None);
         }
-        let Some(geometry) = self
+        let Some((geometry, previous)) = self
             .row_layouts
             .as_deref_mut()
-            .and_then(|cache| cache.scroll_geometry(&self.path[..path_len], view))
-            .filter(|geometry| geometry.caches_child(dense_index))
+            .and_then(|cache| cache.scroll_geometry_with_recycling(&self.path[..path_len], view))
+            .filter(|(geometry, _)| geometry.caches_child(dense_index))
         else {
             return self.place(child, bounds, clip, visible, enabled, None);
         };
         if let Some(local) = geometry.child(dense_index, inputs) {
             if local.deferred_text && !text_outside {
-                Self::resolve_scroll_text(self.text, child, local);
+                local.resolve_text(self.text, child);
             }
-            return row_layout::clone_in_view(
-                &local.layout,
+            return local.place_reusing(
+                previous,
+                &self.path,
                 bounds,
                 clip,
                 self.ancestor_shapes.as_ref(),
@@ -2380,13 +2708,6 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         }
         row_layout::place_in_view(&mut layout, bounds, clip, self.ancestor_shapes.as_ref());
         layout
-    }
-
-    fn resolve_scroll_text(text: &mut T, child: &Node, local: &mut row_layout::ScrollChild) {
-        local.layout.styled_text = local
-            .layout
-            .measure_styled_text(child, |size| text.shared_styled_text_layout(child, size));
-        local.deferred_text = false;
     }
 
     fn place_node(
@@ -2592,7 +2913,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 selection::tab_bar(node, geometry.bar, self.text, direction, requested, reveal)
             });
             let header_scroll = headers.as_ref().map(|(_, scroll)| *scroll);
-            let children = node
+            let children: Vec<_> = node
                 .children
                 .iter()
                 .enumerate()
@@ -2685,7 +3006,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 ancestor_shapes,
                 space,
                 table_column_window: node.table_column_window.clone(),
-                children,
+                child_storage: children.into(),
             };
         }
         let mut scroll = None;
@@ -3204,8 +3525,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .map_or_else(|| placements.len(), ExactSizeIterator::len);
             node.children.len().min(placed)
         };
-        // A complete viewport cache can place its children together. These
-        // cached slots already exclude scroll parts and special child layouts.
+        // Project cached scroll children together. The cache only contains
+        // ordinary child layouts and leaves special children for placement.
         let projected = if cached_scroll_children
             && self.row_key.is_none()
             && self.space.is_none()
@@ -3234,7 +3555,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                         reuse,
                         |slot, bounds, local| {
                             if !defer || !outside_clip(bounds, child_clip) {
-                                Self::resolve_scroll_text(self.text, &node.children[slot], local);
+                                local.resolve_text(self.text, &node.children[slot]);
                             }
                         },
                     )
@@ -3242,169 +3563,198 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         } else {
             None
         };
-        let mut children = projected.unwrap_or_else(|| Vec::with_capacity(count));
-        let placed_children = node
-            .materialized_children()
-            // Use the same bound for allocation and placement.
-            .take(count)
-            .map_while(|(index, child)| {
-                let placement = if let Some(content) = absolute_content {
-                    if self.is_absolute_leaf(child) {
-                        return Some(self.place_absolute_leaf(
-                            child,
-                            content,
-                            child_clip,
-                            content_enabled,
-                        ));
-                    }
-                    grid::Placement::plain(self.absolute_child(child, content))
-                } else if let Some(rects) = scroll_rects.as_mut() {
-                    grid::Placement::plain(rects.next()?)
-                } else {
-                    placements.next()?
-                };
-                self.path.push(index);
-                let is_handle = child.kind == "SplitHandle";
-                let closable = xrack_runtime::tab_is_closable(node, child);
-                let clip = page.as_ref().map_or(child_clip, |page| {
-                    child_clip.intersect(page.band(child).unwrap_or(page.body))
-                });
-                let region = swipe_delegate
-                    .as_ref()
-                    .map(|geometry| geometry.region(child.kind));
-                let clip = region
-                    .as_ref()
-                    .map_or(clip, |region| clip.intersect(region.clip));
-                let clip = view_cells::list_body_clip(
-                    clip,
-                    list_section_headers.as_deref().unwrap_or_default(),
-                );
-                let (clip, visible) = match tree_parts {
-                    Some((tree, has_children)) if child.kind == "TreeDisclosure" => {
-                        (clip.intersect(tree.indicator), visible && has_children)
-                    }
-                    Some((tree, _)) => (clip.intersect(tree.content), visible),
-                    None => (clip, visible),
-                };
-                // The animated fill carries a local clip. Its moving viewport
-                // intersection is applied by the renderer.
-                let clip = if child.kind == "ProgressFill" {
-                    placement.bounds
-                } else {
-                    clip
-                };
-                let scroll_part = Node::SCROLL_PARTS.contains(&child.kind);
-                let clip = if scroll_part {
-                    clip.intersect(placement.bounds)
-                } else {
-                    clip
-                };
-                let visible = visible
-                    && (!scroll_part || custom_scroll.is_some())
-                    && child.kind != "ComboPopup"
-                    && !(child.kind == "ComboContent" && xrack_runtime::combo_editable(node));
-                let outer_shapes = placement
-                    .clip
-                    .as_ref()
-                    .map(|_| self.ancestor_shapes.clone());
-                let pane = placement.clip.as_ref().map(|pane| {
-                    let table_world = pane
-                        .space
-                        .as_ref()
-                        .map_or(Transform2D::IDENTITY, |space| space.world);
-                    let to_parent = self
-                        .space
-                        .as_deref()
-                        .and_then(|space| space.inverse)
-                        .map_or_else(
-                            || Transform2D::from_coefficients(table_world.coefficients()),
-                            |window_to_parent| table_world.then(window_to_parent),
-                        );
-                    if !to_parent.is_identity() {
-                        self.ancestor_shapes = Some(Rc::new(ClipChain {
-                            shape: RoundedClip {
-                                bounds: pane.bounds,
-                                radii: [0.0; 4],
-                            },
-                            parent: self.ancestor_shapes.clone(),
-                            space: pane.space.clone(),
-                        }));
-                    }
-                    (pane.bounds, to_parent)
-                });
-                let clip = pane.map_or(clip, |(bounds, to_parent)| {
-                    clip.intersect(to_parent.map_rect(bounds))
-                });
-                let visible = visible
-                    && region
-                        .as_ref()
-                        .is_none_or(|_| clip.width > 0.0 && clip.height > 0.0);
-                let enabled = content_enabled && region.is_none_or(|region| region.enabled);
-                let mut child = if table_cells
-                    && !child.children.is_empty()
-                    && self.row_layouts.is_some()
-                    && self.space.is_none()
-                    && child.routing_row_key().is_none()
-                    && row_layout::cacheable(child)
-                    && let Some(row) = self.row_key
-                {
-                    let outer_anchor = self.anchor;
-                    let outer_direction = self.layout_direction;
-                    self.layout_direction = child.layout_direction().or(outer_direction);
-                    let inputs = row_layout::RowInputs {
-                        size: Size::new(placement.bounds.width, placement.bounds.height),
-                        visible,
-                        enabled,
-                        layout_direction: self.layout_direction,
-                    };
-                    let slot = row_layout::Slot {
-                        row,
-                        column: Some(index),
-                    };
-                    let child =
-                        self.place_cached_content(child, placement.bounds, clip, inputs, slot);
-                    self.anchor = outer_anchor;
-                    self.layout_direction = outer_direction;
-                    child
-                } else if cached_scroll_children {
-                    self.place_scroll_child(node, child, placement.bounds, clip, visible, enabled)
-                } else {
-                    self.place(
-                        child,
-                        placement.bounds,
-                        clip,
-                        visible,
-                        enabled,
-                        placement.row_children,
-                    )
-                };
-                if child.visible && closable {
-                    child.tab_close = selection::tab_close_rect(
-                        placement.bounds,
-                        self.layout_direction.unwrap_or_default(),
-                        self.text.text_scale() > 1.0,
-                    );
-                }
-                if let Some(shapes) = outer_shapes {
-                    self.ancestor_shapes = shapes;
-                }
-                if let Some((bounds, to_parent)) = pane
-                    && (!to_parent.is_identity() || !child.local_transform().is_identity())
-                {
-                    child.details_mut().table_pane = Some((bounds, to_parent));
-                }
-                if is_handle {
-                    child.enabled &= split
-                        .as_ref()
-                        .and_then(|geometry| geometry.handle(index))
-                        .is_some_and(SplitHandle::adjustable);
-                }
-                self.path.pop();
-                Some(child)
+        let place_child = |context: &mut Self, index, child: &Node, placement: grid::Placement| {
+            context.path.push(index);
+            let is_handle = child.kind == "SplitHandle";
+            let closable = xrack_runtime::tab_is_closable(node, child);
+            let clip = page.as_ref().map_or(child_clip, |page| {
+                child_clip.intersect(page.band(child).unwrap_or(page.body))
             });
-        if children.len() != count {
-            children.extend(placed_children);
-        }
+            let region = swipe_delegate
+                .as_ref()
+                .map(|geometry| geometry.region(child.kind));
+            let clip = region
+                .as_ref()
+                .map_or(clip, |region| clip.intersect(region.clip));
+            let clip = view_cells::list_body_clip(
+                clip,
+                list_section_headers.as_deref().unwrap_or_default(),
+            );
+            let (clip, visible) = match tree_parts {
+                Some((tree, has_children)) if child.kind == "TreeDisclosure" => {
+                    (clip.intersect(tree.indicator), visible && has_children)
+                }
+                Some((tree, _)) => (clip.intersect(tree.content), visible),
+                None => (clip, visible),
+            };
+            // The animated fill carries a local clip. Its moving viewport
+            // intersection is applied by the renderer.
+            let clip = if child.kind == "ProgressFill" {
+                placement.bounds
+            } else {
+                clip
+            };
+            let scroll_part = Node::SCROLL_PARTS.contains(&child.kind);
+            let clip = if scroll_part {
+                clip.intersect(placement.bounds)
+            } else {
+                clip
+            };
+            let visible = visible
+                && (!scroll_part || custom_scroll.is_some())
+                && child.kind != "ComboPopup"
+                && !(child.kind == "ComboContent" && xrack_runtime::combo_editable(node));
+            let outer_shapes = placement
+                .clip
+                .as_ref()
+                .map(|_| context.ancestor_shapes.clone());
+            let pane = placement.clip.as_ref().map(|pane| {
+                let table_world = pane
+                    .space
+                    .as_ref()
+                    .map_or(Transform2D::IDENTITY, |space| space.world);
+                let to_parent = context
+                    .space
+                    .as_deref()
+                    .and_then(|space| space.inverse)
+                    .map_or_else(
+                        || Transform2D::from_coefficients(table_world.coefficients()),
+                        |window_to_parent| table_world.then(window_to_parent),
+                    );
+                if !to_parent.is_identity() {
+                    context.ancestor_shapes = Some(Rc::new(ClipChain {
+                        shape: RoundedClip {
+                            bounds: pane.bounds,
+                            radii: [0.0; 4],
+                        },
+                        parent: context.ancestor_shapes.clone(),
+                        space: pane.space.clone(),
+                    }));
+                }
+                (pane.bounds, to_parent)
+            });
+            let clip = pane.map_or(clip, |(bounds, to_parent)| {
+                clip.intersect(to_parent.map_rect(bounds))
+            });
+            let visible = visible
+                && region
+                    .as_ref()
+                    .is_none_or(|_| clip.width > 0.0 && clip.height > 0.0);
+            let enabled = content_enabled && region.is_none_or(|region| region.enabled);
+            let mut child = if table_cells
+                && !child.children.is_empty()
+                && context.row_layouts.is_some()
+                && context.space.is_none()
+                && child.routing_row_key().is_none()
+                && row_layout::cacheable(child)
+                && let Some(row) = context.row_key
+            {
+                let outer_anchor = context.anchor;
+                let outer_direction = context.layout_direction;
+                context.layout_direction = child.layout_direction().or(outer_direction);
+                let inputs = row_layout::RowInputs {
+                    size: Size::new(placement.bounds.width, placement.bounds.height),
+                    visible,
+                    enabled,
+                    layout_direction: context.layout_direction,
+                };
+                let slot = row_layout::Slot {
+                    row,
+                    column: Some(index),
+                };
+                let child =
+                    context.place_cached_content(child, placement.bounds, clip, inputs, slot);
+                context.anchor = outer_anchor;
+                context.layout_direction = outer_direction;
+                child
+            } else if cached_scroll_children {
+                context.place_scroll_child(node, child, placement.bounds, clip, visible, enabled)
+            } else {
+                context.place(
+                    child,
+                    placement.bounds,
+                    clip,
+                    visible,
+                    enabled,
+                    placement.row_children,
+                )
+            };
+            if child.visible && closable {
+                child.tab_close = selection::tab_close_rect(
+                    placement.bounds,
+                    context.layout_direction.unwrap_or_default(),
+                    context.text.text_scale() > 1.0,
+                );
+            }
+            if let Some(shapes) = outer_shapes {
+                context.ancestor_shapes = shapes;
+            }
+            if let Some((bounds, to_parent)) = pane
+                && (!to_parent.is_identity() || !child.local_transform().is_identity())
+            {
+                child.details_mut().table_pane = Some((bounds, to_parent));
+            }
+            if is_handle {
+                child.enabled &= split
+                    .as_ref()
+                    .and_then(|geometry| geometry.handle(index))
+                    .is_some_and(SplitHandle::adjustable);
+            }
+            context.path.pop();
+            child
+        };
+        let projected = match projected {
+            Some(row_layout::ScrollProjection::Complete(children)) => Some(children),
+            Some(row_layout::ScrollProjection::Partial(missing)) => {
+                let placed: Vec<_> = missing
+                    .into_iter()
+                    .map(|(slot, bounds)| {
+                        let index = node.table_column_window.logical_index(slot);
+                        let placement = grid::Placement::plain(bounds);
+                        (
+                            slot,
+                            place_child(self, index, &node.children[slot], placement),
+                        )
+                    })
+                    .collect();
+                self.row_layouts
+                    .as_deref_mut()
+                    .and_then(|cache| cache.take_projected_scroll_children(&self.path, count))
+                    .map(|mut children| {
+                        for (slot, child) in placed {
+                            children[slot] = child;
+                        }
+                        children
+                    })
+            }
+            None => None,
+        };
+        let children = projected.unwrap_or_else(|| {
+            let mut children = Vec::with_capacity(count);
+            let placed = node
+                .materialized_children()
+                .take(count)
+                .map_while(|(index, child)| {
+                    let placement = if let Some(content) = absolute_content {
+                        if self.is_absolute_leaf(child) {
+                            return Some(self.place_absolute_leaf(
+                                child,
+                                content,
+                                child_clip,
+                                content_enabled,
+                            ));
+                        }
+                        grid::Placement::plain(self.absolute_child(child, content))
+                    } else if let Some(rects) = scroll_rects.as_mut() {
+                        grid::Placement::plain(rects.next()?)
+                    } else {
+                        placements.next()?
+                    };
+                    Some(place_child(self, index, child, placement))
+                });
+            children.extend(placed);
+            children
+        });
         let tumbler = (visible && matches!(node.kind, "Tumbler" | "PathView"))
             .then(|| {
                 let wheel = xrack_runtime::Tumbler::from_node(node);
@@ -3473,7 +3823,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 elastic: overscroll::ElasticOptions::from_node(node),
                 modal_title,
                 group_title,
-                paint_order: sibling_paint_order(node, children.len()),
+                paint_order: self.child_paint_order(node, children.len(), cached_scroll_children),
                 child_shape,
                 viewport_handle: node.viewport_handle.clone(),
                 transform,
@@ -3517,7 +3867,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             ancestor_shapes,
             space,
             table_column_window: node.table_column_window.clone(),
-            children,
+            child_storage: children.into(),
         }
     }
 
@@ -3595,26 +3945,26 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         let size = Size::new(viewport.width, viewport.height);
         let geometry = self.scroll_geometry(node, path_len);
         let cache_ready = geometry.is_some();
-        let measured = geometry
-            .and_then(|(geometry, _)| geometry.measured.as_ref())
-            .filter(|last| last.size == size && last.mirrored == horizontal_reversed)
-            .map(|last| (last.viewport, last.extent, last.child_rects.clone()));
+        let mut previous = None;
+        let measured = geometry.and_then(|(geometry, _)| {
+            let last = geometry
+                .measured
+                .as_ref()
+                .filter(|last| last.size == size && last.mirrored == horizontal_reversed)?;
+            if last.changed_children.is_empty() {
+                Some((last.viewport, last.extent, last.child_rects.clone()))
+            } else {
+                previous = geometry.measured.take();
+                None
+            }
+        });
         let (mut area, extent, rects) = measured.unwrap_or_else(|| {
             let local = Rect::new(0.0, 0.0, size.width, size.height);
             let (area, ScrollContent { extent, children }) =
-                self.fit_scroll_content(node, local, horizontal_reversed);
-            let rects: Rc<[Rect]> = node
-                .children
+                self.fit_scroll_content(node, local, horizontal_reversed, &mut previous);
+            let rects: Rc<[Rect]> = children
                 .iter()
-                .zip(children)
-                .map(|(child, placement)| {
-                    let Some((x, y, width, height)) = placement else {
-                        return Rect::default();
-                    };
-                    let height =
-                        absolute_height(child, height, (extent.height - y.max(0.0)).max(0.0));
-                    Rect::new(x, y, width, height)
-                })
+                .map(|child| child.map_or_else(Rect::default, |child| child.bounds(extent.height)))
                 .collect::<Vec<_>>()
                 .into();
             if cache_ready && let Some((geometry, _)) = self.scroll_geometry(node, path_len) {
@@ -3626,6 +3976,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     viewport: area,
                     extent,
                     child_rects: rects.clone(),
+                    children,
+                    changed_children: Vec::new(),
                 });
             }
             (area, extent, rects)
@@ -3698,7 +4050,51 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         )
     }
 
-    fn measure_scroll_content(&mut self, node: &Node, viewport: Rect) -> ScrollContent {
+    fn measure_scroll_child(
+        &mut self,
+        child: &Node,
+        reference: Size,
+    ) -> Option<ScrollChildMeasurement> {
+        if !participates_in_flow(child) {
+            return None;
+        }
+        let x = child.length("x").unwrap_or(0.0);
+        let y = child.length("y").unwrap_or(0.0);
+        let width = child.relative_length("width", reference.width).map_or_else(
+            || {
+                let metrics = linear::measure(child, reference, self.text);
+                absolute_width(child, metrics.x, (reference.width - x.max(0.0)).max(0.0))
+            },
+            |width| width.max(0.0),
+        );
+        let height = child
+            .relative_length("height", reference.height)
+            .map_or_else(
+                || {
+                    let height =
+                        linear::measure_with_width(child, reference, Some(width), self.text).y;
+                    if absolute_height_uses_preferred(child) {
+                        ScrollChildHeight::Preferred(height.preferred)
+                    } else {
+                        ScrollChildHeight::Available(height)
+                    }
+                },
+                |height| ScrollChildHeight::Preferred(height.max(0.0)),
+            );
+        Some(ScrollChildMeasurement {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    fn measure_scroll_content(
+        &mut self,
+        node: &Node,
+        viewport: Rect,
+        previous: &mut Option<row_layout::ScrollMeasurement>,
+    ) -> ScrollContent {
         // Keep percentage constraints tied to the viewport or explicit content size,
         // so an overflowing child cannot enlarge its own percentage reference.
         let explicit_width = node.relative_length("content-width", viewport.width);
@@ -3709,31 +4105,23 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             viewport.width.max(explicit_width.unwrap_or(0.0)),
             viewport.height.max(explicit_height.unwrap_or(0.0)),
         );
-        let mut extent = reference;
-        let mut children = Vec::with_capacity(node.children.len());
-        for child in &node.children {
-            if !participates_in_flow(child) {
-                children.push(None);
-                continue;
+        let children = if let Some(mut last) = previous
+            .take_if(|last| last.viewport == viewport && last.children.len() == node.children.len())
+        {
+            for index in last.changed_children {
+                last.children[index] = self.measure_scroll_child(&node.children[index], reference);
             }
-            let x = child.length("x").unwrap_or(0.0);
-            let y = child.length("y").unwrap_or(0.0);
-            let width = child.relative_length("width", reference.width).map_or_else(
-                || {
-                    let metrics = linear::measure(child, reference, self.text);
-                    absolute_width(child, metrics.x, (reference.width - x.max(0.0)).max(0.0))
-                },
-                |width| width.max(0.0),
-            );
-            let height = child
-                .relative_length("height", reference.height)
-                .map_or_else(
-                    || linear::measure_with_width(child, reference, Some(width), self.text).y,
-                    |height| linear::AxisInfo::fixed(height.max(0.0)),
-                );
-            extent.width = extent.width.max(x + width);
-            extent.height = extent.height.max(y + height.preferred);
-            children.push(Some((x, y, width, height)));
+            last.children
+        } else {
+            node.children
+                .iter()
+                .map(|child| self.measure_scroll_child(child, reference))
+                .collect()
+        };
+        let mut extent = reference;
+        for child in children.iter().flatten() {
+            extent.width = extent.width.max(child.x + child.width);
+            extent.height = extent.height.max(child.y + child.preferred_height());
         }
         if node.kind == "Flickable" {
             extent.width = explicit_width.unwrap_or(extent.width).max(0.0);
@@ -3747,15 +4135,16 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         node: &Node,
         bounds: Rect,
         mirrored: bool,
+        previous: &mut Option<row_layout::ScrollMeasurement>,
     ) -> (Rect, ScrollContent) {
         use xrack_runtime::ScrollBarPolicy;
 
         if node.kind != "ScrollView" || !node.boolean("reserve-scroll-bar-space", false) {
-            return (bounds, self.measure_scroll_content(node, bounds));
+            return (bounds, self.measure_scroll_content(node, bounds, previous));
         }
         let thickness = scroll_bar::scroll_bar_thickness(bounds);
         if thickness < 1.0 {
-            return (bounds, self.measure_scroll_content(node, bounds));
+            return (bounds, self.measure_scroll_content(node, bounds, previous));
         }
         let policies = [Orientation::Horizontal, Orientation::Vertical]
             .map(|axis| node.scroll_bar_policy(axis));
@@ -3782,7 +4171,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 bounds.width - side,
                 bounds.height - bottom,
             );
-            let content = self.measure_scroll_content(node, viewport);
+            let content = self.measure_scroll_content(node, viewport, previous);
             let overflowing = [
                 content.extent.width > viewport.width,
                 content.extent.height > viewport.height,
@@ -3846,12 +4235,15 @@ fn absolute_width(node: &Node, info: linear::AxisInfo, available: f32) -> f32 {
     }
 }
 
-fn absolute_height(node: &Node, info: linear::AxisInfo, available: f32) -> f32 {
-    if linear::intrinsic_item(node.kind)
+fn absolute_height_uses_preferred(node: &Node) -> bool {
+    linear::intrinsic_item(node.kind)
         || matches!(node.kind, "ToolSeparator" | "Loader")
         || xrack_runtime::is_pane(node.kind)
         || node.properties.contains_key("preferred-height")
-    {
+}
+
+fn absolute_height(node: &Node, info: linear::AxisInfo, available: f32) -> f32 {
+    if absolute_height_uses_preferred(node) {
         info.preferred
     } else {
         info.clamp(available)

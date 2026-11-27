@@ -61,6 +61,7 @@ export component HostValues inherits Window {
     in-out property <Font> font;
     in-out property <styled-text> label: @markdown("**XRack**");
     in-out property <image> icon: @image-url("");
+    in-out property <texturedata2d> pixel-data;
     in-out property <[SearchRow]> rows: [];
     in-out property <[TouchPoint]> contacts;
     in-out property <[string]> names: ["one"];
@@ -279,6 +280,19 @@ class BindingTest(unittest.TestCase):
         self.assertEqual(ui.get("selected"), xrack.Instance3D())
         ui.set("scene", scene)
         self.assertEqual(ui.get("scene"), scene)
+
+    def test_procedural_texture_is_a_public_host_value(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "values.xr"
+            path.write_text(HOST_VALUES_UI, encoding="utf-8")
+            ui = xrack.load_file(path).create("HostValues")
+            texture: xrack.TextureData2D = xrack.TextureData2D.rgba8(2, 1, bytes([16, 32, 48, 255] * 2))
+            self.assertTrue(texture.valid)
+            ui.set("pixel-data", texture)
+            self.assertEqual(ui.get("pixel-data"), texture)
+            self.assertEqual((texture.width, texture.height), (2, 1))
+            ui.set("pixel-data", xrack.TextureData2D.rgba8(1, 1, b""))
+            self.assertEqual(ui.get("pixel-data"), xrack.TextureData2D())
 
     def test_file_instance_table_reads_source_rows_without_a_scene(self) -> None:
         source = """
@@ -893,6 +907,30 @@ class BindingTest(unittest.TestCase):
         self.assertTrue(all(point.normal_impulse == 0.0 for point in reports))
         self.assertEqual(world.contacts(wall), [])
 
+    def test_empty_mesh_has_empty_catalogs(self) -> None:
+        asset = xrack.MeshAsset3D()
+        self.assertEqual(asset.material_slots(), [])
+        self.assertEqual(asset.material_variants(), [])
+        self.assertEqual(asset.animation_clips(), [])
+        self.assertEqual(asset.animation_duration("Slide"), 0.0)
+
+    def test_viewport_statistics_has_typed_empty_value_before_paint(self) -> None:
+        source = """
+            export component App inherits Window {
+                view := SceneView3D { render-stats-revision: 1; }
+                out property <renderstats3d> sample: view.render-stats();
+            }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "render_stats.xr"
+            path.write_text(source, encoding="utf-8")
+            sample = xrack.load_file(path).create("App").get("sample")
+            self.assertEqual(sample, xrack.RenderStats3D())
+            assert isinstance(sample, xrack.RenderStats3D)
+            self.assertFalse(sample.valid)
+            self.assertFalse(sample.gpu_valid)
+            self.assertEqual(sample.mesh_draws, 0)
+
     def test_native_value_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "values.xr"
@@ -1016,7 +1054,11 @@ class BindingTest(unittest.TestCase):
             self.assertEqual(ui.get("saved-hits"), [hit])
             ui.set("saved-hits", [])
             self.assertEqual(ui.get("saved-hits"), [])
-            self.assertFalse(xrack.Hit3D.miss().valid)
+            miss: xrack.Hit3D = xrack.Hit3D.miss()
+            self.assertFalse(miss.valid)
+            self.assertEqual(miss.item_source, "")
+            self.assertEqual(miss.item_position.x, xrack.Length(0))
+            self.assertEqual(miss.item_position.y, xrack.Length(0))
             with self.assertRaises(TypeError):
                 ui.set("offset", 4.0)
             with self.assertRaisesRegex(RuntimeError, "initialized only once"):

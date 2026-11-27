@@ -45,3 +45,63 @@ export component GpuInstancingDemo inherits Window {
     }
     tint-toggle := CheckBox { x <- 164px; y <- 332px; width <- 130px; text <- "Blue coat"; checked <-> root.blue; }
 }
+
+struct CatalogActor {
+    id: string, mesh: string, mesh-asset: meshasset3d,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material-variant: string, animation: string, animation-time: float,
+}
+
+export component MeshCatalogDemo inherits Window {
+    title <- "XRack · 3D 资产目录";
+    width <- 440px; height <- 312px; background <- #1a2638;
+    resizable <- false;
+    in-out property <string> path: "models/gpu-instances.gltf";
+    in-out property <bool> use-variant: false;
+    in-out property <float> time: 0;
+    out property <string> status <- importer.status;
+    property <string> embedded: @mesh-url("models/gpu-instances.gltf");
+
+    out property <[string]> variants <- Scene3D.mesh-material-variants(importer.asset);
+    out property <[string]> clips <- Scene3D.mesh-animation-clips(importer.asset);
+    out property <[string]> compiled-variants <- Scene3D.mesh-material-variants(root.embedded);
+    out property <[string]> compiled-clips <- Scene3D.mesh-animation-clips(root.embedded);
+    out property <string> chosen <- root.use-variant ? Model.at(root.variants, 0, "") : "";
+    out property <[string]> slots <- Scene3D.mesh-material-slots(importer.asset, root.chosen);
+    out property <[string]> compiled-slots <- Scene3D.mesh-material-slots(root.embedded, root.chosen);
+    property <string> active-clip <- Model.at(root.clips, 0, "");
+    out property <float> duration <- Scene3D.mesh-animation-duration(importer.asset, root.active-clip);
+    out property <float> compiled-duration <- Scene3D.mesh-animation-duration(root.embedded, root.active-clip);
+    importer := MeshLoader3D { source <- root.path; }
+
+    SceneView3D {
+        width <- 440px; height <- 226px;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 6;
+        scene-background <- #263b54; cache-rendering <- true;
+        model <- [
+            CatalogActor {
+                id: "asset", mesh: root.embedded, mesh-asset: importer.asset,
+                x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+                yaw: 0, pitch: 0, roll: 0, color: #fff,
+                material-variant: root.chosen, animation: root.active-clip, animation-time: root.time,
+            },
+        ];
+    }
+    Text {
+        x <- 12px; y <- 236px; width <- 416px; color <- #d2ebff;
+        text <- root.status != "ready" ? root.status
+            : Model.at(root.slots, 0, "无材质") + "  ·  " + root.active-clip + "  " + root.duration + " s";
+    }
+    HorizontalLayout {
+        x <- 12px; y <- 270px; width <- 416px; height <- 30px; spacing <- 8px;
+        pick-variant := Button {
+            text <- root.use-variant ? root.chosen : "原始材质";
+            clicked => { root.use-variant = !root.use-variant; }
+        }
+        sample-clip := Button {
+            text <- "切换动画时刻";
+            clicked => { root.time = root.time == 0 ? root.duration : 0; }
+        }
+    }
+}

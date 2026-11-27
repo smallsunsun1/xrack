@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     collections::HashMap,
     rc::Rc,
     sync::{Arc, Weak},
@@ -9,9 +9,9 @@ use xrack_runtime::scene_effect::{
     BufferInput, BufferSampling, CaptureAttachment, ExternalTexture,
 };
 use xrack_runtime::scene3d::{
-    MaterialChannel, MeshAlphaMode, MeshDielectric, MeshFresnel, MeshImage, MeshMaterial,
-    MeshShader, MeshTexture, MeshWorkflow, TextureChannel, TextureColorSpace, TextureFilter,
-    TextureSampling, TextureTransform, TextureWrap,
+    CubeTexture3D, MaterialChannel, MeshAlphaMode, MeshDielectric, MeshFresnel, MeshImage,
+    MeshMaterial, MeshShader, MeshTexture, MeshWorkflow, TextureChannel, TextureColorSpace,
+    TextureFilter, TextureSampling, TextureTransform, TextureWrap,
 };
 
 use super::{
@@ -25,6 +25,7 @@ pub(super) const CLEARCOAT_TEXTURES: u32 = 3;
 pub(super) const CLEARCOAT_SETTINGS_BINDING: u32 = 1 + 2 * (MATERIAL_TEXTURES + CLEARCOAT_TEXTURES);
 pub(super) const FIRST_SHADER_TEXTURE_BINDING: u32 = CLEARCOAT_SETTINGS_BINDING + 1;
 pub(super) const SHADER_CAPTURE_BINDING: u32 = FIRST_SHADER_TEXTURE_BINDING + MAX_TEXTURES as u32;
+pub(super) const SHADER_CUBEMAP_SAMPLER_BINDING: u32 = SHADER_CAPTURE_BINDING + 1;
 // Shadow atlas, baked lightmap, and environment cubemap also occupy fragment slots.
 const LIGHTING_TEXTURES: u32 = 3;
 pub(super) const BASE_MATERIAL_TEXTURES: u32 = MATERIAL_TEXTURES + LIGHTING_TEXTURES;
@@ -96,15 +97,30 @@ pub(super) struct MaterialBindings {
     unprogrammed_coat: Option<wgpu::BindGroup>,
     pub coated: bool,
     shader: Option<(Arc<str>, usize)>,
+    cubemaps: u8,
+    program_layout: Option<wgpu::BindGroupLayout>,
     hooks: MaterialHooks,
     pub vertex: Option<Arc<str>>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct MaterialProgram<'a> {
+    pub source: &'a Arc<str>,
+    pub slots: usize,
+    pub cubemaps: u8,
+    pub layout: Option<&'a wgpu::BindGroupLayout>,
+}
+
 impl MaterialBindings {
-    pub fn program(&self, capture_data: bool) -> Option<(&Arc<str>, usize)> {
+    pub fn program(&self, capture_data: bool) -> Option<MaterialProgram<'_>> {
         let (source, slots) = self.shader.as_ref()?;
         let fragment = self.hooks.uses_fragment(capture_data);
-        (self.hooks.vertex || fragment).then_some((source, if fragment { *slots } else { 0 }))
+        (self.hooks.vertex || fragment).then_some(MaterialProgram {
+            source,
+            slots: if fragment { *slots } else { 0 },
+            cubemaps: if fragment { self.cubemaps } else { 0 },
+            layout: self.program_layout.as_ref().filter(|_| fragment),
+        })
     }
 
     pub fn color(&self, slots: usize) -> &wgpu::BindGroup {
@@ -150,6 +166,7 @@ struct UploadedImage {
 #[derive(Default)]
 pub(super) struct Images {
     images: HashMap<usize, UploadedImage>,
+    cubemaps: HashMap<usize, (Weak<CubeTexture3D>, wgpu::TextureView)>,
     pub mip_levels_uploaded: u64,
     pub uploads: u64,
 }
@@ -160,6 +177,67 @@ impl Images {
     pub fn prune(&mut self) {
         self.images
             .retain(|_, image| image.owner.strong_count() != 0);
+        self.cubemaps
+            .retain(|_, (owner, _)| owner.strong_count() != 0);
+    }
+
+    pub fn cubemap_view(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        cube: &Arc<CubeTexture3D>,
+    ) -> Option<wgpu::TextureView> {
+        if cube.side() > device.limits().max_texture_dimension_2d
+            || device.limits().max_texture_array_layers < 6
+        {
+            return None;
+        }
+        let view = &self
+            .cubemaps
+            .entry(Arc::as_ptr(cube) as usize)
+            .or_insert_with(|| {
+                let extent = |side| wgpu::Extent3d {
+                    width: side,
+                    height: side,
+                    depth_or_array_layers: 6,
+                };
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("XRack shader cubemap"),
+                    size: extent(cube.side()),
+                    mip_level_count: cube.levels(),
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                for (level, (side, texels)) in cube.mip_data().enumerate() {
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &texture,
+                            mip_level: level as u32,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        texels,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(side * 8),
+                            rows_per_image: Some(side),
+                        },
+                        extent(side),
+                    );
+                }
+                self.uploads += 1;
+                self.mip_levels_uploaded += u64::from(cube.levels() - 1);
+                let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(wgpu::TextureViewDimension::Cube),
+                    ..Default::default()
+                });
+                (Arc::downgrade(cube), view)
+            })
+            .1;
+        Some(view.clone())
     }
 
     pub fn sampled_input_view(
@@ -271,6 +349,8 @@ fn native_anisotropy_limit(sampling: TextureSampling, supported: bool) -> u8 {
 pub(super) struct Materials {
     layouts: [wgpu::BindGroupLayout; 2],
     shader_layouts: [[Option<wgpu::BindGroupLayout>; 2]; 2],
+    cube_layouts: HashMap<(bool, bool, u8), wgpu::BindGroupLayout>,
+    cube_sampler: OnceCell<wgpu::Sampler>,
     white: ImageViews,
     images: SharedImages,
     samplers: HashMap<TextureSampling, wgpu::Sampler>,
@@ -292,6 +372,8 @@ impl Materials {
         Self {
             layouts,
             shader_layouts,
+            cube_layouts: HashMap::new(),
+            cube_sampler: OnceCell::new(),
             white: upload(device, queue, [1, 1], &[255; 4], std::iter::empty()).full,
             images,
             samplers: HashMap::new(),
@@ -437,15 +519,33 @@ impl Materials {
         let slots = shader
             .filter(|shader| !shader.textures.is_empty() && hooks.fragment())
             .map_or(0, |_| shader_texture_slots(device, coat.is_some()));
-        let (texture_flags, shader_views) = self.external_textures(
+        let (texture_flags, shader_views, cubemaps) = self.external_textures(
             device,
             queue,
             shader.map_or(&[][..], |shader| &shader.textures),
             slots,
+            true,
         );
         let projections = shader
             .filter(|_| slots != 0 && hooks.capture_position)
             .map(|shader| self.external_projections(device, &shader.textures, slots));
+        let coated = coat.is_some();
+        let positions = projections.is_some();
+        let program_layout = if cubemaps == 0 {
+            self.shader_layouts[usize::from(coated)][usize::from(positions)]
+                .as_ref()
+                .filter(|_| slots != 0)
+                .cloned()
+        } else {
+            Some(
+                self.cube_layouts
+                    .entry((coated, positions, cubemaps))
+                    .or_insert_with(|| {
+                        super::pipeline::material_layout(device, coated, slots, positions, cubemaps)
+                    })
+                    .clone(),
+            )
+        };
         let parameters = shader.map_or([0.0; 4], MeshShader::vertex_parameters);
         let native_anisotropy = self.native_anisotropy;
         let map_transform = |texture: Option<&MeshTexture>| {
@@ -572,11 +672,27 @@ impl Materials {
             });
             if slots > 0 && !hooks.uses_fragment(false) {
                 unprogrammed_coat =
-                    Some(self.color_binding(device, true, entries.clone(), &[], None));
+                    Some(self.color_binding(device, true, entries.clone(), &[], None, None, false));
             }
-            Some(self.color_binding(device, true, entries, &shader_views, projections.as_ref()))
+            Some(self.color_binding(
+                device,
+                true,
+                entries,
+                &shader_views,
+                projections.as_ref(),
+                program_layout.as_ref(),
+                cubemaps != 0,
+            ))
         } else if slots > 0 {
-            Some(self.color_binding(device, false, entries, &shader_views, projections.as_ref()))
+            Some(self.color_binding(
+                device,
+                false,
+                entries,
+                &shader_views,
+                projections.as_ref(),
+                program_layout.as_ref(),
+                cubemaps != 0,
+            ))
         } else {
             None
         };
@@ -586,25 +702,25 @@ impl Materials {
             unprogrammed_coat,
             coated: coat.is_some(),
             shader: shader.map(|shader| (shader.source.clone(), slots)),
+            cubemaps,
+            program_layout,
             hooks,
             vertex: shader.and_then(MeshShader::vertex_program).cloned(),
         }
     }
 
     fn color_binding<'a>(
-        &self,
+        &'a self,
         device: &wgpu::Device,
         coated: bool,
         mut entries: Vec<wgpu::BindGroupEntry<'a>>,
         views: &'a [wgpu::TextureView],
         projections: Option<&'a wgpu::Buffer>,
+        program_layout: Option<&wgpu::BindGroupLayout>,
+        cubemaps: bool,
     ) -> wgpu::BindGroup {
-        let index = usize::from(coated);
         let layout =
-            if let Some(layout) =
-                self.shader_layouts[index][usize::from(projections.is_some())].as_ref()
-                && !views.is_empty()
-            {
+            if let Some(layout) = program_layout {
                 entries.extend(views.iter().enumerate().map(|(index, view)| {
                     wgpu::BindGroupEntry {
                         binding: FIRST_SHADER_TEXTURE_BINDING + index as u32,
@@ -617,9 +733,24 @@ impl Materials {
                         resource: projections.as_entire_binding(),
                     });
                 }
+                if cubemaps {
+                    let sampler = self.cube_sampler.get_or_init(|| {
+                        device.create_sampler(&wgpu::SamplerDescriptor {
+                            label: Some("XRack material cubemap sampler"),
+                            mag_filter: wgpu::FilterMode::Linear,
+                            min_filter: wgpu::FilterMode::Linear,
+                            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                            ..Default::default()
+                        })
+                    });
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: SHADER_CUBEMAP_SAMPLER_BINDING,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    });
+                }
                 layout
             } else {
-                &self.layouts[index]
+                &self.layouts[usize::from(coated)]
             };
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("XRack 3D color material"),
@@ -634,8 +765,10 @@ impl Materials {
         queue: &wgpu::Queue,
         inputs: &[BufferInput],
         slots: usize,
-    ) -> ([u32; MAX_TEXTURES], Vec<wgpu::TextureView>) {
+        allow_cubes: bool,
+    ) -> ([u32; MAX_TEXTURES], Vec<wgpu::TextureView>, u8) {
         let mut flags = [0; MAX_TEXTURES];
+        let mut cubemaps = 0;
         let views = flags[..slots]
             .iter_mut()
             .enumerate()
@@ -655,6 +788,14 @@ impl Materials {
                         ),
                         0,
                     ),
+                    Some(ExternalTexture::Cubemap(cube)) if allow_cubes => {
+                        let Some(view) = self.images.borrow_mut().cubemap_view(device, queue, cube)
+                        else {
+                            return self.white.linear.clone();
+                        };
+                        cubemaps |= 1 << index;
+                        (view, 0)
+                    }
                     Some(ExternalTexture::Item(name)) if let Some(item) = self.items.get(name) => (
                         item.view.clone(),
                         if item.linear_premultiplied { 1 } else { 2 },
@@ -682,7 +823,7 @@ impl Materials {
                 view
             })
             .collect();
-        (flags, views)
+        (flags, views, cubemaps)
     }
 
     pub(super) fn external_projections(

@@ -258,10 +258,22 @@ pub(crate) fn query(
         return Value::Null;
     };
     if method == "textDocument/definition"
-        && let Some(target) = super::imports::scene_light_scope_definition(
-            &source, &tokens, cursor, uri,
-        )
-        .or_else(|| super::imports::scene_particle_parent_definition(&source, &tokens, cursor, uri))
+        && let Some(target) =
+            super::imports::scene_light_scope_definition(&source, &tokens, cursor, uri)
+                .or_else(|| {
+                    super::imports::scene_particle_parent_definition(&source, &tokens, cursor, uri)
+                })
+                .or_else(|| {
+                    super::imports::scene_particle_emitter_definition(&source, &tokens, cursor, uri)
+                })
+                .or_else(|| {
+                    super::imports::model_blend_node_definition(&source, &tokens, cursor, uri)
+                })
+                .or_else(|| super::imports::look_at_node_definition(&source, &tokens, cursor, uri))
+                .or_else(|| super::imports::skin_joint_definition(&source, &tokens, cursor, uri))
+                .or_else(|| {
+                    super::imports::particle_scene_shape_definition(&source, &tokens, cursor, uri)
+                })
     {
         return target;
     }
@@ -1001,6 +1013,11 @@ impl<'a, 'w> Symbols<'a, 'w> {
         }
         if call && builtin_event(kind, name) {
             return Some(Symbol::builtin(Kind::Event, None));
+        }
+        if kind == "SceneView3D" && builtins::scene_texture_size_axis(name).is_some() {
+            let mut symbol = Symbol::builtin(Kind::Property, Some(Type::Int));
+            symbol.modifiers |= READONLY;
+            return Some(symbol);
         }
         builtin_property(kind, name)
             .or_else(|| {

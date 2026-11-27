@@ -128,6 +128,10 @@ pub struct PointerDelivery {
 }
 
 impl PointerDelivery {
+    pub(crate) fn clear_canceled_state(self) {
+        self.handle.publish_event(&self.event);
+    }
+
     pub fn apply(self, component: &mut impl Component, scene: &Node) -> bool {
         let live = live_handler(scene, &self.target, &self.handle);
         if live || self.event.kind == PointerEventKind::Cancel {

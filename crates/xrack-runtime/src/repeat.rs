@@ -254,7 +254,7 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
             resolved.structure_stamp(),
             indices,
             |index| {
-                let key = resolved.row_key(index);
+                let key = resolved.row_key_untracked(index);
                 let row = self
                     .rows
                     .borrow_mut()

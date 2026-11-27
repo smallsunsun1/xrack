@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::{Interaction, LayoutNode, Point};
 use xrack_runtime::{Length, Node, RowKey, ScaleRotateHandle, ScaleRotateSample};
 
@@ -6,6 +8,7 @@ pub struct ScaleRotateTarget {
     pub path: Vec<usize>,
     pub handle: ScaleRotateHandle,
     row: Option<RowKey>,
+    pub(crate) texture: Option<Rc<crate::scene_texture_input::Capture>>,
 }
 
 impl ScaleRotateTarget {
@@ -18,15 +21,34 @@ impl ScaleRotateTarget {
             path: path.to_vec(),
             handle,
             row: scene.row_key_at(path),
+            texture: None,
         })
     }
 
     pub fn is_live(&self, scene: &Node, layout: &LayoutNode, input: &Interaction) -> bool {
         gesture_target_live(scene, layout, input, &self.path, self.row)
+            && self
+                .texture
+                .as_ref()
+                .is_none_or(|capture| capture.is_attached(scene, layout))
             && scene
                 .interactive_at_path(&self.path)
                 .and_then(|node| node.scale_rotate_handle.as_ref())
                 == Some(&self.handle)
+    }
+
+    pub(crate) fn gesture_point(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        input: &Interaction,
+        point: Point,
+    ) -> Option<Point> {
+        let Some(capture) = &self.texture else {
+            return Some(point);
+        };
+        let mapped = input.sample_scale_rotate_texture(capture, scene, layout, point)?;
+        layout.at_path(&self.path)?.map_from_window(mapped)
     }
 
     pub fn sample(
@@ -37,7 +59,11 @@ impl ScaleRotateTarget {
         rotation: f64,
     ) -> Option<ScaleRotateSample> {
         let item = layout.at_path(&self.path)?;
-        let center = item.map_from_window(center)?;
+        let center = if self.texture.is_some() {
+            center
+        } else {
+            item.map_from_window(center)?
+        };
         Some(ScaleRotateSample {
             scale,
             rotation,

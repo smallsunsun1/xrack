@@ -92,32 +92,34 @@ fn vertex_skin_mask(vertex: Geometry, weights: SkinWeights, @location(2) uv: vec
 @vertex
 fn vertex_morph_opaque(vertex: Geometry, @builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     var deformed = vertex;
-    deformed.position += morph_displacement(index).position;
+    deformed.position += morph_displacement(index, 0u).position;
     return project(deformed);
 }
 
 @vertex
 fn vertex_morph_mask(vertex: Geometry, @builtin(vertex_index) index: u32, @location(2) uv: vec2<f32>,
                      @location(3) color: vec4<f32>) -> MaskVertex {
+    let delta = morph_displacement(index, MORPH_COVERAGE);
     var deformed = vertex;
-    deformed.position += morph_displacement(index).position;
-    return MaskVertex(project(deformed), uv, vec2<f32>(color.a, vertex.tint.a), vertex.metadata.x);
+    deformed.position = vertex.position + delta.position;
+    return MaskVertex(project(deformed), uv + delta.uvs.xy, vec2<f32>(clamp(color.a + delta.color.a, 0.0, 1.0), vertex.tint.a), vertex.metadata.x);
 }
 
 @vertex
 fn vertex_skin_morph_opaque(vertex: Geometry, weights: SkinWeights,
                             @builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     var deformed = vertex;
-    deformed.position = skin_point(skin_transform(weights), vertex.position + morph_displacement(index).position);
+    deformed.position = skin_point(skin_transform(weights), vertex.position + morph_displacement(index, 0u).position);
     return project(deformed);
 }
 
 @vertex
 fn vertex_skin_morph_mask(vertex: Geometry, weights: SkinWeights, @builtin(vertex_index) index: u32,
                           @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>) -> MaskVertex {
+    let delta = morph_displacement(index, MORPH_COVERAGE);
     var deformed = vertex;
-    deformed.position = skin_point(skin_transform(weights), vertex.position + morph_displacement(index).position);
-    return MaskVertex(project(deformed), uv, vec2<f32>(color.a, vertex.tint.a), vertex.metadata.x);
+    deformed.position = skin_point(skin_transform(weights), vertex.position + delta.position);
+    return MaskVertex(project(deformed), uv + delta.uvs.xy, vec2<f32>(clamp(color.a + delta.color.a, 0.0, 1.0), vertex.tint.a), vertex.metadata.x);
 }
 
 fn test_material_depth(vertex: MaskVertex) {

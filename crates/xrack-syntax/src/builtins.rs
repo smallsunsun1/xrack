@@ -230,7 +230,51 @@ const fn scene_view_method(
     }
 }
 
+pub fn scene_view_reads_item_sources(method: &str) -> bool {
+    matches!(method, "hit-item" | "ray-hit-item")
+}
+
 pub const SCENE_VIEW_METHODS: &[SceneViewMethod] = &[
+    scene_view_method(
+        "render-stats",
+        &[],
+        &[],
+        "renderstats3d",
+        Type::RenderStats3D,
+        "Returns the latest render sample requested by this viewport's render-stats-revision.",
+    ),
+    scene_view_method(
+        "has-active-camera",
+        &[],
+        &[],
+        "bool",
+        Type::Bool,
+        "Returns true when this laid-out viewport has a resolved camera, including its orbit camera.",
+    ),
+    scene_view_method(
+        "active-camera",
+        &[],
+        &[],
+        "string",
+        Type::String,
+        "Returns the resolved camera selector. Unnamed, orbit and unavailable cameras return an empty string.",
+    ),
+    scene_view_method(
+        "active-camera-row",
+        &[],
+        &[],
+        "int",
+        Type::Int,
+        "Returns the resolved camera's row in the viewport's prepared scene, or -1 for orbit or unavailable cameras.",
+    ),
+    scene_view_method(
+        "active-camera-node",
+        &[],
+        &[],
+        "int",
+        Type::Int,
+        "Returns the glTF source-node index of the resolved camera, or -1 when there is no glTF source node.",
+    ),
     scene_view_method(
         "project",
         &["world: point3d"],
@@ -262,6 +306,14 @@ pub const SCENE_VIEW_METHODS: &[SceneViewMethod] = &[
         "hit3d",
         Type::Hit3D,
         "Returns the closest geometric hit using this view's camera.",
+    ),
+    scene_view_method(
+        "hit-item",
+        &["point: point2d"],
+        &[Type::Point2D],
+        "hit3d",
+        Type::Hit3D,
+        "Picks a live 2D texture source and returns its local logical-pixel position.",
     ),
     scene_view_method(
         "hit-all",
@@ -311,6 +363,18 @@ pub const SCENE_VIEW_METHODS: &[SceneViewMethod] = &[
         "hit3d",
         Type::Hit3D,
         "Traces a world-space ray using the view's layers and selected mesh detail.",
+    ),
+    scene_view_method(
+        "ray-hit-item",
+        &[
+            "origin: point3d",
+            "direction: vector3d",
+            "max-distance: float",
+        ],
+        &[Type::Point3D, Type::Vector3D, Type::Float],
+        "hit3d",
+        Type::Hit3D,
+        "Traces a world-space ray to a live 2D texture source and returns its local logical-pixel position.",
     ),
     scene_view_method(
         "ray-hit-all",
@@ -398,12 +462,34 @@ pub const SCENE_VIEW_METHODS: &[SceneViewMethod] = &[
     ),
 ];
 
+pub const SCENE_TEXTURE_SIZE_PROPERTIES: [&str; 2] =
+    ["effective-texture-width", "effective-texture-height"];
+
+pub fn scene_texture_size_axis(name: &str) -> Option<usize> {
+    SCENE_TEXTURE_SIZE_PROPERTIES
+        .iter()
+        .position(|&axis| axis == name)
+}
+
+pub const SCENE_TOUCH_METHOD: BuiltinSignature = BuiltinSignature {
+    name: "set-touchpoint",
+    parameters: &[
+        "source: string",
+        "position: point2d",
+        "id: int",
+        "pressed: bool",
+    ],
+    result: None,
+    documentation: "Sends a programmatic touch in source-panel logical pixels to a TouchArea, push button, CheckBox, RadioButton, Switch, Slider, RangeSlider, or Dial in an attached texture source.",
+};
+
 pub fn scene_view_methods(kind: &str) -> impl Iterator<Item = &'static BuiltinSignature> {
     (kind == "SceneView3D")
         .then_some(SCENE_VIEW_METHODS)
         .into_iter()
         .flatten()
         .map(|method| &method.signature)
+        .chain((kind == "SceneView3D").then_some(&SCENE_TOUCH_METHOD))
 }
 
 pub const DYNAMIC_CONTAINER_METHODS: &[BuiltinSignature] = &[
@@ -761,6 +847,7 @@ pub const NAMESPACES: &[&str] = &[
     "Quaternion3D",
     "Vector2D",
     "Transform2D",
+    "TextureData2D",
     "Scene3D",
     "Physics3D",
 ];
@@ -839,11 +926,19 @@ operations!(GeometryFunction {
     MapPoint => "map-point",
     MapVector => "map-vector",
     Prepare3D => "prepare-3d",
+    Combine3D => "combine-3d",
     Bounds3D => "bounds-3d",
+    GeometryStatus3D => "geometry-status-3d",
+    GeometryError3D => "geometry-error-3d",
     MeshNode3D => "mesh-node-3d",
     SceneNode3D => "scene-node-3d",
     MeshNodeIndices3D => "mesh-node-indices-3d",
+    MeshMaterialSlots3D => "mesh-material-slots-3d",
+    MeshMaterialVariants3D => "mesh-material-variants-3d",
+    MeshAnimationClips3D => "mesh-animation-clips-3d",
+    MeshAnimationDuration3D => "mesh-animation-duration-3d",
     PrepareInstanceTable3D => "prepare-instance-table-3d",
+    TextureRgba8 => "texture-rgba8",
     RandomInstanceTable3D => "random-instance-table-3d",
     TableInstance3D => "table-instance-3d",
     Pick3D => "pick-3d",
@@ -910,11 +1005,17 @@ impl GeometryFunction {
         match self {
             Self::Point | Self::MapPoint => Type::Point2D,
             Self::Vector | Self::MapVector => Type::Vector2D,
-            Self::Prepare3D => Type::SceneModel3D,
+            Self::Prepare3D | Self::Combine3D => Type::SceneModel3D,
             Self::Bounds3D => Type::Bounds3D,
+            Self::GeometryStatus3D | Self::GeometryError3D => Type::String,
             Self::MeshNode3D | Self::SceneNode3D => Type::MeshNode3D,
             Self::MeshNodeIndices3D => Type::IntList,
+            Self::MeshMaterialSlots3D
+            | Self::MeshMaterialVariants3D
+            | Self::MeshAnimationClips3D => Type::StringList,
+            Self::MeshAnimationDuration3D => Type::Float,
             Self::PrepareInstanceTable3D | Self::RandomInstanceTable3D => Type::InstanceTable3D,
+            Self::TextureRgba8 => Type::TextureData2D,
             Self::TableInstance3D
             | Self::SceneInstance3D
             | Self::SceneInstanceCamera3D
@@ -970,11 +1071,25 @@ impl GeometryFunction {
             _ => Type::Transform2D,
         }
     }
+    pub const fn uses_mesh_asset(self) -> bool {
+        matches!(
+            self,
+            Self::MeshNode3D
+                | Self::MeshNodeIndices3D
+                | Self::MeshMaterialSlots3D
+                | Self::MeshMaterialVariants3D
+                | Self::MeshAnimationClips3D
+                | Self::MeshAnimationDuration3D
+        )
+    }
+
     pub const fn uses_scene_model(self) -> bool {
         matches!(
             self,
             Self::Prepare3D
                 | Self::Bounds3D
+                | Self::GeometryStatus3D
+                | Self::GeometryError3D
                 | Self::SceneNode3D
                 | Self::Pick3D
                 | Self::PickCamera3D
@@ -1695,6 +1810,7 @@ pub const SCENE_MATERIAL_MAP_FIELDS: &[&str] = &[
 
 pub const SCENE_TEXTURE_FIELDS: &[(&str, Type)] = &[
     ("source", Type::String),
+    ("data", Type::TextureData2D),
     ("wrap-u", Type::String),
     ("wrap-v", Type::String),
     ("min-filter", Type::String),
@@ -1846,6 +1962,13 @@ pub const SCENE_ANIMATION_LAYER_FIELDS: &[(&str, Type)] = &[
 ];
 pub const SCENE_ANIMATION_LAYER_MODES: &[&str] = &["override", "additive"];
 
+pub const SCENE_ANIMATION_NODE_OVERRIDE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("translation", Type::Vector3D),
+    ("rotation", Type::Quaternion3D),
+    ("scale", Type::Vector3D),
+    ("weight", Type::Float),
+];
+
 pub const SCENE_COLLISION_SHAPE_FIELDS: &[(&str, Type)] = &[
     ("shape", Type::String),
     ("mesh", Type::String),
@@ -1912,6 +2035,25 @@ pub const ROTATION_KEY_FIELDS: &[(&str, Type)] =
     &[("time", Type::Float), ("orientation", Type::Quaternion3D)];
 
 pub const SCENE_OBJECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("model-blend-mode", Type::String),
+    ("model-blend-order", Type::String),
+    ("model-blend-end-node", Type::String),
+    ("model-blend-activation-node", Type::String),
+    ("model-blend-activation-speed", Type::Float),
+    ("model-blend-time", Type::Float),
+    ("model-blend-duration", Type::Float),
+    ("model-blend-stagger", Type::Float),
+    ("model-blend-arrival", Type::Float),
+    ("model-blend-origin", Type::Point3D),
+    ("model-blend-offset", Type::Vector3D),
+    ("model-blend-orientation", Type::Quaternion3D),
+    ("model-blend-scale", Type::Vector3D),
+    ("model-blend-velocity", Type::Vector3D),
+    ("model-blend-spread", Type::Vector3D),
+    ("model-blend-gravity", Type::Vector3D),
+    ("model-blend-spin", Type::Vector3D),
+    ("model-blend-axis", Type::Vector3D),
+    ("model-blend-seed", Type::Int),
     ("orientation", Type::Quaternion3D),
     ("depth-bias", Type::Float),
     ("motion-vector-enabled", Type::Bool),
@@ -1954,9 +2096,12 @@ pub const SCENE_OBJECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("pivot-z", Type::Float),
     ("camera-kind", Type::String),
     ("camera-fov", Type::Float),
+    ("camera-fov-axis", Type::String),
     ("camera-height", Type::Float),
     ("camera-width", Type::Float),
     ("camera-look-at", Type::String),
+    ("look-at", Type::String),
+    ("look-at-up", Type::Vector3D),
     ("camera-look-at-point", Type::Point3D),
     ("camera-up", Type::Vector3D),
     ("camera-clip-normal", Type::Vector3D),
@@ -1983,6 +2128,30 @@ pub const SCENE_OBJECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("lightmap-v", Type::Float),
     ("lightmap-width", Type::Float),
     ("lightmap-height", Type::Float),
+];
+
+pub const MODEL_BLEND_MODES: &[(&str, &str)] = &[
+    (
+        "explode",
+        "Release the model's triangles along particle trajectories",
+    ),
+    (
+        "construct",
+        "Assemble the model from triangles emitted at a local point",
+    ),
+    (
+        "transfer",
+        "Release and reassemble the model at a destination transform",
+    ),
+];
+
+pub const MODEL_BLEND_ORDERS: &[(&str, &str)] = &[
+    ("sequential", "Release triangles in mesh order"),
+    ("random", "Use a reproducible per-triangle release time"),
+    (
+        "activation",
+        "Sweep the release plane along the activation axis",
+    ),
 ];
 
 pub const SCENE_PARTICLE_FIELDS: &[(&str, Type)] = &[
@@ -2259,12 +2428,23 @@ pub const SCENE_PARTICLE_BURST_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("seed", Type::Int),
 ];
 
+pub const SCENE_PARTICLE_COLOR_VARIATION_FIELDS: &[(&str, Type)] = &[
+    ("red", Type::Float),
+    ("green", Type::Float),
+    ("blue", Type::Float),
+    ("alpha", Type::Float),
+];
+
 pub const SCENE_PARTICLE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("emitter-id", Type::String),
+    ("follow-emitter", Type::String),
+    ("follow-burst-at", Type::String),
     ("emission-loop", Type::Bool),
     ("particle-group", Type::String),
     ("parent", Type::String),
     ("parent-node", Type::String),
     ("lifetime-variation", Type::Float),
+    ("reversed", Type::Bool),
     ("size-variation", Type::Float),
     ("end-size-variation", Type::Float),
     ("end-size", Type::Float),
@@ -2275,6 +2455,9 @@ pub const SCENE_PARTICLE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("gravity", Type::Vector3D),
     ("fade-in", Type::Float),
     ("fade-out", Type::Float),
+    ("fade-in-effect", Type::String),
+    ("fade-out-effect", Type::String),
+    ("unified-color-variation", Type::Bool),
     ("intensity", Type::Float),
     ("seed", Type::Int),
     ("layers", Type::Int),
@@ -2287,10 +2470,23 @@ pub const SCENE_PARTICLE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("sprite-playback", Type::String),
     ("sprite-interpolate", Type::Bool),
     ("sprite-random-start", Type::Bool),
+    ("sprite-billboard", Type::Bool),
+    ("sprite-offset-x", Type::Float),
+    ("sprite-offset-y", Type::Float),
     ("color-table", Type::Image),
     ("particle-blend-mode", Type::String),
+    ("particle-sort-mode", Type::String),
+    ("depth-bias", Type::Float),
+    ("depth-fade-distance", Type::Float),
     ("emitter-shape", Type::String),
     ("emitter-mesh", Type::String),
+    ("emitter-point-source", Type::String),
+    ("emitter-point-randomize", Type::Bool),
+    ("emitter-point-scale", Type::Vector3D),
+    ("emitter-scene-root", Type::String),
+    ("emitter-scene-exclude", Type::StringList),
+    ("emitter-scene-center", Type::Point3D),
+    ("emitter-scene-extents", Type::Vector3D),
     ("emitter-mesh-scale", Type::Vector3D),
     ("emitter-extents", Type::Vector3D),
     ("emitter-fill", Type::Bool),
@@ -2301,13 +2497,26 @@ pub const SCENE_PARTICLE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("velocity-cone-angle", Type::Float),
     ("velocity-target", Type::Point3D),
     ("velocity-target-spread", Type::Vector3D),
+    ("velocity-target-normalized", Type::Bool),
+    ("velocity-target-magnitude", Type::Float),
     ("velocity-speed-variation", Type::Float),
     ("trail-segments", Type::Int),
     ("trail-duration", Type::Float),
     ("trail-end-scale", Type::Float),
     ("trail-fade", Type::Float),
     ("trail-eol-fade", Type::Float),
+    ("trail-length", Type::Float),
+    ("trail-length-variation", Type::Float),
+    ("trail-length-delta-min", Type::Float),
+    ("trail-scale-multiplier", Type::Float),
+    ("trail-alpha-fade", Type::Float),
+    ("trail-texcoord-mode", Type::String),
+    ("trail-texcoord-multiplier", Type::Float),
+    ("particle-instances-only", Type::Bool),
     ("particle-model", Type::String),
+    ("particle-model-scene", Type::SceneModel3D),
+    ("particle-align-mode", Type::String),
+    ("particle-align-target", Type::Point3D),
     ("particle-rotation", Type::Vector3D),
     ("particle-rotation-variation", Type::Vector3D),
     ("particle-angular-velocity", Type::Vector3D),
@@ -2318,12 +2527,31 @@ pub const SCENE_PARTICLE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
 ];
 
 pub const SCENE_PARTICLE_AFFECTOR_FIELDS: &[(&str, Type)] = &[("affector-kind", Type::String)];
+pub const SCENE_PARTICLE_INSTANCE_MODEL_FIELDS: &[(&str, Type)] =
+    &[("emitter", Type::String), ("model", Type::SceneModel3D)];
+
 pub const SCENE_PARTICLE_AFFECTOR_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("parent", Type::String),
     ("parent-node", Type::String),
     ("particle-group", Type::String),
     ("position", Type::Point3D),
     ("position-variation", Type::Vector3D),
+    ("attractor-shape", Type::String),
+    ("attractor-extents", Type::Vector3D),
+    ("attractor-fill", Type::Bool),
+    ("attractor-yaw", Type::Float),
+    ("attractor-pitch", Type::Float),
+    ("attractor-roll", Type::Float),
+    ("attractor-mesh", Type::String),
+    ("attractor-point-source", Type::String),
+    ("attractor-point-randomize", Type::Bool),
+    ("attractor-point-scale", Type::Vector3D),
+    ("attractor-scene-root", Type::String),
+    ("attractor-scene-exclude", Type::StringList),
+    ("attractor-scene-center", Type::Point3D),
+    ("attractor-scene-extents", Type::Vector3D),
+    ("attractor-mesh-scale", Type::Vector3D),
+    ("attractor-samples", Type::Int),
     ("direction", Type::Vector3D),
     ("duration", Type::Float),
     ("duration-variation", Type::Float),
@@ -2397,8 +2625,16 @@ pub const PARTICLE_SCALE_EASINGS: &[(&str, &str)] = &[
 ];
 
 pub const PARTICLE_EMITTER_SHAPES: &[(&str, &str)] = &[
+    (
+        "points",
+        "Emit from positions authored in a CBOR point cloud",
+    ),
     ("point", "Emit from the origin"),
     ("mesh", "Emit from the surface of a glTF mesh"),
+    (
+        "scene",
+        "Emit from the visible mesh surfaces in a scene subtree",
+    ),
     ("box", "Emit from a box volume or its faces"),
     ("sphere", "Emit from an ellipsoid volume or its surface"),
     (
@@ -2407,10 +2643,98 @@ pub const PARTICLE_EMITTER_SHAPES: &[(&str, &str)] = &[
     ),
 ];
 
+pub const PARTICLE_ATTRACTOR_SHAPES: &[(&str, &str)] = &[
+    (
+        "points",
+        "Attract to positions authored in a CBOR point cloud",
+    ),
+    (
+        "scene",
+        "Attract to visible mesh surfaces in a scene subtree",
+    ),
+    ("point", "Attract to a single point"),
+    ("mesh", "Attract to points on a glTF mesh surface"),
+    ("box", "Attract to points within a box or on its faces"),
+    (
+        "sphere",
+        "Attract to points within an ellipsoid or on its surface",
+    ),
+    (
+        "cylinder",
+        "Attract to points within a cylinder or on its surface",
+    ),
+];
+
+pub const PARTICLE_SORT_MODES: &[(&str, &str)] = &[
+    ("none", "Use the regular particle draw order"),
+    ("newest", "Draw the newest particles first"),
+    ("oldest", "Draw the oldest particles first"),
+    (
+        "distance",
+        "Draw particles from farthest to nearest in camera depth",
+    ),
+];
+
+pub const FOLLOW_BURST_EVENTS: &[(&str, &str)] = &[
+    (
+        "birth",
+        "Schedule bursts at the source particle's birth position",
+    ),
+    (
+        "death",
+        "Schedule bursts at the source particle's final position",
+    ),
+];
+
+pub const TRAIL_TEXCOORD_MODES: &[(&str, &str)] = &[
+    ("stretch", "Stretch once over the sampled time interval"),
+    (
+        "fill",
+        "Map one texture over the visible world-space trail length",
+    ),
+    ("relative", "Repeat by world distance from the trail head"),
+    ("absolute", "Repeat by world distance traveled since birth"),
+];
+
+pub const PARTICLE_FADE_EFFECTS: &[(&str, &str)] = &[
+    (
+        "opacity",
+        "Ramp the particle's opacity across the fade duration",
+    ),
+    ("scale", "Ramp the particle's size across the fade duration"),
+    (
+        "none",
+        "Keep the particle's opacity and size during the fade interval",
+    ),
+];
+
+pub const PARTICLE_ALIGNMENT_MODES: &[(&str, &str)] = &[
+    (
+        "none",
+        "Use the particle's authored rotation in world space",
+    ),
+    (
+        "start-velocity",
+        "Align local +Z with the particle's initial velocity",
+    ),
+    (
+        "velocity",
+        "Align local +Z with the particle's current trajectory, including affectors",
+    ),
+    (
+        "target",
+        "Align local +Z with the world-space particle-align-target",
+    ),
+];
+
 pub const PARTICLE_VELOCITY_MODES: &[(&str, &str)] = &[
     (
         "surface-normal",
-        "Emit along the sampled mesh triangle normal",
+        "Emit along the sampled normal. A follower without its own surface uses the source particle's normal.",
+    ),
+    (
+        "surface-reflected",
+        "Reflect around the sampled world-space normal. A follower can use the source birth direction at its own speed.",
     ),
     (
         "vector",
@@ -2426,7 +2750,7 @@ pub const PARTICLE_VELOCITY_MODES: &[(&str, &str)] = &[
     ),
     (
         "target",
-        "Aim from each birth position toward a world-space target",
+        "Aim at a world-space target with optional distance scaling and signed magnitude",
     ),
 ];
 
@@ -2686,11 +3010,37 @@ pub const REFLECTION_TIME_SLICING: &[(&str, &str)] = &[
 pub const SCENE_MESH_VERTEX_FIELDS: &[(&str, Type)] = &[
     ("position", Type::Point3D),
     ("normal", Type::Vector3D),
+    ("tangent", Type::Vector3D),
+    ("tangent-sign", Type::Float),
     ("u", Type::Float),
     ("v", Type::Float),
     ("u1", Type::Float),
     ("v1", Type::Float),
     ("color", Type::Color),
+];
+
+pub const SCENE_SKIN_WEIGHT_FIELDS: &[(&str, Type)] = &[
+    ("vertex", Type::Int),
+    ("joint", Type::Int),
+    ("weight", Type::Float),
+];
+
+pub const SCENE_MORPH_DELTA_FIELDS: &[(&str, Type)] =
+    &[("target", Type::String), ("vertex", Type::Int)];
+
+pub const SCENE_MORPH_DELTA_CHANNELS: &[(&str, Type)] = &[
+    ("position", Type::Vector3D),
+    ("normal", Type::Vector3D),
+    ("tangent", Type::Vector3D),
+    ("binormal", Type::Vector3D),
+    ("u", Type::Float),
+    ("v", Type::Float),
+    ("u1", Type::Float),
+    ("v1", Type::Float),
+    ("color-r", Type::Float),
+    ("color-g", Type::Float),
+    ("color-b", Type::Float),
+    ("color-a", Type::Float),
 ];
 
 pub const SCENE_MESH_SUBSET_FIELDS: &[(&str, Type)] = &[
@@ -2710,6 +3060,10 @@ pub const SCENE_PARAMETRIC_FIELDS: &[(&str, Type)] = &[
     ("segments", Type::Int),
     ("rings", Type::Int),
     ("capped", Type::Bool),
+    ("text", Type::String),
+    ("font", Type::Font),
+    ("text-scale", Type::Float),
+    ("asynchronous", Type::Bool),
 ];
 
 pub const SCENE_PARAMETRIC_SHAPES: &[(&str, &str)] = &[
@@ -2726,6 +3080,7 @@ pub const SCENE_PARAMETRIC_SHAPES: &[(&str, &str)] = &[
         "torus",
         "Ring in the XY plane with customizable tube radius",
     ),
+    ("text", "Extruded text shaped with the selected font"),
 ];
 
 pub const SCENE_PRIMITIVE_MESHES: &[(&str, &str)] = &[
@@ -2753,7 +3108,7 @@ pub const SCENE_CAMERA_KINDS: &[(&str, &str)] = &[
     ("custom", "Use the camera-projection matrix"),
     (
         "perspective",
-        "Perspective camera with a vertical field of view",
+        "Perspective camera with an angular field of view",
     ),
     (
         "orthographic",
@@ -2769,6 +3124,30 @@ pub const SCENE_CAMERA_CLIP_SPACES: &[(&str, &str)] = &[
     ("webgpu", "Clip depth from zero to one"),
     ("opengl", "Clip depth from minus one to one"),
 ];
+
+pub const SCENE_CAMERA_FOV_AXES: &[(&str, &str)] = &[
+    (
+        "vertical",
+        "Hold the vertical field of view fixed as the viewport resizes",
+    ),
+    (
+        "horizontal",
+        "Hold the horizontal field of view fixed as the viewport resizes",
+    ),
+];
+
+pub const SCENE_LIGHT_KINDS: &[(&str, &str)] = &[
+    ("directional", "Illuminate uniformly with a parallel light"),
+    (
+        "point",
+        "Illuminate from a position with distance attenuation",
+    ),
+    (
+        "spot",
+        "Illuminate through a cone with distance attenuation",
+    ),
+];
+
 pub const SCENE_LIGHT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("layers", Type::Int),
     ("casts-shadow", Type::Bool),
@@ -2839,10 +3218,22 @@ const fn geometry(
 ) -> Function {
     let (namespace, member, result) = match kind {
         GeometryFunction::Prepare3D => ("Scene3D", "prepare", "scenemodel3d"),
+        GeometryFunction::Combine3D => ("Scene3D", "combine", "scenemodel3d"),
         GeometryFunction::Bounds3D => ("Scene3D", "bounds", "bounds3d"),
+        GeometryFunction::GeometryStatus3D => ("Scene3D", "geometry-status", "string"),
+        GeometryFunction::GeometryError3D => ("Scene3D", "geometry-error", "string"),
         GeometryFunction::MeshNode3D => ("Scene3D", "mesh-node", "meshnode3d"),
         GeometryFunction::SceneNode3D => ("Scene3D", "scene-node", "meshnode3d"),
         GeometryFunction::MeshNodeIndices3D => ("Scene3D", "mesh-node-indices", "[int]"),
+        GeometryFunction::MeshMaterialSlots3D => ("Scene3D", "mesh-material-slots", "[string]"),
+        GeometryFunction::MeshMaterialVariants3D => {
+            ("Scene3D", "mesh-material-variants", "[string]")
+        }
+        GeometryFunction::MeshAnimationClips3D => ("Scene3D", "mesh-animation-clips", "[string]"),
+        GeometryFunction::MeshAnimationDuration3D => {
+            ("Scene3D", "mesh-animation-duration", "float")
+        }
+        GeometryFunction::TextureRgba8 => ("TextureData2D", "rgba8", "texturedata2d"),
         GeometryFunction::PrepareInstanceTable3D => {
             ("Scene3D", "instance-table", "instancetable3d")
         }
@@ -4202,6 +4593,32 @@ pub const FUNCTIONS: &[Function] = &[
         "Lists original glTF node indices in traversal order. Filter by all, mesh, camera, or light. Pass an index to Scene3D.mesh-node.",
     ),
     geometry(
+        GeometryFunction::MeshMaterialSlots3D,
+        &[
+            Parameter::new("asset: meshasset3d | string"),
+            Parameter::optional("variant?: string", &Type::String),
+        ],
+        "Lists material slot selectors for the selected asset layout. An empty or missing variant selector uses the original layout.",
+    ),
+    geometry(
+        GeometryFunction::MeshMaterialVariants3D,
+        &[Parameter::new("asset: meshasset3d | string")],
+        "Lists selectable material variants in source order, using a numeric selector for a duplicate or reserved name.",
+    ),
+    geometry(
+        GeometryFunction::MeshAnimationClips3D,
+        &[Parameter::new("asset: meshasset3d | string")],
+        "Lists animation clip selectors in source order, using original numeric indices for missing or ambiguous names.",
+    ),
+    geometry(
+        GeometryFunction::MeshAnimationDuration3D,
+        &[
+            Parameter::new("asset: meshasset3d | string"),
+            Parameter::with_type("clip: string", &Type::String),
+        ],
+        "Returns the duration of the selected animation in seconds. Missing assets and clips return zero.",
+    ),
+    geometry(
         GeometryFunction::SceneNode3D,
         &[
             NAMED_VIEW[0],
@@ -4216,12 +4633,45 @@ pub const FUNCTIONS: &[Function] = &[
         "Returns world-space bounds for the current prepared scene pose, before camera-dependent culling or LOD. The default layer mask is 1. Empty results have valid false.",
     ),
     geometry(
+        GeometryFunction::GeometryStatus3D,
+        &[
+            Parameter::with_type("model: scenemodel3d", &Type::SceneModel3D),
+            Parameter::with_type("object: string", &Type::String),
+        ],
+        "Reads the geometry status for a unique object ID in the prepared scene: empty, loading, ready or error.",
+    ),
+    geometry(
+        GeometryFunction::GeometryError3D,
+        &[
+            Parameter::with_type("model: scenemodel3d", &Type::SceneModel3D),
+            Parameter::with_type("object: string", &Type::String),
+        ],
+        "Returns the error for a failed text geometry request. Returns an empty string in other states.",
+    ),
+    geometry(
         GeometryFunction::Prepare3D,
         &[
             Parameter::new("objects: [record]"),
             Parameter::optional("world?: physicsworld3d", &Type::PhysicsWorld3D),
         ],
         "Prepares an immutable scene for views and spatial queries. An optional physics world resolves physics-body links at the current interpolated pose.",
+    ),
+    geometry(
+        GeometryFunction::Combine3D,
+        &[
+            Parameter::with_type("shared: scenemodel3d", &Type::SceneModel3D),
+            Parameter::with_type("local: scenemodel3d", &Type::SceneModel3D),
+        ],
+        "Combines two prepared scenes in shared-then-local row order. The views and spatial queries share the result, and each input keeps its own resolved hierarchy.",
+    ),
+    geometry(
+        GeometryFunction::TextureRgba8,
+        &[
+            Parameter::with_type("width: int", &Type::Int),
+            Parameter::with_type("height: int", &Type::Int),
+            Parameter::with_type("pixels: [int]", &Type::IntList),
+        ],
+        "Prepares top-to-bottom RGBA8 pixels as a texture snapshot. Pass exactly width × height × 4 bytes, each in 0..255, with dimensions in 1..2048. Invalid data returns an invalid texture with width and height 0. Pixel model edits produce a new snapshot. Use it directly as a material map or as the data field of an input record.",
     ),
     geometry(
         GeometryFunction::PrepareInstanceTable3D,

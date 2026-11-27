@@ -108,6 +108,9 @@ pub(super) fn load(path: &Path) -> Result<Arc<str>, String> {
                 "material_has_texture",
                 "material_texture_size",
                 "material_texture_world_position",
+                "material_has_cubemap",
+                "material_cubemap",
+                "material_cubemap_lod",
             ],
         )
     {

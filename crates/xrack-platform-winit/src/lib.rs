@@ -844,6 +844,7 @@ struct Application<C> {
     selection_handle_drag: Option<SelectionHandleDrag>,
     additional_touch_captures: Vec<CapturedPointer>,
     next_touch_finger_id: i64,
+    scene_touches: xrack_layout::SceneTouches,
     last_pointer_click: Option<(PointerHandle, Option<RowKey>, PointerClick)>,
     last_button_click: Option<ButtonClick<Option<DeviceId>>>,
     scroll_requests: ScrollRequests,
@@ -912,6 +913,7 @@ impl<C: Component> Application<C> {
             selection_handle_drag: None,
             additional_touch_captures: Vec::new(),
             next_touch_finger_id: 1,
+            scene_touches: xrack_layout::SceneTouches::default(),
             last_pointer_click: None,
             last_button_click: None,
             scroll_requests: ScrollRequests::default(),
@@ -3555,6 +3557,18 @@ impl<C: Component> Application<C> {
     }
 
     fn apply_focus_and_text_requests(&mut self) -> bool {
+        let _focus = self.focus_requests.enter();
+        let _scroll = self.scroll_requests.enter();
+        if let Some(layout) = &self.layout
+            && self.scene_touches.reconcile(
+                &mut self.input,
+                &mut self.component,
+                &self.scene,
+                layout,
+            )
+        {
+            self.refresh_scene_touch_frame();
+        }
         let mut edited_focused = false;
         for request in self.focus_requests.drain_commands() {
             let Some(layout) = &self.layout else {
@@ -3562,6 +3576,19 @@ impl<C: Component> Application<C> {
             };
             let request = match request {
                 xrack_runtime::QueuedFocusRequest::Focus(request) => request,
+                xrack_runtime::QueuedFocusRequest::SceneTouch(request) => {
+                    if self.scene_touches.apply(
+                        &mut self.input,
+                        &mut self.component,
+                        &self.scene,
+                        layout,
+                        request,
+                    ) {
+                        self.refresh_scene_touch_frame();
+                    }
+                    continue;
+                }
+
                 xrack_runtime::QueuedFocusRequest::ReplaceText {
                     target,
                     replacement,
@@ -3609,6 +3636,20 @@ impl<C: Component> Application<C> {
             }
         }
         edited_focused
+    }
+
+    fn refresh_scene_touch_frame(&mut self) {
+        if self.sync_base_scene()
+            || self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.frame.slider_preview_changed(&self.input))
+        {
+            self.prepare_frame(self.transition_epoch.elapsed());
+        }
+        if let Some(state) = &self.state {
+            state.window.request_redraw();
+        }
     }
 
     fn run_text_command(&mut self, command: TextCommand) -> bool {
@@ -4845,7 +4886,11 @@ impl<C: Component> Application<C> {
     }
 
     fn advance_touch_finger_id(&mut self) {
-        self.next_touch_finger_id = self.next_touch_finger_id.checked_add(1).unwrap_or_default();
+        self.next_touch_finger_id = self
+            .next_touch_finger_id
+            .checked_add(1)
+            .filter(|id| *id < xrack_runtime::FIRST_SCENE_TOUCH_FINGER_ID)
+            .unwrap_or_default();
     }
 
     fn accepts_additional_touch(&self, target: &Target) -> bool {
@@ -8315,24 +8360,24 @@ impl<C: Component> HostedWindow for Application<C> {
             self.component
                 .publish_window_status(state.sample_window_status());
             if state.renderer.viewport_gpu_timing_pending() {
-                if let Some(inspector) = self
+                let inspector = self
                     .component
                     .window_inspector(&self.base_scene)
-                    .filter(|inspector| inspector.profiling())
-                {
-                    state
+                    .filter(|inspector| inspector.profiling());
+                state
+                    .renderer
+                    .set_scene_observation(self.component.source_generation(), inspector.is_some());
+                state
+                    .renderer
+                    .set_viewport_statistics_enabled(inspector.is_some());
+                if state.renderer.poll_viewport_gpu_timing()
+                    && let Some(inspector) = inspector
+                    && let Some(frame) = state
                         .renderer
-                        .set_scene_observation(self.component.source_generation(), true);
-                    if state.renderer.poll_viewport_gpu_timing()
-                        && let Some(frame) = state
-                            .renderer
-                            .viewport_statistics()
-                            .and_then(|statistics| statistics.gpu.clone())
-                    {
-                        inspector.set_viewport_gpu_frame(frame);
-                    }
-                } else {
-                    state.renderer.set_viewport_statistics_enabled(false);
+                        .viewport_statistics()
+                        .and_then(|statistics| statistics.gpu.clone())
+                {
+                    inspector.set_viewport_gpu_frame(frame);
                 }
             }
         }

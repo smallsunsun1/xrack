@@ -180,6 +180,7 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
                             | "scene-effects"
                             | "scene-captures"
                             | "particle-emitters"
+                            | "particle-instance-models"
                             | "particle-affectors"
                     )
                     && matches!(actual, Type::RecordList(_)));
@@ -1384,6 +1385,7 @@ pub fn visual_cache_operand(
                 | "xr.shader_url"
                 | "xr.material_shader_url"
                 | "xr.environment_url"
+                | "xr.particle_shape_url"
                 | "xr.param"
         ))
     .then_some(definition)

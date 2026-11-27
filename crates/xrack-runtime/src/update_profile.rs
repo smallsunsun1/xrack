@@ -15,6 +15,8 @@ pub struct UpdateSample {
     pub model_rows_cloned: usize,
     pub scene_projections_built: usize,
     pub scene_projection_cache_hits: usize,
+    pub scene_lod_groups_evaluated: usize,
+    pub scene_lod_view_cache_hits: usize,
     pub draw_primitives: usize,
     pub quad_batches: usize,
     pub glyph_batches: usize,
@@ -63,6 +65,8 @@ pub fn measure(update: impl FnOnce()) -> Option<UpdateSample> {
             materialized_rows = sample.materialized_rows as u64,
             scene_projections_built = sample.scene_projections_built as u64,
             scene_projection_cache_hits = sample.scene_projection_cache_hits as u64,
+            scene_lod_groups_evaluated = sample.scene_lod_groups_evaluated as u64,
+            scene_lod_view_cache_hits = sample.scene_lod_view_cache_hits as u64,
             cpu_micros = sample.cpu_micros,
         );
         Some(sample)
@@ -146,6 +150,14 @@ pub(crate) fn scene_projection(reused: bool) {
             sample.scene_projections_built += 1;
         }
     });
+}
+
+pub(crate) fn scene_lod_groups_evaluated(groups: usize) {
+    count(|sample| sample.scene_lod_groups_evaluated += groups);
+}
+
+pub(crate) fn scene_lod_view_reused() {
+    count(|sample| sample.scene_lod_view_cache_hits += 1);
 }
 
 #[doc(hidden)]

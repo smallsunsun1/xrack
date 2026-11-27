@@ -73,6 +73,8 @@ bazel test //tests:gpu_test -c opt --nocache_test_results --test_output=all \
 
 加 `--test_env=XRACK_RECTANGLE_BENCH_ROUNDED=1` 可测 2 逻辑像素圆角的同一场景，保留抗锯齿与半透明混合。同时设置 `--test_env=XRACK_RECTANGLE_BENCH_SUBPIXEL=1` 可测小数像素位移与透明度动画，覆盖圆角缓存缺失时的透明度图集路径。
 
+同时开启圆角和小数位移时，可以再设 `--test_env=XRACK_RECTANGLE_BENCH_MIXED=1`，让矩形交替使用六种尺寸和圆角组合。加上 `--test_env=XRACK_RECTANGLE_BENCH_OVERLAP=1` 可缩小列间距以覆盖重叠和绘制顺序。用 `--test_env=XRACK_RECTANGLE_BENCH_OVERLAP=tight` 可测更紧密的长重叠链。
+
 卡片动画基准在同一视口中绘制 24 张含文字和圆角色块的卡片。分别测量只改变整组透明度和同时移动卡片，记录纹理重新栅格化次数、复用次数及整帧耗时。
 
 ```sh
@@ -86,7 +88,17 @@ bazel test //tests:gpu_test -c opt --nocache_test_results --test_output=all \
 
 用 `--test_env=XRACK_CARD_BENCH_COUNT=1` 或 `--test_env=XRACK_CARD_BENCH_COUNT=4` 可缩小卡片数量。加 `--test_env=XRACK_CARD_BENCH_NO_OPACITY_ATLAS=1` 可在同一二进制中对照常规透明层。
 
+首帧的 `layer captures` 统计整层纹理的首次捕获次数。加上 `--test_env=XRACK_CARD_BENCH_NO_TILE_SHARING=1` 可对照共享关闭时的首次捕获。
+
 用 `--test_env=XRACK_CARD_BENCH_SUBPIXEL=1` 测连续的小数平移，或用 `--test_env=XRACK_CARD_BENCH_SUBPIXEL=independent` 测四组不同的采样位置。
+
+加上 `--test_env=XRACK_CARD_BENCH_WINDOW_ENTRY=1` 可走桌面窗口的绘制入口。再同时设置 `XRACK_CARD_BENCH_SCROLL_PROGRESS=1`、`XRACK_CARD_BENCH_STATIC_SCROLL_CONTENT=1` 和 `XRACK_CARD_BENCH_STEADY_SCROLL=1`，可测试圆角裁剪下滚动半透明卡片的稳态开销。回到相同设备像素相位时，完整图层的跨帧复用计入 `reuses`。图集内的复用单独计入 `opacity tiles reused`，跨帧保留的图集块计入 `retained opacity tiles reused`。整层纹理与跨帧保留的图集块共用窗口合成图集。空间不足时，图集在下一次窗口合成开始前按现有显存预算扩容，并保留已分配的图块位置。
+
+普通绘制也可复用同相位的图集块。合成时应用当前位置的外部裁剪，图块内部的裁剪需要与图块一起移动。
+
+设置 `--test_env=XRACK_CARD_BENCH_NO_LAYER_COMPOSITING=1` 可以在同一二进制中测量普通绘制路径，对照窗口合成器直接使用保留纹理和当帧图集的收益。
+
+跨框架对照时，日志中的 `cache_rendering_hint` 和 `window_entry` 记录了缓存设置和绘制入口。对照启用了 `layer.enabled` 的 Qt Quick 卡片时，可以用 `--test_env=XRACK_CARD_BENCH_CACHE_LAYERS=1` 补测 XRack 的显式缓存路径。显式缓存允许在小数设备像素位移时对已有纹理重新采样，因此应单独记录这组耗时和像素输出。
 
 长富文本滚动基准在 640×480 逻辑像素的视口中，以 2 倍像素比例滚动 1,200 段带链接、混合文字方向和 Emoji 的 Markdown。分别记录完整绘制和按字体墨迹裁剪的布局、提交与整帧耗时。
 

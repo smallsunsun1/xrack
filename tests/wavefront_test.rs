@@ -138,6 +138,12 @@ fn host_loaded_mesh_round_trips_and_reuses_gpu_geometry_in_both_backends() -> Te
             .map_err(|_| "mesh preparation panicked")??;
     assert!(file.asset.is_loaded());
     assert_eq!(file.inputs.len(), INPUTS.len());
+    assert_eq!(
+        file.asset.material_slot_selectors("").snapshot(),
+        ["Backdrop", "Trim"]
+    );
+    assert!(file.asset.material_variant_selectors().is_empty());
+    assert!(file.asset.animation_clip_selectors().is_empty());
     for path in INPUTS {
         assert!(file.inputs.contains(&Path::new(path).canonicalize()?));
     }

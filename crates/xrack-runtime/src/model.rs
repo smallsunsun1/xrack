@@ -78,7 +78,7 @@ struct RowSignals {
 
 impl RowSignals {
     fn track(&mut self, index: usize) {
-        if !self.signals.contains_key(&index) && self.signals.len() >= self.next_prune {
+        if self.signals.len() >= self.next_prune && !self.signals.contains_key(&index) {
             self.signals.retain(|_, signal| signal.has_observers());
             self.next_prune = (self.signals.len() * 2).max(64);
         }
@@ -285,6 +285,10 @@ impl<T> VecModel<T> {
     /// A stable identity that survives edits, inserts, removes of other rows, and sorting.
     pub fn row_key(&self, index: usize) -> Option<RowKey> {
         self.0.structure.track();
+        self.row_key_untracked(index)
+    }
+
+    pub(crate) fn row_key_untracked(&self, index: usize) -> Option<RowKey> {
         self.0.rows.borrow().get(index).map(|entry| RowKey {
             model: self.0.id,
             row: entry.id,
@@ -461,6 +465,10 @@ impl<T> VecModel<T> {
 
     pub(crate) fn structure_stamp(&self) -> (u64, u64) {
         self.0.structure.track();
+        self.structure_stamp_untracked()
+    }
+
+    pub(crate) fn structure_stamp_untracked(&self) -> (u64, u64) {
         (self.0.id, self.0.revision.get())
     }
 

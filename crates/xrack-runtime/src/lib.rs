@@ -26,42 +26,10 @@ mod focus;
 mod font_picker;
 mod geometry;
 #[doc(hidden)]
-pub mod material_shader;
-mod procedural_sky;
-#[doc(hidden)]
 pub mod scene3d;
-mod scene_animation;
-mod scene_authored_mesh;
-mod scene_bounds;
-pub use scene_bounds::SceneBounds3D as Bounds3D;
-mod scene_camera;
-mod scene_cast;
+pub use scene3d::bounds::SceneBounds3D as Bounds3D;
 #[doc(hidden)]
-pub mod scene_effect;
-mod scene_environment;
-mod scene_fog;
-mod scene_hierarchy;
-mod scene_indices;
-mod scene_instance_table;
-mod scene_lighting;
-mod scene_lightmap;
-mod scene_material;
-mod scene_morph;
-mod scene_parametric;
-mod scene_particle_affectors;
-mod scene_particle_bursts;
-mod scene_particle_mesh;
-mod scene_particle_motion;
-mod scene_particle_track;
-mod scene_particles;
-mod scene_pick;
-mod scene_primitives;
-mod scene_projection;
-mod scene_random_instances;
-mod scene_rotation;
-mod scene_skin;
-mod scene_surface;
-mod scene_visibility;
+pub use scene3d::{effect as scene_effect, material_shader};
 mod ui_log;
 mod visual_transform;
 pub use ui_log::LogLevel;
@@ -104,13 +72,15 @@ mod input_mask;
 mod input_pattern;
 mod list_sections;
 mod loader;
-mod mesh_loader;
-mod mesh_nodes;
-pub use mesh_loader::{
+pub use scene3d::mesh::loader::{
     MeshLoader3D, mesh_loader_deadline, poll_mesh_loaders, register_mesh_importer,
 };
-pub use mesh_nodes::MeshNode3D;
+pub use scene3d::mesh::nodes::MeshNode3D;
+mod render_stats;
 mod repeat;
+pub use render_stats::RenderStats3D;
+#[doc(hidden)]
+pub use render_stats::RenderStats3DData;
 mod row_heights;
 mod scale_rotate;
 mod scene_plan;
@@ -243,7 +213,7 @@ pub use font_picker::Font;
 #[doc(hidden)]
 pub use font_picker::{FontPopupState, is_font_family_choice, set_font_family_choices};
 #[doc(hidden)]
-pub use geometry::{GeometryHandle, GeometryMetric};
+pub use geometry::{GeometryHandle, GeometryMetric, SceneTouchRequest};
 pub use hover::{CursorShape, HoverHandle};
 pub use image_animation::{ImageAnimation, ImageAnimationFrame};
 #[doc(hidden)]
@@ -294,6 +264,8 @@ pub use physics3d::{
     PhysicsHit3D, PhysicsJointSpec, PhysicsQueryFilter3D, PhysicsShape3D, PhysicsShapeSpec,
     PhysicsWorld3D,
 };
+#[doc(hidden)]
+pub use pointer::FIRST_SCENE_TOUCH_FINGER_ID;
 pub use pointer::{
     PointerButton, PointerButtons, PointerEvent, PointerEventKind, PointerHandle, TouchPoint,
     TouchPoints,
@@ -318,10 +290,10 @@ pub use scene_plan::{
     GridCellPosition, GridCellSlot, GridPlanner, GridTrackInput, LoadedVectorPath, ScenePlanSlice,
     StaticVectorPath, VectorSegment,
 };
-pub use scene_rotation::{Quaternion3D, RotationTrack3D};
+pub use scene3d::rotation::{Quaternion3D, RotationTrack3D};
 pub use scene3d::{
-    Hit3D, Instance3D, InstanceTable3D, MeshAsset3D, Point3D, ProjectedPoint3D, Vector3D,
-    WalkResult3D,
+    Hit3D, Instance3D, InstanceTable3D, MeshAsset3D, Point3D, ProjectedPoint3D, TextureData2D,
+    Vector3D, WalkResult3D,
 };
 #[doc(hidden)]
 pub use split::{
@@ -1749,10 +1721,12 @@ pub enum Value {
     PhysicsDebugLines(PhysicsDebugLines),
     SceneFogVolumes(Arc<[scene3d::FogVolume3D]>),
     #[doc(hidden)]
-    SceneEffects(Arc<scene_effect::Chain>),
-    SceneCaptures(Arc<scene_effect::Captures>),
+    SceneEffects(Arc<scene3d::effect::Chain>),
+    SceneCaptures(Arc<scene3d::effect::Captures>),
     #[doc(hidden)]
     SceneParticleEmitters(Arc<[scene3d::ParticleEmitter]>),
+    #[doc(hidden)]
+    SceneParticleInstanceModels(Arc<[scene3d::ParticleInstanceModel]>),
     #[doc(hidden)]
     SceneParticleAffectors(Arc<[scene3d::ParticleAffector]>),
     Length(Length),
@@ -1768,9 +1742,11 @@ pub enum Value {
     PhysicsHit3D(PhysicsHit3D),
     PhysicsHit3DList(VecModel<PhysicsHit3D>),
     ProjectedPoint3D(ProjectedPoint3D),
+    RenderStats3D(RenderStats3D),
     Instance3D(Instance3D),
     InstanceTable3D(InstanceTable3D),
     MeshAsset3D(MeshAsset3D),
+    TextureData2D(TextureData2D),
     MeshNode3D(MeshNode3D),
     Bounds3D(Bounds3D),
     WalkResult3D(WalkResult3D),
@@ -1907,9 +1883,11 @@ value_from!(VecModel<PhysicsContact3D>, PhysicsContact3DList);
 value_from!(PhysicsHit3D, PhysicsHit3D);
 value_from!(VecModel<PhysicsHit3D>, PhysicsHit3DList);
 value_from!(ProjectedPoint3D, ProjectedPoint3D);
+value_from!(RenderStats3D, RenderStats3D);
 value_from!(Instance3D, Instance3D);
 value_from!(InstanceTable3D, InstanceTable3D);
 value_from!(MeshAsset3D, MeshAsset3D);
+value_from!(TextureData2D, TextureData2D);
 value_from!(MeshNode3D, MeshNode3D);
 value_from!(Bounds3D, Bounds3D);
 value_from!(WalkResult3D, WalkResult3D);
@@ -1994,6 +1972,7 @@ struct NodeStorage {
     stacking_order: OnceCell<f64>,
     visibility: OnceCell<bool>,
     opacity: OnceCell<f32>,
+    clipped_layout_group: OnceCell<bool>,
     height_independent_metrics: OnceCell<bool>,
 }
 
@@ -2036,6 +2015,10 @@ pub enum SceneFeature {
     SceneViewport = 128,
     ScenePreload = 256,
     SceneImageTexture = 512,
+    WindowEffects = 2048,
+    GeometryObservation = 4096,
+    PageTransition = 8192,
+    ScaleRotateGesture = 1024,
 }
 
 /// Scene data shared by clones of a node. Mutating a node detaches its data.
@@ -2447,6 +2430,7 @@ impl Node {
             stacking_order: OnceCell::new(),
             visibility: OnceCell::new(),
             opacity: OnceCell::new(),
+            clipped_layout_group: OnceCell::new(),
             height_independent_metrics: OnceCell::new(),
         }))
     }
@@ -2468,6 +2452,7 @@ impl Node {
         }
     }
 
+    #[inline]
     pub fn shares_storage_with(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
@@ -2565,6 +2550,9 @@ impl Node {
         if self.image_texture_input().is_some() {
             features |= SceneImageTexture as u16;
         }
+        if self.scale_rotate_handle.is_some() {
+            features |= ScaleRotateGesture as u16;
+        }
         if self.kind == "SceneView3D" {
             features |= SceneViewport as u16;
             if self.properties.contains_key("preload-model") {
@@ -2593,6 +2581,25 @@ impl Node {
         }
         if self.viewport_handle.is_some() {
             features |= ScrollEndpoint as u16;
+        }
+        if self.button_press_handle.is_some()
+            || !self.timers.is_empty()
+            || !self.native_dialogs.is_empty()
+            || self.image_playback.is_some()
+            || self.media.is_some()
+            || !self.sound_effects.is_empty()
+        {
+            features |= WindowEffects as u16;
+        }
+        if self.viewport_handle.is_some()
+            || self.range_position_handle.is_some()
+            || self.geometry_handle.is_some()
+            || self.instance_geometry_handle.is_some()
+        {
+            features |= GeometryObservation as u16;
+        }
+        if matches!(self.kind, "StackView" | "SwipeView") {
+            features |= PageTransition as u16;
         }
         self.children.iter().fold(features, |features, child| {
             features | child.scene_features()
@@ -2629,6 +2636,7 @@ impl Node {
         node.stacking_order.take();
         node.visibility.take();
         node.opacity.take();
+        node.clipped_layout_group.take();
         node.height_independent_metrics.take();
         &mut node.data
     }
@@ -2723,6 +2731,12 @@ impl Node {
                 | "light-yaw"
                 | "light-elevation"
                 | "scene-background"
+                | "scene-grid"
+                | "scene-grid-axes"
+                | "scene-grid-color"
+                | "scene-grid-height"
+                | "scene-grid-spacing"
+                | "render-stats-revision"
                 | "shadows"
                 | "imported-lights"
                 | "shadow-map-size"
@@ -2897,15 +2911,16 @@ impl Node {
 
     /// Compare frame inputs, allowing paint-only values to differ.
     #[doc(hidden)]
+    #[inline]
     pub fn same_frame_inputs(&self, other: &Self) -> bool {
-        self.same_layout_inputs(other, false, false)
+        self.shares_storage_with(other) || self.compare_distinct_layout_inputs(other, false, false)
     }
 
     /// Compare a subtree after its parent has resolved the root's position.
     /// Child positions and all layout-affecting inputs remain significant.
     #[doc(hidden)]
     pub fn same_local_layout_inputs(&self, other: &Self) -> bool {
-        self.same_layout_inputs(other, true, false)
+        self.shares_storage_with(other) || self.compare_distinct_layout_inputs(other, true, false)
     }
 
     #[doc(hidden)]
@@ -2924,10 +2939,12 @@ impl Node {
             || self.same_own_layout_inputs(other, false, true, parent.fixed_text_children())
     }
 
-    fn same_layout_inputs(&self, other: &Self, local: bool, fixed_text_child: bool) -> bool {
-        if self.shares_storage_with(other) {
-            return true;
-        }
+    fn compare_distinct_layout_inputs(
+        &self,
+        other: &Self,
+        local: bool,
+        fixed_text_child: bool,
+    ) -> bool {
         if !self.same_own_layout_inputs(other, local, false, fixed_text_child)
             || self.children.len() != other.children.len()
         {
@@ -2942,10 +2959,11 @@ impl Node {
             .iter()
             .zip(&other.children)
             .all(|(child, other)| {
-                (!window
-                    || child.scene_view_render_mode().window_layer()
-                        == other.scene_view_render_mode().window_layer())
-                    && child.same_layout_inputs(other, false, fixed_text_children)
+                child.shares_storage_with(other)
+                    || ((!window
+                        || child.scene_view_render_mode().window_layer()
+                            == other.scene_view_render_mode().window_layer())
+                        && child.compare_distinct_layout_inputs(other, false, fixed_text_children))
             })
     }
 
@@ -3364,6 +3382,18 @@ impl Node {
             .0
             .opacity
             .get_or_init(|| self.number("opacity").unwrap_or(1.0).clamp(0.0, 1.0) as f32)
+    }
+
+    /// A layout group without a retained layer that needs tracking offscreen.
+    #[doc(hidden)]
+    pub fn can_skip_clipped_layout_group(&self) -> bool {
+        *self.0.clipped_layout_group.get_or_init(|| {
+            matches!(
+                self.kind,
+                "HorizontalLayout" | "VerticalLayout" | "GridLayout"
+            ) && self.opacity() == 1.0
+                && !self.boolean("cache-rendering-hint", false)
+        })
     }
 
     /// Finite stacking order within an ordinary sibling list.
@@ -3946,6 +3976,28 @@ mod node_storage_tests {
     use super::*;
 
     #[test]
+    fn clipped_group_classification_tracks_snapshot_edits() {
+        let original = Node::new("VerticalLayout", None).into_shared();
+        assert!(original.can_skip_clipped_layout_group());
+
+        let mut edited = original.clone();
+        edited
+            .properties
+            .insert("cache-rendering-hint", true.into());
+        assert!(!edited.can_skip_clipped_layout_group());
+        edited.properties.remove("cache-rendering-hint");
+        assert!(edited.can_skip_clipped_layout_group());
+
+        edited.properties.insert("opacity", 0.5.into());
+        assert!(!edited.can_skip_clipped_layout_group());
+        edited.properties.remove("opacity");
+        assert!(edited.can_skip_clipped_layout_group());
+        edited.kind = "Rectangle";
+        assert!(!edited.can_skip_clipped_layout_group());
+        assert!(original.can_skip_clipped_layout_group());
+    }
+
+    #[test]
     fn cached_visibility_and_opacity_follow_snapshot_edits() {
         let original = Node::new("Rectangle", None).into_shared();
         assert!(original.is_visible());
@@ -4121,6 +4173,9 @@ mod node_storage_tests {
             SceneFeature::FontFamilyChoice,
             SceneFeature::WindowOverlay,
             SceneFeature::AttachedScrollBar,
+            SceneFeature::WindowEffects,
+            SceneFeature::GeometryObservation,
+            SceneFeature::PageTransition,
         ];
         for feature in features {
             assert!(!window.contains_scene_feature(feature));
@@ -4139,6 +4194,9 @@ mod node_storage_tests {
             .insert("__font-picker-field", Value::String("family".into()));
         panel.children[2].kind = "Drawer";
         panel.children[3].scroll_target = Some(ViewportHandle::for_flickable(false));
+        panel.children[0].button_press_handle = Some(ButtonPressHandle::animated());
+        panel.children[3].viewport_handle = Some(ViewportHandle::default());
+        panel.children.push(Node::new("SwipeView", None));
         for feature in features {
             assert!(edited.contains_scene_feature(feature));
             assert!(!window.contains_scene_feature(feature));
@@ -4165,6 +4223,24 @@ mod node_storage_tests {
         assert_eq!(original.key_handlers, 1);
         assert_eq!(moved.key_handlers, 2);
         assert!(!original.same_local_layout_inputs(&moved));
+    }
+
+    #[test]
+    fn frame_layout_comparison_detects_an_edited_window_layer() {
+        let mut window = Node::new("Window", None);
+        let mut scene = Node::new("SceneView3D", None);
+        scene
+            .properties
+            .insert("render-mode", "underlay".to_owned().into());
+        window.children.push(scene);
+        let window = window.into_shared();
+        let mut edited = window.clone();
+        assert!(window.same_frame_inputs(&edited));
+
+        edited.children[0]
+            .properties
+            .insert("render-mode", "overlay".to_owned().into());
+        assert!(!window.same_frame_inputs(&edited));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use xrack_runtime::{Node, RowKey, SharedNodeIdentity, Value};
+use xrack_runtime::{GeometryHandle, Node, RowKey, SharedNodeIdentity, Value};
 
 use crate::transient_textures::{bytes, create_render_texture, render_bytes};
 
@@ -53,6 +53,58 @@ pub(crate) struct ViewSize {
     pub format: wgpu::TextureFormat,
 }
 
+#[derive(Default)]
+pub(crate) struct TextureSizeObservations {
+    pending: Vec<(GeometryHandle, [u32; 2], bool)>,
+    exported: Vec<GeometryHandle>,
+}
+
+impl TextureSizeObservations {
+    pub fn record(&mut self, node: &Node, size: [u32; 2], exported: bool) {
+        for handle in node
+            .geometry_handle
+            .iter()
+            .chain(node.instance_geometry_handle.iter())
+        {
+            if !handle.observes_scene_texture_size() {
+                continue;
+            }
+            if let Some(entry) = self.pending.iter_mut().find(|entry| &entry.0 == handle) {
+                entry.1 = size;
+                entry.2 = exported;
+            } else {
+                self.pending.push((handle.clone(), size, exported));
+            }
+        }
+    }
+
+    pub fn finish_frame(&mut self, succeeded: bool) -> bool {
+        if !succeeded {
+            self.pending.clear();
+            return false;
+        }
+        let mut changed = false;
+        // Named output preparation runs for the whole frame, even when the
+        // main paint is clipped or retained. A producer can lose its last reader.
+        self.exported.retain(
+            |old| match self.pending.iter().find(|entry| &entry.0 == old) {
+                Some((_, _, exported)) => *exported,
+                None => {
+                    changed |= old.publish_scene_texture_size([0; 2]);
+                    false
+                }
+            },
+        );
+        for (handle, extent, exported) in self.pending.drain(..) {
+            changed |= handle.publish_scene_texture_size(extent);
+            if exported && !self.exported.contains(&handle) {
+                self.exported.push(handle);
+            }
+        }
+        changed
+    }
+}
+
 pub(super) fn viewport_bytes(size: [u32; 2], format: wgpu::TextureFormat) -> u64 {
     // Reserve space for a display resolve, while allocating it only on demand.
     render_bytes(size, format)
@@ -87,6 +139,8 @@ pub(crate) fn viewport_format(device: &wgpu::Device, node: &Node) -> wgpu::Textu
 pub(crate) struct ViewInputs {
     pub reflections: [u64; 8],
     pub items: u64,
+    /// A change of automatic camera is a cut, even when the camera string stays empty.
+    pub automatic_camera: Option<(u32, Option<usize>)>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -380,12 +434,15 @@ impl Entry {
         sampling: Sampling,
     ) -> bool {
         sampling.temporal.is_some()
+            // The guide tests depth without producing depth or motion vectors.
+            && !node.boolean("scene-grid", false)
             && self.sampling == sampling
             && self.size == size
             && self.id == node.id
             && self.inputs == inputs
             && [
                 "camera",
+                "auto-camera",
                 "layer-mask",
                 "environment",
                 "environment-sky",
@@ -397,6 +454,7 @@ impl Entry {
                 "environment-intensity",
                 "scene-hdr",
                 "scene-background",
+                "scene-grid",
                 "scene-color-capture",
                 "scene-depth-capture",
                 "particle-emitters",
@@ -715,6 +773,7 @@ fn scene_settings(node: &Node) -> impl Iterator<Item = (&'static str, &Value)> {
         (!matches!(
             name,
             "cache-rendering"
+                | "render-stats-revision"
                 | "scissor-rect" // Normalized bounds are part of ViewSize.
                 | "preload-model"
                 | "render-mode"

@@ -566,7 +566,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         }
         let mut visible = Vec::new();
         let nodes = crate::list::try_render_stable_rows(model, stamp, indices(count), |index| {
-            let key = model.row_key(index);
+            let key = model.row_key_untracked(index);
             let row = match self.rows.borrow_mut().entry(key) {
                 std::collections::btree_map::Entry::Occupied(row) => row.get().clone(),
                 std::collections::btree_map::Entry::Vacant(row) => {

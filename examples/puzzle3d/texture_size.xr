@@ -20,6 +20,10 @@ export component TextureSizeDemo inherits Window {
     in-out property <bool> msaa: false;
     in-out property <bool> square-camera: false;
     in-out property <bool> effects: false;
+    in-out property <bool> view-visible: true;
+    in-out property <bool> inline-view: false;
+    out property <int> actual-width <- view.effective-texture-width;
+    out property <int> actual-height <- view.effective-texture-height;
     in-out property <point2d> cursor: Point2D.new(240px, 120px);
 
     property <point2d> viewport-size <- Point2D.new(root.view-width * 1px, 240px);
@@ -55,7 +59,9 @@ export component TextureSizeDemo inherits Window {
         ? Scene3D.pick-camera(root.scene, "lens/Hero", root.viewport-size, root.cursor)
         : Scene3D.pick(root.scene, 0, 0, 8, root.viewport-size, root.cursor);
 
-    SceneView3D {
+    view := SceneView3D {
+        visible <- root.view-visible;
+        render-mode <- root.inline-view ? "inline" : "offscreen";
         x <- (480 - root.view-width) * 0.5 * 1px;
         width <- root.view-width * 1px;
         height <- 240px;
@@ -79,6 +85,12 @@ export component TextureSizeDemo inherits Window {
         dof-focus-distance <- 8;
         dof-blur-radius <- 16px;
     }
+    Text {
+        x <- 12px; y <- 214px; width <- 224px; height <- 22px;
+        color <- #f3f8ff;
+        text <- root.actual-width == 0 ? "离屏纹理未生成"
+            : "实际纹理 " + root.actual-width + " × " + root.actual-height + " px";
+    }
     HorizontalLayout {
         x <- 12px; y <- 248px; width <- 456px; height <- 42px; spacing <- 8px;
         automatic := Button {
@@ -94,5 +106,152 @@ export component TextureSizeDemo inherits Window {
             clicked => { root.pixels-wide = 192; root.pixels-high = 96; }
         }
         width-slider := Slider { minimum <- 260; maximum <- 480; value <-> root.view-width; }
+    }
+}
+
+struct AutoCameraRow {
+    id: string, mesh: string, parent: string, visible: bool,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-height: float, layers: int,
+}
+
+export component AutoCameraDemo inherits Window {
+    title <- "XRack · 自动选择相机";
+    width <- 400px; height <- 344px; background <- #141d29;
+    in-out property <bool> auto: true;
+    in-out property <bool> temporal: false;
+    in-out property <bool> shared-visible: false;
+    in-out property <bool> primary-visible: true;
+    in-out property <bool> secondary-visible: true;
+    in-out property <bool> imported-visible: false;
+    in-out property <string> imported-id: "embedded";
+    in-out property <string> camera-name: "";
+
+    property <AutoCameraRow> defaults: AutoCameraRow {
+        id: "", mesh: "primitive:box", parent: "", visible: true, x: 0, y: 0, z: 0,
+        scale-x: 0.8, scale-y: 0.8, scale-z: 0.8, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, camera-kind: "", camera-height: 4, layers: 1,
+    };
+    property <AutoCameraRow> eye <- AutoCameraRow {
+        mesh: "", z: 8, camera-kind: "orthographic", ..root.defaults
+    };
+    property <scenemodel3d> shared <- Scene3D.prepare([
+        AutoCameraRow { id: "camera-rig", mesh: "", visible: root.shared-visible, ..root.defaults },
+        AutoCameraRow { parent: "camera-rig", x: -1.2, camera-height: 3, ..root.eye },
+        AutoCameraRow { id: "amber", x: -1.2, color: #f2bb5d, ..root.defaults },
+        AutoCameraRow { id: "blue", x: 1.2, color: #78cdda, layers: 2, ..root.defaults },
+        AutoCameraRow {
+            id: root.imported-id, mesh: @mesh-url("models/camera-rig.gltf"),
+            visible: root.imported-visible, ..root.defaults
+        },
+    ]);
+    property <scenemodel3d> local <- Scene3D.prepare([
+        AutoCameraRow { id: "z-primary", x: 1.2, visible: root.primary-visible, layers: 2, ..root.eye },
+        AutoCameraRow { id: "a-secondary", x: -1.2, visible: root.secondary-visible, ..root.eye },
+    ]);
+    property <scenemodel3d> world <- Scene3D.combine(root.shared, root.local);
+    property <point2d> viewport <- Point2D.new(376px, 212px);
+    property <point3d> reference <- Point3D.new(0, 0.4, 0);
+    out property <projectedpoint3d> projected <- view.project(root.reference);
+    out property <projectedpoint3d> embedded <- Scene3D.project-camera(
+        root.world, "embedded/Hero", root.viewport, root.reference);
+    out property <hit3d> center-hit <- view.hit(Point2D.new(188px, 106px));
+    out property <bool> camera-ready <- view.has-active-camera();
+    out property <string> selected-camera <- view.active-camera();
+    out property <int> selected-row <- view.active-camera-row();
+    out property <int> selected-node <- view.active-camera-node();
+
+    Text {
+        x <- 12px; y <- 6px; width <- 154px; height <- 20px; color <- #deebfa;
+        text <- root.center-hit.valid ? "中心命中 " + root.center-hit.object-id
+            : root.camera-ready ? "相机就绪" : "暂无可用相机";
+    }
+    Text {
+        x <- 177px; y <- 6px; width <- 208px; height <- 20px; color <- #b7c9dd;
+        text <- !root.camera-ready ? ""
+            : root.selected-row < 0 ? "绕视相机"
+            : root.selected-camera != "" ? root.selected-camera
+            : "相机行 " + root.selected-row;
+    }
+    view := SceneView3D {
+        x <- 12px; y <- 32px; width <- root.viewport.x; height <- root.viewport.y;
+        model <- root.world; auto-camera <- root.auto; camera <- root.camera-name;
+        temporal-aa <- root.temporal;
+        scene-background <- #26364d; cache-rendering <- true;
+    }
+    CheckBox { x <- 12px; y <- 252px; width <- 122px; height <- 34px; text <- "共享相机"; checked <-> root.shared-visible; }
+    CheckBox { x <- 144px; y <- 252px; width <- 122px; height <- 34px; text <- "局部主相机"; checked <-> root.primary-visible; }
+    CheckBox { x <- 268px; y <- 252px; width <- 122px; height <- 34px; text <- "嵌入相机"; checked <-> root.imported-visible; }
+    explicit-camera := Button {
+        x <- 12px; y <- 296px; width <- 164px; height <- 34px;
+        text <- root.camera-name == "" ? "指定局部主相机" : "恢复自动选择";
+        clicked => { root.camera-name = root.camera-name == "" ? "z-primary" : ""; }
+    }
+}
+
+struct StatsActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component RenderStatsDemo inherits Window {
+    title <- "XRack · 3D 视口统计";
+    width <- 404px; height <- 236px;
+    resizable <- false;
+    background <- #141d29;
+
+    in-out property <int> left-ticket: 0;
+    in-out property <int> right-ticket: 0;
+    in-out property <bool> cached: true;
+    out property <renderstats3d> left-sample <- left-view.render-stats();
+    out property <renderstats3d> right-sample <- right-view.render-stats();
+
+    property <StatsActor> defaults: StatsActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1.3, scale-y: 1.3, scale-z: 1.3,
+        yaw: 0, pitch: 0, roll: 0, color: #f0a75d,
+    };
+    property <scenemodel3d> shapes <- Scene3D.prepare([
+        StatsActor { id: "amber", x: -1.1, ..root.defaults },
+        StatsActor { id: "blue", x: 1.1, mesh: "primitive:sphere", color: #6bd3e3, ..root.defaults },
+    ]);
+
+    left-view := SceneView3D {
+        x <- 10px; y <- 10px; width <- 168px; height <- 132px;
+        model <- root.shapes; camera-distance <- 7; scene-background <- #24364c;
+        render-stats-revision <- root.left-ticket;
+    }
+    right-view := SceneView3D {
+        x <- 194px; y <- 10px; width <- 200px; height <- 132px;
+        model <- root.shapes; camera-distance <- 7; scene-background <- #24364c;
+        cache-rendering <- root.cached;
+        render-stats-revision <- root.right-ticket;
+    }
+
+    Text {
+        x <- 10px; y <- 150px; width <- 168px; color <- #d2ebff;
+        text <- root.left-sample.valid
+            ? "网格绘制 " + root.left-sample.mesh-draws
+            : "左视口等待采样";
+    }
+    Text {
+        x <- 10px; y <- 170px; width <- 168px; color <- #d2ebff;
+        text <- root.left-sample.gpu-valid ? "GPU " + root.left-sample.gpu-nanos + " ns" : "";
+    }
+    Text {
+        x <- 194px; y <- 150px; width <- 200px; color <- #d2ebff;
+        text <- root.right-sample.valid
+            ? root.right-sample.work + " · " + root.right-sample.output-width + " px"
+            : "右视口等待采样";
+    }
+    HorizontalLayout {
+        x <- 10px; y <- 194px; width <- 384px; height <- 32px; spacing <- 8px;
+        left-probe := Button { text <- "采样左侧"; clicked => { root.left-ticket = root.left-ticket + 1; } }
+        right-probe := Button { text <- "采样右侧"; clicked => { root.right-ticket = root.right-ticket + 1; } }
+        reset := Button { text <- "清空"; clicked => { root.left-ticket = 0; root.right-ticket = 0; } }
     }
 }

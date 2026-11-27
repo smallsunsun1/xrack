@@ -86,6 +86,109 @@ export struct EmissionKey {
     time: float, position: point3d, orientation: quaternion3d,
 }
 
+struct MappedTrail {
+    position: point3d, color: color, size: float, lifetime: float,
+    velocity: vector3d, gravity: vector3d, bursts: [ParticleBurst], seed: int, fade-out: float,
+    trail-segments: int, trail-duration: float, trail-end-scale: float, trail-fade: float,
+    trail-eol-fade: float, trail-length: float, trail-length-variation: float,
+    trail-length-delta-min: float, trail-scale-multiplier: float, trail-alpha-fade: float,
+    trail-texcoord-mode: string, trail-texcoord-multiplier: float,
+    sprite: image, sprite-frames: int, sprite-frame: int, sprite-playback: string,
+    particle-sort-mode: string,
+}
+
+export component TrailMappingDemo inherits Window {
+    title <- "XRack · 拖尾纹理与长度";
+    width <- 600px; height <- 410px; background <- #182333;
+    in-out property <string> mapping: "relative";
+    in-out property <string> transparency: "sorted";
+    in-out property <float> time: 1.2;
+    in-out property <float> history: 1.0;
+    in-out property <float> speed: 3.6;
+    in-out property <float> repeats: 2;
+    in-out property <float> path-limit: -1;
+    in-out property <float> variation: 0;
+    in-out property <float> spacing: 0;
+    in-out property <float> segment-scale: 1;
+    in-out property <float> segment-fade: 0;
+    in-out property <int> seed: 31;
+    in-out property <int> segments: 12;
+    in-out property <int> population: 1;
+    in-out property <int> atlas-frame: 0;
+    in-out property <bool> curved: false;
+    in-out property <bool> affected: false;
+    in-out property <bool> textured: true;
+    property <image> empty-image;
+
+    SceneView3D {
+        width <- 600px; height <- 300px;
+        camera <- "eye"; scene-background <- #101a2c;
+        oit-method <- root.transparency; particle-time <- root.time;
+        model <- [TrailCamera {
+            id: "eye", mesh: "", x: 0, y: 0, z: 10,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+            color: #ffffff, camera-kind: "orthographic", camera-height: 6,
+        }];
+        particle-affectors <- [TrailRotator {
+            affector-kind: "point-rotator", position: Point3D.new(-0.8, 0, 0),
+            direction: Vector3D.new(0, 0, 1), angular-speed: 64, enabled: root.affected, layers: 1,
+        }];
+        particle-emitters <- [MappedTrail {
+            position: Point3D.new(-2.8, 0, 0), color: #ffffff, size: 0.8, lifetime: 2, fade-out: 0,
+            velocity: Vector3D.new(root.speed, root.curved ? 3 : 0, 0),
+            gravity: Vector3D.new(0, root.curved ? -4.8 : 0, 0),
+            bursts: [ParticleBurst { time: 0, count: root.population }], seed: root.seed,
+            trail-segments: root.segments, trail-duration: root.history,
+            trail-end-scale: 1, trail-fade: 0, trail-eol-fade: 0.7,
+            trail-length: root.path-limit, trail-length-variation: root.variation,
+            trail-length-delta-min: root.spacing, trail-scale-multiplier: root.segment-scale,
+            trail-alpha-fade: root.segment-fade,
+            trail-texcoord-mode: root.mapping, trail-texcoord-multiplier: root.repeats,
+            sprite: root.textured ? @image-url("models/particle-marks.png") : root.empty-image,
+            sprite-frames: 4, sprite-frame: root.atlas-frame, sprite-playback: "single-frame",
+            particle-sort-mode: "distance",
+        }];
+    }
+    mode := Button {
+        x <- 20px; y <- 309px; width <- 120px; height <- 36px;
+        text <- root.mapping == "absolute" ? "沿出生轨迹" : root.mapping == "relative" ? "从头部平铺" : root.mapping == "fill" ? "按长度填满" : "按时间拉伸";
+        clicked => { root.mapping = root.mapping == "relative" ? "absolute" : root.mapping == "absolute" ? "fill" : root.mapping == "fill" ? "stretch" : "relative"; }
+    }
+    limit := Button {
+        x <- 148px; y <- 309px; width <- 123px; height <- 36px;
+        text <- root.spacing > 0 ? "间距 0.25" : root.path-limit >= 0 ? "长度 1.5" : "按时间取点";
+        clicked => {
+            if root.spacing > 0 {
+                root.spacing = 0;
+            } else if root.path-limit >= 0 {
+                root.path-limit = -1;
+                root.spacing = 0.25;
+            } else {
+                root.path-limit = 1.5;
+            }
+        }
+    }
+    CheckBox { x <- 279px; y <- 309px; width <- 91px; height <- 36px; text <- "弯曲轨迹"; checked <-> root.curved; }
+    CheckBox { x <- 375px; y <- 309px; width <- 101px; height <- 36px; text <- "旋转影响器"; checked <-> root.affected; }
+    taper := Button {
+        x <- 485px; y <- 309px; width <- 96px; height <- 36px;
+        text <- root.segment-fade > 0 ? "逐段衰减" : "统一宽度";
+        clicked => {
+            if root.segment-fade > 0 {
+                root.segment-scale = 1;
+                root.segment-fade = 0;
+            } else {
+                root.segment-scale = 0.82;
+                root.segment-fade = 0.14;
+            }
+        }
+    }
+    Label { x <- 20px; y <- 361px; width <- 54px; height <- 34px; text <- "时间"; }
+    Slider { x <- 75px; y <- 361px; width <- 245px; height <- 34px; minimum <- 0; maximum <- 2.7; value <-> root.time; }
+    Label { x <- 347px; y <- 361px; width <- 76px; height <- 34px; text <- "纹理倍率"; }
+    Slider { x <- 422px; y <- 361px; width <- 155px; height <- 34px; minimum <- 0.25; maximum <- 5; value <-> root.repeats; }
+}
+
 struct BirthEmitter {
     position: point3d, color: color, size: float, lifetime: float,
     velocity: vector3d, rate: float, bursts: [ParticleBurst], start-time: float, fade-out: float,
@@ -193,6 +296,101 @@ export struct ImpactBurst {
     time: float, count: int, duration: float, position: point3d, orientation: quaternion3d,
 }
 
+struct FollowEmitter {
+    emitter-id: string, follow-emitter: string, follow-burst-at: string,
+    position: point3d, color: color, size: float, lifetime: float, layers: int,
+    velocity: vector3d, gravity: vector3d, velocity-spread: vector3d,
+    bursts: [ParticleBurst], rate: float, seed: int, fade-out: float,
+    particle-sort-mode: string, trail-segments: int, trail-length: float,
+    particle-model: string, particle-casts-shadow: bool, particle-casts-reflections: bool,
+    emission-track: [EmissionKey],
+}
+
+export component ParticleFollowDemo inherits Window {
+    title <- "XRack · 粒子跟随发射";
+    width <- 600px; height <- 396px; background <- #182333;
+    in-out property <float> time: 0.88;
+    in-out property <bool> playing: false;
+    in-out property <bool> show-source: true;
+    in-out property <bool> rotate-path: false;
+    in-out property <bool> model-sparks: false;
+    in-out property <bool> ribbons: false;
+    in-out property <bool> tracked: false;
+    in-out property <string> source-name: "spark";
+    in-out property <string> burst-event: "death";
+    property <[EmissionKey]> no-track: [];
+
+    clock := FrameAnimation {
+        running <- root.playing;
+        triggered(delta, elapsed, frame) => {
+            root.time = Math.min(root.time + delta, 2.6);
+            if root.time >= 2.6 { root.playing = false; }
+        }
+    }
+    SceneView3D {
+        width <- 600px; height <- 300px;
+        camera <- "eye"; layer-mask <- root.show-source ? 3 : 1;
+        scene-background <- #101925; cache-rendering <- true;
+        model <- [TrailCamera {
+            id: "eye", mesh: "", x: 0, y: 0, z: 10,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+            color: #ffffff, camera-kind: "orthographic", camera-height: 6,
+        }];
+        particle-time <- root.time;
+        particle-affectors <- [TrailRotator {
+            affector-kind: "point-rotator", position: Point3D.new(-3, -0.5, 0.5),
+            direction: Vector3D.new(0,0,1), angular-speed: 45,
+            enabled: root.rotate-path, layers: 2,
+        }];
+        particle-emitters <- [
+            FollowEmitter {
+                emitter-id: "spark", follow-emitter: "", follow-burst-at: "",
+                position: Point3D.new(-3, -0.5, 0.5), color: #ff6678, size: 0.32, lifetime: 1.25, layers: 2,
+                velocity: Vector3D.new(4, 2.8, 0), gravity: Vector3D.new(0,-3,0),
+                velocity-spread: Vector3D.new(0,0,0), bursts: [ParticleBurst { time: 0, count: 1 }],
+                rate: 0, seed: 42, fade-out: 0, particle-sort-mode: "",
+                trail-segments: 0, trail-length: -1, particle-model: "",
+                particle-casts-shadow: false, particle-casts-reflections: false,
+                emission-track: root.tracked ? [
+                    EmissionKey { time: 0, position: Point3D.new(0, 0.8, 0), orientation: Quaternion3D.identity() },
+                    EmissionKey { time: 1, position: Point3D.new(0, 1.5, 0), orientation: Quaternion3D.identity() },
+                ] : root.no-track,
+            },
+            FollowEmitter {
+                emitter-id: "", follow-emitter: root.source-name, follow-burst-at: "birth",
+                position: Point3D.new(0,0,0), color: #ffcc4d, size: 0.22, lifetime: 0.86, layers: 1,
+                velocity: Vector3D.new(0,-0.6,0), gravity: Vector3D.new(0,0,0),
+                velocity-spread: Vector3D.new(0,0,0), bursts: [], rate: 8, seed: 88, fade-out: 0,
+                particle-sort-mode: "distance", trail-segments: root.ribbons ? 8 : 0,
+                trail-length: root.ribbons ? 0.28 : -1, particle-model: "",
+                particle-casts-shadow: false, particle-casts-reflections: true,
+                emission-track: [],
+            },
+            FollowEmitter {
+                emitter-id: "", follow-emitter: "spark", follow-burst-at: root.burst-event,
+                position: Point3D.new(0,0,0.1), color: #44dfff, size: 0.26, lifetime: 1, layers: 1,
+                velocity: Vector3D.new(0,0.8,0), gravity: Vector3D.new(0,0,0),
+                velocity-spread: Vector3D.new(0.9,0.5,0.1), bursts: [ParticleBurst { time: 0, count: 7 }],
+                rate: 0, seed: 91, fade-out: 0, particle-sort-mode: "distance",
+                trail-segments: 0, trail-length: -1,
+                particle-model: root.model-sparks ? "primitive:box" : "",
+                particle-casts-shadow: true, particle-casts-reflections: true,
+                emission-track: [],
+            },
+        ];
+    }
+    Label { x <- 18px; y <- 308px; width <- 58px; height <- 34px; text <- "时间"; }
+    Slider { x <- 78px; y <- 308px; width <- 502px; height <- 34px; minimum <- 0; maximum <- 2.6; value <-> root.time; }
+    playback := Button { x <- 18px; y <- 352px; width <- 110px; height <- 34px;
+        text <- root.playing ? "暂停" : "从头播放";
+        clicked => { if !root.playing { root.time = 0; } root.playing = !root.playing; }
+    }
+    CheckBox { x <- 145px; y <- 352px; width <- 108px; height <- 34px; text <- "显示源粒子"; checked <-> root.show-source; }
+    CheckBox { x <- 269px; y <- 352px; width <- 108px; height <- 34px; text <- "旋转轨迹"; checked <-> root.rotate-path; }
+    CheckBox { x <- 393px; y <- 352px; width <- 93px; height <- 34px; text <- "模型火花"; checked <-> root.model-sparks; }
+    CheckBox { x <- 500px; y <- 352px; width <- 80px; height <- 34px; text <- "子拖尾"; checked <-> root.ribbons; }
+}
+
 struct ImpactEmitter {
     position: point3d, color: color, size: float, lifetime: float, fade-out: float,
     parent: string, rate: float, emission-track: [EmissionKey], bursts: [ImpactBurst],
@@ -298,4 +496,100 @@ export component ParticleImpactDemo inherits Window {
         x <- 482px; y <- 342px; width <- 122px; height <- 34px; text <- "清空记录";
         clicked => { Model.clear(root.impacts); }
     }
+}
+
+struct SurfaceFollowEmitter {
+    emitter-id: string, follow-emitter: string, follow-burst-at: string,
+    position: point3d, color: color, size: float, lifetime: float, layers: int, fade-out: float,
+    velocity: vector3d, velocity-mode: string, gravity: vector3d,
+    emitter-shape: string, emitter-mesh: string, emitter-mesh-scale: vector3d, emitter-pitch: float,
+    bursts: [ParticleBurst], rate: float, parent: string, emission-track: [EmissionKey],
+    particle-model: string, particle-sort-mode: string, trail-segments: int, trail-length: float,
+}
+
+export component ParticleSurfaceFollowDemo inherits Window {
+    title <- "XRack · 跟随表面发射";
+    width <- 640px; height <- 418px; background <- #182333;
+    in-out property <float> time: 0.65;
+    in-out property <string> direction: "surface-reflected";
+    in-out property <string> event: "birth";
+    in-out property <int> placement: 0;
+    in-out property <int> style: 0;
+    in-out property <bool> has-surface: true;
+    in-out property <bool> own-surface: false;
+    in-out property <bool> source-moving: true;
+    in-out property <bool> show-source: true;
+    in-out property <bool> stream: false;
+    property <[EmissionKey]> no-track: [];
+    property <[EmissionKey]> rotated-track <- [
+        EmissionKey { time: 0, position: Point3D.new(0,0,0),
+            orientation: Quaternion3D.from-axis-angle(Vector3D.new(0,0,1), -90) },
+        EmissionKey { time: 1, position: Point3D.new(0,0.6,0),
+            orientation: Quaternion3D.from-axis-angle(Vector3D.new(0,0,1), -90) },
+    ];
+    property <TrailCamera> camera: TrailCamera {
+        id: "eye", mesh: "", color: #ffffff, x: 0, y: 0, z: 10,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        camera-kind: "orthographic", camera-height: 6.4,
+    };
+    property <SurfaceFollowEmitter> source <- SurfaceFollowEmitter {
+        emitter-id: "source", follow-emitter: "", follow-burst-at: "",
+        position: Point3D.new(-2,0,0.3), color: #ff7760, size: 0.24, lifetime: 1.25, layers: 2, fade-out: 0,
+        velocity: root.source-moving ? Vector3D.new(2,-1,0) : Vector3D.new(0,0,0), velocity-mode: "vector", gravity: Vector3D.new(0,-0.75,0),
+        emitter-shape: root.has-surface ? "mesh" : "point", emitter-mesh: "primitive:rectangle",
+        emitter-mesh-scale: Vector3D.new(0.3,0.4,1), emitter-pitch: -90,
+        bursts: [ParticleBurst { time: 0, count: 1 }], rate: 0,
+        parent: root.placement == 1 || root.placement == 2 ? "mount" : "",
+        emission-track: root.placement == 3 ? root.rotated-track : root.no-track,
+        particle-model: "", particle-sort-mode: "", trail-segments: 0, trail-length: -1,
+    };
+
+    SceneView3D {
+        width <- 640px; height <- 320px; camera <- "eye"; layer-mask <- root.show-source ? 3 : 1;
+        scene-background <- #101925; cache-rendering <- true;
+        model <- [
+            root.camera,
+            TrailCamera {
+                id: "mount", x: 0, y: 0, z: 0,
+                scale-y: root.placement == 2 ? -1 : 1,
+                roll: root.placement == 1 ? -90 : 0, camera-kind: "", ..root.camera
+            },
+        ];
+        particle-time <- root.time;
+        particle-emitters <- [
+            root.source,
+            SurfaceFollowEmitter {
+                emitter-id: "", follow-emitter: "source", follow-burst-at: root.event,
+                position: Point3D.new(0,0,0.08), color: #43ffff, size: 0.31, lifetime: 1.1, layers: 1,
+                velocity: Vector3D.new(0,-2.4,0), velocity-mode: root.direction, gravity: Vector3D.new(0,0,0),
+                emitter-shape: root.own-surface ? "mesh" : "point",
+                emitter-mesh: "primitive:rectangle", emitter-pitch: 0,
+                parent: "", emission-track: root.no-track, rate: root.stream ? 18 : 0,
+                particle-model: root.style == 2 ? "primitive:box" : "", particle-sort-mode: "distance",
+                trail-segments: root.style == 1 ? 8 : 0, trail-length: root.style == 1 ? 0.75 : -1,
+                ..root.source
+            },
+        ];
+    }
+    timeline := Slider { x <- 14px; y <- 326px; width <- 612px; height <- 32px; minimum <- 0; maximum <- 2.3; value <-> root.time; }
+    mode-button := Button {
+        x <- 14px; y <- 370px; width <- 132px; height <- 32px;
+        text <- root.direction == "vector" ? "独立发射" : root.direction == "surface-normal" ? "继承法线" : "继承反射";
+        clicked => {
+            root.direction = root.direction == "vector" ? "surface-normal"
+                : root.direction == "surface-normal" ? "surface-reflected" : "vector";
+        }
+    }
+    place-button := Button {
+        x <- 152px; y <- 370px; width <- 118px; height <- 32px;
+        text <- root.placement == 0 ? "世界坐标" : root.placement == 1 ? "旋转挂点" : root.placement == 2 ? "镜像挂点" : "出生轨道";
+        clicked => { root.placement = (root.placement + 1) % 4; }
+    }
+    style-button := Button {
+        x <- 274px; y <- 370px; width <- 108px; height <- 32px;
+        text <- root.style == 0 ? "精灵" : root.style == 1 ? "拖尾" : "模型";
+        clicked => { root.style = (root.style + 1) % 3; }
+    }
+    CheckBox { x <- 390px; y <- 370px; width <- 112px; height <- 32px; text <- "显示源粒子"; checked <-> root.show-source; }
+    CheckBox { x <- 511px; y <- 370px; width <- 111px; height <- 32px; text <- "连续跟随"; checked <-> root.stream; }
 }

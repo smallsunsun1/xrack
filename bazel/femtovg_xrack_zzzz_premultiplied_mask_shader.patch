@@ -1,0 +1,81 @@
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -3191,6 +3191,8 @@
+     clip_shape: bool,
+     /// The draw is under a coverage mask, which only its fragment entry point reads.
+     clip_mask: bool,
++    /// A masked image with premultiplied texels and no color conversion.
++    premultiplied_image_mask: bool,
+     /// A winding draw with no sampled coverage and no color output.
+     stencil_only: bool,
+     opacity_tiles: bool,
+@@ -3249,6 +3251,7 @@
+             stencil_state: has_stencil_buffer.then_some(stencil_state),
+             clip_shape: false,
+             clip_mask: false,
++            premultiplied_image_mask: false,
+             stencil_only: false,
+             opacity_tiles: false,
+             atlas_fills: false,
+@@ -3274,6 +3277,7 @@
+             stencil_state,
+             clip_shape,
+             clip_mask,
++            premultiplied_image_mask,
+             stencil_only,
+             opacity_tiles,
+             atlas_fills,
+@@ -3308,6 +3312,8 @@
+             } else {
+                 "mesh_fragment"
+             }
++        } else if *premultiplied_image_mask {
++            if *clip_shape { "fs_premult_image_clip_mask" } else { "fs_premult_image_mask" }
+         } else {
+             match (*direct_opacity, *atlas_fills, *opacity_tiles, *stencil_only, *clip_shape, *clip_mask) {
+                 (true, _, _, _, _, _) => "direct_fragment",
+@@ -4456,6 +4462,13 @@
+         // to hash, by 1.3 % of the time 600 unclipped fills take to encode.
+         pipeline_state.clip_shape = params.clip.is_some();
+         pipeline_state.clip_mask = params.clip_mask.is_some();
++        pipeline_state.premultiplied_image_mask = pipeline_state.clip_mask
++            && params.shader_type == ShaderType::FillImage
++            && params.tex_type == 0.0
++            && params.glyph_texture_type == 0
++            && params.image_transfer.is_none()
++            && !params.atlas_fills && !params.opacity_tiles && !params.direct_opacity
++            && params.instanced_fill_vertices == 0 && !params.mesh_palette;
+         pipeline_state.opacity_tiles = params.opacity_tiles;
+         pipeline_state.atlas_fills = params.atlas_fills;
+         pipeline_state.direct_opacity = params.direct_opacity;
+diff --git a/src/renderer/wgpu/shader.wgsl b/src/renderer/wgpu/shader.wgsl
+--- a/src/renderer/wgpu/shader.wgsl
++++ b/src/renderer/wgpu/shader.wgsl
+@@ -147,6 +147,26 @@
+     return shade(vertex, clipMask(vertex.fpos) * clipMaskCoverage(vertex.fpos));
+ }
+ 
++@fragment
++fn fs_premult_image_mask(vertex: VertexOutput) -> @location(0) vec4f {
++    return shade_premult_image(vertex, clipMaskCoverage(vertex.fpos));
++}
++
++@fragment
++fn fs_premult_image_clip_mask(vertex: VertexOutput) -> @location(0) vec4f {
++    return shade_premult_image(vertex, clipMask(vertex.fpos) * clipMaskCoverage(vertex.fpos));
++}
++
++fn shade_premult_image(vertex: VertexOutput, clip: f32) -> vec4f {
++    let stroke = strokeMask(vertex, params);
++    if stroke < params.stroke_thr {
++        discard;
++    }
++    let uv = (params.paint_mat * vec3f(vertex.fpos, 1.0)).xy / params.extent;
++    let color = textureSampleBias(image_texture, image_sampler, uv, -0.5) * params.inner_col;
++    return color * (stroke * (scissorMask(vertex.fpos, params) * clip));
++}
++
+ fn shade(vertex: VertexOutput, clip: f32) -> vec4<f32> {
+     var result: vec4<f32>;
+     let shader_type_int: i32 = i32(params.shader_type);

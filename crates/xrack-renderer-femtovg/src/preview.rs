@@ -71,6 +71,7 @@ pub struct PreviewScene {
     list_item_click: Option<(Vec<usize>, xrack_runtime::RowKey)>,
     table_cell_click: Option<xrack_layout::Target>,
     observers: LayoutObservers,
+    scene_touches: xrack_layout::SceneTouches,
     focus_observers: FocusObservers,
     hover_observers: HoverObservers,
     hover_pointer: Option<Point>,
@@ -126,6 +127,7 @@ impl PreviewScene {
             list_item_click: None,
             table_cell_click: None,
             observers: LayoutObservers::default(),
+            scene_touches: xrack_layout::SceneTouches::default(),
             focus_observers: FocusObservers::default(),
             hover_observers: HoverObservers::default(),
             hover_pointer: None,
@@ -3140,9 +3142,30 @@ impl PreviewScene {
         mut frame: (Rc<Node>, Rc<LayoutNode>, u32, u32),
     ) -> (Rc<Node>, Rc<LayoutNode>, u32, u32) {
         for _ in 0..8 {
+            if self.scene_touches.reconcile(
+                &mut self.input,
+                &mut self.component,
+                &frame.0,
+                &frame.1,
+            ) {
+                frame = self.settle_frame(renderer, animated);
+            }
             for request in self.focus.drain_commands() {
                 let request = match request {
                     xrack_runtime::QueuedFocusRequest::Focus(request) => request,
+                    xrack_runtime::QueuedFocusRequest::SceneTouch(request) => {
+                        if self.scene_touches.apply(
+                            &mut self.input,
+                            &mut self.component,
+                            &frame.0,
+                            &frame.1,
+                            request,
+                        ) {
+                            frame = self.settle_frame(renderer, animated);
+                        }
+                        continue;
+                    }
+
                     xrack_runtime::QueuedFocusRequest::ReplaceText {
                         target,
                         replacement,

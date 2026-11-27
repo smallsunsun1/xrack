@@ -1,0 +1,93 @@
+struct PixelInput { data: texturedata2d, filter: string }
+struct PixelPass { shader: string, buffers: [PixelInput] }
+struct PixelSampler { data: texturedata2d, min-filter: string, mag-filter: string, mip-filter: string }
+struct PixelMaterial { base-color-map: PixelSampler, unlit: bool, alpha-mode: string }
+struct PixelProgram { material-shader: string, shader-textures: [PixelInput], unlit: bool }
+struct PixelTile {
+    id: string, mesh: string, x: float, y: float, z: float, color: color,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    material: PixelMaterial,
+}
+struct PixelSphere {
+    id: string, mesh: string, x: float, y: float, z: float, color: color,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    material: PixelProgram,
+}
+
+export component ProceduralTextureDemo inherits Window {
+    title <- "XRack · Procedural texture";
+    width <- 480px; height <- 248px; resizable <- false; background <- #172332;
+    in-out property <[int]> pixels: [
+        238, 28, 36, 255, 238, 28, 36, 255,
+        238, 28, 36, 255, 238, 28, 36, 255,
+    ];
+    in-out property <bool> preset: false;
+    in-out property <bool> tinted: false;
+    property <texturedata2d> image-data <- TextureData2D.rgba8(2, 2, root.pixels);
+    property <texturedata2d> preset-data <- TextureData2D.rgba8(1, 1, [27, 89, 246, 255]);
+    out property <texturedata2d> current <- root.preset ? root.preset-data : root.image-data;
+    out property <bool> valid <- root.current.valid;
+    out property <int> pixel-width <- root.current.width;
+    callback set-byte(int, int);
+    set-byte(index, value) => { Model.set(root.pixels, index, value); }
+    property <[PixelInput]> inputs <- [PixelInput { data: root.current, filter: "nearest" }];
+
+    SceneView3D {
+        width <- 160px; height <- 176px; cache-rendering <- true;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 3;
+        scene-background <- #21334a; scene-tone-map <- none;
+        model <- [
+            PixelTile {
+                id: "tile", mesh: "primitive:rectangle", x: 0, y: 0, z: 0, color: #fff,
+                scale-x: 2, scale-y: 2, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+                material: PixelMaterial {
+                    base-color-map: PixelSampler { data: root.current, min-filter: "nearest",
+                                                   mag-filter: "nearest", mip-filter: "none" },
+                    unlit: true, alpha-mode: "mask",
+                },
+            },
+        ];
+    }
+    SceneView3D {
+        x <- 160px; width <- 160px; height <- 176px; cache-rendering <- true;
+        camera-yaw <- 0; camera-pitch <- 0; camera-distance <- 4;
+        scene-background <- #21334a; scene-tone-map <- none;
+        model <- [
+            PixelSphere {
+                id: "orb", mesh: "primitive:sphere", x: 0, y: 0, z: 0, color: #fff,
+                scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+                material: PixelProgram {
+                    material-shader: @material-shader-url("effects/procedural_texture_material.wgsl"),
+                    shader-textures: root.inputs, unlit: true,
+                },
+            },
+        ];
+    }
+    SceneView3D {
+        x <- 320px; width <- 160px; height <- 176px; cache-rendering <- true;
+        scene-background <- #21334a; scene-tone-map <- none;
+        scene-effects <- [
+            PixelPass { shader: @shader-url("effects/procedural_texture_effect.wgsl"), buffers: root.inputs },
+        ];
+    }
+    Label { x <- 12px; y <- 179px; width <- 148px; height <- 25px; text <- "Material map"; }
+    Label { x <- 171px; y <- 179px; width <- 145px; height <- 25px; text <- "Material shader"; }
+    Label { x <- 330px; y <- 179px; width <- 145px; height <- 25px; text <- "Post-effect"; }
+    paint-button := Button {
+        x <- 12px; y <- 210px; width <- 142px; height <- 30px; text <- "Edit texel";
+        clicked => {
+            root.tinted = !root.tinted;
+            root.set-byte(0, root.tinted ? 28 : 238);
+            root.set-byte(1, root.tinted ? 215 : 28);
+        }
+    }
+    source-button := Button {
+        x <- 169px; y <- 210px; width <- 141px; height <- 30px;
+        text <- root.preset ? "Preset" : "Pixel model";
+        clicked => { root.preset = !root.preset; }
+    }
+    alpha-button := Button {
+        x <- 325px; y <- 210px; width <- 141px; height <- 30px; text <- "Toggle alpha";
+        clicked => { root.set-byte(3, Model.at(root.pixels, 3, 255) == 255 ? 0 : 255); }
+    }
+}

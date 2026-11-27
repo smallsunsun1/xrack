@@ -1,0 +1,177 @@
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -206,6 +206,27 @@
+     rtl: bool,
+ }
+ 
++pub(super) type PreparedWords = std::collections::HashMap<WordId, PreparedWord, fnv::FnvBuildHasher>;
++
++pub(super) struct PreparedWord {
++    text: [u8; 8],
++    len: u8,
++    shaped: ShapedWord,
++}
++
++impl WordId {
++    fn new(word: &str, style: &WordStyle<'_>, rtl: bool) -> Self {
++        let mut hasher = FnvHasher::default();
++        word.hash(&mut hasher);
++        Self {
++            word_hash: hasher.finish(),
++            fonts: style.fonts,
++            variation_hash: style.variation_hash,
++            rtl,
++        }
++    }
++}
++
+ impl ShapedWord {
+     fn scale(&self, size: f32) -> f32 {
+         size / f32::from(self.units_per_em)
+@@ -331,6 +352,92 @@
+         }
+         context.find_font(&settings.font_ids, |_| (false, ()))?;
+         Ok(width)
++    }
++
++    /// Prepares independent short LTR words in the first paint face.
++    /// The ordinary cache only takes a prepared word when that exact text is requested.
++    #[doc(hidden)]
++    pub fn prepare_short_ltr_words<'a>(&self, words: impl Iterator<Item = &'a str>, paint: &Paint) {
++        const MAX_WORDS: usize = 4096;
++        const MIN_WORDS_PER_THREAD: usize = 128;
++        let mut context = self.0.borrow_mut();
++        let limit = MAX_WORDS - context.prepared_words.len();
++        let settings = &paint.text;
++        let Some(font_id) = settings.font_ids[0] else { return };
++        if limit < 2 * MIN_WORDS_PER_THREAD {
++            return;
++        }
++        let style = WordStyle::new(settings.font_ids, &settings.font_variations);
++        let mut seen = std::collections::HashSet::with_hasher(fnv::FnvBuildHasher::default());
++        let words: Vec<_> = words.filter_map(|word| {
++            // Keep the same non-sliced shaping path as the short-word cache.
++            // A new FontId or variation setting produces a different WordId.
++            if !(2..=8).contains(&word.len()) || !word.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
++                return None;
++            }
++            let id = WordId::new(word, &style, false);
++            (!context.shaped_words_cache.contains(&id) && !context.prepared_words.contains_key(&id) && seen.insert(id))
++                .then_some((id, word))
++        }).take(limit).collect();
++        let workers = std::thread::available_parallelism().map_or(1, |count| count.get())
++            .min(4).min(words.len() / MIN_WORDS_PER_THREAD);
++        if workers < 2 {
++            return;
++        }
++        let Some(font) = context.font(font_id) else { return };
++        let face = if font.metrics(1.0).variable() {
++            font.face_ref_with_variations(style.variations)
++        } else {
++            font.face_ref()
++        };
++        let face = rustybuzz::Face::from_face(face.0);
++        let units_per_em = font.units_per_em();
++        let direction = rustybuzz::Direction::LeftToRight;
++        let latin = rustybuzz::ShapePlan::new(&face, direction, Some(rustybuzz::script::LATIN), None, &[]);
++        let common = rustybuzz::ShapePlan::new(&face, direction, None, None, &[]);
++        let shape = |words: &[(WordId, &str)]| {
++            let mut buffer = rustybuzz::UnicodeBuffer::new();
++            let mut results = Vec::with_capacity(words.len());
++            for &(id, text) in words {
++                buffer.push_str(text);
++                buffer.set_direction(direction);
++                buffer.guess_segment_properties();
++                let plan = if buffer.script() == rustybuzz::script::LATIN { &latin } else { &common };
++                let output = rustybuzz::shape_with_plan(&face, plan, buffer);
++                let infos = output.glyph_infos();
++                // Missing glyphs must follow the original ordered font fallback.
++                if infos.iter().all(|info| info.glyph_id != 0) {
++                    let glyphs = output.glyph_positions().iter().zip(infos.iter().zip(text.chars()))
++                        .map(|(position, (info, character))| ShapedGlyph::from_shaping(font_id, character, info, position))
++                        .collect();
++                    let mut bytes = [0; 8];
++                    bytes[..text.len()].copy_from_slice(text.as_bytes());
++                    results.push((id, PreparedWord {
++                        text: bytes,
++                        len: text.len() as u8,
++                        shaped: ShapedWord { glyphs, units_per_em, ascii_slice: None, has_ink: false },
++                    }));
++                }
++                buffer = output.clear();
++            }
++            results
++        };
++        let prepared = std::thread::scope(|scope| {
++            let mut chunks = words.chunks(words.len().div_ceil(workers));
++            let first = chunks.next().unwrap_or_default();
++            let jobs: Vec<_> = chunks.filter_map(|chunk| {
++                let shape = &shape;
++                std::thread::Builder::new().spawn_scoped(scope, move || shape(chunk)).ok()
++            }).collect();
++            let mut prepared = shape(first);
++            for job in jobs {
++                if let Ok(mut words) = job.join() {
++                    prepared.append(&mut words);
++                }
++            }
++            prepared
++        });
++        context.prepared_words.extend(prepared);
+     }
+ 
+     /// Measures the width and baseline-relative ink of a simple LTR span.
+@@ -874,16 +981,14 @@
+         let word = context.prepared_ideographs.as_mut()?.words.get_mut(index)?;
+         return word_with_metrics(word, metrics, &context.fonts, variations);
+     }
+-    let mut hasher = FnvHasher::default();
+-    word.hash(&mut hasher);
+-    let id = WordId {
+-        word_hash: hasher.finish(),
+-        fonts: style.fonts,
+-        variation_hash,
+-        rtl: direction == rustybuzz::Direction::RightToLeft,
+-    };
++    let id = WordId::new(word, style, direction == rustybuzz::Direction::RightToLeft);
+     if !context.shaped_words_cache.contains(&id) {
+-        let shaped = shape_word(word, direction, context, font_ids, variations);
++        let prepared = context.prepared_words.remove(&id)
++            .filter(|prepared| &prepared.text[..usize::from(prepared.len)] == word.as_bytes());
++        let shaped = prepared.map_or_else(
++            || shape_word(word, direction, context, font_ids, variations),
++            |prepared| Ok(prepared.shaped),
++        );
+         if shaped.as_ref().is_ok_and(|word| word.ascii_slice.is_some()) {
+             for suffix in [false, true] {
+                 if let Some(slot) = word_slice_hint(word.as_bytes(), suffix) {
+diff --git a/src/text.rs b/src/text.rs
+--- a/src/text.rs
++++ b/src/text.rs
+@@ -255,6 +255,8 @@
+     #[cfg(feature = "textlayout")]
+     shaped_words_cache: textlayout::ShapedWordsCache<fnv::FnvBuildHasher>,
+     #[cfg(feature = "textlayout")]
++    prepared_words: textlayout::PreparedWords,
++    #[cfg(feature = "textlayout")]
+     word_slice_hints: Vec<u64>,
+     #[cfg(feature = "textlayout")]
+     prepared_ideographs: Option<textlayout::PreparedIdeographs>,
+@@ -288,6 +290,8 @@
+                 fnv_words,
+             ),
+             #[cfg(feature = "textlayout")]
++            prepared_words: Default::default(),
++            #[cfg(feature = "textlayout")]
+             word_slice_hints: Vec::new(),
+             #[cfg(feature = "textlayout")]
+             prepared_ideographs: None,
+@@ -415,6 +419,7 @@
+         #[cfg(feature = "textlayout")]
+         {
+             self.shaped_words_cache.clear();
++            self.prepared_words.clear();
+             if let Some(prepared) = self.prepared_ideographs.take() {
+                 let capacity = self.shaped_words_cache.cap().get() + prepared.len();
+                 if let Some(capacity) = std::num::NonZeroUsize::new(capacity) {

@@ -69,6 +69,11 @@ fn project_scene_texture(
     defaults: TokenStream,
 ) -> Option<TokenStream> {
     let member = ident(&field.name);
+    if field.ty == Type::TextureData2D {
+        return Some(quote!(::xrack_runtime::scene3d::SceneTexture {
+            data: ::core::option::Option::Some(&__style.#member), ..#defaults
+        }));
+    }
     let Type::Record(record) = &field.ty else {
         return Some(quote!(::xrack_runtime::scene3d::SceneTexture {
             source: &__style.#member, ..#defaults
@@ -80,10 +85,12 @@ fn project_scene_texture(
         .filter(|(name, _)| schema.iter().any(|field| field.name == *name))
         .map(|(name, ty)| {
             let field = ident(name);
-            if *ty == Type::String {
-                quote!(#field: &__texture.#field)
-            } else {
-                quote!(#field: __texture.#field)
+            match ty {
+                Type::String => quote!(#field: &__texture.#field),
+                Type::TextureData2D => {
+                    quote!(#field: ::core::option::Option::Some(&__texture.#field))
+                }
+                _ => quote!(#field: __texture.#field),
             }
         });
     Some(quote!({
@@ -105,7 +112,7 @@ fn project_scene_maps(
             let sampler =
                 project_scene_texture(field, records, quote!(::core::default::Default::default()))?;
             Some(quote!(#member: ::core::option::Option::Some(
-                #sampler.prepare(#base_color, __xr_texture)
+                #sampler.prepare(#base_color, |key| __xr_texture(key)?.into_image())
             )))
         })
         .collect::<Vec<_>>();
@@ -291,6 +298,7 @@ fn project_scene_material_slots(
 fn project_scene_geometry(
     schema: &[Parameter],
     records: &BTreeMap<&str, Vec<Parameter>>,
+    renderables: bool,
 ) -> TokenStream {
     if let Some(Type::RecordList(vertices)) = schema
         .iter()
@@ -307,7 +315,10 @@ fn project_scene_geometry(
             })
             .map(|(name, _)| {
                 let field = ident(name);
-                if matches!(*name, "normal" | "color" | "u1" | "v1") {
+                if matches!(
+                    *name,
+                    "normal" | "tangent" | "tangent-sign" | "color" | "u1" | "v1"
+                ) {
                     quote!(#field: ::core::option::Option::Some(vertex.#field))
                 } else {
                     quote!(#field: vertex.#field)
@@ -331,28 +342,86 @@ fn project_scene_geometry(
         } else {
             quote!(::core::option::Option::Some(::std::vec::Vec::new()))
         };
-        return quote!(mesh_inputs.geometry(&object.geometry.vertices, #indices, #subsets, |vertex| {
+        let vertex = quote!(|vertex| {
             ::core::option::Option::Some(::xrack_runtime::scene3d::SceneMeshVertex {
                 position: vertex.position,
                 #(#optional,)*
                 ..::core::default::Default::default()
             })
-        }));
+        });
+        let weights = schema
+            .iter()
+            .any(|field| field.name == "skin-weights")
+            .then(|| {
+                quote!((
+                    ::core::option::Option::Some(&object.geometry.skin_weights),
+                    |row| {
+                        ::core::option::Option::Some(::xrack_runtime::scene3d::SceneSkinWeight {
+                            vertex: row.vertex,
+                            joint: row.joint,
+                            weight: row.weight,
+                        })
+                    }
+                ))
+            });
+        let deltas = schema
+            .iter()
+            .find_map(|field| match &field.ty {
+                Type::RecordList(name) if field.name == "morph-deltas" => Some(name),
+                _ => None,
+            })
+            .map(|name| {
+                let fields = records.get(name.as_ref()).map_or(&[][..], Vec::as_slice);
+                let channels = xrack_syntax::builtins::SCENE_MORPH_DELTA_CHANNELS
+                    .iter()
+                    .filter(|(name, _)| fields.iter().any(|field| field.name == *name))
+                    .map(|(name, _)| {
+                        let name = ident(name);
+                        quote!(#name: row.#name)
+                    });
+                quote!((::core::option::Option::Some(&object.geometry.morph_deltas), |row| {
+                    ::core::option::Option::Some(::xrack_runtime::scene3d::SceneMorphDelta {
+                        target: row.target.as_str(),
+                        vertex: row.vertex,
+                        #(#channels,)*
+                        ..::core::default::Default::default()
+                    })
+                }))
+            });
+        if weights.is_some() || deltas.is_some() {
+            let absent = || {
+                quote!((
+                    ::core::option::Option::<&::xrack_runtime::VecModel<()>>::None,
+                    |_| ::core::option::Option::None
+                ))
+            };
+            let weights = weights.unwrap_or_else(absent);
+            let deltas = deltas.unwrap_or_else(absent);
+            return quote!(mesh_inputs.deformed_geometry(
+                &object.geometry.vertices, #indices, #subsets, #vertex, #weights, #deltas,
+            ));
+        }
+        return quote!(mesh_inputs.geometry(&object.geometry.vertices, #indices, #subsets, #vertex));
     }
     let fields = xrack_syntax::builtins::SCENE_PARAMETRIC_FIELDS
         .iter()
         .filter(|(name, _)| *name != "shape" && schema.iter().any(|field| field.name == *name))
         .map(|(name, _)| {
             let field = ident(name);
-            quote!(#field: ::core::option::Option::Some(object.geometry.#field))
+            let value = match *name {
+                "text" => quote!(object.geometry.#field.as_str()),
+                "font" => quote!(&object.geometry.#field),
+                _ => quote!(object.geometry.#field),
+            };
+            quote!(#field: ::core::option::Option::Some(#value))
         });
-    quote!(::core::option::Option::Some(::xrack_runtime::scene3d::SceneGeometryInput::Parametric(
+    quote!(::core::option::Option::Some(mesh_inputs.parametric_geometry(
         ::xrack_runtime::scene3d::SceneParametricGeometry {
             shape: object.geometry.shape.as_str(),
             #(#fields,)*
-
+            text_fonts: ::xrack_runtime::scene3d::SceneTextFonts::Embedded(&__XR_FONTS),
             ..::core::default::Default::default()
-        }
+        }, #renderables
     )))
 }
 
@@ -440,8 +509,46 @@ fn project_scene_objects(
     };
     let look_at_point = optional_field("camera-look-at-point");
     let camera_up = optional_field("camera-up");
+    let aim_target = if fields.iter().any(|field| field.name == "look-at") {
+        quote!(&object.look_at)
+    } else {
+        quote!("")
+    };
+    let aim_up = optional_field("look-at-up");
     let mesh = field("mesh", quote!(::std::string::String::new()));
     let renderables = !cameras_only;
+    let model_blend = if renderables && fields.iter().any(|field| field.name == "model-blend-mode")
+    {
+        let options = xrack_syntax::builtins::SCENE_OBJECT_OPTIONAL_FIELDS
+            .iter()
+            .filter_map(|(name, _)| {
+                let property = name.strip_prefix("model-blend-")?;
+                if !fields.iter().any(|field| field.name == *name) {
+                    return None;
+                }
+                let property = ident(property);
+                let field = ident(name);
+                Some(
+                    if matches!(
+                        *name,
+                        "model-blend-mode"
+                            | "model-blend-order"
+                            | "model-blend-end-node"
+                            | "model-blend-activation-node"
+                    ) {
+                        quote!(#property: &object.#field)
+                    } else {
+                        quote!(#property: object.#field)
+                    },
+                )
+            });
+        quote!(::xrack_runtime::scene3d::ModelBlendDefinition {
+            #(#options,)*
+            ..::core::default::Default::default()
+        }.prepare())
+    } else {
+        quote!(::core::option::Option::None)
+    };
     let instance_of = field("instance-of", quote!(::std::string::String::new()));
     let instance_root = field("instance-root", quote!(::std::string::String::new()));
     let instance_table = if renderables {
@@ -495,10 +602,39 @@ fn project_scene_objects(
     let geometry = scene_schema(fields, records, "geometry").map_or_else(
         || quote!(::core::option::Option::None),
         |schema| {
-            let geometry = project_scene_geometry(schema, records);
+            let geometry = project_scene_geometry(schema, records, !cameras_only);
             quote!(if (#instance_of).is_empty() { #geometry } else { ::core::option::Option::None })
         },
     );
+    let skin_joints = fields
+        .iter()
+        .find_map(|field| {
+            let Type::RecordList(name) = &field.ty else {
+                return None;
+            };
+            (field.name == "skin-joints")
+                .then(|| records.get(name.as_ref()))
+                .flatten()
+        })
+        .map_or_else(
+            || quote!(::core::option::Option::None),
+            |schema| {
+                let inverse_bind = if schema.iter().any(|field| field.name == "inverse-bind") {
+                    let rows = xrack_runtime::scene3d::CAMERA_MATRIX_FIELDS.map(|row| {
+                        let fields = row.map(ident);
+                        quote!([#(joint.inverse_bind.#fields),*])
+                    });
+                    quote!(::core::option::Option::Some([#(#rows),*]))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
+                quote!(::xrack_runtime::scene3d::prepare_scene_skin_joints(
+                    mesh_inputs, &object.skin_joints, |joint| {
+                        ::xrack_runtime::scene3d::SceneSkinJoint::new(&joint.node, #inverse_bind)
+                    }
+                ))
+            },
+        );
     let collision_shapes = fields.iter().find_map(|field| {
         if cameras_only || field.name != "collision-shapes" {
             return None;
@@ -556,6 +692,39 @@ fn project_scene_objects(
             )
         }))
     });
+    let node_overrides = fields
+        .iter()
+        .find(|field| field.name == "animation-node-overrides")
+        .and_then(|field| {
+            let Type::RecordList(name) = &field.ty else {
+                return None;
+            };
+            records.get(name.as_ref())
+        })
+        .map_or_else(
+            || quote!(::core::default::Default::default()),
+            |schema| {
+                let [translation, rotation, scale] =
+                    ["translation", "rotation", "scale"].map(|name| {
+                        if schema.iter().any(|field| field.name == name) {
+                            let field = ident(name);
+                            quote!(::core::option::Option::Some(entry.#field))
+                        } else {
+                            quote!(::core::option::Option::None)
+                        }
+                    });
+                let weight = scene_field(schema, "weight", "entry", quote!(1.0));
+                quote!(
+                    ::xrack_runtime::scene3d::prepare_animation_node_overrides(
+                        mesh_inputs, &object.animation_node_overrides, |entry| {
+                            ::xrack_runtime::scene3d::MeshAnimationNodeOverride::new(
+                                &entry.node, #translation, #rotation, #scale, #weight,
+                            )
+                        }
+                    )
+                )
+            },
+        );
     let weight_fields = fields
         .iter()
         .find(|field| !cameras_only && field.name == "morph-weights")
@@ -601,6 +770,11 @@ fn project_scene_objects(
         let standard = quote!(::xrack_runtime::scene3d::SceneCameraSettings::from_record(
             &object.camera_kind, #fov, #height, #near, #far, [#(#bounds),*], #width
         ).and_then(|settings| settings.with_clip_normal(#clip_normal)));
+        let standard = if fields.iter().any(|field| field.name == "camera-fov-axis") {
+            quote!((#standard).and_then(|settings| settings.with_fov_axis(&object.camera_fov_axis)))
+        } else {
+            standard
+        };
         let settings = if scene_schema(fields, records, "camera-projection").is_some() {
             let clip_space = field("camera-clip-space", quote!(::std::string::String::new()));
             let rows = xrack_runtime::scene3d::CAMERA_MATRIX_FIELDS.map(|row| {
@@ -684,6 +858,7 @@ fn project_scene_objects(
                 mesh: &(#mesh),
                 mesh_asset: #mesh_asset,
                 geometry: #geometry,
+                skin_joints: #skin_joints,
                 collision_shapes: #collision_shapes,
                 material_variant: &(#material_variant),
                 instance_of: #instance_of,
@@ -696,8 +871,12 @@ fn project_scene_objects(
                 instance_depth_sorting: #instance_depth_sorting,
                 instance_shadow_bounds: #instance_shadow_bounds,
                 instance_template: #instance_template,
-                animation: ::xrack_runtime::scene3d::MeshAnimationBlend { from: #from, to: #to, weight: #weight, layers: #animation_layers },
+                animation: ::xrack_runtime::scene3d::MeshAnimationBlend {
+                    from: #from, to: #to, weight: #weight, layers: #animation_layers,
+                    node_overrides: #node_overrides,
+                },
                 morph_weights: &[#(#weight_fields),*],
+                model_blend: #model_blend,
                 parent: #parent,
                 parent_node: #parent_node,
                 physics_body: &(#physics_body),
@@ -706,6 +885,8 @@ fn project_scene_objects(
                 look_at: #look_at,
                 look_at_point: #look_at_point,
                 camera_up: #camera_up,
+                aim_target: #aim_target,
+                aim_up: #aim_up,
                 position: [object.x, object.y, object.z],
                 scale: [object.scale_x, object.scale_y, object.scale_z],
                 angles: [object.yaw, object.pitch, object.roll],
@@ -890,12 +1071,44 @@ fn project_particles(
             ))?,
         })
     });
+    let rgba = scene_schema(fields, records, "color-variation").map(|schema| {
+        let values = xrack_syntax::builtins::SCENE_PARTICLE_COLOR_VARIATION_FIELDS
+            .iter()
+            .map(|(channel, _)| scene_field(schema, channel, "_variation", quote!(0.0)));
+        quote! {
+            color_variation: {
+                let _variation = &emitter.color_variation;
+                [#(#values),*]
+            },
+        }
+    });
+    let lighting = fields
+        .iter()
+        .find_map(|field| match &field.ty {
+            Type::RecordList(schema) if field.name == "particle-lights" => {
+                records.get(schema.as_ref())
+            }
+            _ => None,
+        })
+        .map(|schema| {
+            let lights = project_scene_lights(&quote!(emitter.particle_lights), schema);
+            quote! {
+                particle_lights: (!emitter.particle_lights.is_empty()).then(|| #lights),
+            }
+        });
     let options = xrack_syntax::builtins::SCENE_PARTICLE_OPTIONAL_FIELDS
         .iter()
         .filter(|(name, _)| fields.iter().any(|field| field.name == *name))
         .map(|(name, _)| {
             let field = ident(name);
-            if matches!(*name, "end-size" | "end-size-variation" | "sprite-frame") {
+            if matches!(
+                *name,
+                "end-size"
+                    | "end-size-variation"
+                    | "sprite-frame"
+                    | "velocity-target-magnitude"
+                    | "particle-model-scene"
+            ) {
                 quote!(#field: ::core::option::Option::Some(emitter.#field))
             } else {
                 quote!(#field: emitter.#field)
@@ -910,10 +1123,14 @@ fn project_particles(
                 lifetime: emitter.lifetime,
                 emission_track: __emission_track,
                 #bursts
+                #rgba
+                #lighting
                 #(#options,)*
                 ..::core::default::Default::default()
             }.prepare(|key, scale| {
                 __XR_SCENE_PROJECTIONS.with(|cache| cache.particle_surface(key, scale, __xr_scene_mesh))
+            }, |key, scale, shuffle| {
+                __XR_SCENE_PROJECTIONS.with(|cache| cache.particle_points(key, scale, shuffle, __xr_particle_points))
             }, |key| {
                 __XR_SCENE_PROJECTIONS.with(|cache| cache.particle_model(key, __xr_scene_mesh))
             })
@@ -939,7 +1156,11 @@ fn project_particle_affectors(model: &TokenStream, fields: &[Parameter]) -> Toke
                 affector_kind: affector.affector_kind,
                 #(#options,)*
                 ..::core::default::Default::default()
-            }.prepare()
+            }.prepare(|key, scale| {
+                __XR_SCENE_PROJECTIONS.with(|cache| cache.particle_surface(key, scale, __xr_scene_mesh))
+            }, |key, scale, shuffle| {
+                __XR_SCENE_PROJECTIONS.with(|cache| cache.particle_points(key, scale, shuffle, __xr_particle_points))
+            })
         })
     }
 }
@@ -961,6 +1182,11 @@ fn project_buffer_inputs(model: &TokenStream, fields: &[Parameter], named: bool)
         )
     };
     let texture = string("texture");
+    let data = if fields.iter().any(|field| field.name == "data") {
+        quote!(::core::option::Option::Some(&buffer.data))
+    } else {
+        quote!(::core::option::Option::None)
+    };
     let item = string("item");
     let capture = string("capture");
     let attachment = string("attachment");
@@ -980,6 +1206,7 @@ fn project_buffer_inputs(model: &TokenStream, fields: &[Parameter], named: bool)
             name: #name,
             previous_frame: #previous,
             texture: &(#texture),
+            data: #data,
             item: &(#item),
             capture: &(#capture),
             attachment: ::xrack_runtime::scene_effect::CaptureAttachment::parse(&(#attachment)),
@@ -1436,8 +1663,10 @@ fn ty(t: &Type) -> TokenStream {
             quote!(::xrack_runtime::VecModel<::xrack_runtime::PhysicsHit3D>)
         }
         Type::ProjectedPoint3D => quote!(::xrack_runtime::ProjectedPoint3D),
+        Type::RenderStats3D => quote!(::xrack_runtime::RenderStats3D),
         Type::Instance3D => quote!(::xrack_runtime::Instance3D),
         Type::InstanceTable3D => quote!(::xrack_runtime::InstanceTable3D),
+        Type::TextureData2D => quote!(::xrack_runtime::TextureData2D),
         Type::MeshAsset3D => quote!(::xrack_runtime::MeshAsset3D),
         Type::MeshNode3D => quote!(::xrack_runtime::MeshNode3D),
         Type::Bounds3D => quote!(::xrack_runtime::Bounds3D),
@@ -1653,6 +1882,16 @@ fn literal(spelling: &str, ty: Type) -> Result<TokenStream, String> {
                         ::xrack_runtime::RotationTrack3D::new(::std::vec![#(#keys),*])
                     });
                 ::core::clone::Clone::clone(&*__XR_TRACK)
+            })
+        }
+        XrLiteral::TextureData2D(width, height, pixels) => {
+            let pixels = Literal::byte_string(&pixels);
+            quote!({
+                static __XR_TEXTURE_DATA: ::std::sync::LazyLock<::xrack_runtime::TextureData2D> =
+                    ::std::sync::LazyLock::new(|| {
+                        ::xrack_runtime::TextureData2D::from_rgba8(#width, #height, (#pixels).to_vec())
+                    });
+                ::core::clone::Clone::clone(&*__XR_TEXTURE_DATA)
             })
         }
         XrLiteral::Vector2D(value) => {
@@ -2663,6 +2902,9 @@ struct Generator<'a> {
     source_scroll_targets: BTreeSet<&'a str>,
     geometry_targets: BTreeSet<&'a str>,
     scene_view_targets: BTreeSet<&'a str>,
+    scene_item_targets: BTreeSet<&'a str>,
+    scene_texture_size_targets: BTreeSet<&'a str>,
+    render_stats_targets: BTreeSet<&'a str>,
     bound_viewports: Vec<OperationRef<'a>>,
     scroll_observers: BTreeSet<&'a str>,
     secondary_windows: Vec<OperationRef<'a>>,
@@ -2960,10 +3202,24 @@ impl<'a> Generator<'a> {
                 "xr.scene_view_query" => {
                     let owner = child.attr("owner")?;
                     self.geometry_targets.insert(owner);
-                    self.scene_view_targets.insert(owner);
+                    let method = child.attr("value")?;
+                    if method == "render-stats" {
+                        self.render_stats_targets.insert(owner);
+                    } else {
+                        self.scene_view_targets.insert(owner);
+                        if xrack_syntax::builtins::scene_view_reads_item_sources(method) {
+                            self.scene_item_targets.insert(owner);
+                        }
+                    }
                 }
                 "xr.geometry_read" => {
-                    self.geometry_targets.insert(child.attr("owner")?);
+                    let owner = child.attr("owner")?;
+                    self.geometry_targets.insert(owner);
+                    if xrack_syntax::builtins::scene_texture_size_axis(child.attr("value")?)
+                        .is_some()
+                    {
+                        self.scene_texture_size_targets.insert(owner);
+                    }
                 }
                 "xr.scroll_control_read" if observed_scroll_read(child) => {
                     self.geometry_targets.insert(child.attr("owner")?);
@@ -3070,9 +3326,29 @@ impl<'a> Generator<'a> {
                             "xr.scene_view_query" => {
                                 let owner = effect.attr("owner")?;
                                 self.geometry_targets.insert(owner);
-                                self.scene_view_targets.insert(owner);
+                                let method = effect.attr("value")?;
+                                if method == "render-stats" {
+                                    self.render_stats_targets.insert(owner);
+                                } else {
+                                    self.scene_view_targets.insert(owner);
+                                    if xrack_syntax::builtins::scene_view_reads_item_sources(method)
+                                    {
+                                        self.scene_item_targets.insert(owner);
+                                    }
+                                }
                             }
                             "xr.geometry_read" => {
+                                let owner = effect.attr("owner")?;
+                                self.geometry_targets.insert(owner);
+                                if xrack_syntax::builtins::scene_texture_size_axis(
+                                    effect.attr("value")?,
+                                )
+                                .is_some()
+                                {
+                                    self.scene_texture_size_targets.insert(owner);
+                                }
+                            }
+                            "xr.scene_touch" => {
                                 self.geometry_targets.insert(effect.attr("owner")?);
                             }
                             "xr.position_child" => {
@@ -3686,8 +3962,10 @@ impl<'a> Generator<'a> {
             | "xr.mesh_asset3d_field"
             | "xr.mesh_node3d_field"
             | "xr.projected_point3d_field"
+            | "xr.render_stats3d_field"
             | "xr.instance3d_field"
             | "xr.instance_table3d_field"
+            | "xr.texture_data2d_field"
             | "xr.walk_result3d_field"
             | "xr.vector2d_field"
             | "xr.key_field"
@@ -3697,7 +3975,11 @@ impl<'a> Generator<'a> {
                 let record = arg(0)?;
                 let field =
                     ident(xrack_resources::field::BuiltinField::from_operation(op)?.member());
-                if matches!(op.name(), "xr.hit3d_field" | "xr.instance3d_field")
+                if op.name() == "xr.hit3d_field" && value == "item-source" {
+                    quote!((#record).#field().to_owned())
+                } else if op.name() == "xr.hit3d_field" && value == "item-position" {
+                    quote!((#record).#field())
+                } else if matches!(op.name(), "xr.hit3d_field" | "xr.instance3d_field")
                     && value == "object-id"
                 {
                     quote!((#record).#field.clone())
@@ -3705,6 +3987,8 @@ impl<'a> Generator<'a> {
                     quote!((#record).valid())
                 } else if op.name() == "xr.mesh_node3d_field" && matches!(value, "name" | "path") {
                     quote!((#record).#field.clone())
+                } else if op.name() == "xr.render_stats3d_field" && value == "work" {
+                    quote!((#record).work.clone())
                 } else if op.name() == "xr.instance_table3d_field" {
                     if value == "loaded" {
                         quote!((#record).is_loaded())
@@ -3717,6 +4001,7 @@ impl<'a> Generator<'a> {
                     op.name(),
                     "xr.quaternion3d_field"
                         | "xr.rotation_track3d_field"
+                        | "xr.texture_data2d_field"
                         | "xr.bounds3d_field"
                         | "xr.mesh_asset3d_field"
                 ) {
@@ -3751,6 +4036,7 @@ impl<'a> Generator<'a> {
                 quote!(::std::string::String::from(#key))
             }
             "xr.shader_url" => quote!(::std::string::String::from(__xr_scene_effect(#value))),
+            "xr.particle_shape_url" => quote!(::std::string::String::from(#value)),
             "xr.texture_url" => {
                 let key = xrack_runtime::scene3d::texture_resource_key(value);
                 quote!(::std::string::String::from(#key))
@@ -4061,12 +4347,21 @@ impl<'a> Generator<'a> {
                 {
                     *rows = quote!(&(#rows).snapshot());
                 }
-                quote!(#receiver.__state.#handle.scene_view().#kind(#(#operands),*))
+                match value {
+                    "hit-item" => quote!(#receiver.__state.#handle.scene_item_hit(#(#operands),*)),
+                    "ray-hit-item" => {
+                        quote!(#receiver.__state.#handle.scene_item_ray_hit(#(#operands),*))
+                    }
+                    "render-stats" => quote!(#receiver.__state.#handle.render_stats()),
+                    _ => quote!(#receiver.__state.#handle.scene_view().#kind(#(#operands),*)),
+                }
             }
             "xr.geometry_read" => {
                 let handle = geometry_handle(owner(op));
                 if value == "layout-ready" {
                     quote!(#receiver.__state.#handle.ready())
+                } else if let Some(axis) = xrack_syntax::builtins::scene_texture_size_axis(value) {
+                    quote!(#receiver.__state.#handle.scene_texture_size(#axis))
                 } else {
                     let metric = xrack_runtime::GeometryMetric::from_name(value)
                         .ok_or("unknown geometry metric")?;
@@ -4430,27 +4725,44 @@ impl<'a> Generator<'a> {
                         ))
                     }
                     (QuaternionSample, [track, time]) => quote!((#track).sample(#time)),
-                    (MeshNode3D | MeshNodeIndices3D, [asset, selector @ ..]) => {
+                    (kind, [asset, selector @ ..]) if kind.uses_mesh_asset() => {
                         let static_key = value_type(self.operand(op, 0)?)? == Type::String;
-                        let (method, input) = if kind == MeshNodeIndices3D {
-                            let value = selector
+                        let optional = |fallback| {
+                            selector
                                 .first()
-                                .map_or_else(|| quote!("all"), |value| quote!(&(#value)));
-                            (quote!(node_indices), value)
-                        } else {
-                            let value = selector.first().ok_or("missing node selector")?;
-                            if value_type(self.operand(op, 1)?)? == Type::Int {
-                                (quote!(node_at), quote!(#value))
-                            } else {
-                                (quote!(node), quote!(&(#value)))
+                                .map_or_else(|| quote!(#fallback), |value| quote!(&(#value)))
+                        };
+                        let (method, input) = match (kind, selector) {
+                            (MeshNodeIndices3D, _) => (quote!(node_indices), Some(optional("all"))),
+                            (MeshNode3D, [value]) => {
+                                if value_type(self.operand(op, 1)?)? == Type::Int {
+                                    (quote!(node_at), Some(quote!(#value)))
+                                } else {
+                                    (quote!(node), Some(quote!(&(#value))))
+                                }
                             }
+                            (MeshMaterialSlots3D, _) => {
+                                (quote!(material_slot_selectors), Some(optional("")))
+                            }
+                            (MeshMaterialVariants3D, []) => {
+                                (quote!(material_variant_selectors), None)
+                            }
+                            (MeshAnimationClips3D, []) => (quote!(animation_clip_selectors), None),
+                            (MeshAnimationDuration3D, [clip]) => {
+                                (quote!(animation_duration), Some(quote!(&(#clip))))
+                            }
+                            _ => return Err("invalid mesh asset query".into()),
                         };
                         if static_key {
+                            let (binding, argument) = input.map_or_else(
+                                || (TokenStream::new(), TokenStream::new()),
+                                |input| (quote!(let __selector = #input;), quote!(__selector)),
+                            );
                             quote!({
                                 let __key = #asset;
-                                let __selector = #input;
+                                #binding
                                 __xr_scene_mesh(&__key).map_or_else(::core::default::Default::default, |asset| {
-                                    asset.#method(__selector)
+                                    asset.#method(#argument)
                                 })
                             })
                         } else {
@@ -4465,11 +4777,20 @@ impl<'a> Generator<'a> {
                             quote!((#scene).scene_node(&(#object), &(#selector)))
                         }
                     }
+                    (GeometryStatus3D, [model, object]) => {
+                        quote!(::std::string::String::from((#model).geometry_status(&(#object))))
+                    }
+                    (GeometryError3D, [model, object]) => {
+                        quote!(::std::string::String::from((#model).geometry_error(&(#object))))
+                    }
                     (Bounds3D, [model, layers @ ..]) => {
                         let scene = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!((#scene).bounds(#layers))
                     }
+                    (Combine3D, [shared, local]) => quote!(
+                        __XR_SCENE_PROJECTIONS.with(|cache| cache.combine_scenes(&(#shared), &(#local)))
+                    ),
                     (Prepare3D, [model]) => query_model(model, false)?,
                     (Prepare3D, [model, world]) => {
                         let scene = query_model(model, false)?;
@@ -4487,6 +4808,9 @@ impl<'a> Generator<'a> {
                         let random =
                             project_random_instances(settings.clone(), fields, self.records);
                         quote!(::xrack_runtime::InstanceTable3D::from_random(#random))
+                    }
+                    (TextureRgba8, [width, height, pixels]) => {
+                        quote!(::xrack_runtime::TextureData2D::from_model(#width, #height, &(#pixels)))
                     }
                     (PrepareInstanceTable3D, [model]) => {
                         let ty = value_type(self.operand(op, 0)?)?;
@@ -5558,6 +5882,14 @@ impl<'a> Generator<'a> {
                             self.__state.__window.request(__xr_command);
                         }
                     });
+                }
+                "xr.scene_touch" => {
+                    let handle = geometry_handle(statement.attr("owner")?);
+                    let operands = (0..statement.operand_count())
+                        .map(|index| expression(self.operand(statement, index)?))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    statements
+                        .extend(quote!(self.__state.#handle.request_scene_touch(#(#operands),*);));
                 }
                 "xr.check_group_command" => {
                     let set = check_group_method(statement.attr("owner")?, "set");
@@ -10449,6 +10781,14 @@ impl<'a> Generator<'a> {
                         project_particles(&value, self.scene_record_fields(&ty), self.records);
                     quote!(::xrack_runtime::Value::SceneParticleEmitters(#emitters))
                 }
+                (Ok("SceneView3D"), "particle-instance-models") => quote!({
+                    ::xrack_runtime::Value::SceneParticleInstanceModels(
+                        __XR_SCENE_PROJECTIONS.with(|cache| cache.particle_instance_models(
+                            &(#value),
+                            |link| ::core::option::Option::Some((link.emitter.clone(), link.model.clone())),
+                        )),
+                    )
+                }),
                 (Ok("SceneView3D"), "particle-affectors") => {
                     let ty = operand_type(binding).ok_or("missing particle affector model type")?;
                     let affectors =
@@ -10505,7 +10845,12 @@ impl<'a> Generator<'a> {
             && children(element, "xr.bind").any(|binding| {
                 matches!(
                     binding.attribute("name"),
-                    Some("physics-world" | "particle-emitters" | "particle-affectors")
+                    Some(
+                        "physics-world"
+                            | "particle-emitters"
+                            | "particle-instance-models"
+                            | "particle-affectors"
+                    )
                 )
             })
         {
@@ -14505,12 +14850,19 @@ impl<'a> Generator<'a> {
         for &target in &self.geometry_targets {
             let handle = geometry_handle(target);
             fields.extend(quote!(#handle: ::xrack_runtime::GeometryHandle,));
-            if self.scene_view_targets.contains(target) {
-                defaults
-                    .extend(quote!(#handle: ::xrack_runtime::GeometryHandle::for_scene_view(),));
+            let mut initial = if self.scene_view_targets.contains(target) {
+                let observe_items = self.scene_item_targets.contains(target);
+                quote!(::xrack_runtime::GeometryHandle::for_scene_view(#observe_items))
             } else {
-                defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+                quote!(::xrack_runtime::GeometryHandle::default())
+            };
+            if self.scene_texture_size_targets.contains(target) {
+                initial.extend(quote!(.with_scene_texture_size()));
             }
+            if self.render_stats_targets.contains(target) {
+                initial.extend(quote!(.with_render_stats()));
+            }
+            defaults.extend(quote!(#handle: #initial,));
         }
         for &element in &self.bound_viewports {
             let owner = element_key(element)?;
@@ -17123,12 +17475,11 @@ fn uses_scene_meshes(op: OperationRef<'_>) -> bool {
                 .and_then(xrack_syntax::builtins::GeometryFunction::parse)
                 .is_some_and(|kind| {
                     kind.uses_scene_model()
+                        || kind.uses_mesh_asset()
                         || matches!(
                             kind,
                             GeometryFunction::PrepareInstanceTable3D
                                 | GeometryFunction::QuaternionTrack
-                                | GeometryFunction::MeshNode3D
-                                | GeometryFunction::MeshNodeIndices3D
                         )
                 })
         || op.name() == "xr.physics_function"
@@ -17158,25 +17509,76 @@ fn binds_scene_environment(op: OperationRef<'_>) -> bool {
         || op.children().any(binds_scene_environment)
 }
 
+fn embed_particle_points(assets: &xrack_resources::SceneAssets) -> TokenStream {
+    let mut declarations = TokenStream::new();
+    let mut embedded = BTreeMap::<Vec<u8>, Ident>::new();
+    let keys: Vec<_> = assets.point_clouds.iter().enumerate().map(|(index, (key, shape))| {
+        let bytes: Vec<_> = shape.points().iter().flatten().copied().flat_map(f32::to_le_bytes).collect();
+        let symbol = match embedded.entry(bytes) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let symbol = format_ident!("__XR_PARTICLE_POINTS_{index}");
+                let bytes = Literal::byte_string(entry.key());
+                declarations.extend(quote! {
+                    static #symbol: ::std::sync::LazyLock<::core::option::Option<::xrack_runtime::scene3d::ParticlePointCloud>> =
+                        ::std::sync::LazyLock::new(|| ::xrack_runtime::scene3d::ParticlePointCloud::from_packed(#bytes));
+                });
+                entry.insert(symbol)
+            }
+        };
+        let symbol = &*symbol;
+        quote!(#key => (*#symbol).clone(),)
+    }).collect();
+    quote! {
+        #declarations
+        fn __xr_particle_points(key: &::core::primitive::str) -> ::core::option::Option<::xrack_runtime::scene3d::ParticlePointCloud> {
+            match key { #(#keys)* _ => ::core::option::Option::None }
+        }
+    }
+}
+
 fn embed_scene_textures(assets: &xrack_resources::SceneAssets) -> Result<TokenStream, String> {
+    use xrack_runtime::scene3d::TextureAsset3D;
+
     let mut declarations = TokenStream::new();
     let mut entries = TokenStream::new();
     let mut known = BTreeMap::<usize, Ident>::new();
     for (key, texture) in &assets.textures {
-        let identity = ::std::sync::Arc::as_ptr(texture) as usize;
+        let identity = match texture {
+            TextureAsset3D::Image(texture) => ::std::sync::Arc::as_ptr(texture) as usize,
+            TextureAsset3D::Cubemap(texture) => ::std::sync::Arc::as_ptr(texture) as usize,
+        };
         let index = known.len();
         let name = match known.entry(identity) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.get().clone(),
             std::collections::btree_map::Entry::Vacant(entry) => {
                 let name = format_ident!("__XR_TEXTURE_{index}");
-                let packed =
-                    proc_macro2::Literal::byte_string(&xrack_resources::pack_mesh_image(texture)?);
-                let [width, height] = texture.size();
+                let asset = match texture {
+                    TextureAsset3D::Image(texture) => {
+                        let packed = proc_macro2::Literal::byte_string(
+                            &xrack_resources::pack_mesh_image(texture)?,
+                        );
+                        let [width, height] = texture.size();
+                        quote! {
+                            ::xrack_runtime::scene3d::MeshImage::from_packed([#width, #height], #packed)
+                                .map(|image| ::xrack_runtime::scene3d::TextureAsset3D::Image(::std::sync::Arc::new(image)))
+                        }
+                    }
+                    TextureAsset3D::Cubemap(texture) => {
+                        let packed = proc_macro2::Literal::byte_string(
+                            &xrack_resources::pack_cubemap(texture)?,
+                        );
+                        let side = texture.side();
+                        let levels = texture.levels();
+                        quote! {
+                            ::xrack_runtime::scene3d::CubeTexture3D::from_packed(#side, #levels, #packed)
+                                .map(|texture| ::xrack_runtime::scene3d::TextureAsset3D::Cubemap(::std::sync::Arc::new(texture)))
+                        }
+                    }
+                };
                 declarations.extend(quote! {
-                    static #name: ::std::sync::LazyLock<::core::option::Option<::std::sync::Arc<::xrack_runtime::scene3d::MeshImage>>> =
-                        ::std::sync::LazyLock::new(|| ::xrack_runtime::scene3d::MeshImage::from_packed(
-                            [#width, #height], #packed
-                        ).map(::std::sync::Arc::new));
+                    static #name: ::std::sync::LazyLock<::core::option::Option<::xrack_runtime::scene3d::TextureAsset3D>> =
+                        ::std::sync::LazyLock::new(|| #asset);
                 });
                 entry.insert(name).clone()
             }
@@ -17185,7 +17587,7 @@ fn embed_scene_textures(assets: &xrack_resources::SceneAssets) -> Result<TokenSt
     }
     Ok(quote! {
         #declarations
-        fn __xr_texture(key: &::core::primitive::str) -> ::core::option::Option<::std::sync::Arc<::xrack_runtime::scene3d::MeshImage>> {
+        fn __xr_texture(key: &::core::primitive::str) -> ::core::option::Option<::xrack_runtime::scene3d::TextureAsset3D> {
             match key {
                 #entries
                 _ => ::core::option::Option::None,
@@ -18140,6 +18542,9 @@ fn generate_with_resources(
         });
     }
     let uses_scene = module.operations().any(uses_scene_meshes);
+    if !scene_assets.point_clouds.is_empty() || uses_scene {
+        out.extend(embed_particle_points(scene_assets));
+    }
     if !scene_assets.meshes.is_empty() || uses_scene {
         out.extend(embed_scene_meshes(&scene_assets.meshes)?);
     }
@@ -18237,13 +18642,12 @@ fn generate_with_resources(
             }
         });
     }
-    if !fonts.is_empty() {
-        let bytes = fonts.iter().map(|font| Literal::byte_string(font));
-        out.extend(quote! {
-            static __XR_FONTS: ::xrack_runtime::EmbeddedFonts =
-                ::xrack_runtime::EmbeddedFonts::new(&[#(#bytes),*]);
-        });
-    }
+    let bytes = fonts.iter().map(|font| Literal::byte_string(font));
+    out.extend(quote! {
+        #[allow(dead_code)]
+        static __XR_FONTS: ::xrack_runtime::EmbeddedFonts =
+            ::xrack_runtime::EmbeddedFonts::new(&[#(#bytes),*]);
+    });
     let mut markdown = BTreeMap::new();
     for (index, (source, text)) in xrack_resources::collect_markdown(module)?
         .into_iter()
@@ -18470,6 +18874,9 @@ fn generate_with_resources(
             source_scroll_targets: BTreeSet::new(),
             geometry_targets: BTreeSet::new(),
             scene_view_targets: BTreeSet::new(),
+            scene_item_targets: BTreeSet::new(),
+            scene_texture_size_targets: BTreeSet::new(),
+            render_stats_targets: BTreeSet::new(),
             bound_viewports: Vec::new(),
             scroll_observers: BTreeSet::new(),
             secondary_windows: Vec::new(),

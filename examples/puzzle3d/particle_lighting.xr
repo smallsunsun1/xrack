@@ -5,6 +5,10 @@ struct ParticleLightEmitter {
     velocity: vector3d, fade-out: float, particle-model: string,
     particle-angular-velocity: vector3d,
     particle-casts-shadow: bool, particle-receives-shadow: bool, particle-casts-reflections: bool,
+    layers: int, sprite: image, sprite-frames: int, sprite-playback: string,
+    trail-segments: int, trail-duration: float, trail-fade: float,
+    trail-texcoord-mode: string, trail-texcoord-multiplier: float,
+    particle-sort-mode: string, particle-blend-mode: string,
 }
 
 struct ParticleLightObject {
@@ -17,6 +21,7 @@ struct ParticleLightObject {
 struct ParticleLightProbe {
     position: point3d, box-size: vector3d, capture-size: int, refresh-mode: string,
     time-slicing: string, intensity: float,
+    layers: int,
 }
 
 export component ParticleLightingDemo inherits Window {
@@ -31,6 +36,14 @@ export component ParticleLightingDemo inherits Window {
     in-out property <float> light-angle: -25;
     in-out property <string> slicing: "none";
     in-out property <int> population: 1;
+    in-out property <string> particle-kind: "model";
+    in-out property <string> sort-mode: "distance";
+    in-out property <string> transparency: "sorted";
+    in-out property <string> blend: "source-over";
+    in-out property <int> particle-layers: 1;
+    in-out property <bool> textured: false;
+    in-out property <bool> blocked: false;
+    property <image> empty-image;
 
     property <ParticleLightObject> defaults: ParticleLightObject {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
@@ -50,26 +63,38 @@ export component ParticleLightingDemo inherits Window {
             scale-x: 1.32, scale-y: 1.32, scale-z: 1.32,
             receives-reflections: true, ..root.defaults
         },
+        ParticleLightObject {
+            id: "screen", mesh: root.blocked ? "primitive:box" : "", x: 0.4, y: 0.35, z: 0.55,
+            scale-x: 0.1, scale-y: 1.8, scale-z: 1.9,
+            color: #284253, casts-reflections: true, ..root.defaults
+        },
     ];
     property <ParticleLightEmitter> sparks <- ParticleLightEmitter {
         position: Point3D.new(-1.9, 1, 1.15), size: 1.35, color: #ff8848,
         lifetime: 3.0, bursts: [ParticleBurst { time: 0, count: root.population }], fade-out: 0.2,
-        velocity: Vector3D.new(0, -0.62, 0.1), particle-model: "primitive:box",
+        velocity: Vector3D.new(0, -0.62, 0.1), particle-model: root.particle-kind == "model" ? "primitive:box" : "",
         particle-angular-velocity: Vector3D.new(45, 64, 18),
         particle-casts-shadow: root.cast-shadow,
         particle-receives-shadow: root.receive-shadow,
         particle-casts-reflections: root.cast-reflection,
+        layers: root.particle-layers,
+        sprite: root.textured ? @image-url("models/particle-marks.png") : root.empty-image,
+        sprite-frames: 4, sprite-playback: "single-frame",
+        trail-segments: root.particle-kind == "ribbon" ? 8 : 0, trail-duration: 0.75, trail-fade: 0.25,
+        trail-texcoord-mode: "absolute", trail-texcoord-multiplier: 2,
+        particle-sort-mode: root.sort-mode, particle-blend-mode: root.blend,
     };
     property <[ParticleLightProbe]> probes <- [
         ParticleLightProbe {
             position: Point3D.new(2.35, 0, 0), box-size: Vector3D.new(14, 10, 10),
             capture-size: 64, refresh-mode: "on-change", time-slicing: root.slicing,
-            intensity: 2.5,
+            intensity: 2.5, layers: 1,
         },
     ];
     SceneView3D {
         width <- 600px; height <- 310px; model <- root.model; camera <- "eye";
         reflection-probes <- root.probes; particle-emitters <- [root.sparks]; particle-time <- root.time;
+        layer-mask <- 3; oit-method <- root.transparency;
         scene-background <- #273d52; scene-hdr <- true; cache-rendering <- true;
         shadows <- true; shadow-map-size <- 512; shadow-bias <- 0.0015;
         light-yaw <- root.light-angle; light-elevation <- 33; ambient-intensity <- 0.35;
@@ -83,5 +108,89 @@ export component ParticleLightingDemo inherits Window {
         clicked => { root.slicing = root.slicing == "none" ? "individual-faces" : "none"; }
     }
     Label { x <- 14px; y <- 371px; width <- 70px; height <- 42px; text <- "粒子时间"; }
-    time-slider := Slider { x <- 90px; y <- 371px; width <- 488px; height <- 42px; minimum <- 0; maximum <- 2.9; value <-> root.time; }
+    time-slider := Slider { x <- 90px; y <- 371px; width <- 320px; height <- 42px; minimum <- 0; maximum <- 2.9; value <-> root.time; }
+    particle-picker := Button {
+        x <- 414px; y <- 371px; width <- 165px; height <- 42px;
+        text <- root.particle-kind == "model" ? "模型粒子" : root.particle-kind == "sprite" ? "精灵粒子" : "拖尾粒子";
+        clicked => { root.particle-kind = root.particle-kind == "model" ? "sprite" : root.particle-kind == "sprite" ? "ribbon" : "model"; }
+    }
+}
+
+struct SpriteLamp {
+    kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+    color: color, intensity: float, range: float, inner-angle: float, outer-angle: float,
+    visible: bool, layers: int, parent: string,
+}
+
+struct LitSprite {
+    position: point3d, velocity: vector3d, size: float, color: color, lifetime: float,
+    bursts: [ParticleBurst], fade-out: float, particle-lights: [SpriteLamp],
+    sprite: image, sprite-frames: int, sprite-playback: string,
+    trail-segments: int, trail-duration: float, trail-fade: float,
+}
+
+export component SpriteLightDemo inherits Window {
+    title <- "XRack · 精灵与拖尾灯光";
+    width <- 600px; height <- 410px;
+    background <- #182333;
+    in-out property <bool> illuminated: true;
+    in-out property <bool> light-enabled: true;
+    in-out property <bool> ribbons: false;
+    in-out property <bool> textured: false;
+    in-out property <bool> comparison: false;
+    in-out property <bool> mounted: false;
+    in-out property <float> rig-x: 0;
+    in-out property <float> time: 0.7;
+    in-out property <float> lamp-x: 0;
+    in-out property <float> lamp-z: 1.1;
+    in-out property <float> reach: 3;
+    in-out property <int> light-layers: 1;
+    in-out property <string> light-kind: "directional";
+    in-out property <string> transparency: "sorted";
+    in-out property <color> tint: #619fff;
+    property <image> empty-image;
+    property <[SpriteLamp]> lamps-off: [];
+
+    property <SpriteLamp> key <- SpriteLamp {
+        kind: root.light-kind, x: root.lamp-x, y: 0, z: root.lamp-z,
+        yaw: 0, elevation: 0, color: root.tint, intensity: 0.8,
+        range: root.reach, inner-angle: 12, outer-angle: 28,
+        visible: root.light-enabled, layers: root.light-layers, parent: root.mounted ? "rig" : "",
+    };
+    property <LitSprite> flame <- LitSprite {
+        position: Point3D.new(root.ribbons ? -0.65 : 0, 0, 0),
+        velocity: Vector3D.new(root.ribbons ? 1.55 : 0, 0, 0),
+        size: 1.5, color: #ffffff, lifetime: 3, fade-out: 0,
+        bursts: [ParticleBurst { time: 0, count: 1 }],
+        particle-lights: root.illuminated ? [root.key] : root.lamps-off,
+        sprite: root.textured ? @image-url("models/particle-marks.png") : root.empty-image,
+        sprite-frames: 4, sprite-playback: "single-frame",
+        trail-segments: root.ribbons ? 8 : 0, trail-duration: 0.55, trail-fade: 0,
+    };
+    property <ParticleLightObject> scene-node: ParticleLightObject {
+        id: "eye", mesh: "", x: 0, y: 0, z: 7,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, camera-kind: "orthographic", camera-height: 4.5,
+        casts-shadow: false, receives-shadow: false, casts-reflections: false, receives-reflections: false,
+    };
+    SceneView3D {
+        width <- 600px; height <- 300px; camera <- "eye";
+        scene-background <- #101a2c; ambient-intensity <- 0.10;
+        oit-method <- root.transparency;
+        model <- [root.scene-node, ParticleLightObject { id: "rig", x: root.rig-x, z: 0, camera-kind: "", ..root.scene-node }];
+        particle-time <- root.time;
+        particle-emitters <- root.comparison ? [root.flame, LitSprite { position: Point3D.new(1.45, 0, 0), ..root.flame }] : [root.flame];
+    }
+    mode := Button {
+        x <- 20px; y <- 312px; width <- 138px; height <- 34px;
+        text <- root.light-kind == "directional" ? "方向光" : root.light-kind == "point" ? "点光源" : "聚光灯";
+        clicked => { root.light-kind = root.light-kind == "directional" ? "point" : root.light-kind == "point" ? "spot" : "directional"; }
+    }
+    CheckBox { x <- 177px; y <- 312px; width <- 105px; height <- 34px; text <- "粒子灯光"; checked <-> root.illuminated; }
+    CheckBox { x <- 293px; y <- 312px; width <- 104px; height <- 34px; text <- "拖尾"; checked <-> root.ribbons; }
+    CheckBox { x <- 407px; y <- 312px; width <- 104px; height <- 34px; text <- "贴图"; checked <-> root.textured; }
+    Label { x <- 22px; y <- 361px; width <- 76px; height <- 34px; text <- "灯光位置"; }
+    Slider { x <- 103px; y <- 361px; width <- 228px; height <- 34px; minimum <- -3; maximum <- 3; value <-> root.lamp-x; }
+    Label { x <- 357px; y <- 361px; width <- 53px; height <- 34px; text <- "时间"; }
+    Slider { x <- 409px; y <- 361px; width <- 170px; height <- 34px; minimum <- 0.1; maximum <- 2; value <-> root.time; }
 }

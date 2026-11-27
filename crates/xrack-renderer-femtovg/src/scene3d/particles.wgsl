@@ -2,10 +2,11 @@ struct Emitter {
     position_radius: vec4<f32>,
     velocity_end_radius: vec4<f32>,
     spread_lifetime: vec4<f32>,
+    // Gravity (xyz) and emission intensity (w).
     gravity: vec4<f32>,
     color: vec4<f32>,
     timing: vec4<f32>,
-    // Exclusive end in the instance range, latest birth ID, padding, seed.
+    // Exclusive end in the instance range, latest birth ID, flags, seed.
     indices: vec4<u32>,
     // Frame count, duration, duration variation, and initial offset.
     sequence: vec4<f32>,
@@ -13,10 +14,13 @@ struct Emitter {
     sheet: vec4<f32>,
     // Playback mode, interpolation flag, random start flag, and affector mask.
     playback: vec4<u32>,
-    // Lifetime spread, birth and end radius spread. A negative end spread shares the birth sample.
+    // Lifetime spread, birth and end radius spread. A negative end spread shares the birth sample. The final word is depth bias.
     birth_variation: vec4<f32>,
     // Initial angle, initial angle spread, spin and spin spread around the view axis.
     billboard_rotation: vec4<f32>,
+    color_variation: vec4<f32>,
+    // Intersection fade distance and local sprite offset in full-size units.
+    appearance: vec4<f32>,
 }
 
 struct View {
@@ -28,7 +32,15 @@ struct View {
     lens: vec4<f32>,
     lateral_x: vec4<f32>,
     lateral_y: vec4<f32>,
-    emitters: array<Emitter, 16>,
+}
+
+struct ParticleShape {
+    shape_x: vec4<f32>,
+    shape_y: vec4<f32>,
+    shape_z: vec4<f32>,
+    surface_weights: vec4<f32>,
+    // Shape kind, surface flag, starting triangle, and triangle count.
+    modes: vec4<u32>,
 }
 
 struct Motion {
@@ -62,12 +74,13 @@ struct SurfaceTriangle {
     normal: vec3<f32>,
 }
 
-@group(0) @binding(0) var<uniform> view: View;
+@group(0) @binding(0) var<uniform> emitters: array<Emitter, 16>;
 @group(0) @binding(1) var sheet_texture: texture_2d<f32>;
 @group(0) @binding(2) var sheet_sampler: sampler;
 @group(0) @binding(3) var color_table: texture_2d<f32>;
 @group(0) @binding(4) var<uniform> motions: Motions;
 @group(0) @binding(5) var<storage, read> surface_triangles: array<SurfaceTriangle>;
+@group(0) @binding(14) var<uniform> view: View;
 
 struct Affector {
     position_age: vec4<f32>,
@@ -86,17 +99,40 @@ struct Wander {
 struct Affectors {
     fields: array<Affector, 16>,
     wander: array<Wander, 16>,
+    shapes: array<ParticleShape, 16>,
 }
 
 @group(0) @binding(6) var<uniform> affectors: Affectors;
 
-struct Trails {
+struct TrailSettings {
     // Duration, end scale, opacity loss, end-of-life fade.
-    settings: array<vec4<f32>, 16>,
+    shape: vec4<f32>,
+    // Length limit (-1 for none), length variation, mode, texture multiplier.
+    mapping: vec4<f32>,
+    // World-space sample spacing, per-point scale, and alpha retention.
+    sampling: vec4<f32>,
+}
+
+struct Trails {
+    settings: array<TrailSettings, 16>,
     segment_count: vec4<u32>,
 }
 
 @group(0) @binding(7) var<uniform> trails: Trails;
+struct ParticlePose {
+    rotation: vec4<f32>,
+    variation: vec4<f32>,
+    spin: vec4<f32>,
+    spin_variation: vec4<f32>,
+    alignment: vec4<f32>,
+}
+
+struct ParticlePoses {
+    settings: array<ParticlePose, 16>,
+}
+
+@group(0) @binding(9) var<uniform> poses: ParticlePoses;
+
 override TEXTURED: bool = false;
 
 struct Sprite {
@@ -104,6 +140,7 @@ struct Sprite {
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) color: vec4<f32>,
     @location(2) @interpolate(flat) depth: f32,
+    // Frame sampling parameters (xyz), intersection fade distance (w).
     @location(3) @interpolate(flat) sheet: vec4<f32>,
     @location(4) @interpolate(flat) frames: vec3<f32>,
     // XRack wireframe varying
@@ -150,7 +187,7 @@ fn unit_sphere(pick: vec2<f32>) -> vec3<f32> {
     return vec3<f32>(ring.x, height, ring.y);
 }
 
-fn ellipsoid(shape: Motion, seed: u32, pick: vec3<f32>) -> vec3<f32> {
+fn ellipsoid(shape: ParticleShape, seed: u32, pick: vec3<f32>) -> vec3<f32> {
     var outward = unit_sphere(pick.xy);
     if shape.modes.y == 0u {
         return outward * pow(pick.z, 1.0 / 3.0);
@@ -168,17 +205,23 @@ fn ellipsoid(shape: Motion, seed: u32, pick: vec3<f32>) -> vec3<f32> {
     return outward;
 }
 
-fn cylinder(shape: Motion, seed: u32, pick: vec3<f32>) -> vec3<f32> {
+struct SurfaceSample {
+    point: vec3<f32>,
+    normal: vec3<f32>,
+}
+
+fn cylinder(shape: ParticleShape, seed: u32, pick: vec3<f32>) -> SurfaceSample {
     var around = circle(pick.x);
     let height = 2.0 * pick.y - 1.0;
     if shape.modes.y == 0u {
         let disk = around * sqrt(pick.z);
-        return vec3<f32>(disk.x, height, disk.y);
+        return SurfaceSample(vec3<f32>(disk.x, height, disk.y), vec3<f32>(0.0));
     }
     let cap = random01(seed ^ 0x94d049bbu) < shape.shape_z.w;
     if cap {
         let disk = around * sqrt(pick.z);
-        return vec3<f32>(disk.x, select(-1.0, 1.0, height >= 0.0), disk.y);
+        let side = select(-1.0, 1.0, height >= 0.0);
+        return SurfaceSample(vec3<f32>(disk.x, side, disk.y), vec3<f32>(0.0, side, 0.0));
     }
     var acceptance = pick.z;
     for (var attempt = 1u; attempt < 12u; attempt++) {
@@ -189,42 +232,49 @@ fn cylinder(shape: Motion, seed: u32, pick: vec3<f32>) -> vec3<f32> {
         around = circle(next.x);
         acceptance = next.z;
     }
-    return vec3<f32>(around.x, height, around.y);
+    return SurfaceSample(vec3<f32>(around.x, height, around.y), vec3<f32>(around.x, 0.0, around.y));
 }
 
-fn spawn_offset(shape: Motion, particle_seed: u32) -> vec3<f32> {
+fn sample_shape(shape: ParticleShape, particle_seed: u32) -> SurfaceSample {
     if shape.modes.x == 0u {
-        return vec3<f32>(0.0);
+        return SurfaceSample(vec3<f32>(0.0), vec3<f32>(0.0, 0.0, 1.0));
     }
     let seed = particle_seed ^ 0xd1b54a35u;
     let pick = random3(seed);
     var local = pick * 2.0 - 1.0;
+    var normal = vec3<f32>(0.0);
     switch shape.modes.x {
         case 1u: {
             if shape.modes.y != 0u {
                 let face = random01(seed ^ 0x85ebca6bu);
                 if face < shape.shape_x.w {
                     local.x = select(-1.0, 1.0, pick.x >= 0.5);
+                    normal.x = local.x;
                 } else if face < shape.shape_y.w {
                     local.y = select(-1.0, 1.0, pick.y >= 0.5);
+                    normal.y = local.y;
                 } else {
                     local.z = select(-1.0, 1.0, pick.z >= 0.5);
+                    normal.z = local.z;
                 }
             }
         }
         case 2u: {
             local = ellipsoid(shape, seed, pick);
+            normal = local;
         }
-        case 3u: {
-            local = cylinder(shape, seed, pick);
-        }
+        case 3u: { return cylinder(shape, seed, pick); }
         default: {}
     }
-    return shape_vector(shape, local);
+    return SurfaceSample(local, normal);
 }
 
-fn shape_vector(shape: Motion, local: vec3<f32>) -> vec3<f32> {
+fn shape_vector(shape: ParticleShape, local: vec3<f32>) -> vec3<f32> {
     return shape.shape_x.xyz * local.x + shape.shape_y.xyz * local.y + shape.shape_z.xyz * local.z;
+}
+
+fn motion_shape(motion: Motion) -> ParticleShape {
+    return ParticleShape(motion.shape_x, motion.shape_y, motion.shape_z, motion.surface_weights, motion.modes);
 }
 
 fn normalized_or(value: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
@@ -235,13 +285,59 @@ fn normalized_or(value: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
     return fallback;
 }
 
+fn largest_component(vector: vec3<f32>) -> f32 {
+    let magnitude = abs(vector);
+    return max(magnitude.x, max(magnitude.y, magnitude.z));
+}
+
+fn surface_normal(basis: mat3x3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    // Cofactors are the inverse-transpose times the determinant. Remove its
+    // sign for reflected placements and keep the surviving axes of flat shapes.
+    let scale = max(1e-20, max(largest_component(basis[0]),
+        max(largest_component(basis[1]), largest_component(basis[2]))));
+    let x = basis[0] / scale;
+    let y = basis[1] / scale;
+    let z = basis[2] / scale;
+    let first = cross(y, z);
+    let map = mat3x3<f32>(first, cross(z, x), cross(x, y));
+    let signed_map = (map * normal) * select(1.0, -1.0, dot(x, first) < 0.0);
+    return normalized_or(signed_map, normal);
+}
+
+const FOLLOW_SURFACE_SOURCE = false;
+
+fn uses_surface_velocity(motion: Motion) -> bool {
+    return motion.modes.z == 4u || motion.modes.z == 5u;
+}
+
+fn surface_departure(motion: Motion, velocity: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    if motion.modes.z == 4u {
+        return length(velocity) * normal;
+    }
+    if motion.modes.z == 5u {
+        return reflect(velocity, normal);
+    }
+    return velocity;
+}
+
 fn vector_velocity(emitter: Emitter, seed: u32) -> vec3<f32> {
     return emitter.velocity_end_radius.xyz + (2.0 * random3(seed) - 1.0) * emitter.spread_lifetime.xyz;
 }
 
-fn spatial_velocity(particle: Particle, motion: Motion, origin: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+fn spatial_velocity(particle: Particle, motion: Motion, normal: vec3<f32>) -> vec3<f32> {
     if motion.modes.z == 0u {
         return vector_velocity(particle.emitter, particle.seed);
+    }
+    if motion.modes.z == 2u {
+        return vec3<f32>(0.0); // Aim after transforming the birth position.
+    }
+    if motion.modes.z == 5u {
+        let incoming = vector_velocity(particle.emitter, particle.seed);
+        if motion.up_variation.w <= 0.0 {
+            return incoming;
+        }
+        let variation = signed_random(particle.seed ^ 0x27d4eb2du) * motion.up_variation.w;
+        return normalized_or(incoming, motion.axis_speed.xyz) * max(0.0, length(incoming) + variation);
     }
     let pick = random3(particle.seed ^ 0x632be59bu);
     let speed_variation = 2.0 * random01(particle.seed ^ 0x27d4eb2du) - 1.0;
@@ -252,10 +348,6 @@ fn spatial_velocity(particle: Particle, motion: Motion, origin: vec3<f32>, norma
             let cosine = mix(motion.right_cosine.w, 1.0, pick.x);
             let ring = circle(pick.y) * sqrt(max(0.0, 1.0 - cosine * cosine));
             return speed * (axis * cosine + motion.right_cosine.xyz * ring.x + motion.up_variation.xyz * ring.y);
-        }
-        case 2u: {
-            let destination = motion.target_point.xyz + (2.0 * pick - 1.0) * motion.target_spread.xyz;
-            return speed * normalized_or(destination - origin, axis);
         }
         case 4u: {
             return speed * normal;
@@ -305,16 +397,60 @@ fn sequence_frames(emitter: Emitter, age: f32, seed: u32) -> vec3<f32> {
     return vec3<f32>(frame_at(tick, count, mode), frame_at(tick + 1u, count, mode), blend);
 }
 
-fn particle_at(index: u32) -> Particle {
+fn varied_particle_color(emitter: Emitter, seed: u32) -> vec4<f32> {
+    let variation = emitter.color_variation;
+    if all(variation == vec4<f32>(0.0)) {
+        return emitter.color;
+    }
+    let alpha_sample = random01(seed ^ 0x9c39a07du);
+    var rgb = emitter.color.rgb;
+    if any(variation.xyz > vec3<f32>(0.0)) {
+        var sample = vec3<f32>(alpha_sample);
+        if (emitter.indices.z & 2u) == 0u {
+            sample = random3(seed ^ 0x6f462ed7u);
+        }
+        let srgb = mix(rgb, sample, variation.xyz);
+        rgb = emitter.gravity.w * select(srgb / 12.92,
+            pow((srgb + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)),
+            srgb > vec3<f32>(0.04045));
+    }
+    return vec4<f32>(rgb, mix(emitter.color.a, alpha_sample, variation.w));
+}
+
+fn particle_slot(index: u32) -> u32 {
     var slot = 0u;
-    while slot + 1u < 16u && index >= view.emitters[slot].indices.x {
+    while slot + 1u < 16u && index >= emitters[slot].indices.x {
         slot++;
     }
-    var emitter = view.emitters[slot];
+    return slot;
+}
+
+fn particle_age(emitter: Emitter, index: u32) -> f32 {
+    let reverse = emitter.indices.x - index - 1u;
+    return emitter.timing.y + f32(reverse) * emitter.timing.x;
+}
+
+fn particle_source_index(draw_index: u32) -> u32 {
+    return draw_index; // XRack particle draw order
+}
+
+fn reversed_life(emitter: Emitter) -> bool {
+    return (emitter.indices.z & 128u) != 0u;
+}
+
+fn effect_age(emitter: Emitter, seconds: f32) -> f32 {
+    return select(seconds, max(0.0, emitter.spread_lifetime.w - seconds), reversed_life(emitter));
+}
+
+fn particle_at(draw_index: u32) -> Particle {
+    let index = particle_source_index(draw_index);
+    let slot = particle_slot(index);
+    var emitter = emitters[slot];
     let reverse = emitter.indices.x - index - 1u;
     let tick = emitter.indices.y - reverse;
-    let age = emitter.timing.y + f32(reverse) * emitter.timing.x;
+    let age = particle_age(emitter, index);
     let seed = emitter.indices.w ^ (tick * 0xa24baed5u);
+    emitter.color = varied_particle_color(emitter, seed);
     let variation = emitter.birth_variation;
     if variation.x > 0.0 {
         emitter.spread_lifetime.w = clamp(
@@ -335,37 +471,90 @@ fn particle_at(index: u32) -> Particle {
     if any(roll != vec4<f32>(0.0)) {
         let start = roll.x + signed_random(seed ^ 0x3141592du ^ 0x91e10da5u) * roll.y;
         let spin = roll.z + signed_random(seed ^ 0x75d77a21u ^ 0x91e10da5u) * roll.w;
-        billboard_angle = fract((start + age * spin) / 360.0) * 6.28318530718;
+        billboard_angle = fract((start + effect_age(emitter, age) * spin) / 360.0) * 6.28318530718;
     }
     return Particle(emitter, slot, age, seed, tick, billboard_angle);
 }
 
 struct ParticleCenter {
     particle: Particle,
+    age: f32,
     center: vec3<f32>,
+    start_velocity: vec3<f32>,
+    velocity_offset: vec3<f32>,
 }
 
 struct ParticleBirth {
     particle: Particle,
     origin: vec3<f32>,
     velocity: vec3<f32>,
+    normal: vec3<f32>,
 }
 
-fn trajectory(birth: ParticleBirth, age: f32) -> ParticleCenter {
+fn trajectory(birth: ParticleBirth, seconds: f32) -> ParticleCenter {
     var particle = birth.particle;
-    particle.seconds = age;
+    particle.seconds = seconds;
+    let age = effect_age(particle.emitter, seconds);
     let center = birth.origin + age * (birth.velocity + (0.5 * age) * particle.emitter.gravity.xyz);
-    return ParticleCenter(particle, center);
+    return ParticleCenter(particle, age, center, birth.velocity, vec3<f32>(0.0));
 }
 
 fn present_position(birth: ParticleBirth) -> ParticleCenter {
     return trajectory(birth, birth.particle.seconds);
 }
 
-fn base_alpha(emitter: Emitter, age: f32) -> f32 {
+fn ballistic_velocity(source: ParticleCenter) -> vec3<f32> {
+    let emitter = source.particle.emitter;
+    let forward = source.start_velocity + source.age * emitter.gravity.xyz;
+    return select(forward, -forward, reversed_life(emitter));
+}
+
+fn particle_rotation(particle: Particle, age: f32, settings: ParticlePose, direction: vec3<f32>) -> mat3x3<f32> {
+    var start = settings.rotation.xyz;
+    if any(settings.variation.xyz != vec3<f32>(0.0)) {
+        start += (2.0 * random3(particle.seed ^ 0x3141592du) - 1.0) * settings.variation.xyz;
+    }
+    var spin = settings.spin.xyz;
+    if any(settings.spin_variation.xyz != vec3<f32>(0.0)) {
+        spin += (2.0 * random3(particle.seed ^ 0x75d77a21u) - 1.0) * settings.spin_variation.xyz;
+    }
+    let angles = fract((start + age * spin) / vec3<f32>(360.0)) * 6.28318530718;
+    let c = cos(angles);
+    let s = sin(angles);
+    // X, Y, then Z, composed in the particle's aligned frame.
+    let rotation = transpose(mat3x3<f32>(
+        vec3<f32>(c.z * c.y, c.z * s.y * s.x - s.z * c.x, c.z * s.y * c.x + s.z * s.x),
+        vec3<f32>(s.z * c.y, s.z * s.y * s.x + c.z * c.x, s.z * s.y * c.x - c.z * s.x),
+        vec3<f32>(-s.y, c.y * s.x, c.y * c.x)));
+    if settings.alignment.w == 0.0 {
+        return rotation;
+    }
+    let forward = normalized_or(direction, vec3<f32>(0.0, 0.0, 1.0));
+    let reference = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(forward.y) > 0.999);
+    let right = normalize(cross(reference, forward));
+    let up = cross(forward, right);
+    return mat3x3<f32>(right, up, forward) * rotation;
+}
+
+fn particle_orientation(source: ParticleCenter, settings: ParticlePose) -> mat3x3<f32> {
+    var direction = source.start_velocity;
+    if settings.alignment.w == 2.0 {
+        direction = settings.alignment.xyz - source.center;
+    } else if settings.alignment.w == 3.0 {
+        direction = ballistic_velocity(source) + source.velocity_offset;
+    }
+    return particle_rotation(source.particle, source.age, settings, direction);
+}
+
+// Final alpha (x) and the radius multiplier (y).
+fn particle_fade(emitter: Emitter, age: f32) -> vec2<f32> {
     let fade_in = select(1.0, min(age / max(emitter.timing.z, 1e-12), 1.0), emitter.timing.z > 0.0);
     let fade_out = select(1.0, clamp((emitter.spread_lifetime.w - age) / max(emitter.timing.w, 1e-12), 0.0, 1.0), emitter.timing.w > 0.0);
-    return emitter.color.a * fade_in * fade_out;
+    let in_effect = (emitter.indices.z >> 2u) & 3u;
+    let out_effect = (emitter.indices.z >> 4u) & 3u;
+    return vec2<f32>(
+        emitter.color.a * select(1.0, fade_in, in_effect == 0u) * select(1.0, fade_out, out_effect == 0u),
+        select(1.0, fade_in, in_effect == 1u) * select(1.0, fade_out, out_effect == 1u));
 }
 
 fn billboard_offset(offset: vec2<f32>) -> vec4<f32> {
@@ -375,40 +564,47 @@ fn billboard_offset(offset: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(offset * view.lens.xy, 0.0, 0.0);
 }
 
+fn particle_light_color(color: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+    return color; // XRack particle lighting
+}
+
 fn sprite_vertex(vertex: u32, source: ParticleCenter, in_field: bool) -> SpriteVertex {
     let emitter = source.particle.emitter;
-    let age = source.particle.seconds;
+    let age = source.age;
     let seed = source.particle.seed;
     let center = source.center;
     let lifetime = emitter.spread_lifetime.w;
-    let visible = in_field && age < lifetime;
+    let visible = in_field && source.particle.seconds < lifetime;
     let age_fraction = clamp(age / lifetime, 0.0, 1.0);
-    let radius = select(0.0, mix(emitter.position_radius.w, emitter.velocity_end_radius.w, age_fraction), visible);
+    let fade = particle_fade(emitter, age);
+    let radius = select(0.0, mix(emitter.position_radius.w, emitter.velocity_end_radius.w, age_fraction) * fade.y, visible);
     let corners = array<vec2<f32>, 4>(
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0),
         vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0),
     );
     let uv = corners[vertex];
-    let world = vec4<f32>(center, 1.0);
-    let xy = vec2<f32>(dot(view.clip_x, world), dot(view.clip_y, world));
+    var world = vec4<f32>(center, 1.0);
     var aspect = 1.0;
     var frames = vec3<f32>(0.0);
     if TEXTURED {
         aspect = emitter.sheet.w;
         frames = sequence_frames(emitter, age, seed);
     }
-    var coordinates = uv * vec2<f32>(aspect, 1.0) * radius;
+    var coordinates = (uv + 2.0 * emitter.appearance.yz) * vec2<f32>(aspect, 1.0) * radius;
     let angle = source.particle.billboard_angle;
     if angle != 0.0 {
         let c = cos(angle);
         let s = sin(angle);
         coordinates = vec2<f32>(c * coordinates.x - s * coordinates.y, s * coordinates.x + c * coordinates.y);
     }
-    let offset = billboard_offset(coordinates);
-    let clip = vec4<f32>(xy, dot(view.clip_z, world), dot(view.clip_w, world)) + offset;
-    let alpha = select(0.0, base_alpha(emitter, age), visible);
-    let sprite = Sprite(clip, uv, vec4<f32>(emitter.color.rgb * alpha, alpha),
-        dot(view.view_depth, world), emitter.sheet, frames,
+    var offset = billboard_offset(coordinates);
+    // XRack oriented particle sprite
+    let clip = vec4<f32>(dot(view.clip_x, world), dot(view.clip_y, world),
+        dot(view.clip_z, world), dot(view.clip_w, world)) + offset;
+    let alpha = select(0.0, fade.x, visible);
+    let lit = particle_light_color(emitter.color.rgb, center);
+    let sprite = Sprite(clip, uv, vec4<f32>(lit * alpha, alpha),
+        dot(view.view_depth, world), vec4<f32>(emitter.sheet.xyz, emitter.appearance.x), frames,
         // XRack wireframe corner
         // XRack linked clip depth
     );
@@ -422,32 +618,100 @@ fn vertex_sprite(@builtin(vertex_index) vertex: u32, @builtin(instance_index) in
 
 fn vector_source(index: u32) -> ParticleBirth {
     let particle = particle_at(index);
-    return ParticleBirth(particle, particle.emitter.position_radius.xyz,
-        vector_velocity(particle.emitter, particle.seed));
+    return follow_birth(ParticleBirth(particle, particle.emitter.position_radius.xyz,
+        vector_velocity(particle.emitter, particle.seed), vec3<f32>(0.0)), index, 0u, 0u);
 }
 
-fn place_particle_birth(particle: Particle, motion: Motion, origin: vec3<f32>, velocity: vec3<f32>) -> ParticleBirth {
+fn follow_birth(birth: ParticleBirth, index: u32, shape_kind: u32, velocity_mode: u32) -> ParticleBirth {
+    return birth; // XRack particle follow origin
+}
+
+fn place_particle_birth(particle: Particle, motion: Motion, origin: vec3<f32>, velocity: vec3<f32>, normal: vec3<f32>) -> ParticleBirth {
     // XRack particle birth track
     if motion.modes.w == 0u {
-        return ParticleBirth(particle, origin, velocity);
+        return ParticleBirth(particle, origin, velocity, normal);
     }
     let frame = transpose(mat3x4<f32>(
         bitcast<vec4<f32>>(motion.parent_x), bitcast<vec4<f32>>(motion.parent_y), bitcast<vec4<f32>>(motion.parent_z)));
     let gravity = particle.emitter.gravity;
     var placed = particle;
     placed.emitter.gravity = vec4<f32>(frame * vec4<f32>(gravity.xyz, 0.0), gravity.w);
-    return ParticleBirth(placed, frame * vec4<f32>(origin, 1.0), frame * vec4<f32>(velocity, 0.0));
+    let outgoing = frame * vec4<f32>(velocity, 0.0);
+    var world_normal = vec3<f32>(0.0);
+    if uses_surface_velocity(motion) || FOLLOW_SURFACE_SOURCE {
+        world_normal = surface_normal(mat3x3<f32>(frame[0], frame[1], frame[2]), normal);
+    }
+    return ParticleBirth(placed, frame * vec4<f32>(origin, 1.0), outgoing, world_normal);
+}
+
+fn placed_spatial_birth(particle: Particle, motion: Motion, origin: vec3<f32>, normal: vec3<f32>, index: u32) -> ParticleBirth {
+    let velocity = spatial_velocity(particle, motion, normal);
+    var birth = follow_birth(place_particle_birth(particle, motion, origin, velocity, normal),
+        index, motion.modes.x, motion.modes.z);
+    if uses_surface_velocity(motion) {
+        birth.velocity = surface_departure(motion, birth.velocity, birth.normal);
+    } else if motion.modes.z == 2u {
+        let spread = 2.0 * random3(particle.seed ^ 0x632be59bu) - vec3<f32>(1.0);
+        let distance = motion.target_point.xyz + spread * motion.target_spread.xyz - birth.origin;
+        var direction = distance;
+        if motion.target_point.w != 0.0 {
+            direction = normalized_or(distance, vec3<f32>(0.0));
+        }
+        let variation = signed_random(particle.seed ^ 0x27d4eb2du) * motion.up_variation.w;
+        birth.velocity = direction * (motion.axis_speed.w + variation);
+    }
+    return birth;
 }
 
 fn spatial_source(index: u32) -> ParticleBirth {
     let particle = particle_at(index);
     let motion = motions.emitters[particle.slot];
-    let origin = particle.emitter.position_radius.xyz + spawn_offset(motion, particle.seed);
-    return place_particle_birth(particle, motion, origin, spatial_velocity(particle, motion, origin, vec3<f32>(0.0)));
+    let shape = motion_shape(motion);
+    let sample = sample_shape(shape, particle.seed);
+    let origin = particle.emitter.position_radius.xyz + shape_vector(shape, sample.point);
+    var normal = vec3<f32>(0.0);
+    if uses_surface_velocity(motion) || (FOLLOW_SURFACE_SOURCE && shape.modes.y != 0u) {
+        normal = surface_normal(mat3x3<f32>(motion.shape_x.xyz, motion.shape_y.xyz, motion.shape_z.xyz), sample.normal);
+    }
+    return placed_spatial_birth(particle, motion, origin, normal, index);
+}
+
+fn triangle_point(triangle: SurfaceTriangle, area_pick: f32, seed: u32) -> vec3<f32> {
+    // Square-root barycentric mapping gives uniform area across a triangle.
+    let radius = sqrt(area_pick);
+    let u = random01(seed ^ 0x74b0dc51u);
+    return (1.0 - radius) * triangle.a + radius * mix(triangle.b, triangle.c, u);
+}
+
+fn point_ordinal(particle: Particle) -> u32 {
+    return particle.tick - ((particle.emitter.indices.z >> 6u) & 1u);
+}
+
+fn surface_point(record: SurfaceTriangle, index: u32) -> vec3<f32> {
+    switch index & 3u {
+        case 0u: { return record.a; }
+        case 1u: { return record.b; }
+        case 2u: { return record.c; }
+        default: { return record.normal; }
+    }
 }
 
 fn mesh_source(index: u32) -> ParticleBirth {
     let particle = particle_at(index);
+    let motion = motions.emitters[particle.slot];
+    let shape = motion_shape(motion);
+    if shape.modes.x == 5u {
+        let point = point_ordinal(particle) % max(u32(motion.surface_weights.w), 1u);
+        let local = surface_point(surface_triangles[point / 4u], point);
+        let origin = particle.emitter.position_radius.xyz + shape_vector(shape, local);
+        var normal = vec3<f32>(0.0);
+        if uses_surface_velocity(motion) || FOLLOW_SURFACE_SOURCE {
+            let radial = local - motion.surface_weights.xyz;
+            let forward = shape.shape_z.xyz;
+            normal = normalized_or(shape_vector(shape, radial), forward);
+        }
+        return placed_spatial_birth(particle, motion, origin, normal, index);
+    }
     let count = arrayLength(&surface_triangles);
     let seed = particle.seed ^ 0x3cd9790du;
     let pick = random3(seed);
@@ -455,14 +719,13 @@ fn mesh_source(index: u32) -> ParticleBirth {
     let entry = surface_triangles[column];
     let selected = select(entry.alternate, column, pick.y < entry.probability);
     let triangle = surface_triangles[selected];
-    // Square-root barycentric mapping gives uniform area across a triangle.
-    let radius = sqrt(pick.z);
-    let u = random01(seed ^ 0x74b0dc51u);
-    let local = (1.0 - radius) * triangle.a + radius * mix(triangle.b, triangle.c, u);
-    let motion = motions.emitters[particle.slot];
-    let origin = particle.emitter.position_radius.xyz + shape_vector(motion, local);
-    let normal = shape_vector(motion, triangle.normal);
-    return place_particle_birth(particle, motion, origin, spatial_velocity(particle, motion, origin, normal));
+    let local = triangle_point(triangle, pick.z, seed);
+    let origin = particle.emitter.position_radius.xyz + shape_vector(shape, local);
+    var normal = vec3<f32>(0.0);
+    if uses_surface_velocity(motion) || FOLLOW_SURFACE_SOURCE {
+        normal = normalized_or(shape_vector(shape, triangle.normal), triangle.normal);
+    }
+    return placed_spatial_birth(particle, motion, origin, normal, index);
 }
 
 fn tinted(input: SpriteVertex) -> Sprite {
@@ -511,11 +774,11 @@ fn affector_world_vector(field: Affector, delta: vec3<f32>) -> vec3<f32> {
         dot(field.local_to_world[2].xyz, delta));
 }
 
-fn wander_offset(field: Affector, extra: Wander, particle: Particle, age: f32) -> vec3<f32> {
+fn wander_offset(field: Affector, extra: Wander, particle: Particle, age: f32, time_left: f32) -> vec3<f32> {
     let tau = 6.28318530718;
     let envelope = min(
         select(1.0, clamp(age / max(field.vector_value.w, 1e-12), 0.0, 1.0), field.vector_value.w > 0.0),
-        select(1.0, clamp((particle.emitter.spread_lifetime.w - particle.seconds) /
+        select(1.0, clamp(time_left /
             max(field.time_bounds.w, 1e-12), 0.0, 1.0), field.time_bounds.w > 0.0));
     var delta = field.vector_value.xyz * sin(tau * fract(field.position_age.xyz + age * field.time_bounds.xyz));
     if any(extra.unique_amount.xyz != vec3<f32>(0.0)) {
@@ -558,6 +821,11 @@ fn scale_factor(field: Affector, age: f32) -> f32 {
     return mix(field.vector_value.x, field.vector_value.y, clamp(ratio, 0.0, 1.0));
 }
 
+fn attractor_local_sample(shape: ParticleShape, seed: u32, tick: u32, limit: u32) -> vec3<f32> {
+    // XRack particle target mesh
+    return sample_shape(shape, seed).point;
+}
+
 fn apply_affectors(original: ParticleCenter) -> Displaced {
     var source = original;
     var visible = true;
@@ -568,13 +836,14 @@ fn apply_affectors(original: ParticleCenter) -> Displaced {
         let bit = firstTrailingBit(mask);
         mask &= mask - 1u;
         let field = affectors.fields[bit];
-        let age = particle.seconds - field.position_age.w;
+        let age = original.age - field.position_age.w;
         if age < 0.0 {
             continue;
         }
-        let attached = field.control.w != 0u;
+        let attached = (field.control.w & 1u) != 0u;
         if field.control.x == 5u {
-            let offset = wander_offset(field, affectors.wander[bit], particle, age);
+            let offset = wander_offset(field, affectors.wander[bit], particle, age,
+                particle.emitter.spread_lifetime.w - original.age);
             if attached {
                 source.center += affector_world_vector(field, offset);
             } else {
@@ -608,7 +877,20 @@ fn apply_affectors(original: ParticleCenter) -> Displaced {
                 let duration = select(field.time_bounds.x, remaining_life, field.time_bounds.x < 0.0);
                 let varied = duration + (2.0 * random01(seed ^ 0x94d049bbu) - 1.0) * field.time_bounds.y;
                 let progress = clamp(age / max(varied, 1e-6), 0.0, 1.0);
-                let destination = position + (2.0 * random3(seed) - 1.0) * field.vector_value.xyz;
+                let count = u32(field.time_bounds.z);
+                var target_seed = seed;
+                if count > 0u {
+                    // Choose from a stable set of sample indices, independently
+                    // of time, view, or the number of currently live particles.
+                    target_seed = u32(random01(seed ^ 0x3c6ef372u) * f32(count)) ^ field.control.y;
+                }
+                var destination = position;
+                if (field.control.w & 2u) != 0u {
+                    let shape = affectors.shapes[bit];
+                    destination += shape_vector(shape, attractor_local_sample(shape, target_seed, point_ordinal(particle), count));
+                } else {
+                    destination += (2.0 * random3(target_seed) - 1.0) * field.vector_value.xyz;
+                }
                 center = mix(center, destination, progress);
                 visible = visible && !(field.control.z != 0u && progress >= 1.0);
             }
@@ -654,8 +936,33 @@ fn apply_affectors(original: ParticleCenter) -> Displaced {
     return Displaced(source, visible && scale > 0.0);
 }
 
+fn oriented_displacement(source: ParticleCenter) -> Displaced {
+    var current = apply_affectors(source);
+    let particle = source.particle;
+    let age = particle.seconds;
+    let lifetime = particle.emitter.spread_lifetime.w;
+    if !current.visible || age >= lifetime || particle.emitter.playback.w == 0u || poses.settings[particle.slot].alignment.w != 3.0 {
+        return current;
+    }
+    // Sample backward to follow the incoming direction at a turn. Use a forward sample at birth.
+    let step = min(1.0 / 240.0, 0.25 * lifetime);
+    let neighbor_age = age + select(-step, step, age < step);
+    let delta = neighbor_age - age;
+    if delta != 0.0 {
+        var neighbor = source;
+        neighbor.particle.seconds = neighbor_age;
+        neighbor.age = effect_age(particle.emitter, neighbor_age);
+        neighbor.center += delta * (ballistic_velocity(source) + (0.5 * delta) * particle.emitter.gravity.xyz);
+        // The ballistic velocity is exact. Only the displacement from fields needs sampling.
+        let current_offset = current.source.center - source.center;
+        let neighbor_offset = apply_affectors(neighbor).source.center - neighbor.center;
+        current.source.velocity_offset = (neighbor_offset - current_offset) / delta;
+    }
+    return current;
+}
+
 fn affected_sprite(vertex: u32, source: ParticleCenter) -> SpriteVertex {
-    let displaced = apply_affectors(source);
+    let displaced = apply_affectors(source); // XRack sprite motion orientation
     return sprite_vertex(vertex, displaced.source, displaced.visible);
 }
 
@@ -716,8 +1023,14 @@ struct TrailInterval {
     end_opacity: f32,
 }
 
+struct TrailPoint {
+    center_age: vec4<f32>,
+    // Radius, opacity, longitudinal texture coordinate, and padding.
+    style: vec4<f32>,
+}
+
 fn trail_interval(vertex: u32, particle: Particle) -> TrailInterval {
-    let settings = trails.settings[particle.slot];
+    let settings = trails.settings[particle.slot].shape;
     let life = particle.emitter.spread_lifetime.w;
     let head = min(particle.seconds, life);
     let span = min(head, settings.x);
@@ -753,11 +1066,70 @@ fn trail_vertex(vertex: u32, sample: Displaced, interval: TrailInterval,
                 younger: vec3<f32>, older: vec3<f32>) -> SpriteVertex {
     let particle = sample.source.particle;
     let emitter = particle.emitter;
-    let settings = trails.settings[particle.slot];
-    let life_fraction = clamp(interval.age / emitter.spread_lifetime.w, 0.0, 1.0);
+    let trail = trails.settings[particle.slot];
+    let settings = trail.shape;
+    let age = sample.source.age;
+    let life_fraction = clamp(age / emitter.spread_lifetime.w, 0.0, 1.0);
+    let fade = particle_fade(emitter, age);
     let radius = mix(emitter.position_radius.w, emitter.velocity_end_radius.w, life_fraction)
-        * mix(1.0, settings.y, interval.fraction);
-    let clip = trail_clip(sample.source.center);
+        * mix(1.0, settings.y, interval.fraction) * fade.y;
+    let alpha = select(0.0, fade.x
+        * (1.0 - settings.z * interval.fraction) * interval.end_opacity, sample.visible);
+    let scale = trail_segment_factor(trail.sampling.y, vertex / 2u);
+    let retention = trail_segment_factor(trail.sampling.z, vertex / 2u);
+    let point = TrailPoint(vec4<f32>(sample.source.center, interval.age),
+        vec4<f32>(radius * scale, alpha * retention, interval.fraction, 0.0));
+    return trail_point_vertex(vertex, particle, interval.head, point, younger, older,
+        sample.source.start_velocity);
+}
+
+fn trail_segment_factor(factor: f32, segment: u32) -> f32 {
+    if segment == 0u || factor == 1.0 {
+        return 1.0;
+    }
+    return pow(factor, f32(segment));
+}
+
+struct TrailProjection {
+    clip: vec4<f32>,
+    depth: f32,
+}
+
+fn world_trail_projection(particle: Particle, point: TrailPoint, younger: vec3<f32>,
+                          older: vec3<f32>, start_velocity: vec3<f32>, side: f32) -> TrailProjection {
+    let center = point.center_age.xyz;
+    var path = younger - older;
+    if dot(path, path) <= 1e-20 {
+        let outgoing = center - older;
+        path = select(younger - center, outgoing, dot(outgoing, outgoing) > 1e-20);
+    }
+    let tangent = normalized_or(path, vec3<f32>(0.0));
+    var vertex = center;
+    if any(tangent != vec3<f32>(0.0)) {
+        let settings = poses.settings[particle.slot];
+        var direction = start_velocity;
+        if settings.alignment.w == 2.0 {
+            direction = settings.alignment.xyz - center;
+        } else if settings.alignment.w == 3.0 {
+            direction = tangent;
+        }
+        let age = effect_age(particle.emitter, point.center_age.w);
+        let axes = particle_rotation(particle, age, settings, direction);
+        var edge = cross(tangent, axes[2]);
+        if dot(edge, edge) <= 1e-8 {
+            // A velocity-aligned normal can be parallel to the centerline.
+            edge = axes[1] - tangent * dot(axes[1], tangent);
+        }
+        vertex += normalized_or(edge, vec3<f32>(0.0)) * (side * point.style.x);
+    }
+    return TrailProjection(trail_clip(vertex), dot(view.view_depth, vec4<f32>(vertex, 1.0)));
+}
+
+fn trail_projection(particle: Particle, point: TrailPoint, younger: vec3<f32>, older: vec3<f32>,
+                     start_velocity: vec3<f32>, side: f32) -> TrailProjection {
+    // XRack oriented particle ribbon
+    let center = point.center_age.xyz;
+    let clip = trail_clip(center);
     let headward = projected_position(trail_clip(younger));
     let tailward = projected_position(trail_clip(older));
     var tangent = tailward - headward;
@@ -780,17 +1152,26 @@ fn trail_vertex(vertex: u32, sample: Displaced, interval: TrailInterval,
         let direction = normalize(tangent / magnitude);
         edge = vec2<f32>(-direction.y, direction.x);
     }
+    let offset_clip = clip + billboard_offset(edge * side * point.style.x);
+    return TrailProjection(offset_clip, dot(view.view_depth, vec4<f32>(center, 1.0)));
+}
+
+fn trail_point_vertex(vertex: u32, particle: Particle, head: f32, point: TrailPoint,
+                      younger: vec3<f32>, older: vec3<f32>, start_velocity: vec3<f32>) -> SpriteVertex {
+    let emitter = particle.emitter;
+    let center = point.center_age.xyz;
+    let life_fraction = clamp(effect_age(emitter, point.center_age.w) / emitter.spread_lifetime.w, 0.0, 1.0);
     let side = select(-1.0, 1.0, (vertex & 1u) != 0u);
-    let offset_clip = clip + billboard_offset(edge * side * radius);
+    let projection = trail_projection(particle, point, younger, older, start_velocity, side);
+    let offset_clip = projection.clip;
     var frames = vec3<f32>(0.0);
     if TEXTURED {
-        frames = sequence_frames(emitter, interval.head, particle.seed);
+        frames = sequence_frames(emitter, effect_age(emitter, head), particle.seed);
     }
-    let alpha = select(0.0, base_alpha(emitter, interval.age)
-        * (1.0 - settings.z * interval.fraction) * interval.end_opacity, sample.visible);
-    let world = vec4<f32>(sample.source.center, 1.0);
-    let sprite = Sprite(offset_clip, vec2<f32>(side, 1.0 - 2.0 * interval.fraction),
-        vec4<f32>(emitter.color.rgb * alpha, alpha), dot(view.view_depth, world), emitter.sheet, frames,
+    let alpha = point.style.y;
+    let sprite = Sprite(offset_clip, vec2<f32>(side, 1.0 - 2.0 * point.style.z),
+        vec4<f32>(particle_light_color(emitter.color.rgb, center) * alpha, alpha), projection.depth,
+        vec4<f32>(emitter.sheet.xyz, emitter.appearance.x), frames,
         // XRack wireframe corner
         // XRack linked offset clip depth
     );
@@ -870,10 +1251,49 @@ fn vertex_mesh_trail_affected_tinted(@builtin(vertex_index) vertex: u32, @builti
     return ribbon(tinted(affected_trail(vertex, mesh_source(index))));
 }
 
+struct IntersectionProjection {
+    linear_depth: vec4<f32>,
+    homogeneous: vec4<f32>,
+    // Pixel row stride, clear depth, and reciprocal viewport dimensions.
+    viewport: vec4<f32>,
+}
+
+@group(0) @binding(12) var<storage, read> opaque_particle_depth: array<f32>;
+@group(0) @binding(13) var<uniform> intersection_projection: IntersectionProjection;
+
+fn sample_intersection(position: vec4<f32>, distance: f32) -> f32 {
+    if distance <= 0.0 {
+        return 1.0;
+    }
+    let projection = intersection_projection;
+    let pixel = vec2<u32>(position.xy);
+    let scene_z = opaque_particle_depth[pixel.y * u32(projection.viewport.x) + pixel.x];
+    if scene_z == projection.viewport.y {
+        return 1.0;
+    }
+    let uv = position.xy * projection.viewport.zw;
+    let clip = vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), position.z, 1.0);
+    let delta_z = scene_z - position.z;
+    let fragment_w = dot(projection.homogeneous, clip);
+    let scene_w = fragment_w + delta_z * projection.homogeneous.z;
+    let denominator = scene_w * fragment_w;
+    if denominator <= 0.0 {
+        return 1.0;
+    }
+    // Subtract the rational depths over a common denominator to retain near-contact precision.
+    let slope = fragment_w * projection.linear_depth.z - dot(projection.linear_depth, clip) * projection.homogeneous.z;
+    let gap = delta_z * slope / denominator;
+    return smoothstep(0.0, distance, gap);
+}
+
+fn intersection_fade(position: vec4<f32>, distance: f32) -> f32 {
+    return 1.0; // XRack particle intersection fade
+}
+
 fn trail_color(sprite: Ribbon) -> vec4<f32> {
     // XRack wireframe discard
     let coverage = 1.0 - smoothstep(0.35, 1.0, abs(sprite.uv.x));
-    return sprite.color * coverage;
+    return sprite.color * (coverage * intersection_fade(sprite.position, sprite.sheet.w));
 }
 
 @fragment
@@ -901,7 +1321,7 @@ fn fragment_sprite(sprite: Sprite) -> @location(0) vec4<f32> {
 fn sprite_color(sprite: Sprite) -> vec4<f32> {
     // XRack wireframe discard
     let coverage = 1.0 - smoothstep(0.15, 1.0, length(sprite.uv));
-    return sprite.color * coverage;
+    return sprite.color * (coverage * intersection_fade(sprite.position, sprite.sheet.w));
 }
 
 fn sprite_sample(coordinates: vec2<f32>, sheet: vec4<f32>, frames: vec3<f32>) -> vec4<f32> {
@@ -909,7 +1329,8 @@ fn sprite_sample(coordinates: vec2<f32>, sheet: vec4<f32>, frames: vec3<f32>) ->
     let inset = sheet.yz;
     let local = (vec2<f32>(0.5) + coordinates * vec2<f32>(0.5, -0.5)) * vec2<f32>(cell, 1.0);
     // Clamp each lookup to the active frame's texel centers, including 1px cells.
-    let uv = clamp(local, inset, max(inset, vec2<f32>(cell, 1.0) - inset));
+    var uv = clamp(local, inset, max(inset, vec2<f32>(cell, 1.0) - inset));
+    // XRack repeating ribbon texture
     let first = textureSampleLevel(sheet_texture, sheet_sampler, uv + vec2<f32>(frames.x * cell, 0.0), 0.0);
     var color = first;
     if frames.z > 0.0 && frames.x != frames.y {
@@ -921,12 +1342,14 @@ fn sprite_sample(coordinates: vec2<f32>, sheet: vec4<f32>, frames: vec3<f32>) ->
 
 fn texture_color(sprite: Sprite) -> vec4<f32> {
     // XRack wireframe discard
-    return sprite_sample(sprite.uv, sprite.sheet, sprite.frames) * sprite.color;
+    return sprite_sample(sprite.uv, sprite.sheet, sprite.frames) * sprite.color
+        * intersection_fade(sprite.position, sprite.sheet.w);
 }
 
 fn ribbon_texture(sprite: Ribbon) -> vec4<f32> {
     // XRack wireframe discard
-    return sprite_sample(sprite.uv, sprite.sheet, sprite.frames) * sprite.color;
+    return sprite_sample(sprite.uv, sprite.sheet, sprite.frames) * sprite.color
+        * intersection_fade(sprite.position, sprite.sheet.w);
 }
 
 @fragment

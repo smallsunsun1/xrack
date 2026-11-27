@@ -241,6 +241,7 @@ struct Pipeline {
     reverse_depth: bool,
     buffers: usize,
     nearest_buffers: u8,
+    cubemaps: u8,
     format: wgpu::TextureFormat,
     program: Option<Program>,
 }
@@ -272,6 +273,7 @@ struct BufferTexture<'a> {
     sampling: BufferSampling,
     encoding: BufferEncoding,
     nearest: bool,
+    cube: bool,
     projection: Option<&'a CaptureProjection>,
 }
 
@@ -348,6 +350,7 @@ impl Effects {
                     sampling: BufferSampling::DEFAULT,
                     encoding: BufferEncoding::default(),
                     nearest: false,
+                    cube: false,
                     projection: None,
                 });
             let count = route.map_or(0, |route| {
@@ -355,6 +358,7 @@ impl Effects {
                     let mut encoding = BufferEncoding::default();
                     let mut nearest = false;
                     let mut projection = None;
+                    let mut cube = false;
                     let view = match buffer.source.as_ref() {
                         None => None,
                         Some(BufferSource::Current(producer)) => {
@@ -373,6 +377,15 @@ impl Effects {
                                 image.color,
                                 buffer.sampling,
                             )))
+                        }
+                        Some(BufferSource::Cubemap(texture)) => {
+                            let view = self
+                                .images
+                                .borrow_mut()
+                                .cubemap_view(ctx.device, queue, texture);
+                            cube = view.is_some();
+                            encoding = BufferEncoding::Straight;
+                            view.map(Cow::Owned)
                         }
                         Some(BufferSource::Capture(read)) => {
                             if read.attachment != CaptureAttachment::Color {
@@ -398,6 +411,7 @@ impl Effects {
                         sampling: buffer.sampling,
                         encoding,
                         nearest,
+                        cube,
                         projection,
                     };
                 }
@@ -489,6 +503,13 @@ impl Effects {
                 bits | (u8::from(input.nearest) << index)
             });
         let format = self.formats.sampled(settings.format);
+        let cubemaps = inputs
+            .buffers
+            .iter()
+            .enumerate()
+            .fold(0u8, |bits, (index, input)| {
+                bits | (u8::from(input.cube) << index)
+            });
         let cached = self
             .pipelines
             .iter()
@@ -498,6 +519,7 @@ impl Effects {
                     && entry.reverse_depth == reverse_depth
                     && entry.buffers == count
                     && entry.nearest_buffers == nearest_buffers
+                    && entry.cubemaps == cubemaps
                     && entry.format == format
             })
             .and_then(|index| self.pipelines.remove(index));
@@ -508,13 +530,14 @@ impl Effects {
             reverse_depth,
             buffers: count,
             nearest_buffers,
+            cubemaps,
             format,
             program: Program::new(
                 ctx.device,
                 settings.source,
                 (kind, reverse_depth),
                 count,
-                nearest_buffers,
+                (nearest_buffers, cubemaps),
                 format,
             )
             .map_err(|error| tracing::warn!(%error, "XRack disabled an invalid scene effect"))
@@ -731,7 +754,7 @@ impl Program {
         source: &str,
         (depth, reverse_depth): (DepthInput, bool),
         buffers: usize,
-        nearest_buffers: u8,
+        (nearest_buffers, cubemaps): (u8, u8),
         format: wgpu::TextureFormat,
     ) -> Result<Self, String> {
         let binding = |binding, ty| wgpu::BindGroupLayoutEntry {
@@ -807,12 +830,17 @@ impl Program {
             [
                 binding(
                     view,
-                    texture(
-                        wgpu::TextureSampleType::Float {
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float {
                             filterable: nearest_buffers & (1 << index) == 0,
                         },
-                        false,
-                    ),
+                        multisampled: false,
+                        view_dimension: if cubemaps & (1 << index) != 0 {
+                            wgpu::TextureViewDimension::Cube
+                        } else {
+                            wgpu::TextureViewDimension::D2
+                        },
+                    },
                 ),
                 binding(
                     sampler,
@@ -838,6 +866,7 @@ impl Program {
                 depth,
                 buffers,
                 nearest_buffers,
+                cubemaps,
             ))),
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {

@@ -141,6 +141,14 @@ impl PendingSurface<'_> {
 
 enum PendingLayer<'a> {
     Surface(PendingSurface<'a>),
+    Opacity {
+        node: &'a Node,
+        layout: &'a LayoutNode,
+        path: Vec<usize>,
+        in_layout: bool,
+        clip: Rect,
+        mask: Option<usize>,
+    },
     ScrollingImages {
         node: &'a Node,
         layout: &'a LayoutNode,
@@ -161,6 +169,7 @@ enum PendingLayer<'a> {
 struct WindowClip {
     rect: Option<Rect>,
     mask: Option<usize>,
+    fractional: bool,
 }
 
 #[derive(Default)]
@@ -225,6 +234,7 @@ impl<'a> WindowLayers<'a> {
         let order = self.layers.len() + self.pending.len();
         if order + self.capsule_layers >= MAX_INSTANCES
             || layout.has_ancestor_clip_chain() != clip.mask.is_some()
+            || clip.fractional && node.boolean("cache-rendering-hint", false)
         {
             return None;
         }
@@ -301,16 +311,34 @@ impl<'a> WindowLayers<'a> {
                 renderer.cached_window_layer(node, layout, &self.path, in_layout, frame)
             {
                 if !contains_rect(visible, layer.bounds) {
-                    if frame.scale < 1.0 || !crate::pixel_aligned(visible, frame.scale) {
-                        return None;
-                    }
-                    layer.crop(visible);
+                    crop_cached_window_layer(
+                        &mut layer,
+                        visible,
+                        frame.scale,
+                        clip.mask.is_some(),
+                    )?;
                 }
                 let complete = !layer.surface_only || node.children.is_empty();
                 self.layers.push((layer, clip.mask));
                 if complete {
                     return Some(());
                 }
+            } else if Renderer::exact_masked_group(node, layout, frame) && passive_content(node) {
+                let content = layout.bounds.intersect(visible);
+                if content.width > 0.0 && content.height > 0.0 {
+                    self.pending.push((
+                        order,
+                        PendingLayer::Opacity {
+                            node,
+                            layout,
+                            path: self.path.clone(),
+                            in_layout,
+                            clip: visible,
+                            mask: clip.mask,
+                        },
+                    ));
+                }
+                return Some(());
             } else if Renderer::can_cache_window_surface(node, layout, frame.scale) {
                 if clip
                     .rect
@@ -351,13 +379,21 @@ impl<'a> WindowLayers<'a> {
         };
         let content = viewport.intersect(layout.clip);
         let rect = clip.rect.map_or(content, |clip| content.intersect(clip));
-        if !crate::pixel_aligned(rect, frame.scale) || frame.scale < 1.0 {
+        let shape = layout.child_clip_shape();
+        let rounded_scope = clip.mask.is_some() || shape.is_some();
+        let pixel_aligned = crate::pixel_aligned(rect, frame.scale);
+        if frame.scale < 1.0
+            || !pixel_aligned && !(fractional_window_composition() && rounded_scope)
+        {
             return None;
         }
-        let mask = if let Some(shape) = layout.child_clip_shape() {
-            if !crate::pixel_aligned(shape.bounds, frame.scale) {
+        let mut fractional = clip.fractional || !pixel_aligned;
+        let mask = if let Some(shape) = shape {
+            let shape_aligned = crate::pixel_aligned(shape.bounds, frame.scale);
+            if !fractional_window_composition() && !shape_aligned {
                 return None;
             }
+            fractional |= !shape_aligned;
             let mut shapes = clip
                 .mask
                 .map_or_else(Vec::new, |scope| self.scopes[scope].to_vec());
@@ -375,6 +411,7 @@ impl<'a> WindowLayers<'a> {
             WindowClip {
                 rect: Some(rect),
                 mask,
+                fractional,
             },
         )
     }
@@ -548,6 +585,39 @@ impl<'a> WindowLayers<'a> {
     }
 }
 
+pub(super) fn fractional_window_composition() -> bool {
+    cfg!(xrack_femtovg_glyph_samples)
+}
+
+fn crop_cached_window_layer(
+    layer: &mut WindowLayer,
+    clip: Rect,
+    scale: f32,
+    rounded_scope: bool,
+) -> Option<()> {
+    if scale >= 1.0 && crate::pixel_aligned(clip, scale) {
+        layer.crop(clip);
+        return Some(());
+    }
+    if !fractional_window_composition()
+        || !rounded_scope
+        || scale < 1.0
+        || !matches!(&layer.source, WindowLayerSource::Texture(_))
+    {
+        return None;
+    }
+    // Preserve the boundary pixel for the compositor's coverage calculation.
+    let device = crate::retained_layers::device_bounds(clip, scale);
+    let raster = crate::retained_layers::logical_bounds(device, scale);
+    layer.crop(raster);
+    layer.edge_clip = Some(
+        layer
+            .edge_clip
+            .map_or(clip, |current| current.intersect(clip)),
+    );
+    Some(())
+}
+
 fn contains_rect(clip: Rect, bounds: Rect) -> bool {
     bounds.x >= clip.x
         && bounds.y >= clip.y
@@ -664,6 +734,7 @@ impl<'a> DisplayList<'a> {
         if !allow_scroll_batch && !large_enough(renderer.opacity_layer_count()) {
             return None;
         }
+        renderer.grow_window_opacity_atlas();
         let mut collected = WindowLayers {
             background,
             allow_scroll_batch,
@@ -742,6 +813,22 @@ impl<'a> DisplayList<'a> {
                 PendingLayer::Surface(item) if item.live => {
                     changing_surfaces.push((index, scrolls.len(), item));
                     skipped += 1;
+                }
+                PendingLayer::Opacity {
+                    node,
+                    layout,
+                    mut path,
+                    in_layout,
+                    clip,
+                    mask,
+                } => {
+                    let mut layer = renderer
+                        .capture_composited_opacity(node, layout, &mut path, frame, in_layout)
+                        .ok()??;
+                    if !contains_rect(clip, layer.bounds) {
+                        crop_cached_window_layer(&mut layer, clip, frame.scale, mask.is_some())?;
+                    }
+                    layers.insert(index, (layer, mask));
                 }
                 PendingLayer::Surface(item) => {
                     let layer = renderer.capture_window_surface(
@@ -857,16 +944,32 @@ impl<'a> DisplayList<'a> {
         }
         let mut masks = vec![None; scopes.len()];
         for (layer, scope) in &mut layers {
-            if let Some(scope) = *scope
-                && layer.bounds.width > 0.0
-                && layer.bounds.height > 0.0
-                && !inside_clip_interiors(&scopes[scope], layer.bounds, frame.scale)
-            {
-                if masks[scope].is_none() {
-                    masks[scope] = Some(renderer.window_clip_mask(&scopes[scope], frame.scale)?);
-                }
-                layer.sample_mask = true;
+            let Some(scope) = *scope else { continue };
+            if layer.bounds.width <= 0.0 || layer.bounds.height <= 0.0 {
+                continue;
             }
+            let shapes = scopes[scope].as_ref();
+            let needs_mask = |shapes| !inside_clip_interiors(shapes, layer.bounds, frame.scale);
+            let samples = match shapes {
+                [outer, inner] => [
+                    needs_mask(std::slice::from_ref(outer)),
+                    needs_mask(std::slice::from_ref(inner)),
+                ],
+                _ => [needs_mask(shapes), false],
+            };
+            if samples == [false, false] {
+                continue;
+            }
+            if masks[scope].is_none() {
+                masks[scope] = Some(renderer.window_clip_masks(shapes, frame.scale)?);
+            }
+            // A quad entirely inside one of the two clips only samples
+            // the other mask. Quads still share the same material.
+            layer.clip_samples = if masks[scope].as_ref()?.second.is_some() {
+                samples
+            } else {
+                [true, false]
+            };
         }
         let layers = layers
             .into_iter()
@@ -1057,6 +1160,10 @@ impl<'a> DisplayList<'a> {
             self.first = None;
         }
         false
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.first.is_none()
     }
 
     pub(super) fn submit(&mut self, renderer: &mut Renderer) -> Result<(), String> {

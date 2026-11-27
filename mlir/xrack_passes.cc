@@ -13,6 +13,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/JSON.h"
@@ -509,10 +510,53 @@ struct FoldGeometryFunction : OpRewritePattern<GeometryFunctionOp> {
   LogicalResult matchAndRewrite(GeometryFunctionOp op, PatternRewriter &rewriter) const override {
     auto operation = op.getValue();
     auto inputs = op.getInputs();
+    if (operation == "texture-rgba8" && inputs.size() == 3) {
+      auto pixels = inputs[2].getDefiningOp<IntArrayOp>();
+      auto integer = [](Value value) -> std::optional<int64_t> {
+        auto literal = value.getDefiningOp<LiteralOp>();
+        int64_t number;
+        if (!literal || literal.getValue().getAsInteger(10, number))
+          return std::nullopt;
+        return number;
+      };
+      const auto width = integer(inputs[0]);
+      const auto height = integer(inputs[1]);
+      if (!pixels || !inputs[2].hasOneUse() || !width || !height ||
+          !staticGeometryArgument(inputs[2]))
+        return failure();
+      if (*width < 1 || *height < 1 || *width > MaxTextureDataDimension ||
+          *height > MaxTextureDataDimension ||
+          size_t(*width * *height * 4) != pixels.getItems().size()) {
+        replaceLiteral(rewriter, op, "");
+        return success();
+      }
+      std::string packed = std::to_string(*width) + "x" + std::to_string(*height) + ":";
+      packed.reserve(packed.size() + pixels.getItems().size() * 2);
+      for (Value byte : pixels.getItems()) {
+        const auto value = integer(byte);
+        if (!value || *value < 0 || *value > 255) {
+          replaceLiteral(rewriter, op, "");
+          return success();
+        }
+        packed.push_back(llvm::hexdigit(*value >> 4));
+        packed.push_back(llvm::hexdigit(*value & 15));
+      }
+      replaceLiteral(rewriter, op, packed);
+      return success();
+    }
     if (operation == "identity")
       return replaceGeometryLiteral(rewriter, op, identity2D);
     if (operation == "quaternion-identity")
       return replaceGeometryLiteral(rewriter, op, identityQuaternion);
+    if (operation == "combine-3d" && inputs.size() == 2) {
+      for (unsigned slot : {0u, 1u}) {
+        auto empty = inputs[slot].getDefiningOp<LiteralOp>();
+        if (empty && empty.getValue().empty()) {
+          rewriter.replaceOp(op, inputs[1 - slot]);
+          return success();
+        }
+      }
+    }
     if (inputs.empty())
       return failure();
     if (operation == "quaternion-look-rotation" || operation == "quaternion-look-at") {

@@ -40,6 +40,7 @@ export component LodFadeDemo inherits Window {
             lod-of: "panel", lod-max-size: 190px,
             geometry: FadeShape { shape: "plane", width: 0.8, height: 0.76 }, ..root.defaults
         },
+        FadeActor { id: "shifted", x: 2, yaw: 20, ..root.eye },
     ]);
     out property <string> picked <- Scene3D.pick-camera(
         root.world, root.camera-name, Point2D.new(320px, 240px), Point2D.new(218px, 108px));

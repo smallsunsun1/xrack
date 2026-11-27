@@ -106,7 +106,7 @@ fn previous_morph_point(index: u32, point: vec3<f32>) -> vec3<f32> {
     var result = point;
     let end = morph_entries[index + 1u];
     for (var entry = morph_entries[index]; entry < end; entry += 1u) {
-        let offset = previous_morph.geometry.x + entry * 10u;
+        let offset = previous_morph.geometry.x + entry * previous_morph.geometry.y;
         let target_index = morph_entries[offset];
         let weight = previous_morph.weights[target_index / 4u][target_index % 4u];
         result += weight * morph_vector(offset + 1u);
@@ -125,17 +125,26 @@ fn skinned(vertex: Vertex, weights: SkinWeights, @builtin(instance_index) instan
         skin_point(skin_transform(weights), vertex.point), previous_skin_point(weights, vertex.point));
 }
 
+fn morphed_coverage(vertex: Vertex, delta: MorphDisplacement) -> Vertex {
+    var result = vertex;
+    result.uv += delta.uvs.xy;
+    result.color.a = clamp(vertex.color.a + delta.color.a, 0.0, 1.0);
+    return result;
+}
+
 @vertex
 fn morphed(vertex: Vertex, @builtin(instance_index) instance: u32) -> RasterVertex {
-    return paired_vertex(vertex, instance,
-        vertex.point + morph_displacement(vertex.index).position, previous_morph_point(vertex.index, vertex.point));
+    let delta = morph_displacement(vertex.index, select(0u, MORPH_COVERAGE, TEST_COVERAGE));
+    return paired_vertex(morphed_coverage(vertex, delta), instance,
+        vertex.point + delta.position, previous_morph_point(vertex.index, vertex.point));
 }
 
 @vertex
 fn skinned_morphed(vertex: Vertex, weights: SkinWeights,
-    @builtin(instance_index) instance: u32) -> RasterVertex {
-    return paired_vertex(vertex, instance,
-        skin_point(skin_transform(weights), vertex.point + morph_displacement(vertex.index).position),
+                  @builtin(instance_index) instance: u32) -> RasterVertex {
+    let delta = morph_displacement(vertex.index, select(0u, MORPH_COVERAGE, TEST_COVERAGE));
+    return paired_vertex(morphed_coverage(vertex, delta), instance,
+        skin_point(skin_transform(weights), vertex.point + delta.position),
         previous_skin_point(weights, previous_morph_point(vertex.index, vertex.point)));
 }
 

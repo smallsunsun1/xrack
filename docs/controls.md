@@ -900,6 +900,16 @@ glTF 材质使用金属度与粗糙度模型。导入器读取 `metallicFactor`�
 
 Bazel 的 `xr_ui_library(assets = [...])` 要声明 OBJ、MTL 和实际使用的贴图。AOT 嵌入准备好的网格，解释器加载同一资产，预览会追踪这些文件的变化。OBJ 也支持 `lightmap-uv` 和 `auto-lod`。VS Code 可以补全文件与材质槽，并显示源顶点和面数。打开示例预览或运行 `bazel run //examples/puzzle3d:play_wavefront`，比较穿过凹口与命中前板的距离，以及材质覆盖。 [OBJ 示例](../examples/puzzle3d/wavefront.xr)
 
+#### 立体文字几何
+
+在模型的 `geometry` 记录设置 `shape: "text"`。用 `text: string` 指定内容，`font: Font` 选择字族、字重与斜体。字体的 `size` 控制曲线细分精度。每个 em 的世界尺寸由 `text-scale: float` 决定，默认 1。`depth: float` 沿 +Z 拉伸文字，默认 0.2。原点位于背面基线左端，深度为 0 时生成平面文字。
+
+可以用 `import "fonts/my-font.ttf";` 声明随应用分发的字体文件，并在 Bazel UI 目标的 `assets` 中列出该文件。几何生成优先使用应用导入的匹配字族，再查系统字体。换行、双向文本和字体回退沿用字形塑形后的位置。字形中间的镂空也会参与拾取。
+
+生成的材质槽为 `front`、`back` 和 `side`。这些部分沿用普通网格的材质、投影、阴影和命中测试。调整物体变换或颜色可复用 GPU 网格，调整深度或文字缩放会复用塑形和三角剖分结果。预览中选择 `TextGeometryDemo`，或运行 `bazel run //examples/puzzle3d:play_text_geometry`。示例附带专为几何示例绘制的字体。 [立体文字示例](../examples/puzzle3d/text_geometry.xr)
+
+给几何记录添加 `asynchronous: bool` 并设为 `true` 后，缓存未命中的文字在后台生成。`Scene3D.geometry-status(model, "letters")` 返回当前快照中指定对象的状态，值为 `"empty"`、`"loading"`、`"ready"` 或 `"error"`。`Scene3D.geometry-error(model, "letters")` 返回出错原因。普通网格已就绪时也会返回 `"ready"`。状态可绑定到界面，窗口和预览会在完成后刷新。加载期间文字几何为空，节点的变换与子节点继续生效。修改文字后，旧请求的结果不会覆盖当前几何。示例可用「Async」复选框切换模式。
+
 #### 运行时加载 3D 资产
 
 Rust 应用可用 `xrack_scene_import::load_mesh_file(path, options)` 加载本地 OBJ、glTF、GLB 或 PNG 高度图。导入器返回准备好的 `MeshAsset3D` 和它读取的文件集合，工作线程可把资产发送给 UI 线程。Python 的 `xrack.load_mesh_file(path, auto_lod=False, lightmap_uv=False)` 返回同一种资产，可以用 `asyncio.to_thread` 放在后台执行。
@@ -925,6 +935,14 @@ importer := MeshLoader3D {
 `status` 的值为 `"empty"`、`"loading"`、`"ready"` 或 `"error"`，失败时可读 `error`。切换路径、修改导入选项或增加 `revision` 会发起新请求。等待时 `asset` 为空，可以显示模型行的占位网格。清空路径和关闭 `active` 都会释放当前资产。已被替换的请求不会修改当前结果。布局热重载时，相同声明 ID、路径、选项和 revision 可继续使用已经完成的资产。
 
 本地导入在后台执行，原生窗口在结果返回时更新。VS Code 支持为 `source` 字面量补全和跳转资源文件。可直接预览示例，或用 `bazel run //examples/puzzle3d:play_declarative_mesh` 打开原生窗口。 [声明式导入示例](../examples/puzzle3d/declarative_mesh.xr)
+
+#### 查询材质和动画目录
+
+`Scene3D.mesh-material-slots(asset, variant?)` 返回所选材质布局的槽选择器，可直接写回 `material-slots`。同名槽使用源索引 `#n` 区分，隐式材质使用 `#default`。省略或给出无效变体时读取原始材质布局。
+
+`Scene3D.mesh-material-variants(asset)` 和 `Scene3D.mesh-animation-clips(asset)` 按源顺序列出变体和动画。优先使用唯一名称，缺名、重名或保留格式的名称使用 `#n`。返回值可直接用于 `material-variant` 和 `animation`。`Scene3D.mesh-animation-duration(asset, clip)` 返回片段秒数，找不到时返回 0。
+
+这些函数接受 `MeshLoader3D.asset`、宿主传入的 `meshasset3d` 或 `@mesh-url` 生成的键。目录从已导入的资产缓存，返回独立的可编辑列表。VS Code 可在已知资源的变体和动画参数中补全选择器。Python 可通过资产的 `material_slots()`、`material_variants()`、`animation_clips()` 和 `animation_duration()` 读取。可在预览中选择 `MeshCatalogDemo`，或运行 `bazel run //examples/puzzle3d:play_gpu_instancing -- --catalog`。 [目录示例](../examples/puzzle3d/gpu_instancing.xr)
 
 #### 3D 包围盒与自动构图
 
@@ -968,20 +986,39 @@ BlendActor {
 
 #### 直接查询 SceneView3D
 
+`view.render-stats() -> renderstats3d` 可在绑定中读取该视口的渲染统计。把 `render-stats-revision` 从 0 改为正整数，视口会在下一次绘制时采样该序号。改成另一个正整数会重新采样，改回 0 会清空。需要周期更新时，可用计时器递增序号。
+
+快照提供 `valid`、`revision`、`frame`、`work`、输出与光栅尺寸、`samples`、`cpu-micros`、网格与粒子绘制计数、阴影与捕获计数，以及上传的网格字节数。未产生新的 3D 绘制时，`work` 可为 `"retained"` 或 `"display-only"`。采样不会使缓存纹理失效。
+
+GPU 时间异步补入同一快照，使用 `gpu-supported`、`gpu-valid`、`gpu-nanos`、`gpu-passes` 和 `gpu-truncated` 读取。GPU 时间只覆盖该视口被采样的通道。可在预览中选择 `RenderStatsDemo`，或用 `bazel run //examples/puzzle3d:play_texture_size -- --render-stats` 打开双视口示例。 [统计示例](../examples/puzzle3d/texture_size.xr)
+
 为视口指定 ID 后，可以用 `view.project(world)` 将世界坐标映射为视口内的逻辑像素与相机深度。用 `view.unproject(point, depth, fallback)` 还原世界坐标。两者读取完成布局的相机，适用于具名相机、自动构图、当前宽高比和取景留白。投影结果的 `inside` 也考虑视口自己的裁剪矩形。
 
 `view.pick(point)` 返回最近命中的对象 ID。 `view.hit(point)` 返回 `hit3d`，其中包含世界位置和行号。 `view.hit-all(point)` 返回按距离排序的命中列表。另有 `hit-row(point, row)`、`hit-subset(point, rows)`、`hit-instance(point, row, mesh-node, instance)`，以及返回行索引的 `pick-in-rect(start, end)`。拾取使用视口当前的图层掩码、裁剪面和 LOD。点和矩形的坐标相对于视口左上角。
+
+当视口启用 `texture-input: true` 时，`view.hit-item(point: point2d) -> hit3d` 可查询该像素命中的交互贴图源。结果的 `item-source: string` 是 `texture-source` 名称，`item-position: point2d` 是相对源面板左上角的逻辑像素，已计入贴图的 UV 旋转、翻转和平铺。原有 `object-id`、行号和 3D 坐标保留。遮挡、视口裁剪、禁用和重名来源遵循同一套输入规则。无可用来源时 `valid` 为 false。普通 `hit` 等几何查询的两个贴图字段分别为空字符串和零坐标。 [交互贴图示例](../examples/puzzle3d/item_texture.xr)
 
 从游戏角色、工具或其他任意世界坐标发起查询时，可以调用以下方法。它们使用该视口布局完成后的模型姿态、图层掩码、LOD 和实例可见距离，结果中的行号仍指向主场景记录。射线起点、方向、距离和半径均在世界空间，视口像素裁剪和相机近远裁剪面不限制这组查询。
 
 | 方法 | 结果 |
 | --- | --- |
 | `view.ray-hit(origin, direction, max-distance)` | 返回最近的 `hit3d`。方向会归一化，距离以世界单位计。 |
+| `view.ray-hit-item(origin, direction, max-distance)` | 用世界射线查询交互贴图并返回 `hit3d`，包含 `item-source` 和面板局部逻辑像素 `item-position`。需要启用 `texture-input`。 |
 | `view.ray-hit-all(origin, direction, max-distance)` | 返回所有命中的 `[hit3d]`，按距离排序。同一行保留一次命中，导入的 GPU 实例按实例地址分别计入。 |
 | `view.ray-hit-row(origin, direction, max-distance, row)` | 只检测指定的主场景记录行。 |
 | `view.ray-hit-subset(origin, direction, max-distance, rows)` | 只检测 `rows: [int]` 中的行，返回按距离排序的命中列表。 |
 | `view.ray-hit-instance(origin, direction, max-distance, row, mesh-node, instance)` | 只检测特定实例。地址可使用命中的 `row-index`、`mesh-node-index` 与 `instance-index`。 |
 | `view.closest-point(origin, radius)`、`view.closest-point-row(origin, radius, row)` | 在半径内找最近的可拾取三角面，返回包含法线、UV 和距离的 `hit3d`。 |
+
+世界射线拾取贴图时，离射线起点最近的表面决定能否命中面板。它会处理遮挡、UV 变换、重名或隐藏的面板，视口裁剪矩形和相机近远剪裁面只限制屏幕坐标查询。运行 `bazel run //examples/puzzle3d:play_item_texture -- --ray`，可切换射线目标、遮挡和裁剪。 [射线面板示例](../examples/puzzle3d/item_texture.xr)
+
+在回调中可调用 `view.set-touchpoint(source: string, position: point2d, id: int, pressed: bool)`，把程序触点送到该视口所引用贴图源内的 `TouchArea`、按钮、`CheckBox`、`RadioButton`、`Switch`、`Slider`、`RangeSlider` 或 `Dial`。坐标是源面板左上角为原点的逻辑像素，`ray-hit-item` 返回的 `item-source` 和 `item-position` 可直接传入。每个视口按调用方的 `id` 跟踪触点。同一 ID 首次按下发出 Down，按住更新发出 Move，抬起发出 Up。换到另一面板时先向旧面板发出 Up，再向新面板发出 Down。抬起时可传空源结束旧触点。视口关闭贴图输入、面板隐藏或目标失效时取消触点。开启 `TouchArea.multi-touch` 可以同时跟踪多个 ID，事件中的运行时触点 ID 属于独立命名空间。运行 `bazel run //examples/puzzle3d:play_item_texture -- --touch` 体验面板触点和射线触点。
+
+对 `Button`、`RoundButton` 和 `ToolButton`，按下会更新贴图内的按压态，在按钮内抬起会触发点击。离开按钮后在外部抬起时取消按压。对 `Slider`，按住手柄会保留抓取偏移，拖动按滑轨方向和范围计算。设置 `live: false` 时，拖动先更新贴图内的手柄预览，抬起再提交值，取消时撤销预览。可用 `bazel run //examples/puzzle3d:play_item_texture -- --touch-controls` 体验标准控件。
+
+`RangeSlider` 按触点选择手柄。两个手柄重合时，触点沿滑轨移动超过拖动阈值后，才根据方向选中下限或上限手柄。两种滑块都支持 `live: false` 的预览和提交。`Dial` 沿用控件的 `input-mode` 和 `wrap`，支持环形、水平和垂直拖动。用 `bazel run //examples/puzzle3d:play_item_texture -- --touch-ranges` 打开双手柄和旋钮示例。在 `ControllerTouchDemo` 的预览中也可以通过「双手柄滑块和旋钮」切换到这组控件。
+
+`CheckBox` 抬起时按控件自身的状态规则切换，三态复选框沿用三态循环。`RadioButton` 通过所属组更新选择。触点从 `Switch` 指示器开始横向拖动时，贴图先显示滑块位置，越过中点后松手才更新 `checked`，并触发一次 `toggled()`。右到左布局反转拖动方向，取消触点会撤销预览。打开 `ControllerTouchDemo` 并勾选「复选、单选和开关」可体验这组控件。用 `bazel run //examples/puzzle3d:play_item_texture -- --touch-toggles` 打开原生示例。
 
 `Scene3D.ray-hit` 等世界查询始终使用主网格。拖动 [LOD 示例](../examples/puzzle3d/lod.xr) 的相机距离后点击「检测射线」，可以查看当前显示网格上的命中位置。
 
@@ -998,6 +1035,12 @@ BlendActor {
 `SceneView3D.scissor-rect` 接受包含 `x`、`y`、`width`、`height` 四个 `length` 字段的记录。坐标相对于视口左上角，单位为逻辑像素。可选的 `enabled: bool` 默认打开此矩形，省略整个属性时使用完整视口。超出视口的范围会取交集，空矩形只显示清屏背景。
 
 裁剪限制网格、天空盒、粒子和深度通道的光栅写入，保持同一相机投影。内联视口与离屏纹理使用相同的坐标规则，后处理继续以裁剪后的帧为输入。命名捕获和反射探针使用各自的绘制区域。3D 贴图上的 2D 控件只接收裁剪区内的新指针命中，独立的 `Scene3D` 几何查询继续使用传入的参数。 [交互示例](../examples/puzzle3d/inline_view.xr)
+
+#### 3D 地面网格
+
+`SceneView3D.scene-grid: true` 在世界 XZ 平面绘制地面参考网格，默认关闭。`scene-grid-height` 是平面的世界 Y 坐标，默认 0。`scene-grid-spacing` 是线间距，默认 1，必须为有限正数，有效绘制范围为 0.0001 到 1000000。`scene-grid-color` 接受带透明度的颜色。`scene-grid-axes` 默认开启，用红色和蓝色区分 X、Z 轴。
+
+网格使用视口相机和深度测试，前景几何可遮挡网格线。线条变密时逐渐淡出。透视、正交、反向深度、视口裁剪和抗锯齿沿用视口设置。网格只写入视口颜色，不生成网格顶点、拾取对象或碰撞体，也不写入命名捕获和反射探针。关闭网格时不会创建或提交网格管线。静止视口仍可复用缓存纹理。 [地面网格示例](../examples/puzzle3d/ground_grid.xr)
 
 #### 不透明深度预通道
 
@@ -1085,6 +1128,8 @@ ProgramStyle {
 `shader-textures` 的记录用 `texture: string` 引用 `@texture-url(...)`，用 `item: string` 引用当前窗口中 Rectangle 的 `texture-source`，或用 `capture: string` 引用当前视口的命名画面。输入优先级为 `capture`、`texture`、`item`。每项可设置 `enabled: bool`、`filter: string`（`nearest` 或默认 `linear`）、`wrap-u` 和 `wrap-v`（默认 `clamp`，也可选 `repeat` 和 `mirror`）。图片的 `color-space` 默认为 `srgb`，数据图可选 `linear`。实时二维源按其捕获编码转换。
 
 WGSL 用 `material_texture(index, uv)` 取得直通 alpha 和线性 RGB。索引为从 0 开始的 `u32`，采样使用第 0 层 mip。可用 `material_has_texture(index)` 查询输入，`material_texture_size(index)` 读取像素尺寸。输入缺失、禁用或超出 GPU 槽位时，查询返回 false、零尺寸和透明黑。最多提供四项。只有 16 个片元纹理槽位的设备可为普通材质提供前三项，启用清漆后槽位全部用于 PBR。 [贴图输入示例](../examples/puzzle3d/material_texture_inputs.xr) · [WGSL 采样](../examples/puzzle3d/effects/material_texture_inputs.wgsl)
+
+`shader-textures` 也可用 `@texture-url("model.ktx2")` 加载 KTX 或 KTX2 六面贴图。用 `material_has_cubemap(index)` 查询类型，用 `material_cubemap(index, direction)` 按 `vec3<f32>` 方向采样，或用 `material_cubemap_lod(index, direction, lod)` 选择 mip。尺寸查询返回单面的宽高，二维采样函数遇到立方体输入时返回透明黑。立方体材质采用线性过滤及 mip 间插值。 [材质和后处理对照示例](../examples/puzzle3d/shader_cubemap.xr)
 
 同一 WGSL 文件可以定义多个材质函数。`fn scene_vertex(input: XrVertexInput) -> vec3<f32>` 修改顶点位置。顶点输入包括蒙皮和 morph 后的局部坐标 `input.position` 以及 `input.parameters`。返回值是局部坐标中的附加位移。正值 `shader-displacement` 开启位移，默认值为 0，允许范围为 0 到 10000。运行时会按该值限制各轴的位移并扩展渲染包围盒。颜色、阴影、深度和运动矢量使用同一顶点函数，TAA 使用上一帧的位移参数。
 
@@ -1330,6 +1375,20 @@ struct Sampler {
 
 例如，声明 `base-color-map: Sampler` 后可以绑定 `Sampler { source: @texture-url("models/tile.png"), wrap-u: "repeat", wrap-v: "repeat", uv-scale-u: 2, uv-scale-v: 2 }`。
 
+**程序生成贴图**
+
+`TextureData2D.rgba8(width, height, pixels)` 从 `[int]` 生成不可变的 `texturedata2d`。每个像素依次提供 R、G、B 和直通 alpha，行从上到下排列。宽高各为 1–2048，列表必须恰好有 `width * height * 4` 项，每项为 0–255。无效输入返回 `valid: false`，宽高均为 0。
+
+```xr
+struct PixelSampler { data: texturedata2d, min-filter: string, mag-filter: string }
+
+property <texturedata2d> palette: TextureData2D.rgba8(2, 1, [240, 30, 60, 255, 0, 180, 245, 255]);
+```
+
+材质贴图字段可直接使用该值，也可以把它填入采样器记录的 `data`，继续设置 UV 和过滤。采样器同时声明 `source` 时，无效数据回退到文件贴图。可编程材质的 `shader-textures`、捕获的 `augment-textures` 和后处理的 `buffers` 也可使用 `data: texturedata2d`。它们沿用二维采样和 `color-space`。同时存在时优先读取 `capture`，其次是有效的 `data`，再读取 `texture` 和其他来源。
+
+常量像素由 MLIR 折叠成紧凑字节。绑定数组模型时，修改像素会产生新快照，原快照继续保留原值。同一快照在材质和后处理中共享上传。Rust 宿主可用 `TextureData2D::from_rgba8` 创建，Python 可用 `TextureData2D.rgba8(width, height, bytes)` 创建。 [程序生成贴图示例](../examples/puzzle3d/procedural_texture.xr)
+
 要把 2D 界面用作底色贴图，在同一窗口的可见 `Rectangle` 上写 `texture-source: "dashboard";`，再在场景材质记录中声明 `base-item: string`，并填入同一个名字。矩形的背景和子项会一起画进 GPU 纹理。多个材质可共享同一源。用 `unlit: true` 可保留面板配色，也可以交由 PBR 材质照明。底色使用 UV0；`alpha-mode: "blend"` 会合成源的透明区域。
 
 `base-item` 也可用采样记录。把 `source: string` 填成窗口中的 `texture-source` 名称，即可使用与文件贴图相同的 UV 缩放、中心、旋转、偏移、翻转和过滤字段。实时来源默认按边缘延伸，两轴可单独用 `wrap-u: string` 和 `wrap-v: string` 改为重复或镜像平铺。编辑器在 `base-item` 的记录字面量内补全同一组件的来源名称。备用 `base-color-map` 使用自己的采样记录。
@@ -1355,6 +1414,8 @@ struct Sampler {
 滚轮使用同样的面片拾取。源内的 `WheelHandler` 收到自身的局部 `x` 和 `y`，可以接收事件。事件继续分发时，开启滚轮调节的范围控件或最近的滚动容器按普通 2D 规则处理。滚动到边界后，余量先传给源内的外层容器，再传给 3D 视口在窗口中的父级滚动容器。
 
 用触摸或鼠标中键拖动时，窗口坐标决定拖动阈值，面片的 UV 决定实际滚动距离。拖动和松手后的惯性可在贴图源的嵌套滚动容器之间传递。拖动过程中移出面片、遇到遮挡或移到同一贴图的另一块面片时，当前手势结束。
+
+贴图源中的 `ScaleRotateGestureHandler` 可以接收同一面片、同一 UV 平铺实例的双指手势。缩放、角度和中心都以手势处理器的局部逻辑像素计算，所以透视缩短、UV 翻转和非等比缩放会反映在手势坐标里。任一触点离开原面片、进入另一份贴图、遇到遮挡或失去源控件时，该手势发出一次 `cancelled`。双方抬手前，已经被手势接管的触点继续由手势处理。支持原生缩放和旋转事件的触控板保留设备给出的倍率与角度，中心点映射到源控件。运行 `bazel run //examples/puzzle3d:play_item_texture -- --gestures` 查看示例。
 
 采样记录中的 `wrap-u` 和 `wrap-v` 可选 `"repeat"`、`"mirror"` 或 `"clamp"`。缩小、放大和 mip 过滤使用 `min-filter`、`mag-filter`、`mip-filter`，默认都为 `"linear"`，可选 `"nearest"`，mip 过滤还可设为 `"none"`。底色使用 UV0，其余贴图可通过 `uv-set: int` 选择导入模型的 UV1。
 
@@ -1386,9 +1447,21 @@ animation-layers: [
 
 动画层继续复用场景投影、挂点姿态和 GPU 网格。编辑共享的层列表会使相关场景更新。VS Code 可为行内层记录补全片段、遮罩根节点和模式。 [动画混合示例](../examples/puzzle3d/animation_blend.xr)
 
+`animation-node-overrides: [record]` 在基础片段、交叉过渡和动画层之后覆盖 glTF rig 的节点局部姿态。记录需要 `node: string`，接受唯一名称、完整路径和 `"#源索引"`。可选通道是 `translation: vector3d`、`rotation: quaternion3d` 和 `scale: vector3d`，省略的通道沿用已采样值。可选的 `weight: float` 默认为 1，取值限制在 0 到 1。
+
+覆盖按列表顺序应用，旋转使用最短弧插值。零权重、无效或重名的节点会跳过。矩阵节点可以覆盖平移，旋转和缩放会在可无损分解为 TRS 时覆盖。蒙皮、挂点、导入相机和灯光，以及场景拾取都使用覆盖后的姿态。VS Code 为已知 glTF 的行内覆盖记录补全节点选择器。选择 `NodePoseDemo` 或运行 `bazel run //examples/puzzle3d:play_animation_blend -- --node-pose`，可以在 `Bend` 播放姿态上转动关节。 [关节覆盖示例](../examples/puzzle3d/animation_blend.xr)
+
 节点的平移、旋转和缩放支持 glTF 的 `STEP`、`LINEAR` 和 `CUBICSPLINE` 插值。不同帧复用同一份网格和材质，绘制、投影及拾取使用当帧的节点变换，拾取返回外层记录的 ID。 [glTF 动画示例](../examples/puzzle3d/README.md#gltf-节点动画) 可以暂停并切换片段。使用 Bazel 时，含动画的 `.glb` 或 `.gltf` 及外置资源与静态模型一样加入 `assets`。
 
 同一套动画字段也适用于 glTF 骨骼蒙皮。每个蒙皮可用最多 128 个关节，每个顶点可通过 `JOINTS_0/WEIGHTS_0` 和 `JOINTS_1/WEIGHTS_1` 使用最多 8 个权重。关节层级和逆绑定矩阵在导入时检查，AOT 嵌入预处理后的数据。GPU 复用顶点、权重和关节缓冲，颜色通道和阴影通道共享蒙皮函数。CPU 根据关节变换更新包围盒，并在射线穿过包围盒时采样三角面做拾取。
+
+#### 自定义三角网格蒙皮
+
+在三角网格记录中声明 `skin-weights: [record]`，每条记录包含 `vertex: int`、`joint: int` 和 `weight: float`。两个索引都从零开始，`vertex` 指向源顶点，`joint` 指向模型行的 `skin-joints` 列表。每个顶点可关联最多 8 个关节，有限的正权重会归一化。索引三角形复用源顶点对应的权重。
+
+`skin-joints` 的每条记录需要 `node: string`，引用同一场景中的唯一节点 ID。它可选填 `inverse-bind`，使用从 `m11` 到 `m44` 的 16 个 `float` 字段，按行、列编号。该矩阵把网格绑定空间映射到关节绑定空间，缺省时采用单位矩阵。通过父子关系、动画绑定或物理位姿驱动关节时，绘制、阴影和拾取共享变形结果。关节变化会复用顶点和权重，修改共享的权重列表会更新受影响的网格。
+
+可在预览里选择 `AuthoredSkinDemo`，或运行 `bazel run //examples/puzzle3d:play_authored_mesh -- --skin`。示例中的肘关节有非零绑定偏移和混合权重，弯曲后可以在上方命中网格。 [自定义蒙皮示例](../examples/puzzle3d/authored_mesh.xr)
 
 glTF 的形变目标（morph targets）通过权重改变网格，适合表情、机关变形和网格之间的过渡。每个网格可用最多 32 个目标，支持位置、法线和切线的稀疏及密集增量。初始权重优先取节点的 `weights`，再取网格的 `weights`，都省略时使用零。动画用同一套 `animation`、`animation-time` 和 `animation-loop` 播放权重轨道，支持三种插值。形变在骨骼蒙皮前应用，颜色、阴影和拾取使用同一顺序。模型形变数据留在 GPU 上，播放时只更新变化的权重或关节矩阵。
 
@@ -1405,15 +1478,42 @@ struct PanelWeights {
 
 手动绑定的目标覆盖动画和初始权重。未绑定的目标继续由片段或初始权重决定，节点动画与蒙皮也可以同时播放。权重 0 表示该目标不参与，1 表示应用该目标的完整增量，也可以用负数或大于 1 的值来外推。 [形变滑块示例](../examples/puzzle3d/animation.xr) 可以暂停后交互调整 `extend`。
 
+#### 自定义三角网格形变
+
+在三角网格的 `geometry` 记录里加入 `morph-deltas: [record]`。每条记录需要 `target: string` 和 `vertex: int`。`vertex` 指向从零开始的源顶点索引，共享索引的三角形使用同一条增量。可选的 `position`、`normal`、`tangent` 都是 `vector3d` 类型的加法增量，省略时为零。切线增量需要源顶点声明 `tangent: vector3d`，表示主 UV 坐标的切线方向。顶点可选填 `tangent-sign: float`，取 `1` 或 `-1`，默认为 `1`。使用其他 UV 坐标或改变 UV 导数的法线贴图会从实际采样坐标推导切线。
+
+```xr
+struct Delta { target: string, vertex: int, position: vector3d }
+struct Geometry { vertices: [Vertex], indices: [int], morph-deltas: [Delta] }
+```
+
+通过模型行上的 `morph-weights` 记录驱动这些目标。目标以首次出现的顺序编号，缺省权重为零。名称优先于 `target-N` 字段。`target-N` 保留给按索引访问，同一个顶点与目标的组合只能定义一次。每个网格最多 32 个目标，空列表表示无形变。写入非有限增量、无效顶点索引或重复条目时，该网格不会进入场景。
+
+权重变化会复用 GPU 顶点和形变数据，直接修改共享的增量列表会重新准备受影响的网格。形变先于蒙皮，绘制、阴影和拾取共用最终姿态。在预览中选择 `AuthoredMorphDemo`，或运行 `bazel run //examples/puzzle3d:play_authored_mesh -- --morph`，可以伸长同一个网格并转动关节。 [自定义形变示例](../examples/puzzle3d/authored_mesh.xr)
+
+每条增量也可用 `u`、`v` 修改第一套 UV，用 `u1`、`v1` 修改第二套 UV。它们是无单位的 `float`。用 `color-r`、`color-g`、`color-b`、`color-a` 添加有符号的线性 RGBA 增量，最终颜色限制在 0 到 1。UV 和透明度的变化同时用于窗口绘制、拾取及阴影和运动向量的遮罩测试。
+
+`binormal: vector3d` 在源顶点法线和切线推导出的副切线上叠加增量，也需要源顶点声明 `tangent`。变形后的副切线可以用 `material-debug: "binormals"` 查看。选择预览里的 `MorphSurfaceDemo` 或运行 `bazel run //examples/puzzle3d:play_authored_mesh -- --surface-morph`，可独立切换各个通道。 [表面形变示例](../examples/puzzle3d/authored_mesh.xr)
+
 glTF 材质默认剔除背面。`doubleSided` 使背面参与绘制和拾取，背面光照和命中法线使用反向法线。导入时保留镜像节点的正面朝向。
 
 使用 Bazel 时，把模型文件、外置二进制缓冲区和纹理都加入 `xr_ui_library(assets = [...])`。AOT 在构建时解析模型并嵌入三角数据和压缩像素，解释器在加载资源时解析。GPU 网格和纹理由引用同一资源的物体共享。
 
+`auto-camera: true` 可以在 `camera` 为空时自动选择场景相机。顺序沿用场景记录，同一记录的声明相机先于它的嵌入相机，`Scene3D.combine` 的共享场景排在局部场景之前。候选相机可以缺省 ID，父节点隐藏时也会跳过其相机。显式指定 `camera` 时按该名称解析，名称无效、相机隐藏或自动模式找不到可见相机时，主 3D 场景显示背景，投影和拾取返回无效结果。自动选择切换到另一个相机来源时会重置时域抗锯齿历史。该开关默认关闭，空 `camera` 沿用绕视和自动构图设置。 [自动相机示例](../examples/puzzle3d/texture_size.xr)
+
+可在布局完成后通过视口的只读查询读取实际选择的相机。`view.has-active-camera()` 区分可用相机和未解析状态，绕视相机也算可用。`view.active-camera()` 返回选择名，自动选中的嵌入相机采用 `模型ID/#节点索引`，无名相机、绕视和未解析状态返回空字符串。`view.active-camera-row()` 返回组合场景中的行索引，`view.active-camera-node()` 返回 glTF 原始节点索引，缺省坐标为 `-1`。这些查询沿用与绘制和拾取相同的相机解析。
+
 视口可以用 `camera: "overview"` 选择模型中的具名相机。相机行设置 `camera-kind: "perspective"` 或 `camera-kind: "orthographic"`，通常用 `mesh: ""` 声明为只提供变换的节点。相机沿局部 −Z 观察，可以随父节点移动、旋转和显隐。父节点的缩放会影响相机位置，镜头方向由局部和父节点的旋转决定。
 
-透视相机使用 `camera-fov` 设定垂直视角，默认 45°。正交相机通过 `camera-height` 设定垂直覆盖的世界单位，默认 10。两个投影都用当前视口宽高比确定横向范围。可选的 `camera-near` 和 `camera-far` 裁剪距离默认分别为 0.1 和 100。空相机名使用 `camera-yaw`、`camera-pitch` 和 `camera-distance` 控制的绕视镜头。显式相机找不到、被隐藏或投影参数无效时，视口显示背景且拾取返回空字符串。
+透视相机的 `camera-fov` 以度为单位，默认 45°。`camera-fov-axis: "vertical"` 固定垂直视角，按视口宽高比调整横向范围。这也是省略该字段或传入空字符串时的行为。设为 `"horizontal"` 时固定水平视角，按视口宽高比调整纵向范围。其他字符串使该透视相机无效。绘制、投影、拾取、裁剪和 LOD 使用同一个取景范围。在 [示例](../examples/puzzle3d/off_axis_camera.xr) 的 `FieldOfViewDemo` 中可切换视角轴和画幅，原生窗口用 `bazel run //examples/puzzle3d:play_off_axis_camera -- --fov-axis` 启动。
+
+正交相机通过 `camera-height` 设定垂直覆盖的世界单位，默认 10。可选的 `camera-near` 和 `camera-far` 裁剪距离默认分别为 0.1 和 100。空相机名使用 `camera-yaw`、`camera-pitch` 和 `camera-distance` 控制的绕视镜头。显式相机找不到、被隐藏或投影参数无效时，视口显示背景且拾取返回空字符串。
 
 相机可用 `camera-look-at: string` 跟随同一模型内的可见节点。目标 ID 为空、缺失或隐藏时，使用可选的 `camera-look-at-point: point3d` 作为世界坐标目标。目标缺失、无效或与相机重合时沿用声明的旋转。`camera-up: vector3d` 指定世界向上方向，可以控制俯视地图和镜头滚转。省略时使用相机声明姿态的 +Y。在俯视或仰视的极点，优先用声明姿态的右向保持取景方向。场景准备阶段解析相机朝向，渲染、裁剪、投影和拾取复用该姿态。 [相机跟踪示例](../examples/puzzle3d/camera_aim.xr)
+
+普通场景记录可用 `look-at: string` 让局部 −Z 朝向同一场景内目标节点的世界枢轴。`look-at-up: vector3d` 可指定世界向上方向，省略或设为零向量时沿用节点自身的 +Y。该约束绕当前节点的枢轴旋转，保留父级缩放、剪切和镜像。绘制、拾取、碰撞和挂在节点上的子模型及灯光共用解析后的姿态。两个独立节点可以互相朝向，如果目标的枢轴位置依赖当前节点的朝向，依赖环中的约束会回退到声明姿态。缺失、隐藏、重名或与当前枢轴重合的目标也会回退。由物理刚体控制的节点保持刚体朝向，仍可作为其他节点的目标。
+
+VS Code 可补全同一记录列表里的目标 ID，并跳到声明。选择 `LookAtDemo` 可交互验证，也可运行 `bazel run //examples/puzzle3d:play_camera_aim -- --look-at`。 [节点跟踪示例](../examples/puzzle3d/camera_aim.xr)
 
 使用 `camera-kind: "frustum"` 可声明偏轴透视镜头。在相机记录中添加 `camera-left`、`camera-right`、`camera-bottom` 和 `camera-top` 四个 `float` 字段。它们是 `camera-near` 平面上相对相机光轴的局部坐标，单位与场景一致。每个轴的下界必须小于上界。省略某条边时使用 `±camera-near × tan(22.5°)`，正负号取决于边所在的一侧。四条边会映射到整个视口，独立决定横向和纵向的覆盖范围。一起平移同一轴的两条边可以移动构图，保留相机的位置和朝向。
 
@@ -1433,6 +1533,12 @@ glTF 材质默认剔除背面。`doubleSided` 使背面参与绘制和拾取，�
 
 同一程序内，共享同一个模型的视口、拾取和射线查询会复用准备好的 3D 场景。具名相机的投影查询也可以复用完整场景。单独改变视口镜头时，可见性和 LOD 按新镜头计算，已准备的层级和网格姿态继续使用。编辑、插入、删除和重排行会更新模型版本，后续查询使用新的行顺序。可通过 Rust 的 `update_profile::measure` 查看 `scene_projections_built` 和 `scene_projection_cache_hits`。
 
+共享准备场景的绘制和查询可以复用相同的 LOD 选择。正交视口按逻辑像素与世界单位的比例选择层级，镜头平移或旋转时可以沿用该选择。透视和自定义投影按各自的投影输入复用，渐变宽度和 LOD 偏差参与选择。图层筛选、视锥裁剪和对象距离限制继续由各视口执行。Rust 的 `update_profile::measure` 可查看 `scene_lod_groups_evaluated` 和 `scene_lod_view_cache_hits`。
+
+`Scene3D.combine(shared, local)` 接收两个 `scenemodel3d`，按共享场景在前、局部场景在后的顺序组合。把结果绑定到 `SceneView3D.model`，也可以将它传给世界射线、碰撞和坐标转换查询。各输入的父子关系和资产挂点沿用准备时的结果。名称查询按输入顺序选取同名条目，行索引在局部场景中加上前面输入的行数，包含隐藏行、相机行和 LOD 声明行。可以嵌套组合，空场景可直接省略。
+
+同一对场景快照的组合结果会复用，已有网格、姿态和 LOD 选择继续由输入场景提供。组合后的绘制与碰撞沿用运行时实例上限。两块视口可共享地标，并分别显示自己的局部模型。运行 `bazel run //examples/puzzle3d:play_content_layers -- --combine`，或在预览中选择 `CombinedSceneDemo`。 [场景组合示例](../examples/puzzle3d/content_layers.xr)
+
 模型、灯光和探针记录可声明 `layers: int`，默认 `1`。这是一个 64 位掩码，`1` 和 `2` 代表前两层，`3` 同时包含它们，`-1` 表示全部位。对象各自设置层，父子关系仍负责变换和整体显隐。具名相机使用所在记录的 `layers`，绕视相机默认用第一层。`SceneView3D.layer-mask: int` 可为当前视口覆盖相机掩码。
 
 视口会绘制与掩码有交集的对象，并从同一集合取阴影投射体及接收体。显式和导入的灯光也按视口掩码筛选。反射探针从模型和视口的共同层中匹配。拾取函数 `pick`、`hit`、`hit-all` 和具名相机版本都接受可选的尾部 `layer-mask` 参数。需要与视口覆盖值一致时传入同一绑定。`ray-hit` 和 `ray-hit-all` 也接受该参数，省略时使用第一层。
@@ -1442,6 +1548,8 @@ glTF 材质默认剔除背面。`doubleSided` 使背面参与绘制和拾取，�
 `multisampling: true;` 为当前视口启用 4× MSAA，默认关闭。它平滑三角形轮廓，场景仍用同一组绘制调用。普通视口解析到 2D 合成用的纹理，HDR 视口先解析再做色调映射。阴影图和视口外的 2D 控件沿用各自的采样方式。重复渲染会复用同尺寸的采样附件，`Renderer::scene_draw_stats()` 的 `multisample_resolves` 记录累计解析次数。
 
 `texture-width` 和 `texture-height` 可分别指定 3D 画幅离屏纹理的物理像素数，类型为 `int`。默认 0，非正值都按自动处理。自动轴跟随画幅的逻辑尺寸、DPI 和画布缩放。`render-scale` 只作用于自动轴，默认 1，范围为 0.125 到 1。例如两轴都自动时设为 `0.5`，光栅面积约为原先的四分之一。设定的纹理尺寸会受设备最大纹理尺寸和额外像素预算限制。
+
+`effective-texture-width` 和 `effective-texture-height` 是 `SceneView3D` 的只读 `int` 属性，返回最近一次成功准备的离屏颜色纹理的实际尺寸，单位为物理像素。它们反映设备和像素预算限制，超采样使用的中间附件尺寸可从渲染统计读取。初次绘制前、直接绘制到窗口时、隐藏视口后，以及仅输出贴图的视口失去所有采样方时返回 0。可将它们绑定到固定尺寸的状态文字，布局或纹理尺寸绑定会检查反馈环。
 
 2D 合成直接将这张纹理映射到相机的逻辑画幅。布局、投影、拾取和 LOD 使用逻辑像素。景深会分别按两个轴的像素比例计算采样半径。开启 `supersampling` 时，会在选定的纹理尺寸上超采样，再解析回该尺寸。Rust 可通过 `Renderer::scene_draw_stats()` 读取最后一个视口的 `last_texture_size`、`last_raster_size` 和累计 `raster_pixels`。 [视口纹理示例](../examples/puzzle3d/texture_size.xr)
 
@@ -1752,6 +1860,8 @@ export component BufferView inherits SceneView3D {
 
 一个输入选用非空的 `capture`、`texture`、`item` 或 `name`，优先级按此顺序。可选的 `enabled: bool` 默认开启，关闭或资源缺失时按缺失输入处理。WGSL 沿用相同的 `scene_buffer_color` 和 `scene_has_buffer`，读取结果为线性 RGB 和直通 alpha。文件贴图可以与模型材质共享 GPU 上传。二维输入沿用 `texture-source` 的离屏捕获与缓存，源内容更新会使引用它的视口重绘。 [文件与二维输入示例](../examples/puzzle3d/effect_texture_inputs.xr)
 
+后处理的 `buffers` 可混合使用二维贴图和 KTX/KTX2 立方体贴图。对立方体槽位用 `scene_has_cubemap(index)`、`scene_buffer_cubemap(index, direction)` 和 `scene_buffer_cubemap_lod(index, direction, lod)`。立方体按文件的颜色空间转换成线性 RGBA16F，保留原始分辨率、直通 alpha 和文件自带的 mip 层。一次上传供使用同一资源的材质和后处理共享。有效输入使用六个正方形面，支持非块压缩的 RGB(A) 色彩格式，KTX2 可使用 ZLIB 数据。 [带多层 mip 的立方体示例](../examples/puzzle3d/shader_cubemap.xr)
+
 **命名场景捕获**
 
 `SceneView3D.scene-captures` 接受记录列表。每条记录用 `name: string` 命名，可选 `camera: string`、`layers: int`、`scale: float`、`background: color` 和 `enabled: bool`。相机默认使用当前视口相机。指定相机时可以使用模型 ID 或导入相机路径。图层默认使用所选相机的掩码，也可以显式选取主视口以外的图层。`scale` 默认 1，范围为 0.25 到 1。固定宽高比的相机按有效画幅输出。背景默认透明，`enabled` 默认开启。
@@ -1889,7 +1999,7 @@ SceneView3D {
 
 命名深度使用映射后的投影重建世界坐标。导入深度时，来源与消费方的相机和视口映射需要匹配。裁剪范围可以不同。移动矩形复用捕获纹理和 GPU 管线。
 
-显式指定比较或写入时，捕获跳过材质的深度预处理，在颜色通道里执行给定的深度状态。显式混合或强制写深度启用直接透明绘制。透明网格按深度排序，模型粒子和广告牌沿用发射器次序。
+显式指定比较或写入时，捕获跳过材质的深度预处理，在颜色通道里执行给定的深度状态。显式混合或强制写深度启用直接透明绘制。透明网格按深度排序，模型粒子和广告牌可通过 `particle-sort-mode` 对粒子批次排序。
 
 ```xr
 struct GlassState { depth-test: bool, depth-write: bool, blend-mode: string }
@@ -2231,6 +2341,10 @@ struct SceneLight3D {
     -Y
 ```
 
+`@environment-url` 也接受 `.ktx` 和 `.ktx2` 立方体贴图。每面必须是同尺寸的正方形，按 `+X -X +Y -Y +Z -Z` 存储。支持 RGB/RGBA 的 8 位线性或 sRGB、浮点 16/32 位以及 RGB9E5；KTX2 支持未压缩的像素或 ZLIB 封装。sRGB 通道先转为线性光，KTX 中声明的轴方向会映射到场景采样方向。XRack 用基础层生成自己的粗糙度 mip。
+
+KTX 与 HDR 走相同的环境资源入口，可绑定到 `environment`、`skybox-source` 或局部反射探针的 `source`。运行 `bazel run //examples/puzzle3d:play_cube_environment`，或选择 `CubeEnvironmentDemo` 的预览，可切换同一组六面的 KTX 和 KTX2 编码，并独立观察 IBL 与局部反射。 [KTX 环境示例](../examples/puzzle3d/cube_environment.xr)
+
 立方体图集按各面的立体角累积漫反射，并跨面采样预过滤镜面 mip。用作背景或受光环境时，同一文件可以共享已加载的 GPU 纹理。
 
 `reflection-probes` 为同一视口中的模型提供局部 HDR 镜面反射。探针记录需要 `position: point3d` 和 `box-size: vector3d`。使用 `source: @environment-url("models/room.hdr")` 加载 HDR 全景。省略 `source` 或将其设为空字符串会从场景捕获。`position` 是世界空间采样中心。把 `box-size` 设为世界轴对齐盒体的三条边长，三个分量均须大于零。可用 `box-offset: vector3d` 将影响盒相对采样中心平移，默认零。
@@ -2534,9 +2648,15 @@ glTF 碰撞体读取静止姿态的主几何，包含资源内部的节点变换
 | `end-size`, `fade-in`, `fade-out` | 三个 `float`，分别为末尾直径、淡入秒数、淡出秒数，默认是初始直径、0 和 0.25。 |
 | `intensity`, `seed`, `layers`, `enabled` | 发光倍数 `float` 默认 1，限制在 0 到 64。随机种子和层掩码为 `int`，默认 0 和 1。启用状态为 `bool`，默认启用。 |
 
+用 `fade-in-effect` 和 `fade-out-effect` 分别选择 `"opacity"`、`"scale"` 或 `"none"`。默认 `"opacity"` 在指定的秒数内改变透明度。`"scale"` 改变精灵直径、模型尺寸或拖尾宽度。`"none"` 保持尺寸和透明度，直到粒子寿命结束。淡入和淡出的效果可以组合，拖尾按轨迹上各点的年龄应用效果。全不透明的模型在尺寸淡入或淡出期间仍可绘制不透明颜色和阴影。
+
+`color-variation` 接收 RGBA 记录，可声明任意组合的 `red: float`、`green: float`、`blue: float` 和 `alpha: float`，范围是 0–1，缺省为 0。出生时各通道按相应幅度把原值和一个 0–1 的随机值混合。RGB 在作者指定的 sRGB 空间取样，再转换为线性颜色进行绘制。默认每个通道分别取样。设置 `unified-color-variation: true` 时，四个通道共用一个随机值。随机值随出生 ID 和种子一起确定，回拨时可重现。含 Alpha 随机量的模型会使用透明合成。 [淡入淡出与颜色示例](../examples/puzzle3d/particle_affectors.xr)
+
 每颗粒子可在出生时固定自己的寿命和尺寸。 `lifetime-variation: float` 以秒为单位，在标称寿命两侧取样。 `size-variation: float` 在初始尺寸两侧取样。声明 `end-size-variation: float` 可单独指定末尾尺寸的变动幅度。省略这一字段时，末尾尺寸沿用初始尺寸的随机偏移。初末尺寸相同且共用偏移时，每颗粒子的尺寸在自身寿命内保持恒定。三个字段默认不增加变化量。寿命限制在 1 微秒至 1 亿秒，尺寸限制在 0 至 1 亿世界单位。
 
 随机值来自出生 ID 和发射器种子。连续发射、瞬时爆发和持续爆发都可使用这些字段。GPU 按每颗粒子的实际寿命计算淡出、缺省序列帧周期和拖尾冻结时间。CPU 取最大可能寿命计算候选区间。开启寿命扰动后，已过期但仍处于候选区间的粒子会占用候选预算，GPU 会跳过它们的可见绘制。
+
+发射器可选字段 `reversed: bool` 默认为 `false`。开启后，每颗粒子从自身寿命曲线的末端开始，沿速度、重力、旋转、尺寸、透明度、颜色表、精灵序列和影响器的曲线倒放。有寿命扰动时使用该粒子抽到的实际寿命。出生时间、死亡时间和按出生时间的排序仍沿着全局时钟，连续发射和爆发可以正常混用。拖尾保留已经走过的路径，跟随发射在实际发生的时刻采样源粒子，包括倒放后回到起始位置的死亡事件。运行 `bazel run //examples/puzzle3d:play_sprite_particles -- --reverse-life`，可在精灵、定时拖尾、定长拖尾和模型之间切换。 [寿命倒放示例](../examples/puzzle3d/sprite_particles.xr)
 
 每条 `bursts` 记录必填 `time: float` 和 `count: int`。时间以相对 `start-time` 的秒数计。省略 `duration: float` 或设为 0 时，全部粒子在 `time` 一起发射。持续时间为正且至少发射两颗粒子时，第一颗在 `time` 出生，最后一颗在 `time + duration` 出生，中间按等间隔分布。单颗粒子在 `time` 出生。可选 `count-variation: int` 默认 0，按发射器种子为每条记录计算确定性的数量偏移。`enabled: bool` 默认启用。每个发射器最多可声明 128 条记录。起始即发射可以写成 `bursts: [Burst { time: 0, count: 24 }]`。 [定时爆发示例](../examples/puzzle3d/animation_blend.xr)
 
@@ -2564,7 +2684,15 @@ glTF 碰撞体读取静止姿态的主几何，包含资源内部的节点变换
 
 粒子使用面向相机的精灵，在 GPU 上按时间和种子算出位置、大小和淡出。CPU 每帧提交发射器参数和当前存活的发射批次。使用相同材质和资源的批次可合并到一次 GPU 绘制。每个视口最多处理 16 个发射器、8192 个粒子候选槽，单个发射器最多 4096 个并优先保留较新的出生记录。
 
-精灵接受不透明几何的深度遮挡，并参与 HDR、泛光和 MSAA。开启 `order-independent-transparency` 时，精灵与半透明网格一起参与加权合成。普通模式下先绘制透明网格，再按发射器顺序混合精灵。粒子属于视口效果，拾取、碰撞、阴影和反射探针继续使用场景模型。 [粒子示例](../examples/puzzle3d/particles.xr)
+精灵接受不透明几何的深度遮挡，并参与 HDR、泛光和 MSAA。开启 `order-independent-transparency` 时，精灵与半透明网格一起参与加权合成。普通模式下先绘制透明网格，再按发射器顺序混合精灵。精灵和拖尾可参与反射探针，拾取与碰撞使用场景模型。 [粒子示例](../examples/puzzle3d/particles.xr)
+
+常规透明混合可通过 `particle-sort-mode: string` 设定画序。`"none"` 沿用默认绘制顺序。`"newest"` 和 `"oldest"` 分别先画较新和较早出生的粒子。`"distance"` 按相机深度从远到近绘制，深度取施加影响器后的粒子中心或拖尾头部。同一材质和采样资源的粒子会一起排序，同键沿用原有顺序。材质或资源不同的批次采用各自的画序。距离键可加 `depth-bias: float`，正值在同批次中较早绘制。偏移只参与排序，深度测试和阴影使用实际位置。
+
+透明模型粒子可以用视口的 `oit-method: "sorted"` 进入常规混合路径。排序在 GPU 上按组排列索引，再合并成绘制顺序。出生 ID 及随机外观保持稳定。加权透明与逐像素链表合成使用各自的顺序规则，设备资源不足时沿用原有画序。运行 `bazel run //examples/puzzle3d:play_particle_affectors -- --sorting`，可比较不同画序、深度偏移和镜头方向。 [透明粒子排序示例](../examples/puzzle3d/particle_affectors.xr)
+
+`depth-fade-distance: float` 让精灵和拖尾靠近不透明表面时逐渐变淡。默认 0，使用常规深度测试。正值表示沿相机深度轴开始淡化的距离，单位为世界单位。距离小于该值时，粒子透明度从完全可见平滑过渡到相交处的零值。表面背后的粒子仍被遮挡，空白像素保持原透明度。可以与贴图、粒子排序和透明混合模式组合。
+
+只在可见粒子和场景深度都存在时准备 GPU 深度快照，同一视口的发射器与其他需要该快照的效果共用它。带粒子的视口采用离屏合成。MSAA 下淡化使用像素内最近的场景深度，遮挡仍使用各个采样点的深度。运行 `bazel run //examples/puzzle3d:play_sprite_particles -- --soft`，拖动「表面距离」和「淡化范围」观察相交边缘。 [粒子相交淡化示例](../examples/puzzle3d/sprite_particles.xr)
 
 发射器可以用 `sprite: image` 绑定 `@image-url("sprites.png")`。PNG 从左到右排列等宽的帧，单帧图片也可以直接用。精灵的高度由 `size` 控制，宽度按单帧比例计算，`color` 和 `intensity` 再乘上贴图颜色。无可用贴图时使用软圆精灵。
 
@@ -2582,7 +2710,7 @@ glTF 碰撞体读取静止姿态的主几何，包含资源内部的节点变换
 
 `particle-blend-mode: string` 默认是 `"source-over"`，使用常规透明合成。可选 `"additive"` 累加发光、`"screen"` 滤色提亮和 `"multiply"` 正片叠底。混合在线性颜色空间执行。HDR 保留加色后的高亮，滤色和正片叠底把粒子自身的直通 RGB 限制在 0–1。
 
-所有模式都测试场景深度。打开加权透明时，加色、滤色和正片叠底按发射器顺序写入场景底色，常规透明粒子与透明网格随后参与加权合成。关闭加权时，四种模式都按发射器顺序绘制。共享混合模式、精灵贴图和颜色表的发射器可以合批。 [混合与颜色表示例](../examples/puzzle3d/particle_materials.xr)
+所有模式都测试场景深度。打开加权透明时，加色、滤色和正片叠底先写入场景底色，常规透明粒子与透明网格随后参与加权合成。直接绘制的粒子默认沿用发射器顺序，可通过 `particle-sort-mode` 调整批次内画序。共享混合模式、精灵贴图和颜色表的发射器可以合批。 [混合与颜色表示例](../examples/puzzle3d/particle_materials.xr)
 
 `emitter-shape: string` 支持 `"point"`、`"box"`、`"sphere"` 和 `"cylinder"`，默认从 `position` 发射。`emitter-extents: vector3d` 是各轴的半尺寸，球体支持椭球，圆柱沿局部 Y 轴，X 和 Z 是截面半径。三个分量默认为 0。`emitter-fill: bool` 默认为 `true`，设为 `false` 可从面、外壳或端盖发射。表面采样考虑缩放后的面积。`emitter-yaw`、`emitter-pitch`、`emitter-roll` 以度旋转发射范围，顺序与场景物体一致。
 
@@ -2591,13 +2719,42 @@ glTF 碰撞体读取静止姿态的主几何，包含资源内部的节点变换
 | `"vector"` | 默认。以 `velocity` 为中心，按 `velocity-spread` 扰动各个分量。 |
 | `"normalized-vector"` | 使用扰动后的方向，速度大小取 `velocity` 的长度。 |
 | `"cone"` | 在以 `velocity` 为轴的锥内按立体角采样。`velocity-cone-angle: float` 是半角，范围 0–180 度。 |
-| `"target"` | 从每颗粒子的出生点朝 `velocity-target: point3d` 发射。`velocity-target-spread: vector3d` 可以扰动目标的世界坐标。 |
+| `"target"` | 从每颗粒子的实际出生点瞄准世界坐标 `velocity-target: point3d`。`velocity-target-spread: vector3d` 可逐轴扰动目标。 |
+| `"surface-normal"` | 沿外表面或网格三角面的几何法线发射。 |
+| `"surface-reflected"` | 沿入射速度关于表面法线的镜面反射方向发射。 |
 
-后三种模式使用 `velocity` 的长度作为标称速度，可用 `velocity-speed-variation: float` 设置速度变化范围。目标用于计算出生时的速度方向，运动按初速度和 `gravity` 推进。发射范围和速度都按粒子身份与种子采样，参数固定时，向前或回拨时间得到相同轨迹。修改发射参数会按当前时间重算存活粒子。普通点发射的批次继续使用原来的顶点路径。 [空间发射示例](../examples/puzzle3d/particle_emitters.xr)
+`"normalized-vector"`、`"cone"` 和 `"target"` 默认使用 `velocity` 的长度作为标称速度。可用 `velocity-speed-variation: float` 设置出生时的随机变化幅度。发射范围和速度都按粒子身份与种子采样，向前播放或回拨能重现轨迹。修改参数会按当前时间重算存活粒子，普通点发射保留原有顶点路径。
+
+目标模式可用 `velocity-target-magnitude: float` 直接设置带符号的标称速率。`velocity-target-normalized: bool` 默认为 `true`，速度大小独立于目标距离，单位为世界单位每秒。设为 `false` 后，实际初速度是目标位移乘以该倍率，单位为每秒，离目标越远的粒子初速度越大。负值使粒子远离目标，出生点与目标重合时初速度为零。出生位置计入挂点、出生轨道及跟随发射，目标保持在世界坐标。发射后按初速度和 `gravity` 运动。运行 `bazel run //examples/puzzle3d:play_particle_emitters`，切换「目标聚拢」，用「固定速率」和「倍率」比较轨迹。 [空间发射示例](../examples/puzzle3d/particle_emitters.xr)
 
 网格发射使用 `emitter-shape: "mesh"` 和 `emitter-mesh: @mesh-url("models/shape.gltf")`。也可以使用上表中的内置图元。发射范围取 glTF 初始姿态下的主网格表面，计入节点层级和初始变形。`emitter-mesh-scale: vector3d` 是三个轴各自的缩放，默认 `Vector3D.new(1, 1, 1)`。`position` 和发射器角度会把该范围摆放到场景中。资源键无法解析或缩放后没有有效三角形时，该发射器跳过。
 
-网格模式始终从表面发射。GPU 先按缩放后的三角面面积选面，再在面内取均匀的点。设置 `velocity-mode: "surface-normal"` 可沿所选三角面的几何法线喷射，速度取 `velocity` 的长度，也可以叠加速度变化。移动、旋转和拖时间轴会复用采样表。共享网格、缩放与材质的发射器可以合批。单张采样表最多包含 300,000 个有效三角面。 [网格发射示例](../examples/puzzle3d/particle_mesh_emitters.xr)
+网格模式始终从表面发射。GPU 先按缩放后的三角面面积选面，再在面内取均匀的点。移动、旋转和拖时间轴会复用采样表。共享网格、缩放与材质的发射器可以合批。单张采样表最多包含 300,000 个有效三角面。 [网格发射示例](../examples/puzzle3d/particle_mesh_emitters.xr)
+
+场景表面采样可用 `emitter-shape: "scene"` 从当前场景发射，或用 `attractor-shape: "scene"` 将粒子吸引到场景表面。两者使用 `SceneView3D.model` 中已求值的场景姿态和可见网格。形状采样独立于视口的绘制图层遮罩，所以可以在画面中隐藏源网格，保留粒子效果。
+
+| 发射器字段 | 吸引器对应字段 | 作用 |
+| --- | --- | --- |
+| `emitter-scene-root: string` | `attractor-scene-root: string` | 从指定节点及其子树取样。空字符串表示整个场景。名称缺失或重名时该形状跳过。 |
+| `emitter-scene-exclude: [string]` | `attractor-scene-exclude: [string]` | 排除指定节点和它们的子树。 |
+| `emitter-scene-center: point3d` | `attractor-scene-center: point3d` | 裁剪盒中心，默认原点。 |
+| `emitter-scene-extents: vector3d` | `attractor-scene-extents: vector3d` | 裁剪盒的半尺寸。三个轴都为零时使用完整表面。跨过边界的三角形按交集裁剪。 |
+
+命名子树在根节点局部空间内取样，默认随该根节点定位。显式挂点或发射轨道可以用自己的变换放置采样结果。整场景形状使用世界坐标。同一个场景快照里的发射器与吸引器可共用面积采样表，改变粒子时间会继续复用。运行 `bazel run //examples/puzzle3d:play_particle_mesh_emitters -- --scene`，切换发射、吸引、排除与裁剪。 [场景表面示例](../examples/puzzle3d/particle_mesh_emitters.xr)
+
+自定义点集使用 `emitter-shape: "points"` 或 `attractor-shape: "points"`。通过 `@particle-shape-url("models/shape.cbor")` 读取 Qt Quick 3D 的 `QQ3D_SHAPE` v1 CBOR 文件。文件相对于声明方，和其他场景资源一样列在构建目标的 `assets` 里。点集最多包含 1,000,000 个有限 XYZ 坐标，AOT 嵌入已解码的坐标。
+
+| 发射器字段 | 吸引器对应字段 | 作用 |
+| --- | --- | --- |
+| `emitter-point-source: string` | `attractor-point-source: string` | 指定点集资源键。 |
+| `emitter-point-scale: vector3d` | `attractor-point-scale: vector3d` | 在点集局部坐标里逐轴缩放，默认各轴为 1。 |
+| `emitter-point-randomize: bool` | `attractor-point-randomize: bool` | 默认按文件顺序循环取点。开启时按该记录的 `seed` 打乱顺序，回拨保持相同排列。 |
+
+点集的表面法线方向取从缩放后质心指向采样点的方向。发射器和吸引器可共用同一张常驻 GPU 点表，混合使用点和三角面时保持各自的取样规则。运行 `bazel run //examples/puzzle3d:play_particle_mesh_emitters -- --points` 体验顺序、打乱和吸引。 [点集示例](../examples/puzzle3d/particle_mesh_emitters.xr)
+
+`velocity-mode: "surface-normal"` 沿采样点的表面法线发射。盒体、椭球和圆柱会采样外表面，网格使用三角面的几何法线。点发射器与无有效表面的退化形状使用发射器局部 +Z，经发射器角度旋转后作为法线。这一模式使用 `velocity` 的长度和 `velocity-speed-variation` 决定速度。
+
+`velocity-mode: "surface-reflected"` 用同样的表面法线对 `velocity` 做镜面反射。每颗粒子的入射速度先应用 `velocity-spread` 和 `velocity-speed-variation`。非均匀缩放下使用变换逆转置对应的世界法线，镜像后仍沿真实表面的方向发射。这两种模式的速度都会计入挂点对初速度长度的缩放。反射结果作为出生初速度，轨迹继续受重力和影响器控制。实时挂点变化会重新摆放轨迹，出生轨道按各粒子的出生位姿计算。可运行 `bazel run //examples/puzzle3d:play_particle_mesh_emitters -- --bounce` 对照普通、缩放和镜像挂点的轨迹。 [反射示例](../examples/puzzle3d/particle_mesh_emitters.xr)
 
 `SceneView3D.particle-affectors` 接收自定义记录列表，必填字段为 `affector-kind: string`。GPU 先计算发射器的轨迹，再按列表顺序应用匹配的影响器。每个视口最多应用 16 个影响器。
 
@@ -2609,6 +2766,19 @@ glTF 碰撞体读取静止姿态的主几何，包含资源内部的节点变换
 | `"point-rotator"` | 围绕经过 `position`、指向 `direction` 的轴旋转。`angular-speed: float` 默认 10 度每秒，可为负数。默认轴为 +Y。 |
 | `"wander"` | 在出生轨迹上叠加公共和每粒子波形，适合烟尘、萤火和漂浮物。 |
 | `"scale"` | 按粒子年龄周期性地将精灵直径、拖尾宽度或模型尺寸乘以倍率。 |
+
+吸引器可以把粒子拉向形状。用 `attractor-shape: string` 选择 `"box"`、`"sphere"`（椭球）、`"cylinder"`、`"mesh"`、`"scene"`、`"points"` 或 `"point"`。省略形状时使用 `position-variation`。指定形状后，`position` 是形状原点。
+
+| 字段 | 用法 |
+| --- | --- |
+| `attractor-extents: vector3d` | 盒体半边长、椭球半轴或圆柱半径与半高。圆柱沿 Y 轴，默认三个轴都为 1。 |
+| `attractor-fill: bool` | 默认 `true`，在图元体积内取点。设为 `false` 时按表面积取点。 |
+| `attractor-yaw`、`attractor-pitch`、`attractor-roll: float` | 以度为单位旋转目标形状。挂点变换在其上叠加。 |
+| `attractor-mesh: string` | 网格模式使用 `@mesh-url("models/target.gltf")` 或内置图元。按网格初始姿态和三角面积在表面采样。 |
+| `attractor-mesh-scale: vector3d` | 网格各轴的缩放，默认都是 1。面积按缩放后的三角形计算。 |
+| `attractor-samples: int` | 默认 0，每颗粒子根据身份和种子取样。设为正数时从该数量的固定候选位置中选择，上限 8,192。 |
+
+形状选择对拖尾、模型粒子和跟随发射生效，回拨时间会复用同一组目标位置。GPU 可共享发射器和吸引器的三角面采样表。只改变时间或目标位姿时，网格采样表仍可复用。同一视图中多个网格目标的采样表合计预算为 40 MiB。可用 `bazel run //examples/puzzle3d:play_particle_affectors -- --shape` 体验。 [形状吸引器示例](../examples/puzzle3d/particle_affectors.xr)
 
 `position` 默认在世界原点。`start-age: float` 是从粒子出生算起的启用秒数，默认 0。`layers: int` 默认为 −1，会与发射器和视口的图层取交集。`enabled: bool` 默认开启。`seed: int` 默认 0，用于固定吸引扰动，回拨时间可以得到同样的粒子位置。编辑影响器会用新参数重算存活粒子在当前时间的位置。只改变时间时复用影响器参数的 GPU 缓冲。 [粒子影响器示例](../examples/puzzle3d/particle_affectors.xr)
 
@@ -2639,18 +2809,96 @@ glTF 碰撞体读取静止姿态的主几何，包含资源内部的节点变换
 | `trail-fade: float` | 尾端透明度损失，范围 0–1，默认 1。设为 0 保留粒子在对应年龄的透明度。 |
 | `trail-eol-fade: float` | 寿命结束后冻结最后一条轨迹，再用指定秒数淡出，默认 0。淡出中的拖尾仍计入粒子预算。 |
 
-拖尾沿用粒子深度测试和透明混合。贴图沿整条拖尾绷开，序列帧取头部年龄，颜色表按各轨迹点的年龄取色。相同段数并共用贴图和材质的粒子会合批。 [粒子拖尾示例](../examples/puzzle3d/particle_trails.xr)
+拖尾沿用粒子深度测试和透明混合。序列帧取头部年龄，颜色表按各轨迹点的年龄取色。相同段数并共用贴图和材质的粒子会合批。 [粒子拖尾示例](../examples/puzzle3d/particle_trails.xr)
+
+发射器也可沿另一种粒子的轨迹发射独立的烟雾、火花或模型。给源发射器设置唯一的 `emitter-id: string`，再在同一个视口的另一个发射器上填写 `follow-emitter: string`。VS Code 在行内发射器列表里补全源名称，可跳转到对应的 `emitter-id`。
+
+| 字段 | 跟随发射时的含义 |
+| --- | --- |
+| `rate: float` | 每颗源粒子存活期间，每秒发射的子粒子数。 |
+| `start-time: float` | 从源事件开始算起的发射延迟，单位为秒。连续发射以源粒子出生为起点。 |
+| `follow-burst-at: string` | `"birth"` 从源粒子出生处爆发，`"death"` 从源粒子寿命结束的位置爆发。默认 `"birth"`。爆发记录的 `time` 和 `duration` 在该事件之后计时。 |
+
+子粒子的出生位置由 GPU 在源轨迹上取样，再叠加子发射器自己的出生位置和形状。子粒子之后按各自的速度和寿命运动。源发射器可以只参与取样，子粒子在源隐藏或死亡后仍可见。每个跟随发射器最多取最近 256 颗候选源粒子，子粒子计入视口粒子预算。源名称缺失、重复或指向另一个跟随发射器时暂停跟随发射。时间轴回拨时使用当前场景参数重建粒子。可运行 `bazel run //examples/puzzle3d:play_particle_trails -- --follow`。 [跟随发射示例](../examples/puzzle3d/particle_trails.xr)
+
+跟随发射器可用 `velocity-mode: "surface-normal"` 沿源粒子采样到的表面法线发射。用 `"surface-reflected"` 时，以源粒子的出生速度方向作为入射方向，围绕表面法线反射，子粒子的配置决定速度大小。子发射器有自己的表面时使用自己的法线。源粒子没有表面法线时，子粒子沿用自己的表面或本地前向。源出生速度为零时使用子粒子的入射速度。法线在源粒子的挂点和出生轨道变换后传给子粒子，计入非均匀缩放和镜像。启用表面方向的跟随发射才传输法线和方向。运行 `bazel run //examples/puzzle3d:play_particle_trails -- --follow-surface` 可比较三个方向模式。
+
+用 `trail-texcoord-mode: string` 控制贴图沿纵向的分布，横向仍跨越一帧贴图的宽度。
+
+| 模式 | 纵向纹理坐标 |
+| --- | --- |
+| `"stretch"` | 默认。在可见时间区间均匀拉伸，保持直接绘制路径。 |
+| `"fill"` | 按可见拖尾的世界空间长度均匀填满。 |
+| `"relative"` | 从当前头部沿轨迹按世界距离平铺。纹理相位随头部移动。 |
+| `"absolute"` | 按粒子自出生以来的世界行程平铺。直线轨迹的纹理相位固定在轨迹上，弯曲轨迹使用有上限的距离估算。 |
+
+`trail-texcoord-multiplier: float` 默认 1。`"stretch"` 和 `"fill"` 用它指定跨整条拖尾的平铺次数。`"relative"` 和 `"absolute"` 用它指定每世界单位的平铺次数。负值反转纹理方向。循环采样保留当前精灵序列帧的边界。
+
+`trail-length: float` 设置可见拖尾的最大世界长度，默认 −1。设为非负值后，GPU 会从头部按长度上限除以段数得到的间距取点。`trail-length-variation: float` 为每颗粒子的长度上限增加出生时固定的对称随机偏移，结果最小为 0。长度上限为 0 时，拖尾收拢到头部。
+
+长度未设时，可用 `trail-length-delta-min: float` 指定取点的世界距离，默认 0 沿用按时间取点。正值开启距离采样。完整段按指定间距分布，历史耗尽时保留较短的尾段。`trail-duration` 决定可向后查找的时间范围，`trail-segments` 决定最多生成多少段。直线轨迹直接按速度求点，弯曲轨迹通过有上限的取样重建行程。距离采样适用于纯色和贴图拖尾。
+
+`trail-scale-multiplier: float` 范围为 0–2，默认 1。第 `n` 段末端的宽度乘以该值的 `n` 次方，从头部的 0 开始编号。`trail-alpha-fade: float` 范围为 0–1，默认 0，根据 `(1 - alphaFade)^n` 调整透明度。它们可以和线性的 `trail-end-scale`、`trail-fade` 叠加，也可以单独使用。
+
+按长度采样和裁剪使用一份可复用的 GPU 轨迹缓冲。反射探针同一捕获步骤的各面共享此次准备。回拨时间时重新生成相同的轨迹，寿命结束后的淡出沿用冻结的长度和纹理相位。运行 `bazel run //examples/puzzle3d:play_particle_trails -- --mapping`，可切换贴图映射与长度限制。 [拖尾映射示例](../examples/puzzle3d/particle_trails.xr)
 
 发射器可用 `particle-model: string` 绘制模型粒子。接受 `@mesh-url("models/shape.glb")` 或上表中的任意内置图元。模型几何取 glTF 初始姿态，沿用模型材质、贴图、深度测试和光照，并接收场景阴影。粒子颜色与模型颜色相乘，`size` 和 `end-size` 是模型缩放倍率。粒子使用同一套发射位置、速度、影响器、颜色表和时间回拨。
 
-`particle-rotation: vector3d` 分别指定 X、Y、Z 轴的初始角度，默认 0 度，按 X、Y、Z 顺序应用。`particle-rotation-variation: vector3d` 为各轴增加按种子固定的对称随机角度，`particle-angular-velocity: vector3d` 为每秒转过的角度。两者默认零向量。
-`particle-angular-velocity-variation: vector3d` 给各轴的每秒旋转角度添加对称随机扰动。精灵读取初始角度、角度扰动、角速度和角速度扰动的 Z 分量，绕面向相机的轴旋转。模型使用三轴，拖尾沿轨迹展开。改时间或回拨会复现每次出生时确定的参数。运行 `bazel run //examples/puzzle3d:play_sprite_particles -- --variation`，可对照固定发射和启用出生变体的发射。 [出生变体示例](../examples/puzzle3d/sprite_particles.xr)
+`particle-model-scene: scenemodel3d` 可引用由 `Scene3D.prepare` 或 `Scene3D.combine` 生成的模型。发射器把当前姿态下可见的网格、局部摆放、材质及顶点属性作为粒子原型。源模型只需在声明里准备，场景视图可以单独绘制粒子。粒子上的发射位置、尺寸和旋转叠加到这份原型上。
 
-同一模型及颜色表的粒子可以合批。GPU 批量写入常规 3D 实例变换，几何和贴图保留在 GPU 上。带透明材质或正在淡出的模型粒子会启用视口的加权透明。 [模型粒子示例](../examples/puzzle3d/particle_models.xr)
+同一份姿态由发射器的粒子共享。只推进粒子时钟时复用原型缓冲，源模型姿态变化时更新受影响的网格。空场景可以回退到 `particle-model` 资源，两个来源都为空时该发射器没有可绘制的模型。预览里选择 `SceneParticleDemo`，或运行 `bazel run //examples/puzzle3d:play_authored_mesh -- --scene-particles`。 [场景模型粒子示例](../examples/puzzle3d/authored_mesh.xr)
+
+`SceneView3D.particle-instance-models` 把独立场景模型绑定到视图中的粒子实例。每条记录含 `emitter: string` 和 `model: scenemodel3d`。发射器用 `emitter-id` 提供唯一名称。多条记录可以引用同一发射器，它们的网格会共用一份 GPU 实例数据，包括挂点、跟随、出生轨迹、影响器、大小、旋转和淡出。发射器自身的模型也可以与绑定模型一同绘制。
+
+将发射器的 `particle-instances-only: bool` 设为 `true`，可让它在没有模型绑定时作为不可见的实例与跟随源。空模型、缺失的名称和重名发射器不建立绑定。绑定采用发射器的层和阴影设置。源模型的局部摆放、材质和当前变形仍会保留。预览中选择 `ParticleInstanceDemo`，或运行 `bazel run //examples/puzzle3d:play_authored_mesh -- --particle-instances`。 [共享粒子实例示例](../examples/puzzle3d/authored_mesh.xr)
+
+`particle-rotation: vector3d` 分别指定 X、Y、Z 轴的初始角度，默认 0 度，按 X、Y、Z 顺序应用。`particle-rotation-variation: vector3d` 为各轴增加按种子固定的对称随机角度，`particle-angular-velocity: vector3d` 为每秒转过的角度。两者默认零向量。
+`particle-angular-velocity-variation: vector3d` 给各轴的每秒旋转角度添加对称随机扰动。面向相机的精灵读取初始角度、角度扰动、角速度和角速度扰动的 Z 分量，绕视线方向旋转。模型使用三轴，拖尾沿轨迹展开。改时间或回拨会复现每次出生时确定的参数。运行 `bazel run //examples/puzzle3d:play_sprite_particles -- --variation`，可对照固定发射和启用出生变体的发射。 [出生变体示例](../examples/puzzle3d/sprite_particles.xr)
+
+精灵和拖尾默认用 `sprite-billboard: true` 面向相机。精灵在该模式下使用 Z 轴旋转。设为 `false` 时，精灵的四边形和拖尾的条带在世界空间应用三轴旋转。固定平面精灵、世界空间拖尾和模型支持以下 `particle-align-mode: string`。
+
+| 模式 | 朝向 |
+| --- | --- |
+| `"none"` | 默认。使用粒子自身的三轴旋转。 |
+| `"start-velocity"` | 以世界空间出生速度为局部 +Z，包括挂点变换和表面反射后的出射速度。 |
+| `"velocity"` | 局部 +Z 沿当前世界轨迹的切线。基础抛物线直接求速度，有影响器时用邻近时刻估算切线。可随重力和力场转向，回拨到相同时间时恢复相同的朝向。 |
+| `"target"` | 局部 +Z 由当前粒子位置指向 `particle-align-target: point3d` 指定的世界坐标。 |
+
+方向为零时以世界 +Z 为基础。实时挂点使用当前姿态下的轨迹方向。初始旋转、角速度和它们的随机扰动在对齐后的坐标系中应用。世界空间拖尾按各轨迹点的年龄求姿态，以轨迹切线和局部法线决定条带宽度方向。沿当前速度对齐的拖尾使用取样后的轨迹切线。镜头从侧面观察时，世界空间条带会呈现实际的透视缩短。它可以和同材质、同段数的面向相机拖尾合批。运行 `bazel run //examples/puzzle3d:play_sprite_particles -- --orientation`，打开「力场」并拖动时间轴，可对比「沿出生速度」和「沿当前速度」。 [粒子朝向示例](../examples/puzzle3d/sprite_particles.xr)
+
+`sprite-offset-x` 和 `sprite-offset-y` 是精灵局部平面上的 `float` 偏移，默认 0。以精灵完整的宽度、高度为单位，正值向局部右侧、上方移动。比如 `sprite-offset-x: 0.5` 将粒子中心放在绘制四边形的左边缘。偏移和四边形一起受尺寸、贴图宽高比和旋转影响。运动轨迹、灯光采样和排序仍以粒子中心为基准，实际绘制使用变换后顶点的深度。运行 `bazel run //examples/puzzle3d:play_sprite_particles -- --pivot` 可对照偏移、绕轴旋转和条带朝向。 [精灵偏移示例](../examples/puzzle3d/sprite_particles.xr)
+
+同一模型及颜色表的粒子可以合批。GPU 批量写入常规 3D 实例变换，几何和贴图保留在 GPU 上。带透明材质或正在淡出的模型粒子默认启用视口的加权透明，可以通过 `oit-method` 指定合成模式。 [模型粒子示例](../examples/puzzle3d/particle_models.xr)
 
 `particle-casts-shadow: bool` 将模型粒子加入方向光、聚光和点光的阴影贴图，需要在视口启用 `shadows`。默认关闭。投影使用不透明或 Alpha 裁切的模型材质，粒子自身的不透明度至少为 0.5 时写入阴影。可通过 `particle-receives-shadow: bool` 独立控制粒子接收阴影，默认开启。
 
-`particle-casts-reflections: bool` 将模型粒子加入实时场景反射探针的捕获，默认关闭。探针的层遮罩、刷新模式和分帧设置同样生效，逐面捕获共用开始捕获时的粒子时间和发射器状态。 [粒子阴影与反射示例](../examples/puzzle3d/particle_lighting.xr)
+##### 模型三角面粒子
+
+在普通 `SceneView3D.model` 记录上绑定 `model-blend-mode`，可把刚性三角网格的各个面作为独立片段。片段保留原模型的材质、贴图和深度遮挡。屏幕拾取和射线查询使用当前片段位置。
+
+| 字段 | 用法 |
+| --- | --- |
+| `model-blend-mode: string` | `"explode"` 从原模型散开并停在飞行终点，`"construct"` 从一个点发射并聚合成模型，`"transfer"` 从原模型散开后在目标变换处聚合。空字符串表示普通模型。 |
+| `model-blend-time: float` | 当前时间，单位为秒。可以绑定到滑块或 `FrameAnimation`，回拨可重建相同画面。 |
+| `model-blend-duration`、`model-blend-stagger`、`model-blend-arrival` | 单个片段的飞行时长、整个网格的发射时间跨度、末段向目标变换过渡的时长。单位都是秒，默认分别为 1、0、0.35。 |
+| `model-blend-order: string` | `"sequential"` 按三角面顺序，`"random"` 按种子打散，`"activation"` 沿 `model-blend-axis: vector3d` 从低投影到高投影扫过模型。各片段的发射时刻分布在 stagger 指定的区间内。 |
+| `model-blend-origin: point3d` | 聚合模式的发射点，默认为原点。 |
+| `model-blend-offset: vector3d`、`model-blend-orientation: quaternion3d`、`model-blend-scale: vector3d` | 聚合和转移的目标变换，默认为零偏移、单位旋转和单位缩放。 |
+| `model-blend-velocity`、`model-blend-spread`、`model-blend-gravity`、`model-blend-spin` | 均为 `vector3d`。分别控制初速度、逐轴速度扰动、加速度及每秒角速度。角速度向量给出旋转轴和角度，默认零。 |
+| `model-blend-seed: int` | 控制速度扰动和随机发射顺序，默认 0。 |
+| `model-blend-end-node: string` | 指定同一场景中的节点。聚合或转移时，目标节点的世界变换取代手写的目标偏移、朝向和缩放，同时保留原模型各子网格的相对变换。 |
+| `model-blend-activation-node: string` | 在 `"activation"` 顺序下，把节点局部 XY 平面作为时间轴起点的激活平面。片段中心进入局部 Z 正半空间时开始飞行。 |
+| `model-blend-activation-speed: float` | 命名激活平面沿自身负 Z 方向移动的每秒局部单位数，默认 1。设为 0 时平面静止，只释放起始时位于正半空间的片段。 |
+
+手写目标、发射点及运动向量使用各刚性网格的局部坐标。命名节点读取场景图里解析后的变换，节点缺失或名称有歧义时回退到手写参数。目标可位于带缩放或镜像的父节点下。命名激活平面的发射时刻由初始节点变换和扫掠速度重算，拖动时间轴即可回拨。飞行时保持网格拓扑，并复用 GPU 原始顶点流和输出缓冲。聚合与转移完成后回到普通模型绘制路径。可运行 `bazel run //examples/puzzle3d:play_model_blend`，勾选「场景锚点」后拖动时间轴。 [模型三角面示例](../examples/puzzle3d/model_blend.xr)
+
+精灵和拖尾可用 `particle-lights: [Light]` 选择灯光。`Light` 是与 `SceneView3D.lights` 同一结构的记录，可以把组件上的灯光属性同时引用到两个列表。省略字段或传空列表会使用精灵自身的颜色。非空列表使用视口的环境光及选中的方向光、点光源和聚光灯。灯光启用状态、照射范围和图层遮罩沿用场景灯光规则，灯光的 `parent` 可绑定同一视口里的场景节点。
+
+方向光合并为统一的基础光照。GPU 在精灵中心和拖尾的各个轨迹采样点计算点光源的距离衰减，以及聚光灯的距离衰减和光锥。光照调整 RGB，粒子透明度继续来自贴图、渐变、淡入淡出和相交淡化。模型粒子沿用网格材质的光照与阴影。采用相同灯光和材质的精灵可以合批，仅改变粒子时间会复用灯光缓冲。运行 `bazel run //examples/puzzle3d:play_particle_lighting -- --sprite-lights`，用「方向光 / 点光源 / 聚光灯」和「灯光位置」对比。 [精灵灯光示例](../examples/puzzle3d/particle_lighting.xr)
+
+`particle-casts-reflections: bool` 将模型、精灵和拖尾粒子加入实时场景反射探针的捕获，默认关闭。探针的层遮罩、刷新模式和分帧设置同样生效。逐面捕获共用开始捕获时的粒子时间和发射器状态。精灵和拖尾随立方体面的视角展开，按距离排序时使用当前面的相机深度，同一帧更新的各面共用粒子批次及按出生时间得到的画序，静止的探针可跨帧复用相机缓冲。
+
+捕获中的常规透明粒子可以按深度排序或用加权透明。视口选用逐像素链表时，探针使用加权合成。存在透明模型粒子时，探针也使用加权合成。加色、滤色和正片叠底的粒子使用各自的混合模式。运行 `bazel run //examples/puzzle3d:play_particle_lighting`，切换「精灵粒子」或「拖尾粒子」，可对照「进入反射」和「逐面捕获」。 [粒子阴影与反射示例](../examples/puzzle3d/particle_lighting.xr)
 
 ### SoundEffect
 

@@ -174,7 +174,8 @@ impl StackTransitions {
         path: &mut Vec<usize>,
         prior: &mut BTreeMap<Vec<usize>, StackSlide>,
     ) {
-        if !old_layout.visible
+        if !new.contains_scene_feature(xrack_runtime::SceneFeature::PageTransition)
+            || !old_layout.visible
             || !new_layout.visible
             || (old.kind, old.element_id(), old.row_key)
                 != (new.kind, new.element_id(), new.row_key)

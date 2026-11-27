@@ -70,16 +70,28 @@ struct WindowOpacityAtlas {
     image: Rc<CachedLayerImage>,
     packing: Atlas,
     tiles: HashMap<*const CachedLayerImage, WindowAtlasTile>,
+    retained: Vec<RetainedOpacityTile>,
     last_frame: u64,
+    grow_next_frame: bool,
+    canvas_image: Option<ImageId>,
+}
+
+struct RetainedOpacityTile {
+    capture: OpacityTile,
+    slot: [u32; 2],
+    last_frame: u64,
+    can_crop: bool,
 }
 
 struct WindowAtlasTile {
     source: Weak<CachedLayerImage>,
     origin: [u32; 2],
+    slot: [u32; 2],
+    last_frame: u64,
 }
 
 impl WindowOpacityAtlas {
-    fn new(device: &wgpu::Device, edge: u32, frame: u64) -> Self {
+    fn image(device: &wgpu::Device, edge: u32) -> Rc<CachedLayerImage> {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("XRack compositor opacity atlas"),
             size: wgpu::Extent3d {
@@ -91,17 +103,26 @@ impl WindowOpacityAtlas {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
+        Rc::new(CachedLayerImage {
+            texture,
+            binding: OnceCell::new(),
+        })
+    }
+
+    fn new(device: &wgpu::Device, edge: u32, frame: u64) -> Self {
         Self {
-            image: Rc::new(CachedLayerImage {
-                texture,
-                binding: OnceCell::new(),
-            }),
+            image: Self::image(device, edge),
             packing: Atlas::new(edge as usize, edge as usize),
             tiles: HashMap::new(),
+            retained: Vec::new(),
             last_frame: frame,
+            grow_next_frame: false,
+            canvas_image: None,
         }
     }
 
@@ -109,25 +130,55 @@ impl WindowOpacityAtlas {
         u64::from(edge) * u64::from(edge) * 4
     }
 
+    fn take_dead_slot(
+        &mut self,
+        width: u32,
+        height: u32,
+        frame: u64,
+    ) -> Option<([u32; 2], [u32; 2])> {
+        let key = self
+            .tiles
+            .iter()
+            .filter(|(_, tile)| {
+                tile.last_frame != frame
+                    && tile.source.strong_count() == 0
+                    && width <= tile.slot[0]
+                    && height <= tile.slot[1]
+            })
+            .min_by_key(|(_, tile)| u64::from(tile.slot[0]) * u64::from(tile.slot[1]))
+            .map(|(key, _)| *key)?;
+        self.tiles.remove(&key).map(|tile| (tile.origin, tile.slot))
+    }
+
     fn tile(
         &mut self,
         source: &Rc<CachedLayerImage>,
         device: &wgpu::Device,
         encoder: &mut Option<wgpu::CommandEncoder>,
+        frame: u64,
     ) -> Option<[u32; 2]> {
         let key = Rc::as_ptr(source);
-        if let Some(tile) = self.tiles.get(&key) {
+        if let Some(tile) = self.tiles.get_mut(&key) {
+            tile.last_frame = frame;
             return Some(tile.origin);
-        }
-        if self.tiles.len() >= MAX_LAYERS {
-            return None;
         }
         let width = source.texture.width();
         let height = source.texture.height();
-        let (x, y) = self
-            .packing
-            .add_rect((width + 2) as usize, (height + 2) as usize)?;
-        let origin = [x as u32 + 1, y as u32 + 1];
+        let allocation = (self.tiles.len() < MAX_LAYERS)
+            .then(|| {
+                self.packing
+                    .add_rect((width + 2) as usize, (height + 2) as usize)
+            })
+            .flatten()
+            .map(|(x, y)| ([x as u32 + 1, y as u32 + 1], [width, height]));
+        let (origin, slot) = allocation
+            .or_else(|| self.take_dead_slot(width, height, frame))
+            .or_else(|| {
+                self.grow_next_frame |= !self.retained.is_empty()
+                    && self.tiles.len() < MAX_LAYERS
+                    && self.image.texture.width() < MAX_OPACITY_ATLAS_EDGE;
+                None
+            })?;
         let encoder = encoder.get_or_insert_with(|| {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("XRack compositor atlas copies"),
@@ -170,6 +221,8 @@ impl WindowOpacityAtlas {
             WindowAtlasTile {
                 source: Rc::downgrade(source),
                 origin,
+                slot,
+                last_frame: frame,
             },
         );
         Some(origin)
@@ -197,11 +250,19 @@ pub(super) struct WindowLayer {
     pub(super) opacity: f32,
     pub(super) surface_only: bool,
     pub(super) mask: Option<LayerClip>,
-    pub(super) sample_mask: bool,
+    pub(super) clip_samples: [bool; 2],
+    pub(super) edge_clip: Option<Rect>,
 }
 
 #[derive(Clone)]
 pub(super) struct LayerClip {
+    pub(super) mask: Rc<WindowClipMask>,
+    pub(super) origin: [i32; 2],
+    pub(super) second: Option<LayerClipSample>,
+}
+
+#[derive(Clone)]
+pub(super) struct LayerClipSample {
     pub(super) mask: Rc<WindowClipMask>,
     pub(super) origin: [i32; 2],
 }
@@ -214,6 +275,7 @@ pub(super) struct WindowClipMask {
 
 struct RetainedClipMask {
     shapes: Rc<[RoundedClip]>,
+    raster_only: bool,
     scale: f32,
     physical: Rect,
     mask: Rc<WindowClipMask>,
@@ -221,8 +283,15 @@ struct RetainedClipMask {
 }
 
 impl RetainedClipMask {
-    fn matches(&self, shapes: &[RoundedClip], physical: Rect, scale: f32) -> bool {
+    fn matches(
+        &self,
+        shapes: &[RoundedClip],
+        physical: Rect,
+        scale: f32,
+        raster_only: bool,
+    ) -> bool {
         if self.scale != scale
+            || self.raster_only != raster_only
             || self.physical.width != physical.width
             || self.physical.height != physical.height
             || self.shapes.len() != shapes.len()
@@ -262,7 +331,8 @@ impl WindowLayer {
             opacity: 1.0,
             surface_only: true,
             mask: None,
-            sample_mask: false,
+            clip_samples: [false; 2],
+            edge_clip: None,
         }
     }
 
@@ -275,7 +345,8 @@ impl WindowLayer {
             opacity: 1.0,
             surface_only: true,
             mask: None,
-            sample_mask: false,
+            clip_samples: [false; 2],
+            edge_clip: None,
         }
     }
 
@@ -333,6 +404,14 @@ impl OpacityLayer {
         }
     }
 
+    fn matches_paint(&self, node: &Node, style: OpacityTileStyle) -> bool {
+        !self.surface_only
+            && self.scale == style.scale
+            && self.palette == style.palette
+            && self.in_layout == style.in_layout
+            && self.node.same_paint_except_layer_composition(node)
+    }
+
     fn shares_capture(
         &self,
         node: &Node,
@@ -344,13 +423,9 @@ impl OpacityLayer {
         // A sampled capture stores its original offset from the layout
         // origin. An exact capture must use the same device-pixel phase.
         if self.resample_origin != origin
-            || self.surface_only
-            || self.scale != style.scale
-            || self.palette != style.palette
-            || self.in_layout != style.in_layout
             || self.raster_bounds.width != bounds.width
             || self.raster_bounds.height != bounds.height
-            || !self.node.same_paint_except_layer_composition(node)
+            || !self.matches_paint(node, style)
         {
             return false;
         }
@@ -368,13 +443,20 @@ impl OpacityLayer {
             return false;
         }
         let mut motion = LayoutMove::new(self.capture_clip, layout.bounds, offset, 0.0);
-        self.captured_layout
-            .matches_translated(layout, sampled, |before, after| {
-                translated_geometry_matches(before, after, &mut motion)
-            })
+        self.captured_layout.matches_translated(
+            layout,
+            sampled || layout.has_ancestor_clip_chain(),
+            |before, after| translated_geometry_matches(before, after, &mut motion),
+        )
     }
 
-    fn reuse_at(&mut self, layout: &LayoutNode, clip: Rect, full_coverage: bool) -> bool {
+    fn reuse_at(
+        &mut self,
+        layout: &LayoutNode,
+        clip: Rect,
+        full_coverage: bool,
+        exact_outer_clip: bool,
+    ) -> bool {
         let previous = self.captured_layout.bounds;
         let next = layout.bounds;
         // Exact capture reuse also covers clipped surfaces which cannot move.
@@ -388,10 +470,14 @@ impl OpacityLayer {
             return true;
         }
         // A cropped raster cannot reveal content that was outside its old clip.
+        // A fully covered subtree raster leaves the ancestor shape on the
+        // destination canvas. Exact translation still checks the clip chain of
+        // every descendant, including clips introduced inside the subtree.
         if !self.full_coverage
             || !full_coverage
                 && (self.resample_origin.is_none() || !can_crop_sampled_layer(layout, self.scale))
             || self.resample_origin.is_none()
+                && !exact_outer_clip
                 && (layout.has_ancestor_clip_chain()
                     || self.captured_layout.has_ancestor_clip_chain())
         {
@@ -431,7 +517,7 @@ impl OpacityLayer {
         }
         if !self.captured_layout.matches_translated(
             layout,
-            self.resample_origin.is_some(),
+            self.resample_origin.is_some() || exact_outer_clip,
             |before, after| translated_geometry_matches(before, after, &mut motion),
         ) {
             return false;
@@ -487,6 +573,7 @@ struct LayoutMove<'a> {
     tolerance: f32,
     sampled_clips: Option<std::slice::Iter<'a, Rect>>,
     viewport: Rect,
+    exact_crop: Option<Rect>,
 }
 
 impl LayoutMove<'_> {
@@ -498,6 +585,7 @@ impl LayoutMove<'_> {
             tolerance,
             sampled_clips: None,
             viewport: next,
+            exact_crop: None,
         }
     }
 }
@@ -536,12 +624,20 @@ fn translated_geometry_matches(
         )
         .intersect(motion.viewport)
     } else {
-        translated(previous.clip.intersect(motion.previous), motion.offset)
+        let clip = translated(previous.clip.intersect(motion.previous), motion.offset);
+        if let Some(viewport) = motion.exact_crop {
+            if !next.local_transform().is_identity() || next.table_pane_clip().is_some() {
+                return false;
+            }
+            clip.intersect(viewport)
+        } else {
+            clip
+        }
     };
     let next_clip = next.clip.intersect(motion.next);
     equal(translated(previous.bounds, motion.offset), next.bounds)
         && (equal(clip, next_clip)
-            || motion.sampled_clips.is_some()
+            || (motion.sampled_clips.is_some() || motion.exact_crop.is_some())
                 && !shadow::nonempty(clip)
                 && !shadow::nonempty(next_clip))
 }
@@ -674,6 +770,8 @@ struct OpacityAtlas {
     texture: wgpu::Texture,
     slots: Atlas,
     tiles: Vec<OpacityTile>,
+    previous_tiles: Vec<OpacityTile>,
+    composited: OnceCell<Rc<CachedLayerImage>>,
     pending: bool,
     cleared: bool,
     last_frame: u64,
@@ -704,6 +802,95 @@ struct OpacityTileCapture {
 }
 
 impl OpacityTile {
+    fn same_content(
+        &self,
+        node: &Node,
+        layout: &LayoutNode,
+        style: OpacityTileStyle,
+        fonts: [usize; 2],
+    ) -> bool {
+        self.capture.moving
+            && self.style == style
+            && self.capture.fonts == fonts
+            && self.layout.bounds.width == layout.bounds.width
+            && self.layout.bounds.height == layout.bounds.height
+            && self.node.same_paint_except_layer_composition(node)
+    }
+
+    fn reuse_retained(
+        &self,
+        node: &Node,
+        layout: &LayoutNode,
+        clip: Rect,
+        device: Rect,
+        style: OpacityTileStyle,
+        capture: OpacityTileCapture,
+        can_crop: bool,
+    ) -> Option<[u32; 2]> {
+        if self.matches(node, layout, clip, device, style, capture) {
+            return Some(self.position);
+        }
+        let clipped_edges = |clip: Rect, bounds: Rect| {
+            [
+                clip.x > bounds.x,
+                clip.y > bounds.y,
+                clip.x + clip.width < bounds.x + bounds.width,
+                clip.y + clip.height < bounds.y + bounds.height,
+            ]
+        };
+        let previous = self.layout.bounds;
+        let next = layout.bounds;
+        // Both captures must already be clipped on the same sides.
+        // Switching from a full capture can change soft edge coverage on
+        // the opposite side, even when the new cut is pixel-aligned.
+        if !can_crop
+            || clip == next
+            || self.clip == previous
+            || self.style != style
+            || self.capture.fonts != capture.fonts
+            || previous.width != next.width
+            || previous.height != next.height
+            || clipped_edges(self.clip, previous) != clipped_edges(clip, next)
+            || !can_crop_sampled_layer(layout, style.scale)
+            || !can_crop_sampled_layer(&self.layout, style.scale)
+        {
+            return None;
+        }
+        let offset = Point {
+            x: next.x - previous.x,
+            y: next.y - previous.y,
+        };
+        let [dx, dy] = [offset.x * style.scale, offset.y * style.scale];
+        let [x, y] = [
+            device.x - (self.device.x + dx),
+            device.y - (self.device.y + dy),
+        ];
+        if dx.fract() != 0.0
+            || dy.fract() != 0.0
+            || x < 0.0
+            || y < 0.0
+            || x + device.width > self.device.width
+            || y + device.height > self.device.height
+            || !self.node.same_paint_except_layer_composition(node)
+        {
+            return None;
+        }
+        let mut motion = LayoutMove::new(self.clip, clip, offset, 0.0);
+        motion.exact_crop = Some(layout.clip);
+        self.layout
+            .matches_translated(layout, true, |before, after| {
+                // Clipping a child can change its own antialiasing. A smaller
+                // crop may only reduce the root's visible area.
+                (std::ptr::eq(after, layout)
+                    || (!before.allows_overflow()
+                        && !after.allows_overflow()
+                        && before.clip.intersect(before.bounds) == before.bounds
+                        && after.clip.intersect(after.bounds) == after.bounds))
+                    && translated_geometry_matches(before, after, &mut motion)
+            })
+            .then(|| [self.position[0] + x as u32, self.position[1] + y as u32])
+    }
+
     fn matches(
         &self,
         node: &Node,
@@ -749,7 +936,7 @@ impl OpacityTile {
         }
         let mut motion = LayoutMove::new(self.clip, clip, offset, 0.0);
         self.layout
-            .matches_translated(layout, false, |before, after| {
+            .matches_translated(layout, capture.moving, |before, after| {
                 translated_geometry_matches(before, after, &mut motion)
             })
     }
@@ -795,12 +982,14 @@ pub struct OpacityAtlasStats {
     pub groups: u64,
     pub submissions: u64,
     pub reused_tiles: u64,
+    pub retained_hits: u64,
 }
 
 struct ChangingGroup {
     node: Box<Node>,
     last_frame: u64,
     moving_phase: Option<LayerPlacement>,
+    window_surface: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -817,8 +1006,8 @@ impl LayerPlacement {
     }
 
     fn preserves_surface_raster(self, other: Self) -> bool {
-        // Both placements must be eligible for capture, with device-aligned bounds.
-        if self.scale != other.scale {
+        // Both placements must be eligible for capture at the same device-pixel phase.
+        if !self.same_phase(other) {
             return false;
         }
         let before = device_bounds(self.bounds, self.scale);
@@ -833,6 +1022,7 @@ impl LayerPlacement {
 pub(super) enum OpacitySource<'a> {
     Transient(Option<&'a (shadow::OuterShadow, Rect)>),
     MovingLayer,
+    Composited,
 }
 
 #[derive(Default)]
@@ -852,6 +1042,7 @@ enum LayerOwner {
 pub(super) struct RetainedLayers {
     layers: Vec<Layer>,
     opacity: BTreeMap<LayerOwner, OpacityLayer>,
+    alternate_opacity: BTreeMap<LayerOwner, OpacityLayer>,
     opacity_stats: LayerStats,
     pub(super) vectors: vector_masks::Masks,
     shadow_masks: HashMap<shadow::ShadowMaskKey, ShadowMask>,
@@ -882,6 +1073,7 @@ impl Default for RetainedLayers {
         Self {
             layers: Vec::new(),
             opacity: BTreeMap::new(),
+            alternate_opacity: BTreeMap::new(),
             opacity_stats: LayerStats::default(),
             vectors: Default::default(),
             shadow_masks: HashMap::new(),
@@ -914,14 +1106,16 @@ impl RetainedLayers {
         let has_live_image = |node: &Node| {
             node.contains_scene_feature(xrack_runtime::SceneFeature::SceneImageTexture)
         };
-        self.opacity.retain(|_, layer| {
-            if has_live_image(&layer.node) {
-                layer.release_image(canvas);
-                false
-            } else {
-                true
-            }
-        });
+        for cache in [&mut self.opacity, &mut self.alternate_opacity] {
+            cache.retain(|_, layer| {
+                if has_live_image(&layer.node) {
+                    layer.release_image(canvas);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
         self.layers.retain(|layer| {
             if layer
                 .page
@@ -939,6 +1133,7 @@ impl RetainedLayers {
     pub(super) fn reset_canvas(&mut self) {
         self.layers.clear();
         self.opacity.clear();
+        self.alternate_opacity.clear();
         self.vectors.reset_canvas();
         self.shadow_masks.clear();
         self.window_clip_masks.clear();
@@ -955,10 +1150,18 @@ impl RetainedLayers {
         if self.window_opacity_atlas.as_ref().is_some_and(|atlas| {
             self.frame_number.wrapping_sub(atlas.last_frame) > OPACITY_ATLAS_LIFETIME
         }) {
-            self.window_opacity_atlas = None;
+            self.clear_window_opacity_atlas(canvas);
         }
-        self.window_clip_masks
-            .retain(|entry| self.frame_number.wrapping_sub(entry.mask.last_frame.get()) <= 2);
+        self.window_clip_masks.retain(|entry| {
+            let idle = if entry.shapes.len() == 1
+                && crate::display_list::fractional_window_composition()
+            {
+                4
+            } else {
+                2
+            };
+            self.frame_number.wrapping_sub(entry.mask.last_frame.get()) <= idle
+        });
         self.new_shadow_masks = 0;
         self.previous_opacity_demand = std::mem::take(&mut self.opacity_demand);
         if self.opacity_atlas.as_ref().is_some_and(|atlas| {
@@ -969,6 +1172,7 @@ impl RetainedLayers {
         if let Some(atlas) = &mut self.opacity_atlas {
             let edge = atlas.texture.width() as usize;
             atlas.slots.reset(edge, edge);
+            std::mem::swap(&mut atlas.tiles, &mut atlas.previous_tiles);
             atlas.tiles.clear();
             atlas.cleared = false;
         }
@@ -987,8 +1191,12 @@ impl RetainedLayers {
 
     pub(super) fn finish_frame(&mut self, canvas: &mut Canvas<WGPURenderer>, scene: &SceneIndex) {
         self.vectors.finish_frame(canvas);
-        self.changing_groups
-            .retain(|_, group| group.last_frame == self.frame_number);
+        self.changing_groups.retain(|_, group| {
+            group.last_frame == self.frame_number
+                || crate::display_list::fractional_window_composition()
+                    && group.window_surface
+                    && self.frame_number.wrapping_sub(group.last_frame) <= 2
+        });
         let capture = &mut self.capture;
         self.shadow_masks.retain(|_, mask| {
             if self.frame_number.wrapping_sub(mask.last_frame) <= SHADOW_MASK_LIFETIME {
@@ -999,8 +1207,20 @@ impl RetainedLayers {
         });
         self.opacity.retain(|owner, layer| {
             if layer.used
+                || crate::display_list::fractional_window_composition()
+                    && layer.surface_only
+                    && self.frame_number.wrapping_sub(layer.last_frame) <= 2
                 || self.frame_number.wrapping_sub(layer.last_frame) <= 120
                     && matches!(owner, LayerOwner::SceneNode(id) if scene.is_pooled(*id))
+            {
+                return true;
+            }
+            layer.release_image(canvas);
+            false
+        });
+        self.alternate_opacity.retain(|owner, layer| {
+            if self.opacity.contains_key(owner)
+                && self.frame_number.wrapping_sub(layer.last_frame) <= OPACITY_ATLAS_LIFETIME
             {
                 return true;
             }
@@ -1012,7 +1232,7 @@ impl RetainedLayers {
     pub(super) fn clear_images(&mut self, canvas: &mut Canvas<WGPURenderer>) {
         self.window_clip_masks.clear();
         self.clear_opacity_atlas(canvas);
-        self.window_opacity_atlas = None;
+        self.clear_window_opacity_atlas(canvas);
         self.opacity_demand = Default::default();
         self.previous_opacity_demand = Default::default();
         self.vectors.clear(canvas);
@@ -1023,8 +1243,21 @@ impl RetainedLayers {
         for layer in self.layers.drain(..) {
             canvas.delete_image(layer.raster.image);
         }
-        for layer in std::mem::take(&mut self.opacity).into_values() {
+        for layer in std::mem::take(&mut self.opacity)
+            .into_values()
+            .chain(std::mem::take(&mut self.alternate_opacity).into_values())
+        {
             layer.release_image(canvas);
+        }
+    }
+
+    fn clear_window_opacity_atlas(&mut self, canvas: &mut Canvas<WGPURenderer>) {
+        if let Some(image) = self
+            .window_opacity_atlas
+            .take()
+            .and_then(|atlas| atlas.canvas_image)
+        {
+            canvas.delete_image(image);
         }
     }
 
@@ -1052,6 +1285,7 @@ impl RetainedLayers {
                 .chain(
                     self.opacity
                         .values()
+                        .chain(self.alternate_opacity.values())
                         .filter(|layer| {
                             Rc::strong_count(&layer.image) == 1 || charged.insert(layer.image.image)
                         })
@@ -1084,6 +1318,21 @@ impl RetainedLayers {
         self.clear_images(canvas);
     }
 
+    fn has_retained_opacity_paint(
+        &self,
+        node: &Node,
+        layout: &LayoutNode,
+        style: OpacityTileStyle,
+        fonts: [usize; 2],
+    ) -> bool {
+        self.window_opacity_atlas.as_ref().is_some_and(|atlas| {
+            atlas
+                .retained
+                .iter()
+                .any(|tile| tile.capture.same_content(node, layout, style, fonts))
+        })
+    }
+
     fn admit_stable_group(
         &mut self,
         owner: &LayerOwner,
@@ -1108,6 +1357,7 @@ impl RetainedLayers {
             if group.moving_phase.is_some() {
                 group.moving_phase = Some(placement);
             }
+            group.window_surface = false;
             group.last_frame = self.frame_number;
             return false;
         }
@@ -1127,6 +1377,7 @@ impl RetainedLayers {
                     node: Box::new(node.clone()),
                     last_frame: self.frame_number,
                     moving_phase: repeated_phase_change.then_some(placement),
+                    window_surface: false,
                 },
             );
         }
@@ -1135,13 +1386,60 @@ impl RetainedLayers {
 }
 
 impl Renderer {
+    pub(super) fn grow_window_opacity_atlas(&mut self) {
+        let cache = &mut self.retained_layers;
+        if cache.opacity_atlas_disabled
+            || !cache
+                .window_opacity_atlas
+                .as_ref()
+                .is_some_and(|atlas| atlas.grow_next_frame)
+        {
+            return;
+        }
+        let budget = cache.budget.saturating_sub(cache.resident_bytes());
+        let Some(atlas) = &mut cache.window_opacity_atlas else {
+            return;
+        };
+        atlas.grow_next_frame = false;
+        let old = &atlas.image.texture;
+        let limit = MAX_OPACITY_ATLAS_EDGE.min(self.device.limits().max_texture_dimension_2d);
+        let Some(edge) = [MAX_WINDOW_ATLAS_EDGE, limit].into_iter().find(|&edge| {
+            old.width() < edge && edge <= limit && WindowOpacityAtlas::bytes(edge) <= budget
+        }) else {
+            return;
+        };
+        let image = WindowOpacityAtlas::image(&self.device, edge);
+        let encoder = self.custom_encoder.get_or_insert_with(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("XRack compositor atlas growth"),
+                })
+        });
+        // Grow before collecting the frame's layers so all UVs use the new
+        // texture size. Existing allocations keep their pixel coordinates.
+        encoder.copy_texture_to_texture(
+            old.as_image_copy(),
+            image.texture.as_image_copy(),
+            old.size(),
+        );
+        atlas.packing.expand(edge as usize, edge as usize);
+        if let Some(previous) = atlas.canvas_image.take() {
+            self.canvas.delete_image(previous);
+        }
+        atlas.image = image;
+    }
+
     pub(super) fn pack_composited_opacity_layers(&mut self, layers: &mut [WindowLayer]) {
-        fn source(layer: &WindowLayer) -> Option<&Rc<CachedLayerImage>> {
+        fn source<'a>(
+            layer: &'a WindowLayer,
+            transient: Option<&Rc<CachedLayerImage>>,
+        ) -> Option<&'a Rc<CachedLayerImage>> {
             let WindowLayerSource::Texture(image) = &layer.source else {
                 return None;
             };
             let texture = &image.texture;
             (!layer.surface_only
+                && transient.is_none_or(|transient| !Rc::ptr_eq(transient, image))
                 && texture.format() == wgpu::TextureFormat::Rgba8Unorm
                 && texture.usage().contains(wgpu::TextureUsages::COPY_SRC)
                 && texture.width() + 2 <= MIN_WINDOW_ATLAS_EDGE
@@ -1153,7 +1451,12 @@ impl Renderer {
         if cache.opacity_atlas_disabled {
             return;
         }
+        let transient = cache
+            .opacity_atlas
+            .as_ref()
+            .and_then(|atlas| atlas.composited.get());
         if let Some(atlas) = &mut cache.window_opacity_atlas
+            && atlas.retained.is_empty()
             && !atlas.tiles.is_empty()
             && atlas
                 .tiles
@@ -1167,7 +1470,7 @@ impl Renderer {
         if cache.window_opacity_atlas.is_none() {
             let mut demand = OpacityDemand::default();
             let mut sources = HashSet::new();
-            for image in layers.iter().filter_map(source) {
+            for image in layers.iter().filter_map(|layer| source(layer, transient)) {
                 if sources.insert(Rc::as_ptr(image)) {
                     demand.record(image.texture.width() + 2, image.texture.height() + 2);
                 }
@@ -1199,8 +1502,15 @@ impl Renderer {
         };
         let edge = atlas.image.texture.width() as f32;
         for layer in layers {
-            let Some(image) = source(layer) else { continue };
-            let Some([x, y]) = atlas.tile(image, &self.device, &mut self.custom_encoder) else {
+            let Some(image) = source(layer, transient) else {
+                continue;
+            };
+            let Some([x, y]) = atlas.tile(
+                image,
+                &self.device,
+                &mut self.custom_encoder,
+                cache.frame_number,
+            ) else {
                 continue;
             };
             let [u, v, right, bottom] = layer.uv;
@@ -1412,6 +1722,82 @@ impl Renderer {
             .map_or_else(|| LayerOwner::Path(path.to_vec()), LayerOwner::SceneNode)
     }
 
+    pub(super) fn exact_masked_group(
+        node: &Node,
+        layout: &LayoutNode,
+        frame: PaintFrame<'_>,
+    ) -> bool {
+        !cfg!(any(target_os = "ios", target_os = "android"))
+            && 0.0 < node.opacity()
+            && node.opacity() < 1.0
+            && frame.scale >= 1.0
+            && !node.children.is_empty()
+            && layout.has_ancestor_clip_chain()
+            && !layout.allows_overflow()
+            && layout.local_transform().is_identity()
+            && layout.table_pane_clip().is_none()
+            && !node.boolean("cache-rendering-hint", false)
+            && shadow::OuterShadow::clipped_for_node(
+                node,
+                layout,
+                frame.scale,
+                frame.theme.role(crate::Role::Border),
+            )
+            .is_none()
+    }
+
+    fn cached_masked_group(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &[usize],
+        in_layout: bool,
+        frame: PaintFrame<'_>,
+    ) -> Option<WindowLayer> {
+        let clip = layout.bounds.intersect(layout.clip);
+        if clip != layout.bounds || !shadow::nonempty(clip) {
+            return None;
+        }
+        let owner = self.opacity_owner(path);
+        let style = OpacityTileStyle {
+            scale: frame.scale,
+            palette: frame.theme,
+            in_layout,
+        };
+        // Each texture retains the exact device-pixel phase of its capture.
+        // The compositor applies the ancestor clip in the new placement.
+        for cache in [
+            &mut self.retained_layers.opacity,
+            &mut self.retained_layers.alternate_opacity,
+        ] {
+            let Some(layer) = cache.get_mut(&owner) else {
+                continue;
+            };
+            if layer.resample_origin.is_some()
+                || !layer.matches_paint(node, style)
+                || !layer.reuse_at(layout, clip, true, true)
+            {
+                continue;
+            }
+            let Some(image) = layer.image.cached.clone() else {
+                continue;
+            };
+            layer.last_frame = self.retained_layers.frame_number;
+            return Some(WindowLayer {
+                owner: Some(owner),
+                source: WindowLayerSource::Texture(image),
+                bounds: layer.raster_bounds,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                opacity: node.opacity(),
+                surface_only: false,
+                mask: None,
+                clip_samples: [false; 2],
+                edge_clip: (!crate::pixel_aligned(clip, frame.scale)).then_some(clip),
+            });
+        }
+        None
+    }
+
     pub(super) fn cached_window_layer(
         &mut self,
         node: &Node,
@@ -1420,6 +1806,9 @@ impl Renderer {
         in_layout: bool,
         frame: PaintFrame<'_>,
     ) -> Option<WindowLayer> {
+        if Self::exact_masked_group(node, layout, frame) {
+            return self.cached_masked_group(node, layout, path, in_layout, frame);
+        }
         let bounds = layout.bounds;
         let opacity = node.opacity();
         let full_coverage = layout.clip.x <= bounds.x
@@ -1439,6 +1828,47 @@ impl Renderer {
             return None;
         }
         let owner = self.opacity_owner(path);
+        if fractional_window_surface(layout) && !whole_group {
+            let placement = LayerPlacement {
+                bounds,
+                scale: frame.scale,
+            };
+            let matches_phase = |layer: &OpacityLayer| {
+                layer.surface_only
+                    && (LayerPlacement {
+                        bounds: layer.captured_layout.bounds,
+                        scale: layer.scale,
+                    })
+                    .preserves_surface_raster(placement)
+                    && layer.node.same_own_paint_except_position(node)
+                    && layer.palette == frame.theme
+                    && layer.in_layout == in_layout
+                    && same_window_surface_layout(&layer.captured_layout, layout)
+            };
+            if !self
+                .retained_layers
+                .opacity
+                .get(&owner)
+                .is_some_and(&matches_phase)
+                && self
+                    .retained_layers
+                    .alternate_opacity
+                    .get(&owner)
+                    .is_some_and(&matches_phase)
+            {
+                if let Some(mut layer) = self.retained_layers.alternate_opacity.remove(&owner) {
+                    layer.last_frame = self.retained_layers.frame_number;
+                    if let Some(mut previous) =
+                        self.retained_layers.opacity.insert(owner.clone(), layer)
+                    {
+                        previous.last_frame = self.retained_layers.frame_number;
+                        self.retained_layers
+                            .alternate_opacity
+                            .insert(owner.clone(), previous);
+                    }
+                }
+            }
+        }
         let layer = self.retained_layers.opacity.get_mut(&owner)?;
         // Group opacity must also apply to the children of the surface.
         if layer.surface_only == whole_group
@@ -1450,7 +1880,9 @@ impl Renderer {
             return None;
         }
         let image = layer.image.cached.as_ref()?.clone();
-        let raster_bounds = if layer.surface_only && node.kind == "Rectangle" {
+        let raster_bounds = if layer.surface_only
+            && (node.kind == "Rectangle" || fractional_window_surface(layout))
+        {
             let captured = LayerPlacement {
                 bounds: layer.captured_layout.bounds,
                 scale: layer.scale,
@@ -1462,6 +1894,7 @@ impl Renderer {
             // The background raster covers only the panel surface. Descendant
             // layout and the current ancestor clip are handled by the compositor.
             if !captured.preserves_surface_raster(current)
+                || !same_window_surface_layout(&layer.captured_layout, layout)
                 || !layer.node.same_own_paint_except_position(node)
             {
                 return None;
@@ -1476,7 +1909,7 @@ impl Renderer {
             } else {
                 bounds.intersect(layout.clip)
             };
-            if !layer.reuse_at(layout, clip, full_coverage) {
+            if !layer.reuse_at(layout, clip, full_coverage, false) {
                 if let Some(layer) = self.retained_layers.opacity.remove(&owner) {
                     layer.release_image(&mut self.canvas);
                 }
@@ -1492,7 +1925,8 @@ impl Renderer {
             opacity,
             surface_only: layer.surface_only,
             mask: None,
-            sample_mask: false,
+            clip_samples: [false; 2],
+            edge_clip: None,
         })
     }
 
@@ -1537,7 +1971,7 @@ impl Renderer {
             && layout.local_transform().is_identity()
             && layout.table_pane_clip().is_none()
             && layout.clip.intersect(layout.bounds) == layout.bounds
-            && crate::pixel_aligned(layout.bounds, scale)
+            && (fractional_window_surface(layout) || crate::pixel_aligned(layout.bounds, scale))
             && shadow::nonempty(layout.bounds)
     }
 
@@ -1556,8 +1990,17 @@ impl Renderer {
         };
         let candidates = &mut self.retained_layers.changing_groups;
         if let Some(previous) = candidates.get_mut(&owner) {
-            let stable = previous.last_frame == previous_frame
-                && if node.kind == "Rectangle" {
+            let stable = (previous.last_frame == previous_frame
+                || fractional_window_surface(layout)
+                    && previous.window_surface
+                    && previous_frame.wrapping_sub(previous.last_frame) <= 2)
+                && if fractional_window_surface(layout) {
+                    previous.moving_phase.is_some_and(|old| {
+                        old.scale == placement.scale
+                            && old.bounds.width == placement.bounds.width
+                            && old.bounds.height == placement.bounds.height
+                    }) && previous.node.same_own_paint_except_position(node)
+                } else if node.kind == "Rectangle" {
                     previous
                         .moving_phase
                         .is_some_and(|old| old.preserves_surface_raster(placement))
@@ -1571,6 +2014,7 @@ impl Renderer {
             }
             previous.last_frame = self.retained_layers.frame_number;
             previous.moving_phase = Some(placement);
+            previous.window_surface = true;
             return stable;
         }
         if candidates.len() < MAX_LAYERS {
@@ -1580,6 +2024,7 @@ impl Renderer {
                     node: Box::new(node.clone()),
                     last_frame: self.retained_layers.frame_number,
                     moving_phase: Some(placement),
+                    window_surface: true,
                 },
             );
         }
@@ -1597,7 +2042,34 @@ impl Renderer {
         let bounds = layout.bounds;
         let owner = self.opacity_owner(path);
         if let Some(layer) = self.retained_layers.opacity.remove(&owner) {
-            layer.release_image(&mut self.canvas);
+            if fractional_window_surface(layout)
+                && layer.surface_only
+                && layer.scale == frame.scale
+                && layer.palette == frame.theme
+                && layer.in_layout == in_layout
+                && layer.node.same_own_paint_except_position(node)
+                && same_window_surface_layout(&layer.captured_layout, layout)
+                && !(LayerPlacement {
+                    bounds: layer.captured_layout.bounds,
+                    scale: layer.scale,
+                })
+                .same_phase(LayerPlacement {
+                    bounds,
+                    scale: frame.scale,
+                })
+                && layer.captured_layout.bounds.width == bounds.width
+                && layer.captured_layout.bounds.height == bounds.height
+            {
+                if let Some(old) = self
+                    .retained_layers
+                    .alternate_opacity
+                    .insert(owner.clone(), layer)
+                {
+                    old.release_image(&mut self.canvas);
+                }
+            } else {
+                layer.release_image(&mut self.canvas);
+            }
         }
         // Ordinary paints blend coverage directly into the window.
         // The float image keeps that coverage until the final blend.
@@ -1652,7 +2124,8 @@ impl Renderer {
             opacity: 1.0,
             surface_only: true,
             mask: None,
-            sample_mask: false,
+            clip_samples: [false; 2],
+            edge_clip: None,
         })
     }
 
@@ -1697,14 +2170,62 @@ impl Renderer {
             opacity: 1.0,
             surface_only: false,
             mask: None,
-            sample_mask: false,
+            clip_samples: [false; 2],
+            edge_clip: None,
         })
     }
 
-    pub(super) fn window_clip_mask(
+    pub(super) fn window_clip_masks(
         &mut self,
-        shapes: &Rc<[RoundedClip]>,
+        shapes: &[RoundedClip],
         scale: f32,
+    ) -> Option<LayerClip> {
+        #[cfg(xrack_femtovg_glyph_samples)]
+        if let [outer, inner] = shapes {
+            let mut outer_path = Path::new();
+            let mut inner_path = Path::new();
+            append_rect(&mut outer_path, outer.bounds, outer.radii);
+            append_rect(&mut inner_path, inner.bounds, inner.radii);
+            let intersection = outer.bounds.intersect(inner.bounds);
+            let bounds = logical_bounds(device_bounds(intersection, scale), scale);
+            let mut transform = femtovg::Transform2D::translation(-bounds.x, -bounds.y);
+            transform.premultiply(&femtovg::Transform2D::scaling(scale, scale));
+            match Canvas::<WGPURenderer>::rounded_clip_composition(
+                &outer_path,
+                &inner_path,
+                transform,
+                scale,
+            ) {
+                femtovg::RoundedClipComposition::Outer if intersection == outer.bounds => {
+                    return self.window_clip_mask(std::slice::from_ref(outer), scale, false);
+                }
+                femtovg::RoundedClipComposition::Inner if intersection == inner.bounds => {
+                    return self.window_clip_mask(std::slice::from_ref(inner), scale, false);
+                }
+                femtovg::RoundedClipComposition::Separate => {
+                    let mut first =
+                        self.window_clip_mask(std::slice::from_ref(outer), scale, false)?;
+                    if let Some(second) =
+                        self.window_clip_mask(std::slice::from_ref(inner), scale, true)
+                    {
+                        first.second = Some(LayerClipSample {
+                            mask: second.mask,
+                            origin: second.origin,
+                        });
+                        return Some(first);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.window_clip_mask(shapes, scale, false)
+    }
+
+    fn window_clip_mask(
+        &mut self,
+        shapes: &[RoundedClip],
+        scale: f32,
+        raster_only: bool,
     ) -> Option<LayerClip> {
         let bounds = shapes
             .iter()
@@ -1712,15 +2233,30 @@ impl Renderer {
             .reduce(Rect::intersect)?;
         let physical = device_bounds(bounds, scale);
         let origin = [physical.x as i32, physical.y as i32];
+        // Moving a nested clip can alternate between analytic and raster
+        // coverage. Keep the other representation of this exact pixel phase.
+        if shapes.len() == 1
+            && let Some(alternate) = self
+                .retained_layers
+                .window_clip_masks
+                .iter()
+                .find(|entry| entry.matches(shapes, physical, scale, !raster_only))
+        {
+            alternate
+                .mask
+                .last_frame
+                .set(self.retained_layers.frame_number);
+        }
         if let Some(entry) = self
             .retained_layers
             .window_clip_masks
             .iter()
-            .find(|entry| entry.matches(shapes, physical, scale))
+            .find(|entry| entry.matches(shapes, physical, scale, raster_only))
         {
             return Some(LayerClip {
                 mask: entry.mask.clone(),
                 origin,
+                second: None,
             });
         }
         let captured = self
@@ -1732,6 +2268,13 @@ impl Renderer {
                     for shape in shapes.iter() {
                         let mut path = Path::new();
                         append_rect(&mut path, shape.bounds, shape.radii);
+                        #[cfg(xrack_femtovg_glyph_samples)]
+                        if raster_only {
+                            if !renderer.canvas.clip_path_as_mask(&path, FillRule::NonZero) {
+                                return Err("raster clip exceeded the canvas mask budget".into());
+                            }
+                            continue;
+                        }
                         renderer.canvas.clip_path(&path, FillRule::NonZero);
                     }
                     let mut fill = Path::new();
@@ -1752,19 +2295,47 @@ impl Renderer {
         self.retained_layers
             .window_clip_masks
             .push(RetainedClipMask {
-                shapes: shapes.clone(),
+                shapes: Rc::from(shapes),
+                raster_only,
                 scale,
                 physical,
                 mask: mask.clone(),
                 bytes: captured.bytes,
             });
-        Some(LayerClip { mask, origin })
+        Some(LayerClip {
+            mask,
+            origin,
+            second: None,
+        })
     }
 
     pub(super) fn retain_composited_layers(&mut self, layers: &[WindowLayer]) {
+        let atlas = self
+            .retained_layers
+            .opacity_atlas
+            .as_ref()
+            .and_then(|atlas| atlas.composited.get());
+        let retained = self.retained_layers.window_opacity_atlas.as_ref();
         for item in layers {
+            if let Some(atlas) = retained
+                && item.owner.is_none()
+                && matches!(&item.source, WindowLayerSource::Texture(source) if Rc::ptr_eq(source, &atlas.image))
+            {
+                self.retained_layers.opacity_atlas_stats.retained_hits += 1;
+            }
+            if let Some(image) = atlas
+                && matches!(&item.source, WindowLayerSource::Texture(source) if Rc::ptr_eq(source, image))
+            {
+                self.retained_layers.opacity_atlas_stats.groups += 1;
+            }
             if let Some(clip) = &item.mask {
                 clip.mask.last_frame.set(self.retained_layers.frame_number);
+                if let Some(second) = &clip.second {
+                    second
+                        .mask
+                        .last_frame
+                        .set(self.retained_layers.frame_number);
+                }
             }
             let Some(owner) = &item.owner else {
                 continue;
@@ -1853,6 +2424,17 @@ impl Renderer {
             && node.opacity() < 1.0
             && !self.retained_layers.opacity_atlas_disabled
             && !cfg!(any(target_os = "ios", target_os = "android"));
+        let exact_placement = track_phase
+            && frame.scale >= 1.0
+            && layout.has_ancestor_clip_chain()
+            && layout.local_transform().is_identity()
+            && layout.table_pane_clip().is_none();
+        let exact_outer_clip = exact_placement && full_coverage;
+        let style = OpacityTileStyle {
+            scale: frame.scale,
+            palette: frame.theme,
+            in_layout,
+        };
         let mut phase_changed = false;
         let mut repeated_phase_change = false;
         let mut cropped_sample = false;
@@ -1862,12 +2444,7 @@ impl Renderer {
             .opacity
             .get_mut(&owner)
             .and_then(|layer| {
-                if layer.scale != frame.scale
-                    || layer.palette != frame.theme
-                    || layer.in_layout != in_layout
-                    || layer.surface_only
-                    || !layer.node.same_paint_except_layer_composition(node)
-                {
+                if !layer.matches_paint(node, style) {
                     return None;
                 }
                 let sampled = layer.resample_origin.is_some();
@@ -1877,7 +2454,7 @@ impl Renderer {
                     return None;
                 }
                 let previous = layer.captured_layout.bounds;
-                if layer.reuse_at(layout, clip, full_coverage) {
+                if layer.reuse_at(layout, clip, full_coverage, exact_outer_clip) {
                     layer.used = true;
                     layer.last_frame = self.retained_layers.frame_number;
                     layer.recaptured_at_new_phase = false;
@@ -1899,11 +2476,33 @@ impl Renderer {
         if discard_sample && let Some(layer) = self.retained_layers.opacity.remove(&owner) {
             layer.release_image(&mut self.canvas);
         }
+        let cached = cached.or_else(|| {
+            if !exact_outer_clip {
+                return None;
+            }
+            let primary = self.retained_layers.opacity.get_mut(&owner)?;
+            let layer = self.retained_layers.alternate_opacity.get_mut(&owner)?;
+            if !layer.matches_paint(node, style)
+                || !layer.reuse_at(layout, clip, full_coverage, true)
+            {
+                return None;
+            }
+            layer.used = true;
+            layer.last_frame = self.retained_layers.frame_number;
+            primary.used = true;
+            primary.last_frame = self.retained_layers.frame_number;
+            Some(layer.raster())
+        });
         let raster = if let Some(raster) = cached {
             self.retained_layers.changing_groups.remove(&owner);
             self.retained_layers.opacity_stats.reused += 1;
             raster
         } else {
+            let reuse_cropped = exact_placement && !full_coverage;
+            if reuse_cropped && self.paint_retained_opacity_tile(node, layout, frame, in_layout) {
+                self.retained_layers.changing_groups.remove(&owner);
+                return Ok(true);
+            }
             let defer_unstable = resample
                 || shadow.is_some()
                 || !cfg!(any(target_os = "ios", target_os = "android"));
@@ -1923,6 +2522,7 @@ impl Renderer {
                     frame.scale,
                     self.opacity_atlas_limit(),
                     shadow,
+                    false,
                 )
                 .is_some();
             if defer_unstable
@@ -1946,14 +2546,17 @@ impl Renderer {
                 if !moving {
                     return Ok(false);
                 }
-                if self.paint_transient_opacity(
-                    node,
-                    layout,
-                    path,
-                    frame,
-                    in_layout,
-                    OpacitySource::MovingLayer,
-                )? {
+                if (!reuse_cropped
+                    && self.paint_retained_opacity_tile(node, layout, frame, in_layout))
+                    || self.paint_transient_opacity(
+                        node,
+                        layout,
+                        path,
+                        frame,
+                        in_layout,
+                        OpacitySource::MovingLayer,
+                    )?
+                {
                     return Ok(true);
                 }
                 // The atlas can be warming up or full. Preserve the
@@ -1969,8 +2572,32 @@ impl Renderer {
                     self.retained_layers.opacity_demand.record(width, height);
                 }
             }
+            if let Some(old) = self.retained_layers.alternate_opacity.remove(&owner) {
+                old.release_image(&mut self.canvas);
+            }
+            let keep_previous_phase =
+                exact_outer_clip && phase_changed && self.retained_capture_slots() > 0 && {
+                    let device = device_bounds(clip, frame.scale);
+                    let bytes = device.width as u64 * device.height as u64 * 4;
+                    self.retained_layers
+                        .budget
+                        .saturating_sub(self.retained_layers.resident_bytes())
+                        >= bytes
+                };
             if let Some(layer) = self.retained_layers.opacity.remove(&owner) {
-                layer.release_image(&mut self.canvas);
+                if keep_previous_phase
+                    && layer.full_coverage
+                    && layer.capture_clip == layer.captured_layout.bounds
+                    && layer.captured_layout.has_ancestor_clip_chain()
+                {
+                    // The first phase change already needs a new capture.
+                    // Keep the previous one for a later whole-pixel translation.
+                    self.retained_layers
+                        .alternate_opacity
+                        .insert(owner.clone(), layer);
+                } else {
+                    layer.release_image(&mut self.canvas);
+                }
             }
             let flags = if pixel_aligned && !resample {
                 ImageFlags::NEAREST
@@ -1991,11 +2618,6 @@ impl Renderer {
                 clip
             };
             let raster_bounds = logical_bounds(device_bounds(bounds, frame.scale), frame.scale);
-            let style = OpacityTileStyle {
-                scale: frame.scale,
-                palette: frame.theme,
-                in_layout,
-            };
             let exact = !resample
                 && shadow.is_none()
                 && Self::can_composite_exact_opacity(node, layout, frame.scale, node.opacity());
@@ -2003,10 +2625,16 @@ impl Renderer {
                 x: raster_bounds.x - layout.bounds.x,
                 y: raster_bounds.y - layout.bounds.y,
             });
+            // The ancestor shape clips the composed quad. Complete captures
+            // of the same paint can share across whole-pixel translations.
+            let share_exact = exact
+                || exact_outer_clip
+                    && full_coverage
+                    && !node.contains_scene_feature(xrack_runtime::SceneFeature::SceneImageTexture);
             let share = if resample {
                 self.retained_layers.hinted_layer_sharing
             } else {
-                exact && self.retained_layers.opacity_tile_sharing
+                share_exact && self.retained_layers.opacity_tile_sharing
             };
             let fonts = self.text.registered_font_counts();
             let shared = (share && self.retained_layers.opacity.len() < MAX_LAYERS)
@@ -2014,6 +2642,7 @@ impl Renderer {
                     self.retained_layers
                         .opacity
                         .values()
+                        .chain(self.retained_layers.alternate_opacity.values())
                         .find(|layer| {
                             (resample || layer.image.fonts == Some(fonts))
                                 && layer.shares_capture(node, layout, style, raster_bounds, origin)
@@ -2046,18 +2675,46 @@ impl Renderer {
                     return Ok(false);
                 };
                 self.retained_layers.opacity_stats.rasterized += 1;
+                // An isolated capture can fill a gap left by the temporary
+                // atlas. Keep its exact crop when this paint already recurs.
+                if reuse_cropped
+                    && self.can_reuse_opacity_tiles(node, frame)
+                    && fonts == self.text.registered_font_counts()
+                    && self
+                        .retained_layers
+                        .has_retained_opacity_paint(node, layout, style, fonts)
+                {
+                    self.copy_retained_opacity(
+                        &captured.texture,
+                        [0, 0],
+                        OpacityTile {
+                            node: node.clone(),
+                            layout: Box::new(layout.clone()),
+                            clip,
+                            device: device_bounds(clip, frame.scale),
+                            position: [0, 0],
+                            style,
+                            capture: OpacityTileCapture {
+                                moving: true,
+                                mask: None,
+                                fonts,
+                            },
+                        },
+                    );
+                }
                 Rc::new(OpacityImage {
                     image: raster.image,
                     bytes: raster.bytes,
                     // At texel centers the compositor's linear sampler
                     // gives the same pixels as the exact retained layer.
-                    cached: (resample || exact).then(|| {
+                    cached: (resample || exact || exact_outer_clip).then(|| {
                         Rc::new(CachedLayerImage {
                             texture: captured.texture,
                             binding: OnceCell::new(),
                         })
                     }),
-                    fonts: (exact && fonts == self.text.registered_font_counts()).then_some(fonts),
+                    fonts: (share_exact && fonts == self.text.registered_font_counts())
+                        .then_some(fonts),
                 })
             };
             let raster = Raster {
@@ -2173,7 +2830,7 @@ impl Renderer {
                 frame.theme.role(crate::Role::Border),
             );
             let Some((clip, device)) =
-                transient_opacity_bounds(child, item, frame.scale, limit, shadow.as_ref())
+                transient_opacity_bounds(child, item, frame.scale, limit, shadow.as_ref(), false)
             else {
                 continue;
             };
@@ -2288,22 +2945,353 @@ impl Renderer {
         in_layout: bool,
         source: OpacitySource<'_>,
     ) -> Result<bool, String> {
+        if !has_device_scale(canvas_transform(&self.canvas), frame.scale) {
+            return Ok(false);
+        }
+        let moving_layer = matches!(source, OpacitySource::MovingLayer);
+        let Some((tile, clip)) =
+            self.capture_opacity_tile(node, layout, path, frame, in_layout, source)?
+        else {
+            return Ok(false);
+        };
+        self.draw_opacity_tile(
+            tile,
+            clip,
+            node.opacity(),
+            moving_layer && !crate::pixel_aligned(clip, frame.scale),
+        );
+        Ok(true)
+    }
+
+    fn paint_retained_opacity_tile(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        frame: PaintFrame<'_>,
+        in_layout: bool,
+    ) -> bool {
+        // The normal painter can replay the same retained pixels under
+        // its live clip, even when the window cannot batch every draw.
+        if let Some((raster, clip, position)) =
+            self.lookup_retained_opacity(node, layout, frame, in_layout)
+            && let Some(atlas) = self.retained_layers.window_opacity_atlas.as_mut()
+        {
+            let edge = atlas.image.texture.width();
+            if atlas.canvas_image.is_none() {
+                let info = ImageInfo::new(
+                    ImageFlags::PREMULTIPLIED | ImageFlags::NEAREST,
+                    edge as usize,
+                    edge as usize,
+                    PixelFormat::Rgba8,
+                );
+                atlas.canvas_image = self
+                    .canvas
+                    .create_image_from_native_texture(atlas.image.texture.clone(), info)
+                    .ok();
+            }
+            if let Some(image) = atlas.canvas_image {
+                let tile = OpacityTilePlacement::new(image, edge, frame.scale, raster, position);
+                self.draw_opacity_tile(
+                    tile,
+                    clip,
+                    node.opacity(),
+                    !crate::pixel_aligned(clip, frame.scale),
+                );
+                self.retained_layers.opacity_atlas_stats.retained_hits += 1;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn can_reuse_opacity_tiles(&self, node: &Node, frame: PaintFrame<'_>) -> bool {
+        self.cached_layer_compositing
+            && self.retained_layers.opacity_tile_sharing
+            && !self.retained_layers.opacity_atlas_disabled
+            && frame.damage.is_none()
+            && !node.contains_scene_feature(xrack_runtime::SceneFeature::SceneImageTexture)
+    }
+
+    fn lookup_retained_opacity(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        frame: PaintFrame<'_>,
+        in_layout: bool,
+    ) -> Option<(Rect, Rect, [u32; 2])> {
+        let clip = layout.bounds.intersect(layout.clip);
+        if !self.can_reuse_opacity_tiles(node, frame) || !shadow::nonempty(clip) {
+            return None;
+        }
+        let device = device_bounds(clip, frame.scale);
+        let style = OpacityTileStyle {
+            scale: frame.scale,
+            palette: frame.theme,
+            in_layout,
+        };
+        let capture = OpacityTileCapture {
+            moving: true,
+            mask: None,
+            fonts: self.text.registered_font_counts(),
+        };
+        if let Some(atlas) = self.retained_layers.window_opacity_atlas.as_mut()
+            && let Some(position) = atlas.retained.iter_mut().find_map(|tile| {
+                let position = tile.capture.reuse_retained(
+                    node,
+                    layout,
+                    clip,
+                    device,
+                    style,
+                    capture,
+                    tile.can_crop,
+                )?;
+                tile.last_frame = self.retained_layers.frame_number;
+                Some(position)
+            })
+        {
+            atlas.last_frame = self.retained_layers.frame_number;
+            return Some((logical_bounds(device, frame.scale), clip, position));
+        }
+        None
+    }
+
+    pub(super) fn capture_composited_opacity(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &mut Vec<usize>,
+        frame: PaintFrame<'_>,
+        in_layout: bool,
+    ) -> Result<Option<WindowLayer>, String> {
+        if let Some((raster, clip, position)) =
+            self.lookup_retained_opacity(node, layout, frame, in_layout)
+        {
+            let Some(atlas) = &self.retained_layers.window_opacity_atlas else {
+                return Ok(None);
+            };
+            return Ok(Some(Self::composited_opacity_layer(
+                atlas.image.clone(),
+                raster,
+                clip,
+                position,
+                frame.scale,
+                node.opacity(),
+            )));
+        }
+        let Some((tile, clip)) = self.capture_opacity_tile(
+            node,
+            layout,
+            path,
+            frame,
+            in_layout,
+            OpacitySource::Composited,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(atlas) = self.retained_layers.opacity_atlas.as_ref() else {
+            return Ok(None);
+        };
+        let image = atlas
+            .composited
+            .get_or_init(|| {
+                Rc::new(CachedLayerImage {
+                    texture: atlas.texture.clone(),
+                    binding: OnceCell::new(),
+                })
+            })
+            .clone();
+        let position = [
+            (tile.offset.x * tile.scale).round() as u32,
+            (tile.offset.y * tile.scale).round() as u32,
+        ];
+        Ok(Some(Self::composited_opacity_layer(
+            image,
+            tile.raster,
+            clip,
+            position,
+            frame.scale,
+            node.opacity(),
+        )))
+    }
+
+    fn composited_opacity_layer(
+        image: Rc<CachedLayerImage>,
+        bounds: Rect,
+        clip: Rect,
+        position: [u32; 2],
+        scale: f32,
+        opacity: f32,
+    ) -> WindowLayer {
+        let extent = image.texture.width() as f32;
+        WindowLayer {
+            owner: None,
+            source: WindowLayerSource::Texture(image),
+            bounds,
+            uv: [
+                position[0] as f32 / extent,
+                position[1] as f32 / extent,
+                (position[0] as f32 + bounds.width * scale) / extent,
+                (position[1] as f32 + bounds.height * scale) / extent,
+            ],
+            opacity,
+            surface_only: false,
+            mask: None,
+            clip_samples: [false; 2],
+            edge_clip: (!crate::pixel_aligned(clip, scale)).then_some(clip),
+        }
+    }
+
+    fn copy_retained_opacity(
+        &mut self,
+        source: &wgpu::Texture,
+        origin: [u32; 2],
+        mut tile: OpacityTile,
+    ) {
+        let cache = &mut self.retained_layers;
+        let [width, height] = [tile.device.width as u32, tile.device.height as u32];
+        if cache.window_opacity_atlas.is_none() {
+            let limit = MAX_WINDOW_ATLAS_EDGE.min(self.device.limits().max_texture_dimension_2d);
+            let budget = cache.budget.saturating_sub(cache.resident_bytes());
+            let Some(edge) = [limit, MIN_WINDOW_ATLAS_EDGE].into_iter().find(|edge| {
+                *edge <= limit
+                    && opacity_tile_fits(width, height, *edge)
+                    && WindowOpacityAtlas::bytes(*edge) <= budget
+            }) else {
+                return;
+            };
+            cache.window_opacity_atlas = Some(WindowOpacityAtlas::new(
+                &self.device,
+                edge,
+                cache.frame_number,
+            ));
+        }
+        let Some(atlas) = cache.window_opacity_atlas.as_mut() else {
+            return;
+        };
+        let allocation = (atlas.retained.len() < MAX_LAYERS)
+            .then(|| {
+                atlas
+                    .packing
+                    .add_rect(width as usize, height as usize)
+                    .map(|(x, y)| ([x as u32, y as u32], [width, height]))
+                    .or_else(|| atlas.take_dead_slot(width, height, cache.frame_number))
+            })
+            .flatten();
+        let (index, slot) = if let Some((origin, slot)) = allocation {
+            tile.position = origin;
+            (atlas.retained.len(), slot)
+        } else {
+            atlas.grow_next_frame |= atlas.retained.len() < MAX_LAYERS
+                && atlas.image.texture.width() < MAX_OPACITY_ATLAS_EDGE
+                && opacity_tile_fits(width, height, MAX_OPACITY_ATLAS_EDGE);
+            // An earlier draw in this frame may still sample its tile.
+            // Reuse only an older slot whose allocation contains the new tile.
+            let Some((index, old)) = atlas
+                .retained
+                .iter()
+                .enumerate()
+                .filter(|(_, old)| {
+                    old.last_frame != cache.frame_number
+                        && old.slot[0] >= width
+                        && old.slot[1] >= height
+                })
+                .max_by_key(|(_, old)| cache.frame_number.wrapping_sub(old.last_frame))
+            else {
+                return;
+            };
+            tile.position = old.capture.position;
+            (index, old.slot)
+        };
+        let encoder = self.custom_encoder.get_or_insert_with(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("XRack opacity tile copies"),
+                })
+        });
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: source,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: origin[0],
+                    y: origin[1],
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &atlas.image.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: tile.position[0],
+                    y: tile.position[1],
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let can_crop = Self::crop_retained_opacity(&tile.node);
+        let entry = RetainedOpacityTile {
+            capture: tile,
+            slot,
+            last_frame: cache.frame_number,
+            can_crop,
+        };
+        atlas.last_frame = cache.frame_number;
+        if index == atlas.retained.len() {
+            atlas.retained.push(entry);
+        } else {
+            atlas.retained[index] = entry;
+        }
+    }
+
+    fn crop_retained_opacity(node: &Node) -> bool {
+        matches!(node.kind, "Rectangle" | "Text" | "Label")
+            && node.color("drop-shadow-color").is_none()
+            && node.color("inner-shadow-color").is_none()
+            && node.children.iter().all(Self::crop_retained_opacity)
+    }
+
+    fn capture_opacity_tile(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &mut Vec<usize>,
+        frame: PaintFrame<'_>,
+        in_layout: bool,
+        source: OpacitySource<'_>,
+    ) -> Result<Option<(OpacityTilePlacement, Rect)>, String> {
         let (shadow, moving_layer) = match source {
             OpacitySource::Transient(shadow) => (shadow, false),
-            OpacitySource::MovingLayer => (None, true),
+            OpacitySource::MovingLayer | OpacitySource::Composited => (None, true),
         };
         if cfg!(any(target_os = "ios", target_os = "android"))
             || self.retained_layers.opacity_atlas_disabled
-            || !self.can_retain_layer(frame.scale)
+            || !self.can_cache_on_main_canvas()
             || self.retained_layers.vectors.opacity_passthrough
         {
-            return Ok(false);
+            return Ok(None);
         }
         let limit = self.opacity_atlas_limit();
-        let Some((clip, device)) =
-            transient_opacity_bounds(node, layout, frame.scale, limit, shadow)
-        else {
-            return Ok(false);
+        // Isolate live groups from the ancestor's shaped clip just as
+        // begin_layer does. The main canvas applies that clip on replay.
+        let clipped_transient = matches!(source, OpacitySource::Transient(None))
+            && Self::exact_masked_group(node, layout, frame);
+        let Some((clip, device)) = transient_opacity_bounds(
+            node,
+            layout,
+            frame.scale,
+            limit,
+            shadow,
+            moving_layer || clipped_transient,
+        ) else {
+            return Ok(None);
         };
         let raster = logical_bounds(device, frame.scale);
         let [width, height] = [device.width as u32, device.height as u32];
@@ -2311,13 +3299,16 @@ impl Renderer {
         let demand = self.retained_layers.previous_opacity_demand;
         if demand.groups < 2
             && !(self.retained_layers.opacity_atlas.is_some()
-                && (node.children.is_empty() || shadow.is_some()))
+                && (node.children.is_empty()
+                    || shadow.is_some()
+                    || clipped_transient
+                    || matches!(source, OpacitySource::Composited)))
         {
-            return Ok(false);
+            return Ok(None);
         }
         let mask = self.prepare_shadow_mask(shadow, layout, frame.scale, true)?;
         if shadow.is_some() && mask.is_none() {
-            return Ok(false);
+            return Ok(None);
         }
         let desired_edge = demand.atlas_edge(width, height, limit);
         if self
@@ -2340,7 +3331,7 @@ impl Renderer {
             fonts: self.text.registered_font_counts(),
         };
         let Some(atlas) = self.retained_layers.opacity_atlas.as_mut() else {
-            return Ok(false);
+            return Ok(None);
         };
         let edge = atlas.texture.width();
         let image = atlas.image;
@@ -2358,7 +3349,7 @@ impl Renderer {
             position
         } else {
             let Some((x, y)) = atlas.slots.add_rect(width as usize, height as usize) else {
-                return Ok(false);
+                return Ok(None);
             };
             [x as u32, y as u32]
         };
@@ -2374,7 +3365,7 @@ impl Renderer {
             if !self.record_opacity_tile(tile, capture_clip, |renderer| {
                 renderer.paint_element_with_shadow(node, layout, path, frame, in_layout, paint)
             })? {
-                return Ok(false);
+                return Ok(None);
             }
             if share_tiles
                 && capture.fonts == self.text.registered_font_counts()
@@ -2393,13 +3384,38 @@ impl Renderer {
                 });
             }
         }
-        self.draw_opacity_tile(
-            tile,
-            clip,
-            node.opacity(),
-            moving_layer && !crate::pixel_aligned(clip, frame.scale),
-        );
-        Ok(true)
+        if moving_layer
+            && share_tiles
+            && self.can_reuse_opacity_tiles(node, frame)
+            && capture.fonts == self.text.registered_font_counts()
+            && let Some(atlas) = self.retained_layers.opacity_atlas.as_ref()
+            && (atlas
+                .previous_tiles
+                .iter()
+                .any(|tile| tile.same_content(node, layout, style, capture.fonts))
+                || self.retained_layers.has_retained_opacity_paint(
+                    node,
+                    layout,
+                    style,
+                    capture.fonts,
+                ))
+        {
+            let source = atlas.texture.clone();
+            self.copy_retained_opacity(
+                &source,
+                position,
+                OpacityTile {
+                    node: node.clone(),
+                    layout: Box::new(layout.clone()),
+                    clip,
+                    device,
+                    position,
+                    style,
+                    capture,
+                },
+            );
+        }
+        Ok(Some((tile, clip)))
     }
 
     pub(super) fn plan_opacity_atlas_for_rectangles(
@@ -2678,7 +3694,14 @@ impl Renderer {
             self.canvas.fill_path(&path, &paint);
             self.canvas.restore();
         }
-        self.retained_layers.opacity_atlas_stats.groups += 1;
+        if self
+            .retained_layers
+            .opacity_atlas
+            .as_ref()
+            .is_some_and(|atlas| atlas.image == tile.image)
+        {
+            self.retained_layers.opacity_atlas_stats.groups += 1;
+        }
     }
 
     fn opacity_atlas_replacement_budget(&self) -> u64 {
@@ -2709,7 +3732,9 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let edge = edge as usize;
@@ -2731,6 +3756,8 @@ impl Renderer {
             texture,
             slots: Atlas::new(edge, edge),
             tiles: Vec::new(),
+            previous_tiles: Vec::new(),
+            composited: OnceCell::new(),
             pending: false,
             cleared: false,
             last_frame: self.retained_layers.frame_number,
@@ -2865,6 +3892,7 @@ impl Renderer {
         MAX_LAYERS.saturating_sub(
             self.retained_layers.layers.len()
                 + self.retained_layers.opacity.len()
+                + self.retained_layers.alternate_opacity.len()
                 + self.retained_layers.shadow_masks.len()
                 + self.retained_layers.window_clip_masks.len(),
         )
@@ -2944,15 +3972,28 @@ impl Renderer {
     }
 }
 
+fn fractional_window_surface(layout: &LayoutNode) -> bool {
+    crate::display_list::fractional_window_composition() && layout.has_ancestor_clip_chain()
+}
+
+fn same_window_surface_layout(before: &LayoutNode, after: &LayoutNode) -> bool {
+    before.enabled == after.enabled
+        && before.layout_direction_override() == after.layout_direction_override()
+        && before.world_transform().max_scale() == after.world_transform().max_scale()
+}
+
 fn transient_opacity_bounds(
     node: &Node,
     layout: &LayoutNode,
     scale: f32,
     limit: u32,
     shadow: Option<&(shadow::OuterShadow, Rect)>,
+    composite_under_ancestor_clip: bool,
 ) -> Option<(Rect, Rect)> {
+    // A clipped group can capture the rectangular source and composite on
+    // the main canvas, where the ancestor's shaped clip is still active.
     if layout.allows_overflow()
-        || layout.has_ancestor_clip_chain()
+        || (!composite_under_ancestor_clip && layout.has_ancestor_clip_chain())
         || node.children.is_empty() && !crate::rectangle::single_fill(node, layout)
         || !passive_content(node)
     {

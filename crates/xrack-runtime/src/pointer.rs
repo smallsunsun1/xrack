@@ -72,6 +72,11 @@ pub struct TouchPoint {
     pub inside: bool,
 }
 
+/// Programmatic scene touch IDs use the upper half of the exact integer range
+/// of a JavaScript number, leaving the lower half for physical touches.
+#[doc(hidden)]
+pub const FIRST_SCENE_TOUCH_FINGER_ID: i64 = 1 << 52;
+
 /// Read-only, reactive rows in contact order. Cloning shares the same rows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TouchPoints(VecModel<TouchPoint>);

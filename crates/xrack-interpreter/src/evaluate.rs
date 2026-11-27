@@ -1980,6 +1980,24 @@ impl Instance {
                 Statement::Table(target, command, operands) => {
                     self.table_command(target, *command, &self.arguments(operands, args)?)?;
                 }
+                Statement::SceneTouch(target, operands) => {
+                    let values: [Value; 4] = self
+                        .arguments(operands, args)?
+                        .try_into()
+                        .map_err(|_| evaluation("invalid touchpoint arity"))?;
+                    let [
+                        Value::String(source),
+                        Value::Point2D(position),
+                        Value::Int(id),
+                        Value::Bool(pressed),
+                    ] = values
+                    else {
+                        return Err(evaluation("invalid touchpoint operands"));
+                    };
+                    self.geometry_value(target, |handle| {
+                        handle.request_scene_touch(source, position, id, pressed)
+                    })?;
+                }
                 Statement::Focus(target, command, operands) => {
                     let (text, offsets) = if command.uses_text_operand() {
                         let (text, offsets) = operands
@@ -2244,6 +2262,9 @@ impl Instance {
             CachedInitializer(group, value) => self.cached_visual(*group, value, true),
             Read(member) => self.read(member),
             GeometryRead(target, metric) => self.geometry_read(target, *metric),
+            SceneTextureSize(target, axis) => {
+                self.geometry_value(target, |handle| handle.scene_texture_size(*axis).into())
+            }
             SceneViewQuery(target, method, inputs) => {
                 self.scene_view_query(target, method, &self.arguments(inputs, args)?)
             }
@@ -3793,6 +3814,14 @@ impl Instance {
                                     program.scene_assets.meshes.get(key).cloned()
                                 })
                         },
+                        |key, scale, shuffle| {
+                            let program = self.program();
+                            program
+                                .scene_projections
+                                .particle_points(key, scale, shuffle, |key| {
+                                    program.scene_assets.point_clouds.get(key).cloned()
+                                })
+                        },
                         |key| {
                             let program = self.program();
                             program.scene_projections.particle_model(key, |key| {
@@ -3801,6 +3830,18 @@ impl Instance {
                         },
                     )),
                 );
+            } else if node.kind == "SceneView3D" && name == "particle-instance-models" {
+                let Value::RecordList(model) = value else {
+                    return Err(evaluation("expected a particle instance model record list"));
+                };
+                node.properties.insert(
+                    name,
+                    Value::SceneParticleInstanceModels(
+                        self.program()
+                            .scene_projections
+                            .record_particle_instance_models(&model),
+                    ),
+                );
             } else if node.kind == "SceneView3D" && name == "particle-affectors" {
                 let Value::RecordList(model) = value else {
                     return Err(evaluation("expected a particle affector record list"));
@@ -3808,7 +3849,26 @@ impl Instance {
                 node.properties.insert(
                     name,
                     Value::SceneParticleAffectors(
-                        xrack_runtime::scene3d::record_particle_affectors(&model),
+                        xrack_runtime::scene3d::record_particle_affectors(
+                            &model,
+                            |key, scale| {
+                                let program = self.program();
+                                program
+                                    .scene_projections
+                                    .particle_surface(key, scale, |key| {
+                                        program.scene_assets.meshes.get(key).cloned()
+                                    })
+                            },
+                            |key, scale, shuffle| {
+                                let program = self.program();
+                                program.scene_projections.particle_points(
+                                    key,
+                                    scale,
+                                    shuffle,
+                                    |key| program.scene_assets.point_clouds.get(key).cloned(),
+                                )
+                            },
+                        ),
                     ),
                 );
             } else if node.kind == "SceneView3D" && name == "fog-volumes" {
@@ -6802,8 +6862,10 @@ impl ValueType {
                 | (Self::PhysicsContact3DList, Value::PhysicsContact3DList(_))
                 | (Self::PhysicsHit3DList, Value::PhysicsHit3DList(_))
                 | (Self::ProjectedPoint3D, Value::ProjectedPoint3D(_))
+                | (Self::RenderStats3D, Value::RenderStats3D(_))
                 | (Self::Instance3D, Value::Instance3D(_))
                 | (Self::InstanceTable3D, Value::InstanceTable3D(_))
+                | (Self::TextureData2D, Value::TextureData2D(_))
                 | (Self::MeshAsset3D, Value::MeshAsset3D(_))
                 | (Self::MeshNode3D, Value::MeshNode3D(_))
                 | (Self::Bounds3D, Value::Bounds3D(_))
@@ -7799,7 +7861,7 @@ fn geometry_function(
         (QuaternionRotate, [Value::Quaternion3D(rotation), Value::Vector3D(vector)]) => {
             rotation.rotate(*vector).into()
         }
-        (MeshNode3D | MeshNodeIndices3D, [asset, args @ ..]) => {
+        (kind, [asset, args @ ..]) if kind.uses_mesh_asset() => {
             let asset = match asset {
                 Value::String(key) => program.scene_assets.meshes.get(key),
                 Value::MeshAsset3D(asset) => asset.asset(),
@@ -7826,7 +7888,30 @@ fn geometry_function(
                         asset.node_indices(kind)
                     }),
                 ),
-                _ => return Err(evaluation("invalid mesh node selector")),
+                (MeshMaterialSlots3D, []) => Value::StringModel(
+                    asset.map_or_else(xrack_runtime::VecModel::default, |asset| {
+                        asset.material_slot_selectors("")
+                    }),
+                ),
+                (MeshMaterialSlots3D, [Value::String(variant)]) => Value::StringModel(
+                    asset.map_or_else(xrack_runtime::VecModel::default, |asset| {
+                        asset.material_slot_selectors(variant)
+                    }),
+                ),
+                (MeshMaterialVariants3D, []) => Value::StringModel(
+                    asset.map_or_else(xrack_runtime::VecModel::default, |asset| {
+                        asset.material_variant_selectors()
+                    }),
+                ),
+                (MeshAnimationClips3D, []) => Value::StringModel(
+                    asset.map_or_else(xrack_runtime::VecModel::default, |asset| {
+                        asset.animation_clip_selectors()
+                    }),
+                ),
+                (MeshAnimationDuration3D, [Value::String(clip)]) => asset
+                    .map_or(0.0, |asset| asset.animation_duration(clip))
+                    .into(),
+                _ => return Err(evaluation("invalid mesh asset query arguments")),
             }
         }
         (SceneNode3D, [model, Value::String(object), Value::String(selector)]) => {
@@ -7839,9 +7924,18 @@ fn geometry_function(
                 .scene_node_at(object, *index)
                 .into()
         }
+        (GeometryStatus3D, [Value::SceneObjects(model), Value::String(object)]) => {
+            model.geometry_status(object).to_owned().into()
+        }
+        (GeometryError3D, [Value::SceneObjects(model), Value::String(object)]) => {
+            model.geometry_error(object).to_owned().into()
+        }
         (Bounds3D, [model, layers @ ..]) => query_model(model, true)?
             .bounds(optional_layers(layers)?)
             .into(),
+        (Combine3D, [Value::SceneObjects(shared), Value::SceneObjects(local)]) => {
+            Value::SceneObjects(program.scene_projections.combine_scenes(shared, local))
+        }
         (Prepare3D, [Value::RecordList(records)]) => {
             Value::SceneObjects(program.prepare_scene(records, true))
         }
@@ -7870,6 +7964,22 @@ fn geometry_function(
         (QuaternionSample, [Value::RotationTrack3D(track), Value::Float(time)]) => {
             track.sample(*time).into()
         }
+        (
+            TextureRgba8,
+            [
+                Value::Int(width),
+                Value::Int(height),
+                Value::IntModel(pixels),
+            ],
+        ) => xrack_runtime::TextureData2D::from_model(*width, *height, pixels).into(),
+        (
+            TextureRgba8,
+            [
+                Value::Int(width),
+                Value::Int(height),
+                Value::IntList(pixels),
+            ],
+        ) => xrack_runtime::TextureData2D::from_ints(*width, *height, pixels).into(),
         (PrepareInstanceTable3D, [Value::RecordList(rows)]) => {
             program.scene_projections.record_instance_table(rows).into()
         }

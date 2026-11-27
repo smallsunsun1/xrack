@@ -110,6 +110,7 @@ pub enum Statement {
     },
     TextCommand(TextCommand),
     ScrollCommand(ScrollCommand),
+    SceneTouch(SceneTouch),
     PositionChild(PositionChild),
     SourceSelection(SourceSelection),
     TreeCommand(TreeCommand),
@@ -227,6 +228,13 @@ pub struct ScrollCommand {
     pub viewport: String,
     pub method: String,
     pub args: Vec<Expr>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SceneTouch {
+    pub owner: String,
+    pub args: [Expr; 4],
     pub span: Span,
 }
 

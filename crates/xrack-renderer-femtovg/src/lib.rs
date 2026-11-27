@@ -228,6 +228,34 @@ fn covers_frame(node: &Node, layout: &LayoutNode, viewport: Rect, scale: f32) ->
         && corner_radii(node, layout.bounds) == [0.0; 4]
 }
 
+fn first_clear_colored_panel<'a>(
+    scene: &'a Node,
+    layout: &'a LayoutNode,
+    background: UiColor,
+) -> Option<&'a Node> {
+    if scene.application_window
+        || scene.is_item_delegate()
+        || layout.table.is_some()
+        || layout.allows_overflow()
+        || !DisplayList::plain_window(scene)
+    {
+        return None;
+    }
+    let (_, panel, item) = layout
+        .children_in_paint_order(scene)
+        .find(|(_, node, item)| item.visible && node.opacity() != 0.0)?;
+    // The rounded panel paints directly onto the just-cleared target.
+    // Leave its child clip active even when the background fill is redundant.
+    (panel.opacity() == 1.0
+        && !panel.children.is_empty()
+        && panel.color("background") == Some(background)
+        && item.child_clip_shape().is_some()
+        && item.local_transform().is_identity()
+        && item.table_pane_clip().is_none()
+        && rectangle::plain_surface(panel, item))
+    .then_some(panel)
+}
+
 fn table_frame_background<'a>(
     scene: &'a Node,
     layout: &'a LayoutNode,
@@ -309,6 +337,7 @@ pub struct Renderer {
     scene3d: scene3d::SceneRenderer,
     viewport_gpu_timing: viewport_gpu_timing::ViewportGpuTimer,
     viewport_textures: scene3d::retained_view::ViewportTextures,
+    scene_texture_sizes: scene3d::retained_view::TextureSizeObservations,
     scene_item_textures: scene3d::item_textures::ItemTextures,
     inline_target: Option<wgpu::Texture>,
     window_damage: window_damage::WindowDamageState,
@@ -526,6 +555,7 @@ impl Renderer {
             scene3d,
             viewport_gpu_timing: viewport_gpu_timing::ViewportGpuTimer::default(),
             viewport_textures: Default::default(),
+            scene_texture_sizes: Default::default(),
             scene_item_textures: Default::default(),
             render_scene: Default::default(),
             scene_generation: 0,
@@ -689,12 +719,12 @@ impl Renderer {
         self.transient_textures.reuses
     }
 
-    /// Cumulative GPU uploads of resolved glTF joint palettes.
+    /// Cumulative GPU uploads of resolved joint palettes.
     pub fn scene_skin_uploads(&self) -> u64 {
         self.scene3d.skin_uploads()
     }
 
-    /// Number of distinct glTF morph weight sets uploaded by the 3D renderer.
+    /// Number of distinct morph weight sets uploaded by the 3D renderer.
     pub fn scene_morph_uploads(&self) -> u64 {
         self.scene3d.morph_uploads()
     }
@@ -711,10 +741,6 @@ impl Renderer {
 
     /// Enable collection of viewport work for subsequent frames.
     pub fn set_viewport_statistics_enabled(&mut self, enabled: bool) {
-        if enabled != self.viewport_statistics().is_some() {
-            self.viewport_gpu_timing.invalidate();
-            self.scene3d.viewport_collector.set_gpu(None);
-        }
         self.scene3d.viewport_collector.enable(
             enabled,
             self.device
@@ -729,22 +755,20 @@ impl Renderer {
 
     /// Consume the latest completed query readback without waiting for GPU work.
     pub fn poll_viewport_gpu_timing(&mut self) -> bool {
-        let Some(statistics) = self.viewport_statistics() else {
-            return false;
-        };
-        let previous = statistics.gpu.as_ref().map(|frame| frame.frame);
-        let Some(frame) = self.viewport_gpu_timing.poll(&self.device, &self.queue) else {
-            return false;
-        };
-        if previous.is_some_and(|previous| previous >= frame.frame) {
-            return false;
-        }
-        self.scene3d.viewport_collector.set_gpu(Some(frame));
-        true
+        let (frame, sampled) = self.viewport_gpu_timing.poll(&self.device, &self.queue);
+        self.needs_redraw |= sampled;
+        let reported = frame.is_some_and(|frame| self.scene3d.viewport_collector.report_gpu(frame));
+        sampled || reported
     }
 
     pub fn viewport_gpu_timing_pending(&self) -> bool {
-        self.viewport_statistics().is_some() && self.viewport_gpu_timing.pending()
+        self.viewport_gpu_timing.pending()
+            && (self.viewport_statistics().is_some() || self.render_stats_pending())
+    }
+
+    #[doc(hidden)]
+    pub fn render_stats_pending(&self) -> bool {
+        self.viewport_gpu_timing.sample_pending()
     }
 
     /// Color submissions and camera-frustum rejections since renderer creation.
@@ -1066,6 +1090,11 @@ impl Renderer {
         let result = self.record_frame(scene, layout, target, frame, transfer);
         self.viewport_textures.finish_frame(result.is_ok());
         self.scene3d.finish_frame(result.is_ok());
+        self.needs_redraw |= self
+            .scene3d
+            .viewport_collector
+            .finish_samples(result.is_ok());
+        self.needs_redraw |= self.scene_texture_sizes.finish_frame(result.is_ok());
         self.inline_target = None;
         if result.is_err() {
             self.viewport_gpu_timing.start_frame(None);
@@ -1125,20 +1154,21 @@ impl Renderer {
         }
         self.transient_textures.begin_frame();
         self.viewport_textures.begin_frame();
-        self.scene3d.begin_frame();
+        let gpu_supported = self
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY);
+        self.scene3d.begin_frame(gpu_supported);
+        self.needs_redraw = false;
         self.poll_viewport_gpu_timing();
-        self.viewport_gpu_timing.start_frame(
-            self.viewport_statistics()
-                .filter(|statistics| statistics.gpu_timing_supported)
-                .map(|statistics| statistics.frame),
-        );
+        self.viewport_gpu_timing
+            .start_frame(self.scene3d.viewport_collector.gpu_frame());
         self.custom_encoder = None;
         #[cfg(any(target_os = "android", target_os = "ios"))]
         self.text.begin_color_glyph_frame(canvas_changed);
         self.retained_layers.begin_frame(&mut self.canvas);
         self.retained_layers
             .sync_font_defaults(&mut self.canvas, self.text.default_style());
-        self.needs_redraw = false;
         self.painted_combo_completion = None;
         let size = target.size();
         let scrim_bounds = Rect::new(
@@ -1212,7 +1242,11 @@ impl Renderer {
                     window_background.map(|color| ClearBackground {
                         color,
                         root: scene,
-                        surface: None,
+                        surface: frame
+                            .damage
+                            .is_none()
+                            .then(|| first_clear_colored_panel(scene, layout, color))
+                            .flatten(),
                     })
                 });
             self.start_frame_canvas(size, scale, &mut canvas_started);
@@ -1380,6 +1414,10 @@ impl Renderer {
 
     fn start_frame_canvas(&mut self, size: wgpu::Extent3d, scale: f32, started: &mut bool) {
         if !*started {
+            // A viewport can revisit the same clip after several frames of
+            // motion. Retain the masks within the existing byte budget.
+            #[cfg(xrack_femtovg_glyph_samples)]
+            self.canvas.set_clip_mask_retention_frames(32);
             self.canvas.set_size(size.width, size.height, scale);
             self.canvas.reset();
             self.canvas.scale(scale, scale);
@@ -1529,13 +1567,19 @@ impl Renderer {
             return Ok(());
         }
         let content = layout.clip.intersect(layout.bounds);
+        let overflow = layout.allows_overflow();
+        if (content.width <= 0.0 || content.height <= 0.0)
+            && !overflow
+            && node.can_skip_clipped_layout_group()
+        {
+            return Ok(());
+        }
         let shadow = shadow::OuterShadow::clipped_for_node(
             node,
             layout,
             frame.scale,
             frame.theme.role(Role::Border),
         );
-        let overflow = layout.allows_overflow();
         let retain_opaque_group = self.geometry_cache.enabled
             && !(frame.damage.is_some() && window_damage::can_clip_surface(node, layout, frame))
             && node.kind == "Rectangle"
@@ -2391,7 +2435,8 @@ impl Renderer {
                 input
                     .pressed
                     .as_ref()
-                    .is_some_and(|target| target.path == *path),
+                    .is_some_and(|target| target.path == *path)
+                    || input.is_scene_control_pressed(path),
                 if layout.enabled && !node.boolean("live", true) {
                     input.slider_preview(path)
                 } else {
@@ -2890,13 +2935,29 @@ impl Renderer {
             None
         };
         let thumb_index = thumb.map(|(index, _, _)| index);
-        let children = layout
-            .children_in_paint_order(node)
-            .filter(|(index, _, _)| Some(*index) != thumb_index)
-            .chain(thumb);
         let offset = slide
             .map(|slide| slide.displacement(bounds, slide.incoming_offset()))
             .or(swipe_offset);
+        let cull_clipped_children =
+            matches!(node.kind, "VerticalLayout" | "ScrollView" | "Flickable")
+                && layout.children.len() >= 32
+                && offset.is_none();
+        let clipped = |child: &Node, item: &LayoutNode| {
+            !item.allows_overflow()
+                && is_clipped_out(item.bounds, item.clip)
+                && (child.can_skip_clipped_layout_group()
+                    // Styled text has no outer shadow. Keep retained layers
+                    // on the ordinary painter so they remain tracked.
+                    || child.kind == "StyledText"
+                        && child.opacity() == 1.0
+                        && !child.boolean("cache-rendering-hint", false))
+        };
+        let children = layout
+            .children_in_paint_order_trimming_edges(node, cull_clipped_children, |child, item| {
+                !item.visible || clipped(child, item)
+            })
+            .filter(|(index, _, _)| Some(*index) != thumb_index)
+            .chain(thumb);
         // The color-atlas shader does not inherit the canvas's global alpha.
         let transform = canvas_transform(&self.canvas);
         let axis_aligned = offset.is_none()
@@ -2906,6 +2967,21 @@ impl Renderer {
         let plain_canvas =
             axis_aligned && transform.translation() == [0.0, 0.0] && !self.using_capture_canvas();
         let rounded_batch = axis_aligned && !self.rectangle_batches.disabled;
+        // Layout keeps the outer clip chain for hit testing. During a
+        // rectangular capture it is applied later, on the destination.
+        let shaped_clip_on_destination = {
+            #[cfg(xrack_femtovg_glyph_samples)]
+            {
+                rounded_batch
+                    && self.using_capture_canvas()
+                    && self.direct_rounded_fills_enabled()
+                    && !self.canvas.has_shaped_clip()
+            }
+            #[cfg(not(xrack_femtovg_glyph_samples))]
+            {
+                false
+            }
+        };
         let square_batch = plain_canvas && rounded_batch;
         let mut prepare_opacity_for = plain_canvas.then_some((node, layout));
         let batch_images = self.display_batching
@@ -2964,6 +3040,11 @@ impl Renderer {
             {
                 continue;
             }
+            // An offscreen container between retained items can also be
+            // skipped when it cannot change an existing batch boundary.
+            if cull_clipped_children && display.is_empty() && clipped(node, layout) {
+                continue;
+            }
             if node.opacity() != 0.0
                 && damage.is_some_and(|rect| {
                     !window_damage::intersects_damage(node, layout, frame, rect)
@@ -2988,7 +3069,12 @@ impl Renderer {
                 }
             }
             if rounded_batch
-                && let Some(rectangle) = rectangle::Solid::from_node(node, layout, scale)
+                && let Some(rectangle) = rectangle::Solid::from_node_with_capture_clip(
+                    node,
+                    layout,
+                    scale,
+                    shaped_clip_on_destination,
+                )
                 && (rectangle.rounded()
                     || square_batch && rectangle.collect_square(batch_clip, scale))
             {
@@ -3799,6 +3885,45 @@ impl Renderer {
             rgba,
             layout,
         })
+    }
+}
+
+#[inline]
+fn is_clipped_out(bounds: Rect, clip: Rect) -> bool {
+    // Long viewports commonly contain a run wholly above or below the clip.
+    // A separating finite edge gives a zero-height intersection.
+    if clip.y.is_finite() && bounds.y + bounds.height <= clip.y
+        || bounds.y.is_finite() && clip.y + clip.height <= bounds.y
+    {
+        return true;
+    }
+    let intersection = clip.intersect(bounds);
+    intersection.width <= 0.0 || intersection.height <= 0.0
+}
+
+#[test]
+fn clipped_out_matches_rectangular_intersection() {
+    let values = [
+        f32::NEG_INFINITY,
+        -8.0,
+        -0.0,
+        0.0,
+        8.0,
+        f32::INFINITY,
+        f32::NAN,
+    ];
+    let rects: Vec<_> = values
+        .into_iter()
+        .flat_map(|y| values.into_iter().map(move |h| Rect::new(0.0, y, 12.0, h)))
+        .collect();
+    for bounds in &rects {
+        for clip in &rects {
+            let intersection = clip.intersect(*bounds);
+            assert_eq!(
+                is_clipped_out(*bounds, *clip),
+                intersection.width <= 0.0 || intersection.height <= 0.0
+            );
+        }
     }
 }
 

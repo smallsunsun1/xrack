@@ -75,7 +75,7 @@ pub(crate) fn try_render_stable_rows<M: ListModel, E>(
             model.track_item(index);
             nodes.push(items.without_new_reads(|| render(index))?);
             if items.changed()
-                || model.structure_stamp() != stamp
+                || model.structure_stamp_untracked() != stamp
                 || watch.as_ref().is_some_and(|watch| watch.changed())
             {
                 return Ok(Vec::new());
@@ -1191,6 +1191,11 @@ pub trait ListModel {
         }
     }
     fn row_key(&self, row: usize) -> RowKey;
+    /// Read a key after the caller has tracked the model's structure.
+    #[doc(hidden)]
+    fn row_key_untracked(&self, row: usize) -> RowKey {
+        self.row_key(row)
+    }
     #[doc(hidden)]
     fn key_at(&self, index: usize) -> Option<RowKey> {
         (index < self.row_count()).then(|| self.row_key(index))
@@ -1218,6 +1223,11 @@ pub trait ListModel {
     }
     fn row_lifetime(&self, key: RowKey) -> RowLifetime;
     fn structure_stamp(&self) -> (u64, u64);
+    /// Check the current structure after an initial tracked read.
+    #[doc(hidden)]
+    fn structure_stamp_untracked(&self) -> (u64, u64) {
+        self.structure_stamp()
+    }
     /// Identify the model revision, including changes to its row values.
     #[doc(hidden)]
     fn contents_stamp(&self) -> (u64, u64) {
@@ -1295,6 +1305,15 @@ impl<T: Clone + PartialEq> ListModel for VecModel<T> {
         self.row_key(row).expect("row is inside the model range")
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "the sampled index belongs to the previously validated model structure"
+    )]
+    fn row_key_untracked(&self, row: usize) -> RowKey {
+        self.row_key_untracked(row)
+            .expect("row is inside the model range")
+    }
+
     fn row_lifetime(&self, key: RowKey) -> RowLifetime {
         self.row_lifetime(key)
     }
@@ -1307,6 +1326,9 @@ impl<T: Clone + PartialEq> ListModel for VecModel<T> {
     fn structure_stamp(&self) -> (u64, u64) {
         self.structure_stamp()
     }
+    fn structure_stamp_untracked(&self) -> (u64, u64) {
+        self.structure_stamp_untracked()
+    }
     fn contents_stamp(&self) -> (u64, u64) {
         self.contents_stamp()
     }
@@ -1315,6 +1337,49 @@ impl<T: Clone + PartialEq> ListModel for VecModel<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rendering_rows_observes_sampled_values_and_checks_current_order() {
+        let model = VecModel::from(vec![1_i64, 2, 3]);
+        let stamp = model.structure_stamp();
+        let render = |index| {
+            let mut node = Node::new("Label", None);
+            node.properties.insert("value", model.item(index).into());
+            Ok::<_, std::convert::Infallible>(node)
+        };
+
+        let rows = try_render_stable_rows(&model, stamp, 0..3, |index| {
+            if index == 0 {
+                assert!(model.set_row(2, 4));
+            }
+            render(index)
+        })
+        .unwrap();
+        assert_eq!(rows[2].int("value"), Some(4));
+
+        let mut visited = Vec::new();
+        let rows = try_render_stable_rows(&model, stamp, 0..3, |index| {
+            visited.push(index);
+            if index == 1 {
+                assert!(model.set_row(0, 5));
+            }
+            render(index)
+        })
+        .unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(visited, [0, 1]);
+
+        let mut visited = Vec::new();
+        let rows = try_render_stable_rows(&model, stamp, 0..3, |index| {
+            visited.push(index);
+            let row = render(index)?;
+            assert!(model.sort_by(i64::cmp));
+            Ok::<_, std::convert::Infallible>(row)
+        })
+        .unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(visited, [0]);
+    }
 
     #[test]
     fn list_text_search_walks_model_labels_and_rejects_an_old_order() {

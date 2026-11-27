@@ -3,13 +3,15 @@ use crate::{
     scroll_gesture::PanDevice, view_cells::ViewCells,
 };
 use std::{
+    cell::OnceCell,
     collections::BTreeMap,
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use xrack_runtime::{
     Component, GeometryHandle, Length, Node, Orientation, ScrollAction, ScrollAlignment,
-    ScrollRequest, ViewportHandle, ViewportMotion, is_window_overlay,
+    ScrollRequest, ViewportHandle, ViewportMotion, is_window_overlay, scene3d::SceneTextureSources,
 };
 
 pub(crate) type MotionOwners = Vec<(ViewportHandle, [bool; 2])>;
@@ -247,7 +249,11 @@ impl LayoutObservers {
             geometry: &mut BTreeMap<usize, GeometryHandle>,
             scroll_controls: &mut Vec<(Vec<usize>, GeometryHandle)>,
             path: &mut Vec<usize>,
+            texture_sources: &impl Fn() -> Option<Arc<SceneTextureSources>>,
         ) {
+            if !node.contains_scene_feature(xrack_runtime::SceneFeature::GeometryObservation) {
+                return;
+            }
             if let Some(handle) = &node.range_position_handle {
                 handle.publish_direction(item.layout_direction);
             }
@@ -315,7 +321,17 @@ impl LayoutObservers {
                     .iter()
                     .chain(node.instance_geometry_handle.iter())
                 {
-                    handle.publish_scene_view(node, [rect.width.into(), rect.height.into()]);
+                    handle.publish_scene_view(
+                        node,
+                        [rect.width.into(), rect.height.into()],
+                        || {
+                            if item.enabled && node.boolean("texture-input", false) {
+                                texture_sources()
+                            } else {
+                                None
+                            }
+                        },
+                    );
                     handle.publish_with_content(
                         [
                             rect.x - parent.x,
@@ -340,6 +356,7 @@ impl LayoutObservers {
                     geometry,
                     scroll_controls,
                     path,
+                    texture_sources,
                 );
                 path.pop();
             }
@@ -348,6 +365,12 @@ impl LayoutObservers {
         let mut next = Vec::new();
         let mut geometry = BTreeMap::new();
         self.scroll_controls.clear();
+        let texture_sources = OnceCell::new();
+        let sources = || {
+            texture_sources
+                .get_or_init(|| crate::scene_texture_input::query_sources(scene, layout))
+                .clone()
+        };
         publish(
             scene,
             layout,
@@ -356,6 +379,7 @@ impl LayoutObservers {
             &mut geometry,
             &mut self.scroll_controls,
             &mut Vec::new(),
+            &sources,
         );
         for handle in self.present.drain(..) {
             if !next.contains(&handle) {
