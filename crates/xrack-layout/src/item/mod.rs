@@ -6,6 +6,7 @@ pub(crate) mod calendar;
 pub(crate) mod choice;
 mod combo_box;
 pub(crate) mod container;
+mod control_content;
 pub(crate) mod delay_button;
 pub(crate) mod drag;
 pub(crate) mod group_box;
@@ -323,17 +324,52 @@ impl<T: TextMeasurer> LayoutServices for T {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SizePolicy {
+    pub preferred_width: bool,
+    pub preferred_height: bool,
+    pub intrinsic: bool,
+    pub preferred_minimum: bool,
+}
+
+impl SizePolicy {
+    pub const FILL: Self = Self {
+        preferred_width: false,
+        preferred_height: false,
+        intrinsic: false,
+        preferred_minimum: false,
+    };
+
+    pub const PREFERRED: Self = Self {
+        preferred_width: true,
+        preferred_height: true,
+        ..Self::FILL
+    };
+
+    pub const INTRINSIC_HEIGHT: Self = Self {
+        preferred_height: true,
+        intrinsic: true,
+        ..Self::FILL
+    };
+
+    pub const INTRINSIC: Self = Self {
+        preferred_width: true,
+        ..Self::INTRINSIC_HEIGHT
+    };
+}
+
 pub(crate) struct MeasureContext<'a> {
     pub node: &'a Node,
     pub available: Size,
     pub reference: Size,
     pub assigned_width: Option<f32>,
+    pub size_policy: SizePolicy,
     pub layout: &'a mut dyn LayoutServices,
 }
 
 impl MeasureContext<'_> {
     fn intrinsic(&self, size: Size) -> Metrics {
-        linear::intrinsic_metrics(self.node, size)
+        linear::intrinsic_metrics(self.node, size, self.size_policy)
     }
 }
 
@@ -347,6 +383,38 @@ pub(crate) struct ArrangeContext<'a> {
     pub path: &'a [usize],
     pub switch_position: Option<f32>,
     pub layout: &'a mut dyn LayoutServices,
+}
+
+pub(super) enum ControlPartPlacement {
+    Plain(Rect),
+    Clipped(Rect),
+}
+
+impl ArrangeContext<'_> {
+    pub(super) fn control_children(
+        &mut self,
+        mut part: impl FnMut(&Node) -> Option<ControlPartPlacement>,
+    ) -> Vec<Placement> {
+        self.node
+            .children
+            .iter()
+            .map(|child| match part(child) {
+                Some(ControlPartPlacement::Plain(bounds)) => Placement::plain(bounds),
+                Some(ControlPartPlacement::Clipped(bounds)) => self.clipped_child(bounds),
+                None => Placement::plain(self.layout.absolute_child(child, self.bounds)),
+            })
+            .collect()
+    }
+
+    fn clipped_child(&self, bounds: Rect) -> Placement {
+        Placement {
+            clip: Some(Rc::new(crate::table::PaneClip {
+                bounds,
+                space: self.space.clone(),
+            })),
+            ..Placement::plain(bounds)
+        }
+    }
 }
 
 /// Pointer positions in these events are relative to the item's top-left corner.
@@ -389,6 +457,10 @@ pub(crate) enum ItemAction {
 }
 
 pub(crate) trait Item {
+    fn size_policy(&self, _node: &Node) -> SizePolicy {
+        SizePolicy::FILL
+    }
+
     fn menu(&self) -> Option<&dyn menu::MenuItem> {
         None
     }

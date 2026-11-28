@@ -30,6 +30,7 @@ struct Projection {
     revision: u64,
     schema: Box<str>,
     renderables: bool,
+    retain_fragment: bool,
     mesh_inputs: SceneMeshInputs,
     scene: Arc<SceneModel>,
 }
@@ -171,7 +172,9 @@ impl SceneProjectionCache {
                     } else {
                         return false;
                     };
-                    previous.upgrade().is_some_and(|scene| scene == *current)
+                    previous
+                        .upgrade()
+                        .is_some_and(|scene| scene == *current && scene.same_node_sources(current))
                 })
             });
         if let Some(entry) = index.and_then(|index| combinations.remove(index)) {
@@ -411,9 +414,38 @@ impl SceneProjectionCache {
         schema: &str,
         project: impl Fn(T, &SceneMeshInputs) -> Option<SceneNode>,
     ) -> Arc<SceneModel> {
-        self.get(&model, schema, true, |inputs, observe_rows| {
-            prepare_model(&model, |row| project(row, inputs), true, observe_rows)
-        })
+        self.project_nodes(model, schema, project, false)
+    }
+
+    pub fn model_fragment<T: Clone>(
+        &self,
+        model: VecModel<T>,
+        schema: &str,
+        project: impl Fn(T, &SceneMeshInputs) -> Option<SceneNode>,
+    ) -> Arc<SceneModel> {
+        self.project_nodes(model, schema, project, true)
+    }
+
+    fn project_nodes<T: Clone>(
+        &self,
+        model: VecModel<T>,
+        schema: &str,
+        project: impl Fn(T, &SceneMeshInputs) -> Option<SceneNode>,
+        retain_fragment: bool,
+    ) -> Arc<SceneModel> {
+        self.get(
+            &model,
+            schema,
+            (true, retain_fragment),
+            |inputs, observe_rows| {
+                prepare_model(
+                    &model,
+                    |row| project(row, inputs),
+                    true,
+                    (observe_rows, retain_fragment),
+                )
+            },
+        )
     }
 
     pub fn model_cameras<T: Clone>(
@@ -422,8 +454,13 @@ impl SceneProjectionCache {
         schema: &str,
         project: impl Fn(T, &SceneMeshInputs) -> Option<SceneNode>,
     ) -> Arc<SceneModel> {
-        self.get(&model, schema, false, |inputs, observe_rows| {
-            prepare_model(&model, |row| project(row, inputs), false, observe_rows)
+        self.get(&model, schema, (false, false), |inputs, observe_rows| {
+            prepare_model(
+                &model,
+                |row| project(row, inputs),
+                false,
+                (observe_rows, false),
+            )
         })
     }
 
@@ -436,18 +473,24 @@ impl SceneProjectionCache {
         textures: impl Fn(&str) -> Option<TextureAsset3D>,
         shaders: impl Fn(&str) -> Option<Arc<str>>,
         text_fonts: super::SceneTextFonts<'_>,
+        retain_fragment: bool,
     ) -> Arc<SceneModel> {
-        self.get(model.model(), model.name(), true, |inputs, observe_rows| {
-            prepare_record_scene(
-                model,
-                imported,
-                (textures, shaders),
-                (true, observe_rows),
-                inputs,
-                &self.camera_matrices,
-                text_fonts,
-            )
-        })
+        self.get(
+            model.model(),
+            model.name(),
+            (true, retain_fragment),
+            |inputs, observe_rows| {
+                prepare_record_scene(
+                    model,
+                    imported,
+                    (textures, shaders),
+                    (true, observe_rows, retain_fragment),
+                    inputs,
+                    &self.camera_matrices,
+                    text_fonts,
+                )
+            },
+        )
     }
 
     pub fn record_cameras(
@@ -458,13 +501,13 @@ impl SceneProjectionCache {
         self.get(
             model.model(),
             model.name(),
-            false,
+            (false, false),
             |inputs, observe_rows| {
                 prepare_record_scene(
                     model,
                     imported,
                     (|_| None, |_| None),
-                    (false, observe_rows),
+                    (false, observe_rows, false),
                     inputs,
                     &self.camera_matrices,
                     Default::default(),
@@ -477,7 +520,7 @@ impl SceneProjectionCache {
         &self,
         model: &VecModel<T>,
         schema: &str,
-        renderables: bool,
+        (renderables, retain_fragment): (bool, bool),
         build: impl FnOnce(&SceneMeshInputs, bool) -> Arc<SceneModel>,
     ) -> Arc<SceneModel> {
         if !model.is_shared() {
@@ -497,6 +540,7 @@ impl SceneProjectionCache {
                     && projection.revision == revision
                     && projection.schema.as_ref() == schema
                     && (projection.renderables || !renderables)
+                    && projection.retain_fragment == retain_fragment
                     && projection.mesh_inputs.current()
             });
             if let Some(projection) = existing.and_then(|index| projections.remove(index)) {
@@ -515,6 +559,7 @@ impl SceneProjectionCache {
             projections.retain(|projection| {
                 projection.source != source
                     || projection.schema.as_ref() != schema
+                    || projection.retain_fragment != retain_fragment
                     || (projection.revision == revision && projection.renderables && !renderables)
             });
             projections.truncate(CAPACITY - 1);
@@ -523,6 +568,7 @@ impl SceneProjectionCache {
                 revision,
                 schema: schema.into(),
                 renderables,
+                retain_fragment,
                 mesh_inputs,
                 scene: scene.clone(),
             });

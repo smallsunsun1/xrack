@@ -7,6 +7,10 @@ pub(super) struct Slider {
 }
 
 impl Item for Slider {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy::INTRINSIC_HEIGHT
+    }
+
     fn reserves_pointer_drag(&self, _node: &xrack_runtime::Node) -> bool {
         true
     }
@@ -80,6 +84,10 @@ impl Item for Slider {
 pub(super) struct Dial;
 
 impl Item for Dial {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy::INTRINSIC_HEIGHT
+    }
+
     fn reserves_pointer_drag(&self, _node: &xrack_runtime::Node) -> bool {
         true
     }

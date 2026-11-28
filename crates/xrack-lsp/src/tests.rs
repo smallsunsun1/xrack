@@ -11944,3 +11944,76 @@ if true { Text{text <- if false {"a"} else {"b"};} } else {for item[i] in 2 {Tex
     }
     assert_eq!(formatting::edits(formatted, &json!({})), json!([]));
 }
+
+#[test]
+fn layout_anchors_complete_and_diagnose_invalid_references() {
+    for (marker, label, detail) in [
+        ("anch|", "anchor-left", "string"),
+        ("anch|", "anchor-margin", "length"),
+        ("anchor-left: pane.|", "right", "anchor line"),
+        ("anchor-top: |", "parent", "layout parent"),
+        ("anchor-center-in: |", "pane", "anchor target"),
+    ] {
+        let source = format!(
+            "component App inherits Window {{ pane := Rectangle {{}} Rectangle {{ {marker} }} }}"
+        );
+        assert!(
+            complete_at(&source)
+                .iter()
+                .any(|item| item["label"] == label && item["detail"] == detail),
+            "{source}"
+        );
+    }
+    let source = "component App inherits Window { pane := Rectangle {} Rectangle { anchor-left: pane.right; anchor-bottom: parent.bottom; } }";
+    assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
+    let invalid = source.replace("pane.right", "pane.bottom");
+    assert!(
+        analysis::analyze(URI, &invalid, None).diagnostics[URI][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("same axis")
+    );
+    let managed =
+        "component App inherits Window { VerticalLayout { Button { anchor-fill: parent; } } }";
+    assert!(
+        analysis::analyze(URI, managed, None).diagnostics[URI][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("absolute placement slot")
+    );
+    assert!(
+        !complete_at("component App inherits Window { VerticalLayout { Button { anch| } } }")
+            .iter()
+            .any(|item| item["label"] == "anchor-fill")
+    );
+}
+
+#[test]
+fn scene_fragments_node_references_and_window_preload_complete() {
+    let functions = complete_at(
+        "component App inherits Window { property <scenemodel3d> scene <- Scene3D.|; }",
+    );
+    for name in [
+        "node-reference",
+        "resolve-node",
+        "fragment",
+        "mount",
+        "attach",
+        "repeat",
+    ] {
+        assert!(functions.iter().any(|item| item["label"] == name), "{name}");
+    }
+    let methods = complete_at(
+        "component App inherits Window { view := SceneView3D {} out property <string> ref <- view.pick-n|; }",
+    );
+    assert!(methods.iter().any(|item| item["label"] == "pick-node"));
+    let properties = complete_at("component App inherits Window { preloa| }");
+    assert!(
+        properties
+            .iter()
+            .any(|item| item["label"] == "preload-model" && item["detail"] == "scenemodel3d"),
+    );
+    let source =
+        "component App inherits Window { out property <bool> ready <- root.preload-ready; }";
+    assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
+}

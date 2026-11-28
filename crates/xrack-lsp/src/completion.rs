@@ -1731,6 +1731,22 @@ pub(crate) fn import_fixes(
     fixes
 }
 
+fn anchor_completion_allowed(index: &Index<'_>, scope: usize, property: &str) -> bool {
+    if xrack_ir::semantic::anchor_target_lines(property).is_none() && property != "anchor-margin" {
+        return true;
+    }
+    let Role::Element { kind, .. } = index.scopes[scope].role else {
+        return false;
+    };
+    let parent = index.scopes[scope].parent;
+    match index.scopes[parent].role {
+        Role::Element { kind: parent, .. } | Role::Component { base: parent, .. } => {
+            xrack_ir::semantic::anchor_placement_allowed(parent, kind)
+        }
+        _ => true,
+    }
+}
+
 fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut Items<'a>) {
     let role = index.scopes[scope].role;
     let radio_group = matches!(
@@ -1797,6 +1813,40 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             _ => {}
         }
         return;
+    }
+    if let Some(lines) = xrack_ir::semantic::anchor_target_lines(first)
+        && let [_, operator, rest @ ..] = head
+        && matches!(operator.text, ":" | "<-")
+        && anchor_completion_allowed(index, scope, first)
+    {
+        let parent = index.scopes[scope].parent;
+        let siblings = index
+            .scopes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, candidate)| {
+                if candidate.parent == parent
+                    && i != scope
+                    && let Role::Element { id: Some(id), kind } = candidate.role
+                    && xrack_ir::semantic::geometry_owner(kind)
+                {
+                    Some(id)
+                } else {
+                    None
+                }
+            });
+        if rest.is_empty() {
+            items.add("parent", VARIABLE, "layout parent");
+            for id in siblings {
+                items.add(id, VARIABLE, "anchor target");
+            }
+        } else if let [target, dot] = rest
+            && dot.text == "."
+            && (target.text == "parent" || siblings.into_iter().any(|id| id == target.text))
+        {
+            items.words(lines, PROPERTY, "anchor line");
+            return;
+        }
     }
     if last == "." {
         qualified(index, scope, head, items);
@@ -2028,7 +2078,8 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             .split_ascii_whitespace()
             .filter(|property| property.starts_with(prefix))
         {
-            if xrack_ir::semantic::media_object_read_type(kind, property).is_some()
+            if !anchor_completion_allowed(index, scope, property)
+                || xrack_ir::semantic::media_object_read_type(kind, property).is_some()
                 || (builtins::text_submission_editor(kind)
                     && matches!(property, "acceptable-input" | "input-validity"))
                 || (animation && builtins::text_submission_rule(kind, property))
@@ -2294,6 +2345,9 @@ fn add_state_properties(index: &Index<'_>, owner: usize, timing: bool, items: &m
     };
     let instance = matches!(role, Role::Element { .. }) && !is_builtin(kind);
     for property in catalog::PROPERTIES.split_ascii_whitespace() {
+        if !anchor_completion_allowed(index, owner, property) {
+            continue;
+        }
         let ty = if instance {
             layout_item_property(property)
         } else {

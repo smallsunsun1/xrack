@@ -2,8 +2,7 @@ use crate::{Rect, Size, TextMeasurer, dimension, flow, participates_in_flow};
 use std::collections::{HashMap, hash_map::Entry};
 use xrack_runtime::{
     ControlAction, CrossAxisAlignment, DialogCommand, DialogRole, LayoutAlignment, Node, RowKey,
-    SharedNodeIdentity, Value, dialog_button_action, is_modal_overlay, is_multiline_text_input,
-    is_pane, is_text_input, is_toggle,
+    SharedNodeIdentity, Value, dialog_button_action, is_modal_overlay, is_pane,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,35 +135,6 @@ pub(crate) fn measure_replacement_content(
         }
     }
     size
-}
-
-pub(crate) fn intrinsic_item(kind: &str) -> bool {
-    matches!(
-        kind,
-        "Text"
-            | "Label"
-            | "StyledText"
-            | "Button"
-            | "ToolButton"
-            | "RoundButton"
-            | "DelayButton"
-            | "DialogButton"
-            | "Menu"
-            | "Image"
-            | "AnimatedImage"
-            | "Slider"
-            | "PageIndicator"
-            | "Dial"
-            | "RangeSlider"
-            | "ProgressIndicator"
-            | "BusyIndicator"
-            | "Spinner"
-            | "SpinBox"
-            | "DoubleSpinBox"
-            | "ComboBox"
-    ) || kind == "RadioButton"
-        || is_toggle(kind)
-        || is_text_input(kind) && !is_multiline_text_input(kind)
 }
 
 fn legacy_box(kind: &str) -> bool {
@@ -710,11 +680,13 @@ fn compute_measurement(
             .map(|value| value.max(0.0))
             .unwrap_or(reference.height),
     );
-    let metrics = crate::item::item(node.kind).measure(&mut crate::item::MeasureContext {
+    let item = crate::item::item(node.kind);
+    let metrics = item.measure(&mut crate::item::MeasureContext {
         node,
         available,
         reference,
         assigned_width,
+        size_policy: item.size_policy(node),
         layout: text,
     });
     Metrics {
@@ -877,25 +849,18 @@ pub(crate) fn measure_axis(
     metrics
 }
 
-pub(crate) fn intrinsic_metrics(node: &Node, natural: Size) -> Metrics {
+pub(crate) fn intrinsic_metrics(
+    node: &Node,
+    natural: Size,
+    policy: crate::item::SizePolicy,
+) -> Metrics {
     let info = |preferred| AxisInfo {
-        min: if matches!(
-            node.kind,
-            "Text"
-                | "Label"
-                | "StyledText"
-                | "Button"
-                | "ToolButton"
-                | "RoundButton"
-                | "DialogButton"
-                | "DelayButton"
-                | "Menu"
-        ) {
+        min: if policy.preferred_minimum {
             preferred
         } else {
             0.0
         },
-        stretch: if intrinsic_item(node.kind) { 0.0 } else { 1.0 },
+        stretch: if policy.intrinsic { 0.0 } else { 1.0 },
         ..AxisInfo::flexible(preferred)
     };
     let mut x = info(natural.width);
@@ -965,7 +930,7 @@ fn main_info(
             .iter()
             .any(|name| child.properties.contains_key(name))
     {
-        if intrinsic_item(child.kind) {
+        if crate::item::item(child.kind).size_policy(child).intrinsic {
             AxisInfo::fixed(info.preferred)
         } else {
             AxisInfo::flexible(0.0)

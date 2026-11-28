@@ -300,6 +300,14 @@ pub const SCENE_VIEW_METHODS: &[SceneViewMethod] = &[
         "Returns the closest visible pickable object's ID.",
     ),
     scene_view_method(
+        "pick-node",
+        &["point: point2d"],
+        &[Type::Point2D],
+        "string",
+        Type::String,
+        "Picks a node and returns its opaque reference from the view's current scene snapshot.",
+    ),
+    scene_view_method(
         "hit",
         &["point: point2d"],
         &[Type::Point2D],
@@ -928,6 +936,12 @@ operations!(GeometryFunction {
     MapVector => "map-vector",
     Prepare3D => "prepare-3d",
     Combine3D => "combine-3d",
+    NodeReference3D => "node-reference-3d",
+    ResolveNode3D => "resolve-node-3d",
+    Fragment3D => "fragment-3d",
+    Mount3D => "mount-3d",
+    Attach3D => "attach-3d",
+    Repeat3D => "repeat-3d",
     Bounds3D => "bounds-3d",
     GeometryStatus3D => "geometry-status-3d",
     GeometryError3D => "geometry-error-3d",
@@ -1007,9 +1021,15 @@ impl GeometryFunction {
         match self {
             Self::Point | Self::MapPoint => Type::Point2D,
             Self::Vector | Self::MapVector => Type::Vector2D,
-            Self::Prepare3D | Self::Combine3D => Type::SceneModel3D,
+            Self::Prepare3D
+            | Self::Combine3D
+            | Self::Fragment3D
+            | Self::Mount3D
+            | Self::Attach3D
+            | Self::Repeat3D => Type::SceneModel3D,
             Self::Bounds3D => Type::Bounds3D,
-            Self::GeometryStatus3D | Self::GeometryError3D => Type::String,
+            Self::GeometryStatus3D | Self::GeometryError3D | Self::NodeReference3D => Type::String,
+            Self::ResolveNode3D => Type::Int,
             Self::MeshNode3D | Self::SceneNode3D => Type::MeshNode3D,
             Self::MeshNodeIndices3D => Type::IntList,
             Self::MeshMaterialSlots3D
@@ -1090,6 +1110,7 @@ impl GeometryFunction {
         matches!(
             self,
             Self::Prepare3D
+                | Self::Fragment3D
                 | Self::Bounds3D
                 | Self::GeometryStatus3D
                 | Self::GeometryError3D
@@ -3239,6 +3260,12 @@ const fn geometry(
     let (namespace, member, result) = match kind {
         GeometryFunction::Prepare3D => ("Scene3D", "prepare", "scenemodel3d"),
         GeometryFunction::Combine3D => ("Scene3D", "combine", "scenemodel3d"),
+        GeometryFunction::NodeReference3D => ("Scene3D", "node-reference", "string"),
+        GeometryFunction::ResolveNode3D => ("Scene3D", "resolve-node", "int"),
+        GeometryFunction::Fragment3D => ("Scene3D", "fragment", "scenemodel3d"),
+        GeometryFunction::Mount3D => ("Scene3D", "mount", "scenemodel3d"),
+        GeometryFunction::Attach3D => ("Scene3D", "attach", "scenemodel3d"),
+        GeometryFunction::Repeat3D => ("Scene3D", "repeat", "scenemodel3d"),
         GeometryFunction::Bounds3D => ("Scene3D", "bounds", "bounds3d"),
         GeometryFunction::GeometryStatus3D => ("Scene3D", "geometry-status", "string"),
         GeometryFunction::GeometryError3D => ("Scene3D", "geometry-error", "string"),
@@ -4684,6 +4711,59 @@ pub const FUNCTIONS: &[Function] = &[
             Parameter::with_type("local: scenemodel3d", &Type::SceneModel3D),
         ],
         "Combines two prepared scenes in shared-then-local row order. The views and spatial queries share the result, and each input keeps its own resolved hierarchy.",
+    ),
+    geometry(
+        GeometryFunction::NodeReference3D,
+        &[
+            Parameter::with_type("scene: scenemodel3d", &Type::SceneModel3D),
+            Parameter::with_type("row: int", &Type::Int),
+        ],
+        "Returns the stable reference for an authored row of a prepared scene. Returns an empty string if there is no stable source row.",
+    ),
+    geometry(
+        GeometryFunction::ResolveNode3D,
+        &[
+            Parameter::with_type("scene: scenemodel3d", &Type::SceneModel3D),
+            Parameter::with_type("reference: string", &Type::String),
+        ],
+        "Resolves an opaque node reference against the current snapshot. Returns -1 if the node is gone or its placement is ambiguous.",
+    ),
+    geometry(
+        GeometryFunction::Fragment3D,
+        &[Parameter::new("objects: [record]")],
+        "Prepares a reusable scene fragment, preserving its authored hierarchy for mounting.",
+    ),
+    geometry(
+        GeometryFunction::Mount3D,
+        &[
+            Parameter::with_type("fragment: scenemodel3d", &Type::SceneModel3D),
+            Parameter::with_type("key: string", &Type::String),
+            Parameter::with_type("position: point3d", &Type::Point3D),
+            Parameter::optional("active?: bool", &Type::Bool),
+            Parameter::optional("orientation?: quaternion3d", &Type::Quaternion3D),
+            Parameter::optional("scale?: vector3d", &Type::Vector3D),
+        ],
+        "Mounts a named instance of the fragment in world space. The instance is empty when inactive.",
+    ),
+    geometry(
+        GeometryFunction::Attach3D,
+        &[
+            Parameter::with_type("scene: scenemodel3d", &Type::SceneModel3D),
+            Parameter::with_type("parent: string", &Type::String),
+            Parameter::with_type("fragment: scenemodel3d", &Type::SceneModel3D),
+            Parameter::with_type("key: string", &Type::String),
+            Parameter::optional("active?: bool", &Type::Bool),
+        ],
+        "Mounts a fragment at an authored parent node and combines it with the base scene.",
+    ),
+    geometry(
+        GeometryFunction::Repeat3D,
+        &[
+            Parameter::with_type("fragment: scenemodel3d", &Type::SceneModel3D),
+            Parameter::with_type("keys: [string]", &Type::StringList),
+            Parameter::with_type("placements: instancetable3d", &Type::InstanceTable3D),
+        ],
+        "Creates one fragment per placement and nonempty unique key, keeping each subtree in its own identity namespace.",
     ),
     geometry(
         GeometryFunction::VolumeRgba8,

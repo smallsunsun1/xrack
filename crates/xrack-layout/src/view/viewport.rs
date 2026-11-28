@@ -321,6 +321,10 @@ impl LayoutObservers {
                     .iter()
                     .chain(node.instance_geometry_handle.iter())
                 {
+                    handle.publish_preload_request(match node.properties.get("preload-model") {
+                        Some(xrack_runtime::Value::SceneObjects(model)) => Some(model),
+                        _ => None,
+                    });
                     handle.publish_scene_view(
                         node,
                         [rect.width.into(), rect.height.into()],

@@ -139,6 +139,15 @@ impl Program {
         model: &xrack_runtime::RecordList,
         renderables: bool,
     ) -> std::sync::Arc<xrack_runtime::scene3d::SceneModel> {
+        self.prepare_scene_variant(model, renderables, false)
+    }
+
+    fn prepare_scene_variant(
+        &self,
+        model: &xrack_runtime::RecordList,
+        renderables: bool,
+        retain_fragment: bool,
+    ) -> std::sync::Arc<xrack_runtime::scene3d::SceneModel> {
         let imported = |key: &str| self.scene_assets.meshes.get(key).cloned();
         if renderables {
             self.scene_projections.record_objects(
@@ -150,6 +159,7 @@ impl Program {
                     xrack_runtime::scene3d::SceneTextFonts::System,
                     xrack_runtime::scene3d::SceneTextFonts::Loaded,
                 ),
+                retain_fragment,
             )
         } else {
             self.scene_projections.record_cameras(model, imported)
@@ -478,6 +488,7 @@ enum Expression {
     TextValidity(String),
     GeometryRead(String, Option<xrack_runtime::GeometryMetric>),
     SceneTextureSize(String, usize),
+    ScenePreloadReady(String),
     SceneViewQuery(String, String, Vec<Expr>),
     ViewportRead(String, viewport::Metric),
     ListSelectionRead(String),

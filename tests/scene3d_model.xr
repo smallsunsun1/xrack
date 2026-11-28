@@ -1034,3 +1034,55 @@ export component CullPoseScene inherits Window {
         scene-background <- #08090a;
     }
 }
+
+struct FragmentPlacement { position: point3d }
+export struct FragmentActor {
+    id: string, parent: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component FragmentScene inherits Window {
+    width: 240px; height: 180px;
+    in-out property <bool> mounted: true;
+    in-out property <string> selection: "";
+    in-out property <[FragmentActor]> actors: [
+        FragmentActor {
+            id: "hinge", parent: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1,
+            yaw: 0, pitch: 0, roll: 0, color: #fff,
+        },
+        FragmentActor {
+            id: "panel", parent: "hinge", mesh: "primitive:box", x: 2, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1,
+            yaw: 0, pitch: 0, roll: 0, color: #fff,
+        },
+    ];
+    property <scenemodel3d> fragment <- Scene3D.fragment(root.actors);
+    property <scenemodel3d> mounted-scene <- Scene3D.mount(root.fragment, "selected-door", Point3D.new(0, 0, 0), root.mounted);
+    property <instancetable3d> placements <- Scene3D.instance-table([
+        FragmentPlacement { position: Point3D.new(-3, 0, 0) },
+        FragmentPlacement { position: Point3D.new(3, 0, 0) },
+    ]);
+    property <scenemodel3d> repeated <- Scene3D.repeat(root.fragment, ["left-door", "right-door"], root.placements);
+    property <scenemodel3d> attached <- Scene3D.attach(root.mounted-scene, "panel", root.fragment, "child-door", root.mounted);
+    out property <string> picked <- view.pick-node(Point2D.new(120px, 90px));
+    out property <int> selected-row <- Scene3D.resolve-node(root.mounted-scene, root.selection);
+    property <bounds3d> mounting-bounds <- Scene3D.bounds(root.mounted-scene);
+    out property <bool> valid <- root.mounting-bounds.valid;
+    out property <string> left-ref <- Scene3D.node-reference(root.repeated, 0);
+    out property <string> right-ref <- Scene3D.node-reference(root.repeated, 2);
+    out property <int> left-row <- Scene3D.resolve-node(root.repeated, root.left-ref);
+    out property <int> right-row <- Scene3D.resolve-node(root.repeated, root.right-ref);
+    property <point3d> left-position <- Scene3D.map-position(
+        root.repeated, root.left-ref, "", Point3D.new(0, 0, 0), Point3D.new(999, 0, 0));
+    out property <float> left-x <- root.left-position.x;
+    property <instance3d> attached-instance <- Scene3D.instance(root.attached, 2, -1, -1);
+    out property <float> attached-x <- root.attached-instance.origin.x;
+
+    view := SceneView3D {
+        width: 240px; height: 180px; model <- root.mounted-scene;
+        camera-yaw: 0; camera-pitch: 0; camera-distance: 8;
+    }
+}

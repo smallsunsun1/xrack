@@ -66,6 +66,35 @@ impl PartialEq for SceneComposition {
 }
 
 impl SceneComposition {
+    pub(super) fn node_key(&self, row: u32) -> Option<(crate::RowKey, &str)> {
+        let part = self
+            .parts
+            .iter()
+            .rev()
+            .find(|part| part.row_offset <= row)?;
+        part.model.node_key(row - part.row_offset)
+    }
+
+    pub(super) fn match_node_key(
+        &self,
+        key: crate::RowKey,
+        namespace: &str,
+        offset: u32,
+        result: &mut Option<u32>,
+    ) -> bool {
+        self.parts.iter().all(|part| {
+            part.model
+                .match_node_key(key, namespace, offset + part.row_offset, result)
+        })
+    }
+
+    pub(super) fn same_node_sources(&self, other: &Self) -> bool {
+        self.parts.len() == other.parts.len()
+            && self.parts.iter().zip(&other.parts).all(|(left, right)| {
+                left.row_offset == right.row_offset && left.model.same_node_sources(&right.model)
+            })
+    }
+
     pub(super) fn camera(&self, id: &str) -> Option<SelectedCamera<'_>> {
         self.parts.iter().find_map(|part| {
             let (name, entry) = part.model.cameras.get_key_value(id)?;
@@ -75,6 +104,16 @@ impl SceneComposition {
                 row: entry.row + part.row_offset,
             })
         })
+    }
+
+    pub(super) fn frame_at_row(&self, row: u32) -> Option<(&SceneModel, &NodeFrame, u16)> {
+        let part = self
+            .parts
+            .iter()
+            .rev()
+            .find(|part| part.row_offset <= row)?;
+        let (scene, frame, offset) = part.model.frame_at_row(row - part.row_offset)?;
+        Some((scene, frame, offset + part.scope_offset))
     }
 
     pub(super) fn frame(&self, id: &str) -> Option<(&SceneModel, &NodeFrame, u16)> {
@@ -212,7 +251,7 @@ impl SceneComposition {
 }
 
 impl SceneModel {
-    fn from_parts(models: impl IntoIterator<Item = Arc<Self>>) -> Arc<Self> {
+    pub(super) fn from_parts(models: impl IntoIterator<Item = Arc<Self>>) -> Arc<Self> {
         let mut parts = Vec::new();
         let mut source_rows = 0u32;
         let mut scope_span = 0u16;
@@ -288,6 +327,9 @@ impl SceneModel {
             lod_selection: super::SceneLodSelection::Primary,
             physics: None,
             source_rows,
+            row_keys: Default::default(),
+            node_namespace: Default::default(),
+            fragment: None,
             scope_span,
             composition: Some(Box::new(SceneComposition {
                 parts: parts.into_boxed_slice(),

@@ -1,4 +1,5 @@
 use crate::item::menu::{MenuHeaderAction, MenuRole, menu_item, role as menu_role};
+mod contact_grab;
 pub(crate) mod drag;
 pub(crate) mod edit;
 pub(crate) mod file_drop;
@@ -49,6 +50,7 @@ use crate::{
     view_cells::ViewCells,
     viewport::{MotionOwners, MotionState, UserScrollChange, record_motion, record_motion_owner},
 };
+use contact_grab::ContactGrab;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -587,7 +589,7 @@ impl ScrollRoute {
 struct ScrollGesture {
     route: ScrollRoute,
     motion: DragMotion,
-    tap: Option<Hit>,
+    grab: ContactGrab<Hit, ()>,
     window_origin: Point,
     touch_point: Option<Point>,
     popup: (bool, bool),
@@ -2500,7 +2502,7 @@ impl Interaction {
     pub fn direct_pointer_claimed(&self) -> bool {
         self.scroll_table_drag_claimed()
             || self.scroll_gesture.as_ref().is_some_and(|gesture| {
-                gesture.motion.dragging
+                gesture.grab.exclusive.is_some()
                     && (gesture.route.axes.iter().any(Option::is_some)
                         || gesture.drawer.is_some()
                         || !gesture.pages.is_empty()
@@ -2517,7 +2519,7 @@ impl Interaction {
     pub fn owns_pointer_press(&self, target: &Target) -> bool {
         self.pressed.as_ref() == Some(target)
             || self.scroll_gesture.as_ref().is_some_and(
-                |gesture| matches!(&gesture.tap, Some(Hit::Target(tap)) if tap == target),
+                |gesture| matches!(gesture.grab.first_observer(), Some(Hit::Target(tap)) if tap == target),
             )
     }
 
@@ -2526,10 +2528,10 @@ impl Interaction {
             self.pressed = None;
             self.press_origin = None;
         }
-        if let Some(gesture) = &mut self.scroll_gesture
-            && matches!(&gesture.tap, Some(Hit::Target(tap)) if tap == target)
-        {
-            gesture.tap = None;
+        if let Some(gesture) = &mut self.scroll_gesture {
+            gesture
+                .grab
+                .remove_observers(|observer| matches!(observer, Hit::Target(tap) if tap == target));
         }
     }
 
@@ -5277,7 +5279,7 @@ impl Interaction {
                 surface: None,
             },
             motion: DragMotion::new(point, now),
-            tap: None,
+            grab: ContactGrab::default(),
             window_origin: point,
             touch_point: None,
             popup: (false, false),
@@ -5603,6 +5605,10 @@ impl Interaction {
         } else {
             None
         };
+        let mut grab = ContactGrab::default();
+        if let Some(tap) = tap {
+            grab.observe(tap);
+        }
         self.scroll_gesture = Some(ScrollGesture {
             route: ScrollRoute {
                 scope_row: scene.row_key_at(&scope),
@@ -5614,7 +5620,7 @@ impl Interaction {
                 surface: projected.map(|surface| Box::new(surface.capture)),
             },
             motion: DragMotion::new(point, now),
-            tap,
+            grab,
             window_origin: window,
             touch_point: (kind == ScrollGestureKind::Touch).then_some(window),
             popup,
@@ -6047,6 +6053,12 @@ impl Interaction {
             (gesture.window_origin.x - window.x).hypot(gesture.window_origin.y - window.y)
         });
         let movement = gesture.motion.update(point, now, window_distance);
+        if gesture.motion.dragging && gesture.grab.exclusive.is_none() {
+            let (observers, _) = gesture.grab.claim(());
+            if !observers.is_empty() {
+                self.finish_button_contact(ButtonContactSource::Gesture, false);
+            }
+        }
         let scrolled = movement.is_some_and(|delta| {
             if let Some(pan) = &mut gesture.menu_pan {
                 return self
@@ -6355,14 +6367,14 @@ impl Interaction {
                 ..ScrollGestureEnd::default()
             };
         }
-        let Some(gesture) = self.scroll_gesture.take() else {
+        let Some(mut gesture) = self.scroll_gesture.take() else {
             return ScrollGestureEnd {
                 scrolled,
                 ..ScrollGestureEnd::default()
             };
         };
         let inside = !gesture.motion.dragging
-            && gesture.tap.is_some_and(|hit| {
+            && gesture.grab.take_tap().is_some_and(|hit| {
                 let (next, projected) = self.hit_at_for_position(
                     scene,
                     layout,
@@ -9793,7 +9805,7 @@ impl Interaction {
     pub(crate) fn physical_button_pressed(&self, target: &Target) -> bool {
         self.pressed.as_ref() == Some(target)
             || self.scroll_gesture.as_ref().is_some_and(|gesture| {
-                matches!(&gesture.tap, Some(Hit::Target(pressed)) if pressed == target)
+                matches!(gesture.grab.first_observer(), Some(Hit::Target(pressed)) if pressed == target)
                     || gesture
                         .switch
                         .as_ref()
@@ -14093,7 +14105,7 @@ impl Interaction {
                 .filter(|target| self.focused.as_ref() == Some(*target));
             let touch = self.scroll_gesture.as_ref().and_then(|gesture| {
                 let point = gesture.touch_point?;
-                let Some(Hit::Target(target)) = &gesture.tap else {
+                let Some(Hit::Target(target)) = gesture.grab.first_observer() else {
                     return None;
                 };
                 (!gesture.motion.dragging

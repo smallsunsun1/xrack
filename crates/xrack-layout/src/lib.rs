@@ -16,7 +16,7 @@ pub use drag::{DragDispatch, DragUpdate};
 #[doc(hidden)]
 pub use edit::selection_drag_axis;
 pub use edit::{EditAction, TextEdit, TextEditContext, TextPosition};
-use engine::{clip, flow, frame, frame_projection, geometry, grid, linear, transform};
+use engine::{anchors, clip, flow, frame, frame_projection, geometry, grid, linear, transform};
 pub use file_drop::{FileDragInput, FileDropScope, TextDrop};
 pub use focus_observers::{FocusDelivery, FocusObservers};
 #[doc(hidden)]
@@ -3183,15 +3183,23 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     .map(|child| grid::Placement::plain(geometry.region(child.kind).bounds))
                     .collect()
             } else if let Some(page) = &page {
-                node.children
+                let mut bounds: Vec<_> = node
+                    .children
                     .iter()
                     .map(|child| {
-                        grid::Placement::plain(
-                            page.band(child)
-                                .unwrap_or_else(|| self.absolute_child(child, page.body)),
-                        )
+                        page.band(child)
+                            .unwrap_or_else(|| self.absolute_child(child, page.body))
                     })
-                    .collect()
+                    .collect();
+                anchors::apply(
+                    &node.children,
+                    page.body,
+                    &mut bounds,
+                    self.text,
+                    |child| page.band(child).is_some(),
+                    None,
+                );
+                bounds.into_iter().map(grid::Placement::plain).collect()
             } else if let Some(rects) = modal::picker_children(
                 node,
                 content,
@@ -3456,12 +3464,18 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             None => None,
         };
         let children = projected.unwrap_or_else(|| {
+            let anchor_rects = absolute_content
+                .filter(|_| node.children.iter().take(count).any(anchors::has_anchors))
+                .map(|content| anchors::children(node, content, self.text));
             let mut children = Vec::with_capacity(count);
             let placed = node
                 .materialized_children()
                 .take(count)
-                .map_while(|(index, child)| {
-                    let placement = if let Some(content) = absolute_content {
+                .enumerate()
+                .map_while(|(slot, (index, child))| {
+                    let placement = if let Some(rects) = &anchor_rects {
+                        grid::Placement::plain(rects[slot])
+                    } else if let Some(content) = absolute_content {
                         if self.is_absolute_leaf(child) {
                             return Some(self.place_absolute_leaf(
                                 child,
@@ -3832,9 +3846,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             viewport.width.max(explicit_width.unwrap_or(0.0)),
             viewport.height.max(explicit_height.unwrap_or(0.0)),
         );
-        let children = if let Some(mut last) = previous
-            .take_if(|last| last.viewport == viewport && last.children.len() == node.children.len())
-        {
+        let has_anchors = node.children.iter().any(anchors::has_anchors);
+        let mut children: Vec<_> = if let Some(mut last) = previous.take_if(|last| {
+            !has_anchors && last.viewport == viewport && last.children.len() == node.children.len()
+        }) {
             for index in last.changed_children {
                 last.children[index] = self.measure_scroll_child(&node.children[index], reference);
             }
@@ -3845,6 +3860,40 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .map(|child| self.measure_scroll_child(child, reference))
                 .collect()
         };
+        if has_anchors {
+            let content = Rect::new(
+                0.0,
+                0.0,
+                explicit_width.unwrap_or(reference.width).max(0.0),
+                explicit_height.unwrap_or(reference.height).max(0.0),
+            );
+            let mut rects: Vec<_> = children
+                .iter()
+                .map(|child| {
+                    child.map_or_else(Rect::default, |child| child.bounds(reference.height))
+                })
+                .collect();
+            let mut fixed_heights = vec![false; rects.len()];
+            anchors::apply(
+                &node.children,
+                content,
+                &mut rects,
+                self.text,
+                |_| false,
+                Some(&mut fixed_heights),
+            );
+            for ((child, bounds), fixed_height) in children.iter_mut().zip(rects).zip(fixed_heights)
+            {
+                let Some(child) = child else { continue };
+                let before = child.bounds(reference.height);
+                child.x = bounds.x;
+                child.y = bounds.y;
+                child.width = bounds.width;
+                if fixed_height || before.height != bounds.height {
+                    child.height = ScrollChildHeight::Preferred(bounds.height);
+                }
+            }
+        }
         let mut extent = reference;
         for child in children.iter().flatten() {
             extent.width = extent.width.max(child.x + child.width);
@@ -3952,12 +4001,7 @@ fn absolute_child(text: &mut impl TextMeasurer, child: &Node, content: Rect) -> 
 }
 
 fn absolute_width(node: &Node, info: linear::AxisInfo, available: f32) -> f32 {
-    if xrack_runtime::is_button(node.kind)
-        || xrack_runtime::is_pane(node.kind)
-        || matches!(
-            node.kind,
-            "Image" | "AnimatedImage" | "ToolSeparator" | "Loader"
-        )
+    if item::item(node.kind).size_policy(node).preferred_width
         || node.properties.contains_key("preferred-width")
     {
         info.preferred
@@ -3967,9 +4011,7 @@ fn absolute_width(node: &Node, info: linear::AxisInfo, available: f32) -> f32 {
 }
 
 fn absolute_height_uses_preferred(node: &Node) -> bool {
-    linear::intrinsic_item(node.kind)
-        || matches!(node.kind, "ToolSeparator" | "Loader")
-        || xrack_runtime::is_pane(node.kind)
+    item::item(node.kind).size_policy(node).preferred_height
         || node.properties.contains_key("preferred-height")
 }
 

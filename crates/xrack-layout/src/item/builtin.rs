@@ -102,6 +102,13 @@ impl Item for ScrollBar {
 struct Text(ItemPaint);
 
 impl Item for Text {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy {
+            preferred_minimum: true,
+            ..super::SizePolicy::INTRINSIC_HEIGHT
+        }
+    }
+
     fn focusable(&self, node: &Node) -> bool {
         node.selectable_styled_text()
     }
@@ -133,6 +140,14 @@ impl Item for Text {
 pub(super) struct TextInput;
 
 impl Item for TextInput {
+    fn size_policy(&self, node: &xrack_runtime::Node) -> super::SizePolicy {
+        if is_multiline_text_input(node.kind) {
+            super::SizePolicy::FILL
+        } else {
+            super::SizePolicy::INTRINSIC_HEIGHT
+        }
+    }
+
     fn reserves_pointer_drag(&self, _node: &xrack_runtime::Node) -> bool {
         true
     }
@@ -170,6 +185,10 @@ struct Toggle {
 }
 
 impl Item for Toggle {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy::INTRINSIC_HEIGHT
+    }
+
     fn layout(&self) -> ItemLayout {
         if self.style == ToggleStyle::Switch {
             ItemLayout::Switch
@@ -239,6 +258,10 @@ struct Image {
 }
 
 impl Item for Image {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy::INTRINSIC
+    }
+
     fn paint(&self, _node: &xrack_runtime::Node) -> ItemPaint {
         ItemPaint::Image {
             animated: self.animated,
@@ -346,6 +369,10 @@ impl Item for FocusItem {
 struct Indicator;
 
 impl Item for Indicator {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy::INTRINSIC_HEIGHT
+    }
+
     fn measure(&self, cx: &mut MeasureContext<'_>) -> crate::linear::Metrics {
         cx.intrinsic(Size::new(36.0, 36.0))
     }

@@ -5,6 +5,64 @@ mod stack_back;
 mod touch_spin;
 
 #[test]
+fn anchor_cycles_fall_back_on_their_own_axis_and_hidden_targets_are_skipped() {
+    let box_at = |id, x| {
+        let mut child = node("Rectangle", id);
+        length(&mut child, "x", x);
+        length(&mut child, "width", 20.0);
+        length(&mut child, "height", 10.0);
+        child
+    };
+    let mut left = box_at("left", 5.0);
+    left.properties
+        .insert("anchor-left", "right.right".to_owned().into());
+    left.properties
+        .insert("anchor-bottom", "parent.bottom".to_owned().into());
+    let mut right = box_at("right", 40.0);
+    right
+        .properties
+        .insert("anchor-left", "left.right".to_owned().into());
+    let mut follower = box_at("follower", 80.0);
+    follower
+        .properties
+        .insert("anchor-left", "right.right".to_owned().into());
+    let mut window = Node::new("Window", None);
+    window.children.extend([left, right, follower]);
+
+    let viewport = Size::new(180.0, 100.0);
+    let before = layout(&window, viewport, &mut Text);
+    assert_eq!(before.children[0].bounds, Rect::new(5.0, 90.0, 20.0, 10.0));
+    assert_eq!(before.children[1].bounds.x, 40.0);
+    assert_eq!(before.children[2].bounds.x, 80.0);
+
+    boolean(&mut window.children[0], "visible", false);
+    let after = layout(&window, viewport, &mut Text);
+    assert_eq!(after.children[1].bounds.x, 40.0);
+    assert_eq!(after.children[2].bounds.x, 60.0);
+}
+
+#[test]
+fn scroll_anchors_keep_their_reference_height_when_another_child_overflows() {
+    let mut scroll = node("Flickable", "scroll");
+    let mut fill = node("Rectangle", "fill");
+    fill.properties
+        .insert("anchor-fill", "parent".to_owned().into());
+    let mut tall = node("Rectangle", "tall");
+    length(&mut tall, "height", 320.0);
+    scroll.children.extend([fill, tall]);
+    let mut window = Node::new("Window", None);
+    window.children.push(scroll);
+
+    let frame = layout(&window, Size::new(200.0, 100.0), &mut Text);
+    let scroller = &frame.children[0];
+    assert_eq!(
+        scroller.children[0].bounds,
+        Rect::new(0.0, 0.0, 200.0, 100.0)
+    );
+    assert_eq!(scroller.children[1].bounds.height, 320.0);
+}
+
+#[test]
 fn moving_small_subtrees_share_the_local_layout_node_budget() {
     struct View;
     impl xrack_runtime::Component for View {

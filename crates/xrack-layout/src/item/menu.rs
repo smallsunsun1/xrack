@@ -62,6 +62,13 @@ pub(crate) fn label(row: &Node) -> &str {
 pub(super) struct Menu;
 
 impl Item for Menu {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy {
+            preferred_minimum: true,
+            ..super::SizePolicy::INTRINSIC_HEIGHT
+        }
+    }
+
     fn menu(&self) -> Option<&dyn MenuItem> {
         Some(self)
     }

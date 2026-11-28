@@ -494,6 +494,7 @@ fn project_scene_objects(
     fields: &[Parameter],
     records: &BTreeMap<&str, Vec<Parameter>>,
     cameras_only: bool,
+    retain_fragment: bool,
 ) -> TokenStream {
     let field = |name, default| scene_field(fields, name, "object", default);
     let parent = field("parent", quote!(::std::string::String::new()));
@@ -841,6 +842,8 @@ fn project_scene_objects(
     };
     let prepare = if cameras_only {
         quote!(model_cameras)
+    } else if retain_fragment {
+        quote!(model_fragment)
     } else {
         quote!(model_nodes)
     };
@@ -4384,6 +4387,8 @@ impl<'a> Generator<'a> {
                 let handle = geometry_handle(owner(op));
                 if value == "layout-ready" {
                     quote!(#receiver.__state.#handle.ready())
+                } else if value == "preload-ready" {
+                    quote!(#receiver.__state.#handle.preload_ready())
                 } else if let Some(axis) = xrack_syntax::builtins::scene_texture_size_axis(value) {
                     quote!(#receiver.__state.#handle.scene_texture_size(#axis))
                 } else {
@@ -4700,6 +4705,7 @@ impl<'a> Generator<'a> {
                         self.scene_record_fields(&ty),
                         self.records,
                         cameras_only,
+                        kind == Fragment3D,
                     ))
                 };
                 match (kind, args.as_slice()) {
@@ -4815,7 +4821,29 @@ impl<'a> Generator<'a> {
                     (Combine3D, [shared, local]) => quote!(
                         __XR_SCENE_PROJECTIONS.with(|cache| cache.combine_scenes(&(#shared), &(#local)))
                     ),
-                    (Prepare3D, [model]) => query_model(model, false)?,
+                    (NodeReference3D, [model, row]) => quote!((#model).node_reference(#row)),
+                    (ResolveNode3D, [model, reference]) => {
+                        quote!((#model).resolve_node(&(#reference)))
+                    }
+                    (Prepare3D | Fragment3D, [model]) => query_model(model, false)?,
+                    (Mount3D, [fragment, key, position, options @ ..]) => {
+                        let active = options.first().cloned().unwrap_or_else(|| quote!(true));
+                        let orientation = options
+                            .get(1)
+                            .cloned()
+                            .unwrap_or_else(|| quote!(::xrack_runtime::Quaternion3D::IDENTITY));
+                        let scale = options.get(2).cloned().unwrap_or_else(|| {
+                            quote!(::xrack_runtime::Vector3D::new(1.0, 1.0, 1.0))
+                        });
+                        quote!((#fragment).mount_fragment(&(#key), #position, #orientation, #scale, #active))
+                    }
+                    (Attach3D, [scene, parent, fragment, key, options @ ..]) => {
+                        let active = options.first().cloned().unwrap_or_else(|| quote!(true));
+                        quote!((#scene).attach_fragment(&(#parent), &(#fragment), &(#key), #active))
+                    }
+                    (Repeat3D, [fragment, keys, placements]) => {
+                        quote!((#fragment).repeat_fragment(&(#keys).snapshot(), &(#placements)))
+                    }
                     (Prepare3D, [model, world]) => {
                         let scene = query_model(model, false)?;
                         quote!((#scene).resolve_physics(&(#world)))
@@ -10760,11 +10788,12 @@ impl<'a> Generator<'a> {
                             self.scene_record_fields(&ty),
                             self.records,
                             false,
+                            false,
                         );
                         quote!(::xrack_runtime::Value::SceneObjects(#objects))
                     }
                 }
-                (Ok("SceneView3D"), "preload-model") => {
+                (Ok("SceneView3D" | "Window" | "ApplicationWindow"), "preload-model") => {
                     quote!(::xrack_runtime::Value::SceneObjects(#value))
                 }
                 (Ok("SceneView3D"), "environment" | "skybox-source") => {

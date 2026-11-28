@@ -69,6 +69,37 @@ Label {
 
 `Label` 默认不自动换行，适合标题和状态文字。`Text` 保留现有的默认换行。两者都支持 `wrap`、`horizontal-alignment`、`vertical-alignment`、`overflow` 和 `max-lines`。`start` 和 `end` 按段落方向解释，`left` 和 `right` 指物理边缘。`overflow: elide;` 按字素簇缩短超宽文字，隐藏后续行时在最后一个完整可见行加省略号。辅助技术仍可读取完整文本。运行 `bazel run //examples/layout:layout -- --labels` 体验。
 
+子控件按下时可先进入按压状态。触点移动超过阈值并由滚动或双指手势接管后，原控件会收到取消，抬手不会触发原先的点击。
+
+### 锚点布局
+
+`Window`、`Rectangle` 等采用绝对布局的容器，可以把直接子元素贴到父容器内容区或同级元素的边。锚点用布局坐标计算，旋转、缩放和裁剪在放置之后应用。
+
+```xr
+sidebar := Rectangle {
+    anchor-left: parent.left;
+    anchor-top: parent.top;
+    anchor-bottom: parent.bottom;
+    width: 160px;
+}
+Rectangle {
+    anchor-left: sidebar.right;
+    anchor-right: parent.right;
+    anchor-top: parent.top;
+    anchor-bottom: parent.bottom;
+    anchor-margin: 12px;
+    Button { anchor-center-in: parent; text: "确认"; }
+}
+```
+
+- `anchor-fill: parent;` 同时设置四边。`anchor-center-in: parent;` 同时设置两个中心。它们也接受同级元素 ID。
+- `anchor-left`、`anchor-right`、`anchor-horizontal-center` 引用横轴锚线。`anchor-top`、`anchor-bottom`、`anchor-vertical-center` 引用纵轴锚线。边锚点优先于同轴中心。单条锚线按显式或首选尺寸定位，两条对边共同决定该轴的位置和尺寸。`anchor-margin` 在每条边的内侧保留同样的逻辑像素间距。
+- 支持前向引用。同级目标隐藏或暂时不存在时，跳过对应的锚线。通过字符串绑定可以动态切换目标，例如 `anchor-left <- root.compact ? "parent.left" : "sidebar.right";`。空字符串清除直接锚线。一个轴上的循环及依赖该循环的元素沿用该轴的绝对布局。
+- `Page` 和 `ApplicationWindow` 的普通子项以正文区为父级锚框，页眉、页脚和菜单栏沿用专用布局。`ScrollView` 和 `Flickable` 以明确给定的内容尺寸或视口尺寸为锚框。锚定完成后，滚动偏移作用于所有内容。
+- `HorizontalLayout`、`VerticalLayout`、`GridLayout` 等管理直接子项的容器会诊断冲突的锚点。可用一个普通 `Rectangle` 接收容器分配的空间，再对这个矩形的子项使用锚点。
+
+运行 `bazel run //examples/layout:layout -- --anchors`，调整窗口大小观察侧栏、内容区和居中按钮。
+
 ## 替换控件部件
 
 在 `Button` 下声明一个 `ButtonContent`，可用任意视觉子树替代默认文字与图标。在 `Slider` 下声明一个 `SliderHandle`，可自定义手柄的颜色、边框和尺寸。按键、焦点、指针和无障碍操作由父控件处理，部件内部不会形成额外的焦点目标。自定义按钮仍可通过 `text` 或 `accessible-name` 提供辅助技术使用的名称。
@@ -791,6 +822,8 @@ let _painter = register_geometry("level-meter", |context| {
 `preload-model: scenemodel3d` 可绑定用 `Scene3D.prepare` 准备好的下一幕模型。视口显示期间，渲染器会在帧末分批准备主网格、可选中的替代 LOD 网格及其静态材质贴图。替代级别包括手写的 `lod-of` 和导入时生成的 `auto-lod`。固定细节因子时只再准备指定的替代级别，主网格供关闭相机 LOD 时使用。每帧最多准备一个新的替代网格姿态，并为两个需要传输的网格及其材质上传数据。
 
 把同一模型切给 `model` 后，首次绘制和后续切级都能复用已准备的缓冲与贴图。视口画面和拾取仍来自 `model`，因此可以在过渡页和加载页先准备下一幕。资源按模型引用的生命周期回收，绑定更换后会取消原列表尚未完成的工作。命名捕获和实时 2D 纹理在绘制时接入。 [预加载示例](../examples/puzzle3d/resource_preload.xr)
+
+`Window.preload-model` 和 `ApplicationWindow.preload-model` 可以在窗口当前没有可见 3D 视口时准备下一幕。窗口和 `SceneView3D` 的只读 `preload-ready: bool` 在当前请求的静态网格、LOD 和贴图都已安排上传后为真，可以绑定到切换按钮或加载提示。更换请求会重置状态。新的视口使用同一个场景快照时会复用当前窗口的 GPU 缓存。
 
 ```xr
 struct SceneObject3D {
@@ -1567,6 +1600,20 @@ VS Code 可补全同一记录列表里的目标 ID，并跳到声明。选择 `L
 `Scene3D.combine(shared, local)` 接收两个 `scenemodel3d`，按共享场景在前、局部场景在后的顺序组合。把结果绑定到 `SceneView3D.model`，也可以将它传给世界射线、碰撞和坐标转换查询。各输入的父子关系和资产挂点沿用准备时的结果。名称查询按输入顺序选取同名条目，行索引在局部场景中加上前面输入的行数，包含隐藏行、相机行和 LOD 声明行。可以嵌套组合，空场景可直接省略。
 
 同一对场景快照的组合结果会复用，已有网格、姿态和 LOD 选择继续由输入场景提供。组合后的绘制与碰撞沿用运行时实例上限。两块视口可共享地标，并分别显示自己的局部模型。运行 `bazel run //examples/puzzle3d:play_content_layers -- --combine`，或在预览中选择 `CombinedSceneDemo`。 [场景组合示例](../examples/puzzle3d/content_layers.xr)
+
+#### 稳定节点引用和场景子树
+
+`view.pick-node(point)` 在当前视口快照中拾取一个节点并返回不透明的字符串引用。`Scene3D.node-reference(scene, row)` 从同一快照的行号取得引用。使用 `Scene3D.resolve-node(new-scene, reference)` 在下一份快照中获取当前行号，可以继续传给 `Scene3D.instance` 或视口的按行拾取。`Scene3D.map-position`、`Scene3D.map-direction` 和 `Scene3D.attach` 也接受指向具名节点的引用。存储模型的插入、排序和坐标修改会保留行身份。目标被删除或在组合中有歧义时返回 `-1`。无稳定源行的临时场景返回空引用。
+
+```xr
+property <scenemodel3d> door <- Scene3D.fragment(root.door-rows);
+property <scenemodel3d> placed <- Scene3D.mount(root.door, "entrance",
+    Point3D.new(3, 0, -2), root.enabled);
+```
+
+`Scene3D.fragment(rows)` 保存模型定义和父子关系，挂载时才创建可渲染的子树。记录里的尺寸、材质和状态可以绑定到组件属性。`Scene3D.mount(fragment, key, position, active?, orientation?, scale?)` 放置整棵子树。把 `active` 设为假会卸载实例。同一份源模型与实例键可以在重新挂载后恢复引用。`Scene3D.attach(scene, parent, fragment, key, active?)` 将子树挂到基础场景里指定的可见父节点，并把它的局部坐标转到父节点空间。
+
+`Scene3D.repeat(fragment, keys, placements)` 使用一个实例表重复整个子树，键与实例表的行一一对应。每份子树内部保留自己的父级和挂点，同名节点通过实例键区分。空键和重复键会跳过。重排时一起移动键和摆放数据，节点引用就可以在重复场景的下一份快照中继续解析。
 
 模型、灯光和探针记录可声明 `layers: int`，默认 `1`。这是一个 64 位掩码，`1` 和 `2` 代表前两层，`3` 同时包含它们，`-1` 表示全部位。对象各自设置层，父子关系仍负责变换和整体显隐。具名相机使用所在记录的 `layers`，绕视相机默认用第一层。`SceneView3D.layer-mask: int` 可为当前视口覆盖相机掩码。
 

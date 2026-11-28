@@ -1913,6 +1913,9 @@ pub struct SceneModel {
     lod_selection: SceneLodSelection,
     physics: Option<Box<PhysicsScene>>,
     source_rows: u32,
+    row_keys: Arc<[Option<crate::RowKey>]>,
+    node_namespace: Arc<str>,
+    fragment: Option<Arc<[SceneNode]>>,
     scope_span: u16,
     composition: Option<Box<SceneComposition>>,
 }
@@ -1945,6 +1948,8 @@ impl PartialEq for SceneModel {
             return self.composition == other.composition;
         }
         self.source_rows == other.source_rows
+            && self.node_namespace == other.node_namespace
+            && self.fragment == other.fragment
             && self.scope_span == other.scope_span
             && self.objects() == other.objects()
             && self.collision_rows == other.collision_rows
@@ -2031,6 +2036,7 @@ impl AssetNodeFrame {
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct NodeFrame {
+    row: u32,
     pub origin: Vector3<f32>,
     pub linear: Matrix3<f32>,
     inverse: Matrix3<f32>,
@@ -2114,12 +2120,11 @@ impl SceneModel {
                 node.world_locked = true;
             }
         }
-        let model = Arc::new(prepare_nodes(
-            nodes,
-            self.source_rows,
-            true,
-            &mut cache.meshes,
-        ));
+        let mut model = prepare_nodes(nodes, self.source_rows, true, &mut cache.meshes);
+        model.row_keys = self.row_keys.clone();
+        model.node_namespace = self.node_namespace.clone();
+        model.fragment.clone_from(&self.fragment);
+        let model = Arc::new(model);
         cache.projection = Some(PhysicsProjection {
             poses,
             model: model.clone(),
@@ -2427,6 +2432,210 @@ impl SceneModel {
     }
 
     /// Read a primary instance by its source row, mesh node, and table index.
+    /// Instantiate a prepared fragment in world space. Disabling the mount
+    /// releases its scene while the application can keep the fragment itself.
+    pub fn mount_fragment(
+        &self,
+        key: &str,
+        position: Point3D,
+        orientation: Quaternion3D,
+        scale: Vector3D,
+        active: bool,
+    ) -> Arc<Self> {
+        let result = (|| {
+            if !active {
+                return None;
+            }
+            let (transform, rotation) = SceneTransform::local_with_rotation(
+                position.narrow()?,
+                [scale.x as f32, scale.y as f32, scale.z as f32],
+                [0.0; 3],
+                orientation.rotation_f32(),
+            )?;
+            self.place_fragment(key, transform, rotation, &mut SceneMeshCache::default())
+        })();
+        result.unwrap_or_default()
+    }
+
+    /// Mount a fragment in the local frame of a named node in this scene.
+    pub fn attach_fragment(
+        self: &Arc<Self>,
+        parent: &str,
+        fragment: &Self,
+        key: &str,
+        active: bool,
+    ) -> Arc<Self> {
+        if active
+            && let Some((scene, frame, _)) = self.find_frame(parent)
+            && frame.visible
+            && let Some(mounted) = fragment.place_fragment(
+                key,
+                frame.transform(),
+                scene
+                    .node_rotation(frame)
+                    .cast::<f32>()
+                    .to_rotation_matrix(),
+                &mut SceneMeshCache::default(),
+            )
+        {
+            Self::combine(self, &mounted)
+        } else {
+            self.clone()
+        }
+    }
+
+    /// Duplicate the whole authored subtree with a separate identity namespace
+    /// for each supplied key. Placement data affects the subtree root pose.
+    pub fn repeat_fragment(
+        &self,
+        keys: &[String],
+        placements: &crate::InstanceTable3D,
+    ) -> Arc<Self> {
+        let limit = MAX_NODES / (self.source_rows as usize).max(1);
+        let mut counts = HashMap::new();
+        for key in keys.iter().take(placements.len()).take(MAX_NODES) {
+            *counts.entry(key.as_str()).or_insert(0usize) += 1;
+        }
+        let mut cache = SceneMeshCache::default();
+        let models = keys
+            .iter()
+            .take(placements.len())
+            .take(MAX_NODES)
+            .enumerate()
+            .filter_map(|(index, key)| {
+                if counts.get(key.as_str()) != Some(&1) {
+                    return None;
+                }
+                let transform = placements.transform(index)?;
+                let rotation = Rotation3::from_matrix_eps(
+                    &transform.linear,
+                    1.0e-5,
+                    24,
+                    Rotation3::identity(),
+                );
+                self.place_fragment(key, transform, rotation, &mut cache)
+            })
+            .take(limit);
+        Self::from_parts(models)
+    }
+
+    fn place_fragment(
+        &self,
+        key: &str,
+        transform: SceneTransform,
+        rotation: Rotation3<f32>,
+        cache: &mut SceneMeshCache,
+    ) -> Option<Arc<Self>> {
+        if key.is_empty() || key.len() > 256 {
+            return None;
+        }
+        let mut nodes = self.fragment.as_ref()?.to_vec();
+        for node in nodes
+            .iter_mut()
+            .filter(|node| node.transform_parent().is_empty())
+        {
+            let Some(local) = transform.child(node.local) else {
+                node.visible = false;
+                continue;
+            };
+            node.position = transform.origin + transform.linear * node.position;
+            node.rotation = rotation * node.rotation;
+            node.local = local;
+        }
+        let mut result = if nodes.iter().any(|node| node.physics.is_some()) {
+            prepare_scene_with_physics(nodes, self.source_rows, true, cache)
+        } else {
+            prepare_nodes(nodes, self.source_rows, true, cache)
+        };
+        result.row_keys = self.row_keys.clone();
+        result.node_namespace = key.into();
+        Some(Arc::new(result))
+    }
+
+    pub fn node_reference(&self, row: i64) -> String {
+        let Ok(row) = u32::try_from(row) else {
+            return String::new();
+        };
+        self.node_key(row)
+            .map_or_else(String::new, |(key, namespace)| {
+                format!(
+                    "@xrack-node/{:016x}/{:016x}/{namespace}",
+                    key.model, key.row
+                )
+            })
+    }
+
+    fn node_key(&self, row: u32) -> Option<(crate::RowKey, &str)> {
+        if let Some(composition) = &self.composition {
+            return composition.node_key(row);
+        }
+        Some(((*self.row_keys.get(row as usize)?)?, &self.node_namespace))
+    }
+
+    /// Resolves an opaque node reference to its current source row. Removed or
+    /// ambiguous targets have no row in this snapshot.
+    pub fn resolve_node(&self, reference: &str) -> i64 {
+        let Some(reference) = reference.strip_prefix("@xrack-node/") else {
+            return -1;
+        };
+        let Some((model, rest)) = reference.split_once('/') else {
+            return -1;
+        };
+        let Some((row, namespace)) = rest.split_once('/') else {
+            return -1;
+        };
+        let (Ok(model), Ok(row)) = (u64::from_str_radix(model, 16), u64::from_str_radix(row, 16))
+        else {
+            return -1;
+        };
+        let mut result = None;
+        if self.match_node_key(
+            crate::RowKey {
+                model,
+                row,
+                scope: 0,
+            },
+            namespace,
+            0,
+            &mut result,
+        ) {
+            result.map_or(-1, i64::from)
+        } else {
+            -1
+        }
+    }
+
+    fn match_node_key(
+        &self,
+        key: crate::RowKey,
+        namespace: &str,
+        offset: u32,
+        result: &mut Option<u32>,
+    ) -> bool {
+        if let Some(composition) = &self.composition {
+            return composition.match_node_key(key, namespace, offset, result);
+        }
+        if self.node_namespace.as_ref() == namespace
+            && let Some(row) = self.row_keys.iter().position(|value| *value == Some(key))
+        {
+            if result.is_some() {
+                return false;
+            }
+            *result = Some(offset + row as u32);
+        }
+        true
+    }
+
+    pub(crate) fn same_node_sources(&self, other: &Self) -> bool {
+        match (&self.composition, &other.composition) {
+            (Some(left), Some(right)) => left.same_node_sources(right),
+            (None, None) => {
+                self.row_keys == other.row_keys && self.node_namespace == other.node_namespace
+            }
+            _ => false,
+        }
+    }
+
     pub fn instance(&self, address: [i64; 3]) -> Instance3D {
         self.geometry.instance(address)
     }
@@ -2526,10 +2735,23 @@ impl SceneModel {
     }
 
     fn find_frame(&self, id: &str) -> Option<LocatedFrame<'_>> {
+        if id.starts_with("@xrack-node/") {
+            return self.frame_at_row(u32::try_from(self.resolve_node(id)).ok()?);
+        }
         match &self.composition {
             Some(parts) => parts.frame(id),
             None => self.frames.get(id).map(|frame| (self, frame, 0)),
         }
+    }
+
+    fn frame_at_row(&self, row: u32) -> Option<LocatedFrame<'_>> {
+        if let Some(composition) = &self.composition {
+            return composition.frame_at_row(row);
+        }
+        self.frames
+            .values()
+            .find(|frame| frame.row == row)
+            .map(|frame| (self, frame, 0))
     }
 
     fn node_rotation<'a>(&'a self, mut frame: &'a NodeFrame) -> UnitQuaternion<f64> {
@@ -3024,7 +3246,7 @@ pub fn model_nodes<T: Clone>(
     model: &VecModel<T>,
     project: impl Fn(T) -> Option<SceneNode>,
 ) -> Arc<SceneModel> {
-    prepare_model(model, project, true, true)
+    prepare_model(model, project, true, (true, false))
 }
 
 #[doc(hidden)]
@@ -3032,14 +3254,14 @@ pub fn model_cameras<T: Clone>(
     model: &VecModel<T>,
     project: impl Fn(T) -> Option<SceneNode>,
 ) -> Arc<SceneModel> {
-    prepare_model(model, project, false, true)
+    prepare_model(model, project, false, (true, false))
 }
 
 pub(crate) fn prepare_model<T: Clone>(
     model: &VecModel<T>,
     project: impl Fn(T) -> Option<SceneNode>,
     renderables: bool,
-    observe_rows: bool,
+    (observe_rows, retain_fragment): (bool, bool),
 ) -> Arc<SceneModel> {
     let project_row = |index, row| {
         let mut node = project(row)?;
@@ -3063,25 +3285,48 @@ pub(crate) fn prepare_model<T: Clone>(
             .collect();
         (count, nodes)
     };
+    let mut scene = if retain_fragment {
+        SceneModel {
+            source_rows: source_rows as u32,
+            fragment: Some(nodes.into()),
+            ..SceneModel::default()
+        }
+    } else {
+        let mut meshes = SceneMeshCache::default();
+        prepare_scene_with_physics(nodes, source_rows as u32, renderables, &mut meshes)
+    };
+    if (observe_rows || retain_fragment) && renderables {
+        scene.row_keys = (0..source_rows)
+            .map(|row| model.row_key_untracked(row))
+            .collect();
+    }
+    Arc::new(scene)
+}
+
+fn prepare_scene_with_physics(
+    nodes: Vec<SceneNode>,
+    source_rows: u32,
+    renderables: bool,
+    cache: &mut SceneMeshCache,
+) -> SceneModel {
     let bindings: Vec<_> = nodes
         .iter()
         .enumerate()
         .filter_map(|(index, node)| node.physics.as_ref().map(|_| index))
         .collect();
     let original = (!bindings.is_empty()).then(|| nodes.clone());
-    let mut meshes = SceneMeshCache::default();
-    let mut scene = prepare_nodes(nodes, source_rows as u32, renderables, &mut meshes);
+    let mut scene = prepare_nodes(nodes, source_rows, renderables, cache);
     if let Some(nodes) = original {
         scene.physics = Some(Box::new(PhysicsScene {
             nodes,
             bindings,
             cache: Mutex::new(PhysicsSceneCache {
-                meshes,
+                meshes: std::mem::take(cache),
                 projection: None,
             }),
         }));
     }
-    Arc::new(scene)
+    scene
 }
 
 fn prepare_nodes(
@@ -3177,6 +3422,9 @@ fn prepare_nodes(
             lod_selection: SceneLodSelection::Primary,
             physics: None,
             source_rows,
+            row_keys: Default::default(),
+            node_namespace: Default::default(),
+            fragment: None,
             scope_span,
             composition: None,
         };
@@ -3229,6 +3477,7 @@ fn prepare_nodes(
             Some((
                 id.to_owned(),
                 NodeFrame {
+                    row: node.row,
                     origin: world.transform.origin,
                     geometry_status: node.geometry_status,
                     linear: world.transform.linear,
@@ -3518,6 +3767,9 @@ fn prepare_nodes(
         lod_groups,
         physics: None,
         source_rows,
+        row_keys: Default::default(),
+        node_namespace: Default::default(),
+        fragment: None,
         scope_span,
         composition: None,
     }
@@ -3552,7 +3804,7 @@ pub fn record_objects(
         list,
         imported,
         (textures, |_| None),
-        (true, true),
+        (true, true, false),
         &SceneMeshInputs::default(),
         &CameraMatrixCache::new(),
         Default::default(),
@@ -3568,7 +3820,7 @@ pub fn record_cameras(
         list,
         imported,
         (|_| None, |_| None),
-        (false, true),
+        (false, true, false),
         &SceneMeshInputs::default(),
         &CameraMatrixCache::new(),
         Default::default(),
@@ -3582,7 +3834,7 @@ pub(crate) fn prepare_record_scene(
         impl Fn(&str) -> Option<crate::scene3d::TextureAsset3D>,
         impl Fn(&str) -> Option<Arc<str>>,
     ),
-    (renderables, observe_rows): (bool, bool),
+    (renderables, observe_rows, retain_fragment): (bool, bool, bool),
     mesh_inputs: &SceneMeshInputs,
     camera_matrices: &CameraMatrixCache,
     text_fonts: crate::scene3d::SceneTextFonts<'_>,
@@ -3896,7 +4148,7 @@ pub(crate) fn prepare_record_scene(
             .prepare(&imported, renderables)
         },
         renderables,
-        observe_rows,
+        (observe_rows, retain_fragment),
     )
 }
 

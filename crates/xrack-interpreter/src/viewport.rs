@@ -239,6 +239,7 @@ impl Instance {
             ) => view.unproject(*point, *depth, *fallback).into(),
             ("pick", [Value::Point2D(point)]) => view.pick(*point).into(),
             ("hit", [Value::Point2D(point)]) => view.hit(*point).into(),
+            ("pick-node", [Value::Point2D(point)]) => view.pick_node(*point).into(),
             ("hit-all", [Value::Point2D(point)]) => Value::Hit3DList(view.hit_all(*point)),
             ("hit-row", [Value::Point2D(point), Value::Int(row)]) => {
                 view.hit_row(*point, *row).into()

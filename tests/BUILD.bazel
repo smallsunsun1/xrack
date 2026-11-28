@@ -1218,6 +1218,7 @@ rust_test(
         "//crates/xrack-compiler:xrack_compiler",
         "//crates/xrack-interpreter:xrack_interpreter",
         "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-testing:xrack_testing",
         "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
         "//crates/xrack-runtime:xrack_runtime",
         "@crates//:pollster",

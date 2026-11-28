@@ -38607,3 +38607,143 @@ fn capture_mrt_schedules_upstream_reads_without_merging_dependent_outputs() -> T
     }
     Ok(())
 }
+
+#[test]
+fn fragment_keys_survive_reorder_and_keep_repeated_subtrees_separate() -> TestResult {
+    use scene3d_model_ui::FragmentScene;
+    use xrack_layout::Size;
+    use xrack_testing::UiDriver;
+
+    const NAME: &str = "tests/scene3d_model.xr";
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("scene3d_model.xr"),
+        NAME,
+        Default::default(),
+    )?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let size = Size::new(240.0, 180.0);
+    let mut interpreted = UiDriver::headless(program.create("FragmentScene")?, size);
+    let mut app = FragmentScene::new();
+    let aot_rows = VecModel::from(app.get_actors());
+    app.bind_model_actors(aot_rows.clone());
+    let mut aot = UiDriver::headless(app, size);
+    let picked = |instance: &xrack_interpreter::Instance| -> TestResult<String> {
+        let Value::String(reference) = instance.get("picked")? else {
+            return Err("invalid interpretation of pick-node".into());
+        };
+        Ok(reference)
+    };
+    let left = aot.component().get_left_ref();
+    let right = aot.component().get_right_ref();
+    assert!(!left.is_empty());
+    assert!(!right.is_empty());
+    assert_ne!(left, right);
+    assert_eq!(aot.component().get_left_row(), 0);
+    assert_eq!(aot.component().get_right_row(), 2);
+    assert_eq!(interpreted.component().get("left-row")?, Value::Int(0));
+    assert_eq!(interpreted.component().get("right-row")?, Value::Int(2));
+    assert_eq!(aot.component().get_left_x(), -3.0);
+    assert_eq!(interpreted.component().get("left-x")?, Value::Float(-3.0));
+    assert_eq!(aot.component().get_attached_x(), 2.0);
+    assert_eq!(
+        interpreted.component().get("attached-x")?,
+        Value::Float(2.0)
+    );
+
+    let aot_reference = aot.component().get_picked();
+    let interpreted_reference = picked(interpreted.component())?;
+    assert!(!aot_reference.is_empty());
+    assert!(!interpreted_reference.is_empty());
+    aot.update(|ui| ui.set_selection(aot_reference.clone()));
+    let instance = interpreted.component().clone();
+    interpreted.update(|_| {
+        instance
+            .set("selection", interpreted_reference.clone().into())
+            .unwrap();
+    });
+    assert_eq!(aot.component().get_selected_row(), 0);
+    assert_eq!(instance.get("selected-row")?, Value::Int(0));
+
+    let Value::RecordList(rows) = instance.get("actors")? else {
+        return Err("invalid interpreted actor model".into());
+    };
+    aot.update(|_| assert!(aot_rows.move_row(0, 1)));
+    interpreted.update(|_| assert!(rows.model().move_row(0, 1)));
+    assert_eq!(aot.component().get_selected_row(), 1);
+    assert_eq!(instance.get("selected-row")?, Value::Int(1));
+    assert_eq!(aot.component().get_picked(), aot_reference);
+    assert_eq!(picked(interpreted.component())?, interpreted_reference);
+
+    aot.update(|ui| ui.set_mounted(false));
+    interpreted.update(|_| instance.set("mounted", false.into()).unwrap());
+    assert!(!aot.component().get_valid());
+    assert_eq!(instance.get("valid")?, Value::Bool(false));
+    assert_eq!(aot.component().get_selected_row(), -1);
+    assert_eq!(instance.get("selected-row")?, Value::Int(-1));
+
+    aot.update(|ui| {
+        assert!(aot_rows.remove(1).is_some());
+        ui.set_mounted(true);
+    });
+    interpreted.update(|_| {
+        assert!(rows.model().remove(1).is_some());
+        instance.set("mounted", true.into()).unwrap();
+    });
+    assert_eq!(aot.component().get_selected_row(), -1);
+    assert_eq!(instance.get("selected-row")?, Value::Int(-1));
+    Ok(())
+}
+
+#[test]
+fn window_preload_reports_ready_with_no_viewport_in_both_backends() -> TestResult {
+    use resource_preload_ui::StandalonePreloadDemo;
+
+    const NAME: &str = "examples/puzzle3d/resource_preload.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("StandalonePreloadDemo")?;
+    let app = StandalonePreloadDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let mut aot_gpu = renderer()?;
+    let mut interpreted_gpu = renderer()?;
+    let mut handle = weak.upgrade().ok_or("missing standalone preload demo")?;
+    assert!(!handle.get_ready());
+    assert_eq!(dynamic.get("ready")?, Value::Bool(false));
+    for _ in 0..8 {
+        assert_eq!(
+            aot.render_animated(&mut aot_gpu)?,
+            interpreted.render_animated(&mut interpreted_gpu)?
+        );
+        if handle.get_ready() {
+            break;
+        }
+    }
+    assert!(handle.get_ready());
+    assert_eq!(dynamic.get("ready")?, Value::Bool(true));
+    let uploads = aot_gpu.scene_mesh_uploads();
+    assert_eq!(uploads, 3);
+    assert_eq!(interpreted_gpu.scene_mesh_uploads(), uploads);
+    assert_eq!(aot_gpu.scene_draw_stats().viewport_renders, 0);
+    assert_eq!(interpreted_gpu.scene_draw_stats().viewport_renders, 0);
+
+    handle.set_show_scene(true);
+    dynamic.set("show-scene", true.into())?;
+    assert_eq!(
+        aot.render_animated(&mut aot_gpu)?,
+        interpreted.render_animated(&mut interpreted_gpu)?
+    );
+    assert_eq!(aot_gpu.scene_mesh_uploads(), uploads);
+    assert_eq!(interpreted_gpu.scene_mesh_uploads(), uploads);
+    Ok(())
+}

@@ -1,3 +1,4 @@
+pub(crate) mod anchors;
 pub(crate) mod clip;
 pub(crate) mod flow;
 pub(crate) mod frame;

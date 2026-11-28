@@ -1774,6 +1774,8 @@ impl<'m> Loader<'m> {
                 if let Some(axis) = xrack_syntax::builtins::scene_texture_size_axis(name) {
                     self.scene_texture_size_targets.insert(target.clone());
                     Expression::SceneTextureSize(target, axis)
+                } else if name == "preload-ready" {
+                    Expression::ScenePreloadReady(target)
                 } else {
                     let metric = match name {
                         "layout-ready" => None,
@@ -2613,6 +2615,15 @@ fn property_name(op: Op<'_>) -> Result<&'static str> {
 }
 
 const PROPERTIES: &[&str] = &[
+    "anchor-fill",
+    "anchor-center-in",
+    "anchor-left",
+    "anchor-right",
+    "anchor-top",
+    "anchor-bottom",
+    "anchor-horizontal-center",
+    "anchor-vertical-center",
+    "anchor-margin",
     "x",
     "y",
     "width",

@@ -1546,6 +1546,12 @@ impl SceneViewQuery {
             .unwrap_or_default()
     }
 
+    pub fn pick_node(&self, point: Point2D) -> String {
+        self.model.as_ref().map_or_else(String::new, |model| {
+            model.node_reference(self.hit(point).row_index)
+        })
+    }
+
     pub fn hit(&self, point: Point2D) -> Hit3D {
         self.first(point, &RayRows::All)
     }

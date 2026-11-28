@@ -1,3 +1,4 @@
+use super::control_content::ControlContentLayout;
 use crate::item::ItemRef;
 use crate::{
     LayoutNode, Point, Rect, Size, Target, input::valid_item, place_in_direction,
@@ -294,39 +295,30 @@ impl ComboGeometry {
             .control_part("ComboIndicator")
             .map(Self::indicator_size);
         let trigger = Self::trigger_width(indicator);
-        let content = node.combo_content().map_or_else(Size::default, |content| {
-            let available = Size::new(
-                (available.width - trigger - Self::LABEL_INSET).max(0.0),
-                available.height,
-            );
-            text.measure_children(content, available)
-        });
         let (entry_width, vertical_padding) = if xrack_runtime::combo_editable(node) {
             let padding = crate::linear::Padding::for_editor(node).size();
             (116.0 + padding.width, padding.height)
         } else {
             (128.0, 10.0)
         };
-        Size::new(
-            trigger + entry_width.max(content.width + Self::LABEL_INSET),
+        let minimum = Size::new(
+            trigger + entry_width,
             (text.font_size(node) * 1.4 + vertical_padding)
                 .max(34.0)
-                .max(indicator.map_or(0.0, |size| size.height + 8.0))
-                .max(content.height),
-        )
+                .max(indicator.map_or(0.0, |size| size.height + 8.0)),
+        );
+        let layout = ControlContentLayout::horizontal(Self::LABEL_INSET, trigger, minimum);
+        let content = node.combo_content().map_or_else(Size::default, |content| {
+            text.measure_children(content, layout.available(available))
+        });
+        layout.preferred(content)
     }
 
     /// The inset used by the selected label and replacement content.
     #[doc(hidden)]
     pub fn label_bounds(&self, direction: LayoutDirection) -> Rect {
-        let entry = self.entry;
-        let inset = entry.width.min(Self::LABEL_INSET);
-        let x = if direction == LayoutDirection::RightToLeft {
-            entry.x
-        } else {
-            entry.x + inset
-        };
-        Rect::new(x, entry.y, entry.width - inset, entry.height)
+        ControlContentLayout::horizontal(Self::LABEL_INSET, 0.0, Size::default())
+            .bounds(self.entry, direction)
     }
 
     fn trigger_width(indicator: Option<Size>) -> f32 {

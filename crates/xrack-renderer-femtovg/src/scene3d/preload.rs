@@ -58,52 +58,59 @@ impl SceneRenderer {
                     meshes: ScenePreloadCursor::default(),
                     requested: false,
                 });
-            if std::mem::replace(&mut job.requested, true) {
-                return;
-            }
-
-            while uploads != 0 && rows != 0 {
-                let mesh = match job.meshes.advance(model, &mut lod_poses) {
-                    Some(ScenePreloadStep::Mesh(mesh)) => Some(mesh),
-                    Some(ScenePreloadStep::Skipped) => None,
-                    Some(ScenePreloadStep::Deferred) | None => break,
-                };
-                rows -= 1;
-                let Some(mesh @ Mesh3D::Imported(data)) = mesh else {
-                    continue;
-                };
-                let scene = self.scene.get_or_insert_with(|| {
-                    SceneGpu::new(
-                        device,
-                        queue,
-                        &self.item_textures,
-                        (
-                            self.postprocess.effects.images.clone(),
-                            self.postprocess.effects.projections.clone(),
-                            self.native_anisotropy,
-                        ),
-                    )
-                });
-                let key = (Arc::as_ptr(data) as usize, false);
-                if scene.meshes.imported.contains_key(&key) {
-                    continue;
+            let process = !std::mem::replace(&mut job.requested, true);
+            if process {
+                while uploads != 0 && rows != 0 {
+                    let mesh = match job.meshes.advance(model, &mut lod_poses) {
+                        Some(ScenePreloadStep::Mesh(mesh)) => Some(mesh),
+                        Some(ScenePreloadStep::Skipped) => None,
+                        Some(ScenePreloadStep::Deferred) | None => break,
+                    };
+                    rows -= 1;
+                    let Some(mesh @ Mesh3D::Imported(data)) = mesh else {
+                        continue;
+                    };
+                    let scene = self.scene.get_or_insert_with(|| {
+                        SceneGpu::new(
+                            device,
+                            queue,
+                            &self.item_textures,
+                            (
+                                self.postprocess.effects.images.clone(),
+                                self.postprocess.effects.projections.clone(),
+                                self.native_anisotropy,
+                            ),
+                        )
+                    });
+                    let key = (Arc::as_ptr(data) as usize, false);
+                    if scene.meshes.imported.contains_key(&key) {
+                        continue;
+                    }
+                    // Captures and live item textures are resolved by the consumer
+                    // when it draws. Warm the static buffers and texture data here.
+                    scene.meshes.materials.captures.clear();
+                    scene.meshes.materials.items.clone_from(&self.item_textures);
+                    let images = &self.postprocess.effects.images;
+                    let image_uploads = images.borrow().uploads;
+                    let meshes = scene.meshes.uploads;
+                    scene.meshes.get(device, queue, mesh);
+                    // A rebuilt SceneModel can have new material bindings with
+                    // the same vertex streams and images. Budget only transfers.
+                    if meshes != scene.meshes.uploads || image_uploads != images.borrow().uploads {
+                        uploads -= 1;
+                        self.stats.preloaded_meshes += 1;
+                    }
                 }
-                // Captures and live item textures are resolved by the consumer
-                // when it draws. Warm the static buffers and texture data here.
-                scene.meshes.materials.captures.clear();
-                scene.meshes.materials.items.clone_from(&self.item_textures);
-                let images = &self.postprocess.effects.images;
-                let image_uploads = images.borrow().uploads;
-                let meshes = scene.meshes.uploads;
-                scene.meshes.get(device, queue, mesh);
-                // A rebuilt SceneModel can have new material bindings with
-                // the same vertex streams and images. Budget only transfers.
-                if meshes != scene.meshes.uploads || image_uploads != images.borrow().uploads {
-                    uploads -= 1;
-                    self.stats.preloaded_meshes += 1;
-                }
             }
-            work |= job.meshes.pending(model);
+            let pending = job.meshes.pending(model);
+            work |= pending;
+            for handle in node
+                .geometry_handle
+                .iter()
+                .chain(node.instance_geometry_handle.iter())
+            {
+                work |= handle.publish_preload_ready(model, !pending);
+            }
         });
         self.preloads
             .jobs

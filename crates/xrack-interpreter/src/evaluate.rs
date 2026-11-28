@@ -2262,6 +2262,9 @@ impl Instance {
             CachedInitializer(group, value) => self.cached_visual(*group, value, true),
             Read(member) => self.read(member),
             GeometryRead(target, metric) => self.geometry_read(target, *metric),
+            ScenePreloadReady(target) => {
+                self.geometry_value(target, |handle| handle.preload_ready().into())
+            }
             SceneTextureSize(target, axis) => {
                 self.geometry_value(target, |handle| handle.scene_texture_size(*axis).into())
             }
@@ -7936,6 +7939,63 @@ fn geometry_function(
             .into(),
         (Combine3D, [Value::SceneObjects(shared), Value::SceneObjects(local)]) => {
             Value::SceneObjects(program.scene_projections.combine_scenes(shared, local))
+        }
+        (NodeReference3D, [Value::SceneObjects(model), Value::Int(row)]) => {
+            model.node_reference(*row).into()
+        }
+        (ResolveNode3D, [Value::SceneObjects(model), Value::String(reference)]) => {
+            model.resolve_node(reference).into()
+        }
+        (Fragment3D, [Value::RecordList(records)]) => {
+            Value::SceneObjects(program.prepare_scene_variant(records, true, true))
+        }
+        (
+            Mount3D,
+            [
+                Value::SceneObjects(fragment),
+                Value::String(key),
+                Value::Point3D(position),
+                options @ ..,
+            ],
+        ) => {
+            let active = matches!(options.first(), None | Some(Value::Bool(true)));
+            let orientation = match options.get(1) {
+                Some(Value::Quaternion3D(value)) => *value,
+                _ => xrack_runtime::Quaternion3D::IDENTITY,
+            };
+            let scale = match options.get(2) {
+                Some(Value::Vector3D(value)) => *value,
+                _ => xrack_runtime::Vector3D::new(1.0, 1.0, 1.0),
+            };
+            Value::SceneObjects(fragment.mount_fragment(key, *position, orientation, scale, active))
+        }
+        (
+            Attach3D,
+            [
+                Value::SceneObjects(scene),
+                Value::String(parent),
+                Value::SceneObjects(fragment),
+                Value::String(key),
+                options @ ..,
+            ],
+        ) => {
+            let active = matches!(options.first(), None | Some(Value::Bool(true)));
+            Value::SceneObjects(scene.attach_fragment(parent, fragment, key, active))
+        }
+        (
+            Repeat3D,
+            [
+                Value::SceneObjects(fragment),
+                keys,
+                Value::InstanceTable3D(placements),
+            ],
+        ) => {
+            let keys = match keys {
+                Value::StringModel(keys) => std::borrow::Cow::Owned(keys.snapshot()),
+                Value::StringList(keys) => std::borrow::Cow::Borrowed(keys.as_slice()),
+                _ => return Err(evaluation("expected string keys for the repeated scene")),
+            };
+            Value::SceneObjects(fragment.repeat_fragment(&keys, placements))
         }
         (Prepare3D, [Value::RecordList(records)]) => {
             Value::SceneObjects(program.prepare_scene(records, true))

@@ -14,6 +14,10 @@ pub(super) fn indicator_paint(node: &Node) -> ItemPaint {
 pub(super) struct Progress;
 
 impl Item for Progress {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy::INTRINSIC_HEIGHT
+    }
+
     fn paint(&self, node: &Node) -> ItemPaint {
         ItemPaint::Progress(indicator_state(node).unwrap_or(IndicatorState::Hidden))
     }

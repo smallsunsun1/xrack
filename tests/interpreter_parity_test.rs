@@ -7789,6 +7789,93 @@ fn scroll_commands_position_virtual_rows_after_model_update() {
 }
 
 #[test]
+fn layout_anchors_share_placement_and_hit_targets_in_both_backends() {
+    use layout_ui::AnchorsDemo;
+    use xrack_layout::{Rect, Size};
+    use xrack_runtime::Length;
+
+    let source = include_str!("../examples/layout/layout.xr");
+    let module = xrack_compiler::prepare_preview(source, "layout.xr", Default::default()).unwrap();
+    let instance = Program::from_module(&module.module)
+        .unwrap()
+        .create("AnchorsDemo")
+        .unwrap();
+    let mut interpreted = ui_driver::UiDriver::new(instance, FixedText, Size::new(460.0, 260.0));
+    let mut generated =
+        ui_driver::UiDriver::new(AnchorsDemo::new(), FixedText, Size::new(460.0, 260.0));
+
+    let expect = |interpreted: &ui_driver::UiDriver<Instance, FixedText>,
+                  generated: &ui_driver::UiDriver<AnchorsDemo, FixedText>,
+                  expected: Rect| {
+        assert_eq!(interpreted.bounds("body"), expected);
+        assert_eq!(generated.bounds("body"), expected);
+        let action = interpreted.bounds("action");
+        assert_eq!(action, generated.bounds("action"));
+        assert_eq!(
+            action.x + action.width / 2.0,
+            expected.x + expected.width / 2.0
+        );
+        assert_eq!(
+            action.y + action.height / 2.0,
+            expected.y + expected.height / 2.0
+        );
+    };
+    expect(
+        &interpreted,
+        &generated,
+        Rect::new(144.0, 12.0, 304.0, 236.0),
+    );
+    let inset = Rect::new(20.0, 20.0, 104.0, 220.0);
+    assert_eq!(interpreted.bounds("inset"), inset);
+    assert_eq!(generated.bounds("inset"), inset);
+
+    interpreted.update(|ui| ui.set("sidebar-width", Length(170.0).into()).unwrap());
+    generated.update(|ui| ui.set_sidebar_width(Length(170.0)));
+    expect(
+        &interpreted,
+        &generated,
+        Rect::new(194.0, 12.0, 254.0, 236.0),
+    );
+
+    interpreted.resize(Size::new(590.0, 300.0));
+    generated.resize(Size::new(590.0, 300.0));
+    expect(
+        &interpreted,
+        &generated,
+        Rect::new(194.0, 12.0, 384.0, 276.0),
+    );
+
+    interpreted.click("action");
+    generated.click("action");
+    assert_eq!(interpreted.component().get("clicks"), Ok(1_i64.into()));
+    assert_eq!(generated.component().get_clicks(), 1);
+}
+
+#[test]
+fn anchors_use_page_body_and_scroll_content_in_both_backends() {
+    use layout_ui::AnchoredContainersDemo;
+    use xrack_layout::{Rect, Size};
+
+    let source = include_str!("../examples/layout/layout.xr");
+    let module = xrack_compiler::prepare_preview(source, "layout.xr", Default::default()).unwrap();
+    let instance = Program::from_module(&module.module)
+        .unwrap()
+        .create("AnchoredContainersDemo")
+        .unwrap();
+    let size = Size::new(300.0, 180.0);
+    let interpreted = ui_driver::UiDriver::headless(instance, size);
+    let generated = ui_driver::UiDriver::headless(AnchoredContainersDemo::new(), size);
+    for (id, bounds) in [
+        ("page", Rect::new(0.0, 24.0, 300.0, 156.0)),
+        ("viewport", Rect::new(0.0, 40.0, 300.0, 140.0)),
+        ("edge", Rect::new(240.0, 260.0, 60.0, 30.0)),
+    ] {
+        assert_eq!(interpreted.bounds(id), bounds, "{id}");
+        assert_eq!(generated.bounds(id), bounds, "{id}");
+    }
+}
+
+#[test]
 fn layout_feedback_tracks_child_and_instance_geometry_and_popup_lifetime() {
     use layout_ui::GeometryDemo;
     use xrack_layout::Size;

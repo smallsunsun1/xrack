@@ -400,6 +400,8 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             SwipeGestureDemo,
             ScaleRotateDemo,
             TransformDemo,
+            AnchorsDemo,
+            AnchoredContainersDemo,
             GeometryDemo,
             WheelDemo,
             HoverDemo,

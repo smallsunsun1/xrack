@@ -1,4 +1,7 @@
-use super::{ArrangeContext, Item, MeasureContext};
+use super::{
+    ArrangeContext, ControlPartPlacement, Item, MeasureContext,
+    control_content::ControlContentLayout,
+};
 use crate::grid::Placement;
 use crate::{Rect, Size, dimension};
 use xrack_runtime::{ButtonDisplay, ImageAsset, LayoutDirection, Node, Value, button_text};
@@ -210,6 +213,13 @@ impl<'a> ButtonContent<'a> {
 pub(super) struct Button(pub(super) Size, pub(super) super::ButtonStyle);
 
 impl Item for Button {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy {
+            preferred_minimum: true,
+            ..super::SizePolicy::INTRINSIC
+        }
+    }
+
     fn hit_behavior(&self, _node: &Node) -> super::HitBehavior {
         if self.1 == super::ButtonStyle::Round {
             super::HitBehavior::RoundedButton
@@ -228,30 +238,18 @@ impl Item for Button {
 
     fn arrange(&self, cx: &mut ArrangeContext<'_>) -> Option<Vec<Placement>> {
         cx.node.control_part("ButtonContent")?;
-        let content = cx.bounds.inset(ButtonContent::new(cx.node).padding);
-        Some(
-            cx.node
-                .children
-                .iter()
-                .map(|child| {
-                    Placement::plain(if child.kind == "ButtonContent" {
-                        content
-                    } else {
-                        cx.layout.absolute_child(child, cx.bounds)
-                    })
-                })
-                .collect(),
-        )
+        let layout = ControlContentLayout::uniform(ButtonContent::new(cx.node).padding, self.0);
+        let content = layout.bounds(cx.bounds, cx.direction);
+        Some(cx.control_children(|child| {
+            (child.kind == "ButtonContent").then_some(ControlPartPlacement::Plain(content))
+        }))
     }
 
     fn measure(&self, cx: &mut MeasureContext<'_>) -> crate::linear::Metrics {
         let button = ButtonContent::new(cx.node);
-        let chrome = 2.0 * button.padding;
+        let layout = ControlContentLayout::uniform(button.padding, self.0);
+        let available = layout.available(cx.available);
         let content = if let Some(content) = cx.node.control_part("ButtonContent") {
-            let available = Size::new(
-                (cx.available.width - chrome).max(0.0),
-                (cx.available.height - chrome).max(0.0),
-            );
             cx.layout.measure_children(content, available)
         } else {
             let label = if button.label.is_empty() {
@@ -260,15 +258,11 @@ impl Item for Button {
                 cx.layout.measure_node(
                     cx.node,
                     button.label,
-                    button.natural_label_width(cx.available.width - chrome),
+                    button.natural_label_width(available.width),
                 )
             };
             button.natural_size(label)
         };
-        let size = Size::new(
-            (content.width + chrome).max(self.0.width),
-            (content.height + chrome).max(self.0.height),
-        );
-        cx.intrinsic(size)
+        cx.intrinsic(layout.preferred(content))
     }
 }

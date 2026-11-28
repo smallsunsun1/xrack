@@ -74,6 +74,10 @@ impl SpinGeometry {
 pub(super) struct SpinBox(pub(super) f32);
 
 impl Item for SpinBox {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy::INTRINSIC_HEIGHT
+    }
+
     fn reserves_pointer_drag(&self, _node: &xrack_runtime::Node) -> bool {
         true
     }

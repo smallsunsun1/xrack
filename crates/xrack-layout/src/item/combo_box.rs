@@ -1,11 +1,17 @@
-use super::{ArrangeContext, Item, ItemAction, ItemEvent, ItemPaint, ItemRef, MeasureContext};
+use super::{
+    ArrangeContext, ControlPartPlacement, Item, ItemAction, ItemEvent, ItemPaint, ItemRef,
+    MeasureContext,
+};
 use crate::{ComboGeometry, Rect, grid::Placement};
-use std::rc::Rc;
 use xrack_runtime::{ControlAction, combo_editable};
 
 pub(super) struct ComboBox;
 
 impl Item for ComboBox {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy::INTRINSIC_HEIGHT
+    }
+
     fn reserves_pointer_drag(&self, node: &xrack_runtime::Node) -> bool {
         combo_editable(node)
     }
@@ -24,28 +30,16 @@ impl Item for ComboBox {
             return None;
         }
         let geometry = ComboGeometry::for_control(cx.node, cx.bounds, cx.direction);
-        Some(
-            cx.node
-                .children
-                .iter()
-                .map(|child| match child.kind {
-                    "ComboIndicator" => Placement::plain(geometry.indicator_bounds(child)),
-                    "ComboPopup" => Placement::plain(Rect::new(cx.bounds.x, cx.bounds.y, 0.0, 0.0)),
-                    "ComboContent" => {
-                        let bounds = geometry.label_bounds(cx.direction);
-                        Placement {
-                            bounds,
-                            clip: Some(Rc::new(crate::table::PaneClip {
-                                bounds,
-                                space: cx.space.clone(),
-                            })),
-                            row_children: None,
-                        }
-                    }
-                    _ => Placement::plain(cx.layout.absolute_child(child, cx.bounds)),
-                })
-                .collect(),
-        )
+        let direction = cx.direction;
+        let empty = Rect::new(cx.bounds.x, cx.bounds.y, 0.0, 0.0);
+        Some(cx.control_children(|child| {
+            Some(match child.kind {
+                "ComboIndicator" => ControlPartPlacement::Plain(geometry.indicator_bounds(child)),
+                "ComboPopup" => ControlPartPlacement::Plain(empty),
+                "ComboContent" => ControlPartPlacement::Clipped(geometry.label_bounds(direction)),
+                _ => return None,
+            })
+        }))
     }
 
     fn paint(&self, _node: &xrack_runtime::Node) -> ItemPaint {

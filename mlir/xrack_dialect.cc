@@ -132,7 +132,7 @@ static bool isSceneTextureSize(llvm::StringRef name) {
 
 static bool geometryProperty(llvm::StringRef name) {
   return isSceneTextureSize(name) || llvm::StringSwitch<bool>(name)
-      .Cases({"layout-x", "layout-y", "layout-width", "layout-height", "layout-ready",
+      .Cases({"layout-x", "layout-y", "layout-width", "layout-height", "layout-ready", "preload-ready",
               "window-bounds-x", "window-bounds-y", "window-bounds-width", "window-bounds-height",
               "available-width", "available-height"}, true)
       .Default(false);
@@ -263,7 +263,7 @@ LogicalResult SceneViewQueryOp::verify() {
   } else if (method == "unproject") {
     inputs = {point, number, world};
     output = world;
-  } else if (method == "pick") {
+  } else if (method == "pick" || method == "pick-node") {
     inputs = {point};
     output = StringType::get(context);
   } else if (method == "hit" || method == "hit-item" || method == "hit-all") {
@@ -315,7 +315,7 @@ LogicalResult GeometryReadOp::verify() {
     return emitOpError("requires an int for a SceneView3D texture size");
   }
   if (geometryProperty(property) &&
-      (property == "layout-ready" ? isa<BoolType>(type) : isa<LengthType>(type)))
+      ((property == "layout-ready" || property == "preload-ready") ? isa<BoolType>(type) : isa<LengthType>(type)))
     return success();
   return emitOpError("requires a typed layout geometry property");
 }
@@ -798,6 +798,19 @@ static bool validTransformBinding(llvm::StringRef kind, llvm::StringRef name,
   return (name == "transform-rotation" || name == "transform-scale" ||
           name == "transform-scale-x" || name == "transform-scale-y") &&
       isa<FloatType>(type);
+}
+
+static bool anchorTargetProperty(llvm::StringRef name) {
+  return llvm::StringSwitch<bool>(name)
+      .Cases({"anchor-fill", "anchor-center-in", "anchor-left", "anchor-right", "anchor-top",
+              "anchor-bottom", "anchor-horizontal-center", "anchor-vertical-center"}, true)
+      .Default(false);
+}
+
+static bool validAnchorBinding(llvm::StringRef name, Type type) {
+  if (anchorTargetProperty(name))
+    return isa<StringType>(type);
+  return name != "anchor-margin" || isa<LengthType>(type);
 }
 
 static bool validBoxShadowBinding(llvm::StringRef kind, llvm::StringRef name,
@@ -1891,6 +1904,8 @@ LogicalResult ElementOp::verify() {
       if (name == "accessible-heading-level" &&
           ((kind != "Text" && kind != "Label") || !isa<IntType>(bind.getInput().getType())))
         return child.emitOpError("accessible-heading-level requires an integer on Text or Label");
+      if (!validAnchorBinding(name, bind.getInput().getType()))
+        return bind.emitOpError("incorrect anchor property type");
       if (!validTransformBinding(kind, name, bind.getInput().getType()))
         return child.emitOpError("incorrect visual transform property or type");
       if (name == "clip" &&
@@ -2952,6 +2967,8 @@ LogicalResult StateSetOp::verify() {
   if (isViewport(element.getKind()) && getName() == "enabled" &&
       !isa<BoolType>(getInput().getType()))
     return emitOpError("viewport enabled requires a boolean");
+  if (!validAnchorBinding(getName(), getInput().getType()))
+    return emitOpError("incorrect anchor property type");
   if (!validTransformBinding(element.getKind(), getName(), getInput().getType()))
     return emitOpError("incorrect visual transform property or type");
   if (getName() == "clip" &&
@@ -3620,6 +3637,11 @@ LogicalResult RowLinkOp::verify() {
 }
 
 static LogicalResult verifyInstanceLayout(Operation *op, llvm::StringRef name, Type value) {
+  if (anchorTargetProperty(name) || name == "anchor-margin") {
+    if (!validAnchorBinding(name, value))
+      return op->emitOpError("incorrect type for instance anchor property ") << name;
+    return success();
+  }
   auto *context = op->getContext();
   Type expected =
       llvm::StringSwitch<Type>(name)
@@ -4514,6 +4536,38 @@ LogicalResult GeometryFunctionOp::verify() {
     auto scene = SceneModel3DType::get(getContext());
     inputs = {scene, scene};
     output = scene;
+  } else if (operation == "fragment-3d") {
+    if (getInputs().size() != 1 || !isa<RecordListType>(getInputs().front().getType()))
+      return emitOpError("scene fragment requires a scene object record list");
+    inputs = {getInputs().front().getType()};
+    output = SceneModel3DType::get(getContext());
+  } else if (operation == "mount-3d") {
+    auto scene = SceneModel3DType::get(getContext());
+    inputs = {scene, StringType::get(getContext()), Point3DType::get(getContext())};
+    if (getInputs().size() >= 4)
+      inputs.push_back(BoolType::get(getContext()));
+    if (getInputs().size() >= 5)
+      inputs.push_back(Quaternion3DType::get(getContext()));
+    if (getInputs().size() >= 6)
+      inputs.push_back(Vector3DType::get(getContext()));
+    output = scene;
+  } else if (operation == "attach-3d") {
+    auto scene = SceneModel3DType::get(getContext());
+    auto string = StringType::get(getContext());
+    inputs = {scene, string, scene, string};
+    if (getInputs().size() == 5)
+      inputs.push_back(BoolType::get(getContext()));
+    output = scene;
+  } else if (operation == "repeat-3d") {
+    auto scene = SceneModel3DType::get(getContext());
+    inputs = {scene, StringListType::get(getContext()), InstanceTable3DType::get(getContext())};
+    output = scene;
+  } else if (operation == "node-reference-3d") {
+    inputs = {SceneModel3DType::get(getContext()), IntType::get(getContext())};
+    output = StringType::get(getContext());
+  } else if (operation == "resolve-node-3d") {
+    inputs = {SceneModel3DType::get(getContext()), StringType::get(getContext())};
+    output = IntType::get(getContext());
   } else if (operation == "volume-rgba8") {
     auto integer = IntType::get(getContext());
     inputs = {integer, integer, integer, IntListType::get(getContext())};
@@ -5305,7 +5359,8 @@ static LogicalResult verifyDirectGeometryFlow(Operation *op, const Owners &owner
                 "reserve-scroll-bar-space", "vertical-scroll-bar-policy", "horizontal-scroll-bar-policy",
                 "texture-width", "texture-height", "render-scale"}, true)
         .Default(false) || name.starts_with("padding-") ||
-        name.starts_with("transform-") || name == "padding";
+        name.starts_with("transform-") || name == "padding" ||
+        anchorTargetProperty(name) || name == "anchor-margin";
   };
   llvm::SmallVector<Value> values;
   if (auto bind = dyn_cast<BindOp>(op); bind && dimension(bind.getName()))

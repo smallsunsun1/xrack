@@ -169,6 +169,10 @@ fn sizing(node: &Node) -> (f32, f32, f32) {
 pub(super) struct PageIndicator;
 
 impl Item for PageIndicator {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy::INTRINSIC_HEIGHT
+    }
+
     fn focusable(&self, node: &Node) -> bool {
         node.boolean("interactive", false) && page_indicator_count(node) != 0
     }

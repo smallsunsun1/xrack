@@ -85,3 +85,35 @@ export component ResourcePreloadDemo inherits Window {
         clicked => { root.detail = (root.detail + 1) % 3; }
     }
 }
+
+export component StandalonePreloadDemo inherits Window {
+    width: 160px; height: 120px; background: #182535;
+    in-out property <bool> show-scene: false;
+    in-out property <bool> warm: true;
+    property <PreloadShape> shape: PreloadShape {
+        shape: "", radius: 0.52, tube-radius: 0.16, segments: 24, rings: 16,
+    };
+    property <PreloadActor> actor <- PreloadActor {
+        id: "asset", mesh: "", geometry: root.shape, visible: true,
+        material: PreloadFinish {
+            base-color-map: @texture-url("models/focus-grid.png"), unlit: true,
+        },
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #fff,
+        camera-kind: "", camera-height: 3, camera-lod-bias: 0,
+        lod-of: "", lod-max-size: 0px, instancing-lod-factor: -1,
+    };
+    property <[PreloadActor]> empty-rows: [];
+    property <scenemodel3d> empty <- Scene3D.prepare(root.empty-rows);
+    property <scenemodel3d> gallery <- Scene3D.prepare([
+        PreloadActor { geometry: PreloadShape { shape: "sphere", ..root.shape }, ..root.actor },
+        PreloadActor { id: "torus", x: 1.4, geometry: PreloadShape { shape: "torus", ..root.shape }, ..root.actor },
+        PreloadActor { id: "box", x: -1.4, geometry: PreloadShape { shape: "box", ..root.shape }, ..root.actor },
+    ]);
+    preload-model <- root.warm ? root.gallery : root.empty;
+    out property <bool> ready <- root.warm && root.preload-ready;
+    if root.show-scene : SceneView3D {
+        width: 160px; height: 120px; model <- root.gallery;
+        camera-yaw: 0; camera-pitch: 0; camera-distance: 5;
+    }
+}

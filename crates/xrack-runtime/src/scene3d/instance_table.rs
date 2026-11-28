@@ -248,7 +248,7 @@ impl InstanceTable3D {
         }
     }
 
-    fn transform(&self, index: usize) -> Option<SceneTransform> {
+    pub(crate) fn transform(&self, index: usize) -> Option<SceneTransform> {
         match self.0.as_ref()? {
             InstanceSource::Rows(rows) => Some(rows.get(index)?.transform),
             InstanceSource::Random(random) if index < random.len() => random.transform(index),

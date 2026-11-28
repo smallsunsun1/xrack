@@ -1,12 +1,12 @@
 use crate::{
     Hit3D, Length, Point2D, Point3D, Property, RenderStats3D, Vector3D, ViewportGpuStats,
-    scene3d::{SceneTextureSources, camera::SceneViewQuery},
+    scene3d::{SceneModel, SceneTextureSources, camera::SceneViewQuery},
 };
 use std::{
-    cell::{Cell, OnceCell},
+    cell::{Cell, OnceCell, RefCell},
     fmt,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 thread_local! {
@@ -61,11 +61,19 @@ struct SceneViewObservation {
 }
 
 #[derive(Default)]
+struct ScenePreloadObservation {
+    requested: RefCell<Option<Weak<SceneModel>>>,
+    ready: Property<bool>,
+    observed: Cell<bool>,
+}
+
+#[derive(Default)]
 struct Geometry {
     values: [Property<Length>; 10],
     ready: Property<bool>,
     scene_view: Option<Box<SceneViewObservation>>,
     scene_texture_size: OnceCell<Box<[Property<u32>; 2]>>,
+    scene_preload: OnceCell<ScenePreloadObservation>,
     render_stats: OnceCell<Box<Property<RenderStats3D>>>,
     scroll_target_id: OnceCell<u64>,
     scroll_thumb: [Property<f64>; 2],
@@ -206,6 +214,40 @@ impl GeometryHandle {
             }
         }
         changed
+    }
+
+    pub fn preload_ready(&self) -> bool {
+        let observation = self.0.scene_preload.get_or_init(Default::default);
+        observation.observed.set(true);
+        observation.ready.get(|| false)
+    }
+
+    pub fn publish_preload_request(&self, model: Option<&Arc<SceneModel>>) {
+        let observation = match model {
+            Some(_) => self.0.scene_preload.get_or_init(Default::default),
+            None => match self.0.scene_preload.get() {
+                Some(observation) => observation,
+                None => return,
+            },
+        };
+        let mut requested = observation.requested.borrow_mut();
+        let before = requested.as_ref().map(Weak::as_ptr);
+        if before != model.map(Arc::as_ptr) {
+            *requested = model.map(Arc::downgrade);
+            observation.ready.set_if_changed(false);
+        }
+    }
+
+    pub fn publish_preload_ready(&self, model: &Arc<SceneModel>, ready: bool) -> bool {
+        self.publish_preload_request(Some(model));
+        let Some(observation) = self.0.scene_preload.get() else {
+            return false;
+        };
+        if observation.ready.cached_value().unwrap_or(false) == ready {
+            return false;
+        }
+        observation.ready.set_if_changed(ready);
+        observation.observed.get()
     }
 
     pub fn publish_scene_view(
@@ -366,6 +408,7 @@ impl GeometryHandle {
                 sources.set_if_changed(None);
             }
         }
+        self.publish_preload_request(None);
         self.publish_scene_texture_size([0; 2]);
         self.publish_render_stats(RenderStats3D::default());
         self.publish_scroll_interaction(false, false, false);

@@ -1116,6 +1116,65 @@ export component TransformDemo inherits Window {
     }
     Label { x <- 327px; y <- 240px; text <- "点击 " + root.clicks; color <- #a7b6ce; }
 }
+component AnchorPanel inherits Rectangle {
+    background: #28384c;
+}
+
+export component AnchorsDemo inherits Window {
+    title: "XRack · 锚点布局";
+    width: 460px; height: 260px;
+    background: #182331;
+    in property <length> sidebar-width: 120px;
+    out property <int> clicks: 0;
+
+    body := AnchorPanel {
+        anchor-left: sidebar.right;
+        anchor-right: parent.right;
+        anchor-top: parent.top;
+        anchor-bottom: parent.bottom;
+        anchor-margin: 12px;
+        action := Button {
+            anchor-center-in: parent;
+            text <- "点击 " + root.clicks;
+            clicked => { root.clicks += 1; }
+        }
+    }
+
+    sidebar := Rectangle {
+        anchor-left: parent.left;
+        anchor-top: parent.top;
+        anchor-bottom: parent.bottom;
+        anchor-margin: 12px;
+        width <- root.sidebar-width;
+        background: #16766e;
+        inset := Rectangle {
+            anchor-fill: parent;
+            anchor-margin: 8px;
+            border-color: #73b4ac;
+            border-width: 1px;
+        }
+    }
+}
+
+export component AnchoredContainersDemo inherits ApplicationWindow {
+    width: 300px; height: 180px; padding: 0px; spacing: 0px;
+    PageHeader { height: 24px; }
+    page := Page {
+        anchor-fill: parent; padding: 0px; spacing: 0px;
+        PageHeader { height: 16px; }
+        viewport := Flickable {
+            anchor-fill: parent;
+            content-height: 250px;
+            edge := Button {
+                anchor-right: parent.right;
+                anchor-bottom: parent.bottom;
+                width: 60px; height: 30px;
+                text: "Edge";
+            }
+        }
+    }
+}
+
 export component GeometryDemo inherits Window {
     title <- "XRack · 实际布局几何";
     width <- 500px; height <- 290px;

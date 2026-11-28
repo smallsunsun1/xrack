@@ -307,6 +307,12 @@ pub fn control_part_parents(kind: &str) -> &'static [&'static str] {
 }
 
 pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
+    if name == "preload-model" && is_window(kind) {
+        return Some(Type::SceneModel3D);
+    }
+    if !geometry_owner(kind) && (anchor_target_lines(name).is_some() || name == "anchor-margin") {
+        return None;
+    }
     if name == "accessible-heading-level" {
         return matches!(kind, "Text" | "Label").then_some(Type::Int);
     }
@@ -1655,7 +1661,7 @@ pub fn geometry_property(name: &str) -> Option<Type> {
         | "window-bounds-height"
         | "available-width"
         | "available-height" => Type::Length,
-        "layout-ready" => Type::Bool,
+        "layout-ready" | "preload-ready" => Type::Bool,
         _ => return None,
     })
 }
@@ -1676,6 +1682,7 @@ fn geometry_property_for(kind: &str, name: &str) -> Option<Type> {
     if !geometry_owner(kind)
         || matches!(name, "available-width" | "available-height") && !content_geometry_owner(kind)
         || builtins::scene_texture_size_axis(name).is_some() && kind != "SceneView3D"
+        || name == "preload-ready" && !is_window(kind) && kind != "SceneView3D"
     {
         return None;
     }
@@ -1686,8 +1693,97 @@ pub fn geometry_owner(kind: &str) -> bool {
     !nonvisual_element(kind) && !matches!(kind, "ComboPopup" | "TableColumn" | "SystemTrayIcon")
 }
 
+/// An empty line list denotes an anchor to a whole item.
+pub fn anchor_target_lines(name: &str) -> Option<&'static str> {
+    match name {
+        "anchor-fill" | "anchor-center-in" => Some(""),
+        "anchor-left" | "anchor-right" | "anchor-horizontal-center" => {
+            Some("left right horizontal-center")
+        }
+        "anchor-top" | "anchor-bottom" | "anchor-vertical-center" => {
+            Some("top bottom vertical-center")
+        }
+        _ => None,
+    }
+}
+
+pub fn anchor_placement_allowed(parent: &str, child: &str) -> bool {
+    if !geometry_owner(child) {
+        return false;
+    }
+    if matches!(parent, "Page" | "ApplicationWindow")
+        && matches!(child, "PageHeader" | "PageFooter")
+        || parent == "ApplicationWindow" && child == "MenuBar"
+    {
+        return false;
+    }
+    !matches!(
+        parent,
+        "HorizontalLayout"
+            | "VerticalLayout"
+            | "HorizontalBox"
+            | "VerticalBox"
+            | "GridLayout"
+            | "FlowLayout"
+            | "FlexboxLayout"
+            | "Row"
+            | "StackLayout"
+            | "StackView"
+            | "SwipeView"
+            | "SplitView"
+            | "ListView"
+            | "StandardListView"
+            | "GridView"
+            | "TreeView"
+            | "TableView"
+            | "StandardTableView"
+            | "TableRow"
+            | "TreeRow"
+            | "TabBar"
+            | "TabWidget"
+            | "Loader"
+            | "DynamicContainer"
+            | "ToolBar"
+            | "MenuBar"
+            | "Dialog"
+            | "Drawer"
+            | "PopupWindow"
+            | "Menu"
+            | "GroupBox"
+            | "Expander"
+            | "RadioGroup"
+            | "DialogButtonBox"
+            | "SwipeContent"
+            | "SwipeLeft"
+            | "SwipeRight"
+            | "PageHeader"
+            | "PageFooter"
+            | "TimePicker"
+            | "SwipeDelegate"
+    ) && !matches!(
+        child,
+        "ButtonContent"
+            | "ComboContent"
+            | "ComboIndicator"
+            | "ProgressTrack"
+            | "ProgressFill"
+            | "SliderHandle"
+            | "RangeLowerHandle"
+            | "RangeUpperHandle"
+            | "ScrollTrack"
+            | "ScrollThumb"
+            | "SpinUpIndicator"
+            | "SpinDownIndicator"
+            | "ToggleIndicator"
+            | "SwitchThumb"
+            | "SplitHandle"
+    )
+}
+
 pub fn layout_item_property(name: &str) -> Option<Type> {
     Some(match name {
+        name if anchor_target_lines(name).is_some() => Type::String,
+        "anchor-margin" => Type::Length,
         "width" | "height" | "x" | "y" | "min-width" | "min-height" | "preferred-width"
         | "preferred-height" | "max-width" | "max-height" | "transform-origin-x"
         | "transform-origin-y" => Type::Length,
@@ -9531,7 +9627,10 @@ fn element<'a>(
                         message: format!("unknown property `{}.{}`", kind, b.name),
                     })?
                 };
-                let value = if relative_size(kind, &b.name, &ty) {
+                let value = if let Some(value) = anchor_reference(&b.name, &b.value, scope, owner)?
+                {
+                    value
+                } else if relative_size(kind, &b.name, &ty) {
                     let value = expression(&b.value, scope, owner)?;
                     if value.ty == Type::Percent {
                         value
@@ -9801,6 +9900,80 @@ fn element<'a>(
     Ok(())
 }
 
+fn anchor_reference(
+    property: &str,
+    expr: &ast::Expr,
+    scope: &Scope<'_>,
+    owner: &str,
+) -> Result<Option<ir::Expr>> {
+    let lines = anchor_target_lines(property);
+    if lines.is_none() && property != "anchor-margin" {
+        return Ok(None);
+    }
+    let node = &scope.owners[owner];
+    let Some(parent) = node.parent.as_deref() else {
+        return fail(expr.span, "anchor requires a layout parent");
+    };
+    let mut parent_kind = scope.owners[parent].kind.as_str();
+    while let Some(base) = scope.definitions.and_then(|defs| defs.get(parent_kind)) {
+        parent_kind = base.base.as_str();
+    }
+    if !anchor_placement_allowed(parent_kind, &node.kind) {
+        return fail(
+            expr.span,
+            format!(
+                "`{property}` requires an absolute placement slot; `{parent_kind}` places this child"
+            ),
+        );
+    }
+    let (Some(lines), ExprKind::Reference(reference)) = (lines, &expr.kind) else {
+        return Ok(None);
+    };
+    let whole = lines.is_empty();
+    let (target, edge) = match reference.split_once('.') {
+        None if whole => (reference.as_str(), None),
+        Some((target, edge))
+            if !whole
+                && matches!(
+                    edge,
+                    "left" | "right" | "horizontal-center" | "top" | "bottom" | "vertical-center"
+                ) =>
+        {
+            if !lines.split_ascii_whitespace().any(|line| line == edge) {
+                return fail(
+                    expr.span,
+                    "anchor line must be on the same axis as the property",
+                );
+            }
+            (target, Some(edge))
+        }
+        _ => return Ok(None),
+    };
+    let target = if target == "parent" {
+        "parent"
+    } else {
+        let Some(node) = scope.owners.get(target) else {
+            return fail(expr.span, format!("unknown anchor target `{target}`"));
+        };
+        if target == owner || (target != parent && node.parent.as_deref() != Some(parent)) {
+            return fail(expr.span, "anchor target must be a parent or sibling");
+        }
+        if !geometry_owner(&node.kind) {
+            return fail(expr.span, "anchor target must have layout geometry");
+        }
+        if target != "root" {
+            scope.reference(expr.span, reference, 0, node.span, target);
+        }
+        if target == parent { "parent" } else { target }
+    };
+    let target = edge.map_or_else(|| target.to_owned(), |edge| format!("{target}.{edge}"));
+    Ok(Some(ir::Expr::literal(
+        Type::String,
+        string_literal_spelling(&target),
+        expr.span,
+    )))
+}
+
 fn state_target<'a>(
     reference: &'a str,
     owner: &'a str,
@@ -10022,7 +10195,14 @@ fn lower_states(
                     format!("`{}` already belongs to another state group", change.name),
                 );
             }
-            let value = if !instance_input && relative_size(&scope.owners[target].kind, name, &ty) {
+            let anchor = if instance_input {
+                None
+            } else {
+                anchor_reference(name, &change.value, scope, target)?
+            };
+            let value = if let Some(value) = anchor {
+                value
+            } else if !instance_input && relative_size(&scope.owners[target].kind, name, &ty) {
                 let value = expression(&change.value, scope, owner)?;
                 if value.ty == Type::Percent {
                     value
@@ -12000,12 +12180,15 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         if kind.uses_scene_model()
                             && let Some(model) = args.first()
                         {
-                            if kind == builtins::GeometryFunction::Prepare3D
-                                && !matches!(model.ty, Type::RecordList(_))
+                            if matches!(
+                                kind,
+                                builtins::GeometryFunction::Prepare3D
+                                    | builtins::GeometryFunction::Fragment3D
+                            ) && !matches!(model.ty, Type::RecordList(_))
                             {
                                 return fail(
                                     model.span,
-                                    "Scene3D.prepare requires a scene object record list",
+                                    format!("{} requires a scene object record list", call.callee),
                                 );
                             }
                             validate_scene_model(model, scope)?;

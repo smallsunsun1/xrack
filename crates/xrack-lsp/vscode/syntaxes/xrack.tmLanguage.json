@@ -288,6 +288,20 @@
     "members": {
       "patterns": [
         {
+          "match": "(?<![A-Za-z_0-9-])(anchor-(?:left|right|top|bottom|horizontal-center|vertical-center|fill|center-in))\\s*(:|<-)\\s*(parent)(?![A-Za-z_0-9-])",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.xrack"
+            },
+            "2": {
+              "name": "keyword.operator.assignment.xrack"
+            },
+            "3": {
+              "name": "variable.language.xrack"
+            }
+          }
+        },
+        {
           "match": "(?<![A-Za-z_0-9-])([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)\\s*(:=)",
           "captures": {
             "1": {

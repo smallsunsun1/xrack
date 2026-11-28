@@ -2527,9 +2527,9 @@ impl Node {
         }
         if self.kind == "SceneView3D" {
             features |= SceneViewport as u16;
-            if self.properties.contains_key("preload-model") {
-                features |= ScenePreload as u16;
-            }
+        }
+        if self.properties.contains_key("preload-model") {
+            features |= ScenePreload as u16;
         }
         if self.list.is_some() {
             features |= VirtualList as u16 | ListPreparation as u16;

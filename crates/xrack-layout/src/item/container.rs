@@ -209,6 +209,14 @@ impl Item for Stack {
 pub(super) struct Loader(pub(super) bool);
 
 impl Item for Loader {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        if self.0 {
+            super::SizePolicy::PREFERRED
+        } else {
+            super::SizePolicy::FILL
+        }
+    }
+
     fn layout(&self) -> ItemLayout {
         ItemLayout::Fill { padded: self.0 }
     }
@@ -263,6 +271,10 @@ impl Item for ScrollView {
 pub(super) struct Pane(pub(super) ItemPaint);
 
 impl Item for Pane {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy::PREFERRED
+    }
+
     fn layout(&self) -> ItemLayout {
         ItemLayout::Pane
     }
@@ -312,6 +324,10 @@ impl Item for Pane {
 pub(super) struct ToolSeparator;
 
 impl Item for ToolSeparator {
+    fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
+        super::SizePolicy::PREFERRED
+    }
+
     fn measure(&self, cx: &mut MeasureContext<'_>) -> Metrics {
         let padding = dimension(cx.node, "padding").unwrap_or(6.0);
         let thickness = dimension(cx.node, "stroke-width").unwrap_or(1.0);

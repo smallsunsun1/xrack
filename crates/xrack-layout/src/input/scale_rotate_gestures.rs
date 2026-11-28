@@ -1,3 +1,4 @@
+use super::contact_grab::ContactGrab;
 use crate::{
     Interaction, LayoutNode, Point,
     scale_rotate::{ScaleRotateTarget, TouchTransform, touch_centroid},
@@ -111,8 +112,7 @@ impl<Device: Eq> GrabHandoff<Device> {
 }
 
 pub struct Gestures<Device> {
-    pending: Option<(Contact<Device>, ScaleRotateTarget)>,
-    capture: Option<Capture<Device>>,
+    grab: ContactGrab<(Contact<Device>, ScaleRotateTarget), Capture<Device>>,
     /// Contacts consumed by a two-finger capture stay consumed until they lift.
     held: Vec<ContactId<Device>>,
 }
@@ -120,8 +120,7 @@ pub struct Gestures<Device> {
 impl<Device> Default for Gestures<Device> {
     fn default() -> Self {
         Self {
-            pending: None,
-            capture: None,
+            grab: ContactGrab::default(),
             held: Vec::new(),
         }
     }
@@ -129,11 +128,11 @@ impl<Device> Default for Gestures<Device> {
 
 impl<Device: Copy + Eq> Gestures<Device> {
     pub fn is_active(&self) -> bool {
-        self.capture.is_some()
+        self.grab.exclusive.is_some()
     }
 
     pub fn captured_touch_pair(&self) -> Option<[ContactId<Device>; 2]> {
-        match &self.capture.as_ref()?.source {
+        match &self.grab.exclusive.as_ref()?.source {
             Source::Touch { pair, .. } => Some(pair.map(|contact| contact.id)),
             Source::Trackpad { .. } => None,
         }
@@ -145,9 +144,9 @@ impl<Device: Copy + Eq> Gestures<Device> {
     }
 
     pub fn cancel(&mut self) -> Option<Delivery> {
-        self.pending = None;
-        self.capture
-            .take()
+        self.grab
+            .cancel()
+            .1
             .map(|capture| capture.delivery("cancelled"))
     }
 
@@ -165,7 +164,7 @@ impl<Device: Copy + Eq> Gestures<Device> {
         context: &Context<'_>,
         check_projection: bool,
     ) -> Option<Delivery> {
-        let unavailable = self.capture.as_ref().is_some_and(|capture| {
+        let unavailable = self.grab.exclusive.as_ref().is_some_and(|capture| {
             !capture
                 .target
                 .is_live(context.scene, context.layout, context.input)
@@ -200,7 +199,7 @@ impl<Device: Copy + Eq> Gestures<Device> {
             }
             return (consumed, [Some(cancelled), None]);
         }
-        if let Some(capture) = &mut self.capture {
+        if let Some(capture) = &mut self.grab.exclusive {
             if phase != TouchPhase::Started && !self.held.contains(&id) {
                 return (false, [None, None]);
             }
@@ -245,7 +244,10 @@ impl<Device: Copy + Eq> Gestures<Device> {
                 capture.update(sample)
             });
             let ended = if phase == TouchPhase::Ended {
-                self.capture.take().map(|capture| capture.delivery("ended"))
+                self.grab
+                    .exclusive
+                    .take()
+                    .map(|capture| capture.delivery("ended"))
             } else {
                 None
             };
@@ -270,8 +272,8 @@ impl<Device: Copy + Eq> Gestures<Device> {
                 return (false, [None, None]);
             };
             let second = Contact { id, point };
-            let Some((first, initial)) = &self.pending else {
-                self.pending = Some((second, target));
+            let Some((first, initial)) = self.grab.first_observer() else {
+                self.grab.observe((second, target));
                 return (false, [None, None]);
             };
             if first.id == id
@@ -307,15 +309,14 @@ impl<Device: Copy + Eq> Gestures<Device> {
                 sample,
             };
             let started = capture.delivery("started");
-            self.capture = Some(capture);
-            self.pending = None;
+            self.grab.claim(capture);
             return (true, [Some(started), None]);
         }
-        if let Some((first, _)) = &mut self.pending
+        if let Some((first, _)) = self.grab.first_observer_mut()
             && first.id == id
         {
             if terminal {
-                self.pending = None;
+                self.grab.remove_observers(|_| true);
             } else {
                 first.point = point;
             }
@@ -338,10 +339,10 @@ impl<Device: Copy + Eq> Gestures<Device> {
             TrackpadDelta::Rotation(_) => 2,
         };
         let mut started = None;
-        if self.capture.is_none()
+        if self.grab.exclusive.is_none()
             && phase == TouchPhase::Started
             && self.held.is_empty()
-            && self.pending.is_none()
+            && self.grab.first_observer().is_none()
         {
             let Some(center) = context.input.pointer_position() else {
                 return [None, None];
@@ -371,10 +372,9 @@ impl<Device: Copy + Eq> Gestures<Device> {
                 sample,
             };
             started = Some(capture.delivery("started"));
-            self.capture = Some(capture);
-            self.pending = None;
+            self.grab.claim(capture);
         }
-        let Some(capture) = &mut self.capture else {
+        let Some(capture) = &mut self.grab.exclusive else {
             return [None, None];
         };
         let Source::Trackpad {
@@ -429,7 +429,10 @@ impl<Device: Copy + Eq> Gestures<Device> {
         if ending {
             [
                 updated,
-                self.capture.take().map(|capture| capture.delivery("ended")),
+                self.grab
+                    .exclusive
+                    .take()
+                    .map(|capture| capture.delivery("ended")),
             ]
         } else {
             [started, updated]
@@ -439,7 +442,7 @@ impl<Device: Copy + Eq> Gestures<Device> {
 
 impl<Device> Drop for Gestures<Device> {
     fn drop(&mut self) {
-        if let Some(capture) = &self.capture {
+        if let Some(capture) = &self.grab.exclusive {
             capture.target.handle.publish(None);
         }
     }

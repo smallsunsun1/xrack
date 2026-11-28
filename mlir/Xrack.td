@@ -636,8 +636,8 @@ def XR_MathFunctionOp : XR_ExpressionOp<"math_function", (ins Variadic<XR_MathOp
     AnyTypeOf<[XR_MathOperand, XR_Bool]>, [Pure]> { let hasVerifier = 1; }
 def XR_GeometryValue : AnyTypeOf<[XR_Point2D, XR_Vector2D, XR_Transform2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_Hit3DList, XR_ProjectedPoint3D, XR_RenderStats3D, XR_WalkResult3D, XR_Bounds3D, XR_MeshNode3D]>;
 def XR_GeometryFunctionOp : XR_ExpressionOp<"geometry_function",
-    (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length, XR_Record, XR_RecordList, XR_SceneModel3D, XR_InstanceTable3D, XR_PhysicsWorld3D, XR_MeshAsset3D, XR_String, XR_Int, XR_IntList]>>:$inputs),
-    AnyTypeOf<[XR_GeometryValue, XR_SceneModel3D, XR_InstanceTable3D, XR_TextureData2D, XR_TextureData3D, XR_String, XR_IntList, XR_StringList, XR_Float]>,
+    (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length, XR_Record, XR_RecordList, XR_SceneModel3D, XR_InstanceTable3D, XR_PhysicsWorld3D, XR_MeshAsset3D, XR_String, XR_Int, XR_IntList, XR_Bool, XR_StringList]>>:$inputs),
+    AnyTypeOf<[XR_GeometryValue, XR_SceneModel3D, XR_InstanceTable3D, XR_TextureData2D, XR_TextureData3D, XR_String, XR_Int, XR_IntList, XR_StringList, XR_Float]>,
     [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> { let hasVerifier = 1; }
 def XR_PhysicsFunctionOp : XR_ExpressionOp<"physics_function",
     (ins Variadic<AnyTypeOf<[XR_PhysicsWorld3D, XR_Point3D, XR_Vector3D, XR_Int, XR_Float, XR_Bool, XR_String, XR_RecordList]>>:$inputs),
