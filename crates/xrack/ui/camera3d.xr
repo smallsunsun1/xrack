@@ -1,0 +1,311 @@
+struct ControllerCamera {
+    id: string,
+    mesh: string,
+    x: float,
+    y: float,
+    z: float,
+    scale-x: float,
+    scale-y: float,
+    scale-z: float,
+    yaw: float,
+    pitch: float,
+    roll: float,
+    color: color,
+    orientation: quaternion3d,
+    camera-kind: string,
+    camera-fov: float,
+    camera-near: float,
+    camera-far: float,
+    layers: int,
+}
+
+component CameraInput inherits TouchArea {
+    in property <bool> input-enabled: true;
+    in property <bool> mouse-enabled: true;
+    in property <bool> pan-enabled: false;
+    in property <bool> zoom-enabled: false;
+    callback begin-look();
+    callback look(dx: length, dy: length);
+    callback pan(dx: length, dy: length);
+    callback zoom(amount: float);
+    callback tapped(point: point2d);
+
+    private property <bool> tracking: false;
+    private property <bool> dragged: false;
+    private property <bool> panning: false;
+    private property <int> contact: 0;
+    private property <length> last-x: 0px;
+    private property <length> last-y: 0px;
+
+    accepted-buttons <- !root.mouse-enabled ? [] : root.pan-enabled
+        ? [primary, secondary, middle] : [primary];
+    enabled <- root.input-enabled;
+
+    pointer-event(event) => {
+        if event.kind == PointerEventKind.down && !root.tracking {
+            root.tracking = true;
+            root.dragged = false;
+            root.contact = event.touch-finger-id;
+            root.last-x = event.x;
+            root.last-y = event.y;
+            root.panning = root.pan-enabled && (event.button != PointerButton.primary
+                || event.modifiers.control || event.modifiers.primary);
+            root.begin-look();
+        } else if root.tracking && event.touch-finger-id == root.contact {
+            if event.kind == PointerEventKind.move {
+                let dx = event.x - root.last-x;
+                let dy = event.y - root.last-y;
+                if root.dragged || Math.abs(dx) > 4px || Math.abs(dy) > 4px {
+                    root.dragged = true;
+                    root.last-x = event.x;
+                    root.last-y = event.y;
+                    if root.panning { root.pan(dx, dy); }
+                    else { root.look(dx, dy); }
+                }
+            } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                root.tracking = false;
+                if event.kind == PointerEventKind.up && event.inside
+                    && event.button == PointerButton.primary && !root.dragged && !root.panning {
+                    root.tapped(Point2D.new(event.x, event.y));
+                }
+            }
+        }
+    }
+    scroll-event(event) => {
+        if root.zoom-enabled && event.delta-y != 0px { root.zoom(event.delta-y / 120px); }
+        root.zoom-enabled && event.delta-y != 0px ? EventResult.accept : EventResult.reject
+    }
+}
+
+component CameraController inherits FocusScope {
+    in property <bool> active: true;
+    in property <string> camera-id: "navigation-camera";
+    in property <float> field-of-view: 45;
+    in property <float> near: 0.1;
+    in property <float> far: 500;
+    in property <int> layers: 1;
+    in property <bool> mouse-enabled: true;
+    in property <float> x-sensitivity: 0.25;
+    in property <float> y-sensitivity: 0.25;
+    in property <bool> invert-x: false;
+    in property <bool> invert-y: false;
+    in-out property <float> yaw: 0;
+    in-out property <float> pitch: 0;
+    in property <point3d> eye-position: Point3D.new(0, 0, 4);
+    out property <point3d> camera-position <- root.eye-position;
+    out property <quaternion3d> camera-orientation <- Quaternion3D.from-euler(
+        Vector3D.new(root.yaw, Math.clamp(root.pitch, -89, 89), 0));
+    out property <scenemodel3d> camera-model <- Scene3D.prepare([ControllerCamera {
+        id: root.camera-id,
+        mesh: "",
+        x: root.camera-position.x,
+        y: root.camera-position.y,
+        z: root.camera-position.z,
+        scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #fff,
+        orientation: root.camera-orientation,
+        camera-kind: "perspective",
+        camera-fov: root.field-of-view,
+        camera-near: root.near,
+        camera-far: root.far,
+        layers: root.layers,
+    }]);
+    callback tapped(point: point2d);
+    enabled <- root.active;
+
+    callback turn(dx: length, dy: length);
+    turn(dx, dy) => {
+        root.yaw += (root.invert-x ? dx : -dx) / 1px * root.x-sensitivity;
+        root.pitch = Math.clamp(
+            root.pitch + (root.invert-y ? -dy : dy) / 1px * root.y-sensitivity, -89, 89);
+    }
+}
+
+export component OrbitCameraController inherits CameraController {
+    in-out property <point3d> pivot: Point3D.new(0, 0, 0);
+    in-out property <float> distance: 4;
+    in property <float> min-distance: 0.2;
+    in property <float> max-distance: 250;
+    in property <float> zoom-speed: 0.16;
+    in property <bool> pan-enabled: true;
+    in property <bool> zoom-enabled: true;
+    in property <bool> automatic-clipping: true;
+
+    private property <float> effective-distance <- root.bounded-distance(root.distance);
+    private property <vector3d> eye-offset <- Quaternion3D.rotate(
+        root.camera-orientation, Vector3D.new(0, 0, root.effective-distance));
+    private property <float> pinch-distance: 4;
+    private property <length> pinch-x: 0px;
+    private property <length> pinch-y: 0px;
+
+    camera-id: "orbit-camera";
+    yaw: 25;
+    pitch: 24;
+    near <- root.automatic-clipping ? Math.max(0.01, root.effective-distance / 1000) : 0.1;
+    far <- root.automatic-clipping ? Math.max(100, root.effective-distance * 20) : 500;
+    eye-position <- Point3D.new(
+        root.pivot.x + root.eye-offset.x,
+        root.pivot.y + root.eye-offset.y,
+        root.pivot.z + root.eye-offset.z);
+
+    pure function bounded-distance(candidate: float) -> float {
+        let minimum = Math.max(0.001, root.min-distance);
+        Math.clamp(candidate, minimum, Math.max(minimum, root.max-distance))
+    }
+
+    callback pan-camera(dx: length, dy: length);
+    pan-camera(dx, dy) => {
+        if root.pan-enabled {
+            let size = Point2D.new(root.layout-width, root.layout-height);
+            let center = Point2D.new(root.layout-width / 2, root.layout-height / 2);
+            let moved = Point2D.new(center.x + dx, center.y + dy);
+            let world = Scene3D.unproject-camera(
+                root.camera-model, root.camera-id, size, moved, root.effective-distance, root.pivot);
+            root.pivot = Point3D.new(
+                root.pivot.x + (root.pivot.x - world.x),
+                root.pivot.y + (root.pivot.y - world.y),
+                root.pivot.z + (root.pivot.z - world.z));
+        }
+    }
+
+    pinch := ScaleRotateGestureHandler {
+        width <- 100%;
+        height <- 100%;
+        enabled <- root.active && root.mouse-enabled && (root.zoom-enabled || root.pan-enabled);
+        started => {
+            root.pinch-distance = root.effective-distance;
+            root.pinch-x = self.center-x;
+            root.pinch-y = self.center-y;
+        }
+        updated => {
+            if root.zoom-enabled {
+                root.distance = root.bounded-distance(root.pinch-distance / Math.max(0.01, self.scale));
+            }
+            root.pan-camera(self.center-x - root.pinch-x, self.center-y - root.pinch-y);
+            root.pinch-x = self.center-x;
+            root.pinch-y = self.center-y;
+        }
+        orbit-input := CameraInput {
+            width <- 100%;
+            height <- 100%;
+            input-enabled <- root.active;
+            mouse-enabled <- root.mouse-enabled;
+            pan-enabled <- root.pan-enabled;
+            zoom-enabled <- root.mouse-enabled && root.zoom-enabled;
+            look(dx, dy) => { root.turn(dx, dy); }
+            pan(dx, dy) => { root.pan-camera(dx, dy); }
+            zoom(amount) => {
+                let scale = 1 + Math.clamp(amount * root.zoom-speed, -0.8, 3);
+                root.distance = root.bounded-distance(root.effective-distance * scale);
+            }
+            tapped(point) => { root.tapped(point); }
+        }
+    }
+}
+
+struct FlightKeys {
+    w: bool, up: bool, s: bool, down: bool,
+    a: bool, left: bool, d: bool, right: bool,
+    r: bool, page-up: bool, f: bool, page-down: bool,
+}
+
+export component FlyCameraController inherits CameraController {
+    in-out property <point3d> position: Point3D.new(0, 0, 4);
+    in property <bool> keys-enabled: true;
+    in property <float> speed: 5;
+    in property <float> shift-multiplier: 3;
+    out property <bool> moving <- root.active && root.keys-enabled && root.has-focus
+        && (root.strafe != 0 || root.rise != 0 || root.forward != 0);
+
+    private property <FlightKeys> held;
+    private property <bool> shift-held: false;
+    private property <float> strafe <- ((root.held.d || root.held.right) ? 1 : 0)
+        - ((root.held.a || root.held.left) ? 1 : 0);
+    private property <float> rise <- ((root.held.r || root.held.page-up) ? 1 : 0)
+        - ((root.held.f || root.held.page-down) ? 1 : 0);
+    private property <float> forward <- ((root.held.w || root.held.up) ? 1 : 0)
+        - ((root.held.s || root.held.down) ? 1 : 0);
+
+    camera-id: "fly-camera";
+    eye-position <- root.position;
+    focus-on-click <- root.keys-enabled;
+    focus-on-tab-navigation <- root.keys-enabled;
+
+    callback clear-keys();
+    clear-keys => {
+        root.held = FlightKeys { w: false, up: false, s: false, down: false,
+            a: false, left: false, d: false, right: false, r: false, page-up: false,
+            f: false, page-down: false };
+        root.shift-held = false;
+    }
+
+    callback set-key(key: string, down: bool) -> bool;
+    set-key(key, down) => {
+        let w = key == "w" || key == "W";
+        let a = key == "a" || key == "A";
+        let s = key == "s" || key == "S";
+        let d = key == "d" || key == "D";
+        let r = key == "r" || key == "R";
+        let f = key == "f" || key == "F";
+        let up = key == "ArrowUp";
+        let left = key == "ArrowLeft";
+        let back = key == "ArrowDown";
+        let right = key == "ArrowRight";
+        let page-up = key == "PageUp";
+        let page-down = key == "PageDown";
+        let handled = w || a || s || d || r || f || up || left || back || right || page-up || page-down;
+        if handled {
+            root.held = FlightKeys {
+                w: w ? down : root.held.w, a: a ? down : root.held.a,
+                s: s ? down : root.held.s, d: d ? down : root.held.d,
+                r: r ? down : root.held.r, f: f ? down : root.held.f,
+                up: up ? down : root.held.up, left: left ? down : root.held.left,
+                down: back ? down : root.held.down, right: right ? down : root.held.right,
+                page-up: page-up ? down : root.held.page-up,
+                page-down: page-down ? down : root.held.page-down,
+            };
+        }
+        handled
+    }
+
+    key-pressed(event) => {
+        if root.keys-enabled && root.has-focus {
+            root.shift-held = event.modifiers.shift || event.key == "Shift";
+        }
+        root.keys-enabled && root.has-focus && !event.modifiers.control && !event.modifiers.meta
+            && !event.modifiers.alt && root.set-key(event.key, true)
+            ? EventResult.accept : EventResult.reject
+    }
+    key-released(event) => {
+        root.shift-held = event.key != "Shift" && event.modifiers.shift;
+        let was-navigation = root.set-key(event.key, false);
+        root.keys-enabled && root.has-focus && was-navigation
+            ? EventResult.accept : EventResult.reject
+    }
+    focus-lost(reason) => { root.clear-keys(); }
+
+    flight-clock := FrameAnimation {
+        running <- root.moving;
+        triggered(delta, elapsed, frame) => {
+            let local = Quaternion3D.rotate(root.camera-orientation, Vector3D.new(root.strafe, 0, -root.forward));
+            let vertical = local.y + root.rise;
+            let magnitude = Math.sqrt(local.x * local.x + vertical * vertical + local.z * local.z);
+            let distance = Math.max(0, root.speed) * Math.clamp(delta, 0, 0.05)
+                * (root.shift-held ? Math.max(0, root.shift-multiplier) : 1)
+                / Math.max(1, magnitude);
+            root.position = Point3D.new(
+                root.position.x + local.x * distance,
+                root.position.y + vertical * distance,
+                root.position.z + local.z * distance);
+        }
+    }
+    flight-input := CameraInput {
+        width <- 100%;
+        height <- 100%;
+        input-enabled <- root.active;
+        mouse-enabled <- root.mouse-enabled;
+        begin-look => { if root.keys-enabled { root.focus(); } }
+        look(dx, dy) => { root.turn(dx, dy); }
+        tapped(point) => { root.tapped(point); }
+    }
+}

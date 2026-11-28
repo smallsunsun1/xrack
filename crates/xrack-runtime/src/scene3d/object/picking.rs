@@ -4,9 +4,8 @@ use nalgebra::Vector3;
 
 use super::SceneObject;
 use crate::scene3d::{
-    ClosestSurface, Mesh3D, MeshCullMode, MeshMaterial, MeshVertex, Ray3D, RayHit, SceneCamera,
-    SurfaceHit, bake_opaque, pick::MIN_BVH_TRIANGLES, surface::closest_triangle_point,
-    visibility::Frustum,
+    ClosestSurface, Mesh3D, MeshCullMode, MeshMaterial, MeshTopology, MeshVertex, Ray3D, RayHit,
+    SceneCamera, SurfaceHit, bake_opaque, surface::closest_triangle_point, visibility::Frustum,
 };
 
 impl SceneObject {
@@ -27,6 +26,7 @@ impl SceneObject {
         planes: u8,
     ) -> bool {
         if !self.pickable
+            || !self.mesh.has_triangle_surface()
             || self.color.0 as u8 == 0
                 && matches!(&self.mesh, Mesh3D::Imported(mesh) if mesh.instance_blended)
         {
@@ -38,12 +38,11 @@ impl SceneObject {
             return true;
         }
         let pose = self.pick_pose();
-        let triangles = self.mesh.vertices().as_chunks::<3>().0;
         let intersects = |vertex, material: Option<&MeshMaterial>, planes| {
             if material.is_some_and(|material| !material.is_visible()) {
                 return false;
             }
-            let vertices = pose.deform::<false>(vertex, triangles[vertex / 3]);
+            let vertices = pose.deform::<false>(vertex, *self.mesh.triangle_at(vertex));
             let points = vertices.map(|vertex| {
                 self.transform.linear * Vector3::from(vertex.position) + self.transform.origin
             });
@@ -75,7 +74,7 @@ impl SceneObject {
                 },
             )
         } else {
-            self.mesh.sections().any(|(range, material)| {
+            self.mesh.triangle_sections().any(|(range, material)| {
                 range
                     .step_by(3)
                     .any(|vertex| intersects(vertex, material, planes))
@@ -91,10 +90,9 @@ impl SceneObject {
         let pose = self.pick_pose();
         let origin = self.transform.origin.cast::<f64>();
         let linear = self.transform.linear.cast::<f64>();
-        let triangles = self.mesh.vertices().as_chunks::<3>().0;
         let mut best: Option<ClosestSurface> = None;
         let mut inspect = |vertex: usize, limit: f64| {
-            let triangle = pose.deform::<false>(vertex, triangles[vertex / 3]);
+            let triangle = pose.deform::<false>(vertex, *self.mesh.triangle_at(vertex));
             let [a, b, c] =
                 triangle.map(|v| linear * Vector3::from(v.position).cast::<f64>() + origin);
             if (b - a).cross(&(c - a)).norm_squared() == 0.0 {
@@ -124,7 +122,11 @@ impl SceneObject {
             tree.visit_nearest(point, self.transform_rows(), limit, inspect);
         } else {
             let mut limit = limit;
-            for vertex in (0..triangles.len() * 3).step_by(3) {
+            for vertex in self
+                .mesh
+                .triangle_sections()
+                .flat_map(|(range, _)| range.step_by(3))
+            {
                 limit = inspect(vertex, limit);
             }
         }
@@ -152,7 +154,6 @@ impl SceneObject {
         }
         let ray_scale = world_step.norm();
         let local_direction = world_step / ray_scale;
-        let triangles = self.mesh.vertices().as_chunks::<3>().0;
         let pose = self.pick_pose();
         let tint_alpha = self.tint_alpha();
         let moves_positions = pose.moves_positions();
@@ -161,7 +162,7 @@ impl SceneObject {
             if bake && material.is_some_and(|material| !bake_opaque(material)) {
                 return closest;
             }
-            let base = &triangles[vertex / 3];
+            let base = self.mesh.triangle_at(vertex);
             let posed;
             let [a, b, c] = if moves_positions {
                 posed = pose.deform::<false>(vertex, *base);
@@ -184,7 +185,7 @@ impl SceneObject {
                     return closest;
                 }
                 if material.tests_fragment_coverage() {
-                    let [a, b, c] = pose.material_triangle(vertex, *base);
+                    let [a, b, c] = pose.material_vertices(vertex, *base);
                     let uv = [
                         std::array::from_fn(|axis| {
                             a.uv[axis] * w + b.uv[axis] * u + c.uv[axis] * v
@@ -205,6 +206,7 @@ impl SceneObject {
                 }
             }
             let hit = SurfaceHit {
+                topology: MeshTopology::Triangles,
                 distance,
                 vertex,
                 weights: [w, u, v],
@@ -220,9 +222,8 @@ impl SceneObject {
         };
         if !moves_positions
             && let Mesh3D::Imported(mesh) = &self.mesh
-            && triangles.len() >= MIN_BVH_TRIANGLES
+            && let Some(tree) = self.mesh.pick_tree()
         {
-            let tree = mesh.pick_tree();
             tree.visit(local_origin, world_step, min, max, |triangle, closest| {
                 let part = &self.mesh.parts()[triangle.part as usize];
                 test(
@@ -233,7 +234,7 @@ impl SceneObject {
             });
         } else {
             let mut closest = max;
-            for (range, material) in self.mesh.sections() {
+            for (range, material) in self.mesh.triangle_sections() {
                 for vertex in range.step_by(3) {
                     closest = test(vertex, material, closest);
                 }
@@ -243,6 +244,9 @@ impl SceneObject {
     }
 
     pub(in crate::scene3d) fn describe_hit(&self, ray: Ray3D, surface: SurfaceHit) -> RayHit<'_> {
+        if surface.topology != MeshTopology::Triangles {
+            return self.describe_raster(surface);
+        }
         let position = ray.origin + surface.distance * ray.direction;
         self.describe_surface(position, surface)
     }
@@ -252,7 +256,7 @@ impl SceneObject {
         position: Vector3<f32>,
         surface: SurfaceHit,
     ) -> RayHit<'_> {
-        let base = self.mesh.vertices().as_chunks::<3>().0[surface.vertex / 3];
+        let base = *self.mesh.triangle_at(surface.vertex);
         let [a, b, c] = self.pick_pose().deform::<true>(surface.vertex, base);
         let [w, u, v] = surface.weights;
         let local_position = Vector3::from(a.position) * w

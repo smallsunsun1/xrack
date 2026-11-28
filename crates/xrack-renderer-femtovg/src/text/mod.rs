@@ -1749,7 +1749,7 @@ pub struct TextSystem {
     retained_text: RefCell<Option<crate::retained_text::Cache>>,
     pub(crate) styled_ink: RefCell<crate::styled_ink::InkCache>,
     #[cfg(not(any(xrack_femtovg_glyph_samples, target_os = "android", target_os = "ios")))]
-    pub(super) native_styled_masks_warmed: Cell<bool>,
+    pub(super) native_styled_masks_pending: Cell<bool>,
     #[cfg(target_os = "android")]
     android_emoji: Option<RefCell<Emoji>>,
     #[cfg(target_os = "ios")]
@@ -1963,7 +1963,7 @@ impl TextSystem {
                 target_os = "android",
                 target_os = "ios"
             )))]
-            native_styled_masks_warmed: Cell::new(false),
+            native_styled_masks_pending: Cell::new(true),
             #[cfg(target_os = "android")]
             android_emoji: None,
             #[cfg(target_os = "ios")]

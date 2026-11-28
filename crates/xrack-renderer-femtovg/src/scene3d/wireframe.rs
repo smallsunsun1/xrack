@@ -1,5 +1,7 @@
 //! Portable triangle-edge coverage for devices without native polygon lines.
 
+use xrack_runtime::scene3d::MeshTopology;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) enum RasterMode {
     #[default]
@@ -19,6 +21,14 @@ impl RasterMode {
             Self::NativeLine
         } else {
             Self::ShaderLine
+        }
+    }
+
+    pub fn for_topology(self, topology: MeshTopology) -> Self {
+        if topology == MeshTopology::Triangles {
+            self
+        } else {
+            Self::Fill
         }
     }
 

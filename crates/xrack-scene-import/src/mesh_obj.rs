@@ -224,6 +224,8 @@ impl<'a> Geometry<'a> {
                 part.vertices.end += 3;
             } else {
                 parts.push(MeshPart {
+                    lighting: Default::default(),
+                    topology: xrack_runtime::scene3d::MeshTopology::Triangles,
                     vertices: vertices.len()..vertices.len() + 3,
                     material: triangle.material,
                     volume_inverse: None,
@@ -539,6 +541,8 @@ impl MaterialLoader<'_> {
             separate_surface_maps: None,
             specular_reflection: None,
             height_map: None,
+            iridescence: None,
+            sheen: None,
             emissive_texture: None,
             occlusion_texture: None,
             normal_map: None,
@@ -574,6 +578,8 @@ impl MaterialLoader<'_> {
         };
         let transparent = base_color[3] < 1.0 || image_transparent;
         Ok(MeshMaterial {
+            point_size: 1.0,
+            line_width: 1.0,
             opacity: 1.0,
             opacity_texture: None,
             invert_opacity_map_value: false,

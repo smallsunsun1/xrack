@@ -326,12 +326,21 @@ exports_files(["reflection_probes.xr"] + REFLECTION_ASSETS, visibility = ["//tes
 
 exports_files(["live_reflections.xr"], visibility = ["//tests:__pkg__"])
 
-exports_files(["material_debug.xr"], visibility = ["//tests:__pkg__"])
+exports_files(
+    [
+        "material_debug.xr",
+        "models/iridescence-panel.gltf",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
 
 xr_ui_library(
     name = "material_debug_ui",
     src = "material_debug.xr",
-    assets = ["effects/material_surface.wgsl"],
+    assets = [
+        "effects/material_surface.wgsl",
+        "models/iridescence-panel.gltf",
+    ],
     visibility = ["//tests:__pkg__"],
 )
 
@@ -341,6 +350,31 @@ rust_binary(
     edition = "2024",
     deps = [
         ":material_debug_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(
+    [
+        "material_sheen.xr",
+        "models/sheen-panel.gltf",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "material_sheen_ui",
+    src = "material_sheen.xr",
+    assets = ["models/sheen-panel.gltf"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_material_sheen",
+    srcs = ["play_material_sheen.rs"],
+    edition = "2024",
+    deps = [
+        ":material_sheen_ui",
         "//crates/xrack-platform-winit:xrack_platform_winit",
     ],
 )
@@ -1999,6 +2033,36 @@ rust_binary(
 
 exports_files(["procedural_sky.xr"], visibility = ["//tests:__pkg__"])
 
+exports_files(
+    [
+        "effects/program_sky.wgsl",
+        "program_sky.xr",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "program_sky_ui",
+    src = "program_sky.xr",
+    assets = [
+        "effects/program_sky.wgsl",
+        "models/anisotropic-map.png",
+        "models/channel-swatch.png",
+        "models/shader-cube.ktx2",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_program_sky",
+    srcs = ["play_program_sky.rs"],
+    edition = "2024",
+    deps = [
+        ":program_sky_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
 xr_ui_library(
     name = "procedural_sky_ui",
     src = "procedural_sky.xr",
@@ -2752,6 +2816,17 @@ rust_binary(
     ],
 )
 
+exports_files(
+    ["authored_topology.xr"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "authored_topology_ui",
+    src = "authored_topology.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
 exports_files(["authored_mesh.xr"], visibility = ["//tests:__pkg__"])
 
 xr_ui_library(
@@ -3422,6 +3497,220 @@ rust_binary(
     edition = "2024",
     deps = [
         ":mesh_nodes_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(
+    [
+        "models/primitive-modes.gltf",
+        "primitive_modes.xr",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "primitive_modes_ui",
+    src = "primitive_modes.xr",
+    assets = ["models/primitive-modes.gltf"],
+    visibility = ["//tests:__pkg__"],
+)
+
+
+exports_files(
+    [
+        "models/point-line-lighting.gltf",
+        "point_line_lighting.xr",
+        "wide_points.xr",
+        "wide_lines.xr",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "point_line_lighting_ui",
+    src = "point_line_lighting.xr",
+    assets = ["models/point-line-lighting.gltf"],
+    visibility = ["//tests:__pkg__"],
+)
+
+
+xr_ui_library(
+    name = "wide_points_ui",
+    src = "wide_points.xr",
+    assets = ["models/point-line-lighting.gltf"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "wide_lines_ui",
+    src = "wide_lines.xr",
+    assets = ["models/point-line-lighting.gltf"],
+    visibility = ["//tests:__pkg__"],
+)
+
+exports_files(
+    ["raster_picking.xr"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "raster_picking_ui",
+    src = "raster_picking.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+exports_files(
+    [
+        "models/float-cards.gltf",
+        "models/quantized-cards.gltf",
+        "quantized_mesh.xr",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "quantized_mesh_ui",
+    src = "quantized_mesh.xr",
+    assets = [
+        "models/float-cards.gltf",
+        "models/quantized-cards.gltf",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+exports_files(
+    [
+        "meshopt_assets.xr",
+        "models/meshopt-reference.glb",
+        "models/meshopt-v0.glb",
+        "models/meshopt-v1.bin",
+        "models/meshopt-v1.gltf",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "meshopt_assets_ui",
+    src = "meshopt_assets.xr",
+    assets = [
+        "models/meshopt-reference.glb",
+        "models/meshopt-v0.glb",
+        "models/meshopt-v1.bin",
+        "models/meshopt-v1.gltf",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+exports_files(
+    [
+        "models/webp-card-embedded.glb",
+        "models/webp-card-external.gltf",
+        "models/webp-card-reference.glb",
+        "models/webp-card.webp",
+        "webp_textures.xr",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "webp_textures_ui",
+    src = "webp_textures.xr",
+    assets = [
+        "models/webp-card-embedded.glb",
+        "models/webp-card-external.gltf",
+        "models/webp-card-reference.glb",
+        "models/webp-card.webp",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+exports_files(
+    [
+        "block_textures.xr",
+        "models/block-astc.ktx2",
+        "models/block-bc3-unaligned.ktx2",
+        "models/block-bc3.ktx2",
+        "models/block-etc2.ktx2",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "block_textures_ui",
+    src = "block_textures.xr",
+    assets = [
+        "models/block-astc.ktx2",
+        "models/block-bc3-unaligned.ktx2",
+        "models/block-bc3.ktx2",
+        "models/block-etc2.ktx2",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+exports_files(
+    [
+        "basis_textures.xr",
+        "models/basis-card-embedded.glb",
+        "models/basis-card-etc1s.ktx2",
+        "models/basis-card-external.gltf",
+        "models/basis-card-uastc.ktx2",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "basis_textures_ui",
+    src = "basis_textures.xr",
+    assets = [
+        "models/basis-card-embedded.glb",
+        "models/basis-card-etc1s.ktx2",
+        "models/basis-card-external.gltf",
+        "models/basis-card-uastc.ktx2",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+exports_files(
+    [
+        "draco_assets.xr",
+        "models/draco-card-animation.bin",
+        "models/draco-card-compressed.bin",
+        "models/draco-card-external.gltf",
+        "models/draco-card-reference.glb",
+        "models/draco-card-required.glb",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "draco_assets_ui",
+    src = "draco_assets.xr",
+    assets = [
+        "models/draco-card-animation.bin",
+        "models/draco-card-compressed.bin",
+        "models/draco-card-external.gltf",
+        "models/draco-card-reference.glb",
+        "models/draco-card-required.glb",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+exports_files(["camera_controls.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "camera_controls_ui",
+    src = "camera_controls.xr",
+    sources = ["//crates/xrack:ui/camera3d.xr"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_camera_controls",
+    srcs = ["play_camera_controls.rs"],
+    edition = "2024",
+    deps = [
+        ":camera_controls_ui",
         "//crates/xrack-platform-winit:xrack_platform_winit",
     ],
 )

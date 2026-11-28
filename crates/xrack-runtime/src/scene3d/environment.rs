@@ -3,7 +3,7 @@ use std::{io::Read, sync::Arc};
 
 use crate::{
     Node, RecordList, Value, VecModel,
-    scene3d::sky::SkySettings,
+    scene3d::sky::{SkyProgram, SkySettings},
     scene3d::{Point3D, Vector3D},
 };
 
@@ -140,22 +140,28 @@ impl EnvironmentOrientation {
 pub enum EnvironmentSource<'a> {
     Panorama(&'a Arc<EnvironmentProbe>),
     Sky(SkySettings),
+    Program(&'a Arc<SkyProgram>),
 }
 
 impl<'a> EnvironmentSource<'a> {
     #[doc(hidden)]
     pub fn from_node(node: &'a Node, sky_field: &str, image_field: &str) -> Option<Self> {
-        let sky = match node.properties.get(sky_field) {
-            Some(Value::Record(record)) => SkySettings::from_record(record),
-            _ => None,
-        };
-        sky.map(EnvironmentSource::Sky).or_else(|| {
+        match node.properties.get(sky_field) {
+            Some(Value::SceneSky(program)) => return Some(Self::Program(program)),
+            Some(Value::Record(record)) => {
+                if let Some(sky) = SkySettings::from_record(record) {
+                    return Some(Self::Sky(sky));
+                }
+            }
+            _ => {}
+        }
+        {
             let Some(Value::SceneEnvironment(Some(probe))) = node.properties.get(image_field)
             else {
                 return None;
             };
-            Some(EnvironmentSource::Panorama(probe))
-        })
+            Some(Self::Panorama(probe))
+        }
     }
 
     #[doc(hidden)]
@@ -163,6 +169,7 @@ impl<'a> EnvironmentSource<'a> {
         match self {
             Self::Panorama(_) => EnvironmentProbe::LEVELS - 1,
             Self::Sky(sky) => sky.resolution().ilog2(),
+            Self::Program(sky) => sky.settings.resolution.ilog2(),
         }
     }
 }

@@ -2,6 +2,8 @@
 
 pub(crate) mod animation;
 pub(crate) mod authored;
+pub(super) mod basis;
+pub(super) mod blocks;
 mod catalog;
 pub(super) mod cubemap;
 pub(super) mod data;

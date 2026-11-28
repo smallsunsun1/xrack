@@ -276,11 +276,15 @@ mod tests {
             vertices.into(),
             Vec::new(),
             vec![MeshPart {
+                lighting: Default::default(),
+                topology: xrack_runtime::scene3d::MeshTopology::Triangles,
                 vertices: 0..9,
                 material: 0,
                 volume_inverse: None,
             }],
             vec![MeshMaterial {
+                point_size: 1.0,
+                line_width: 1.0,
                 opacity: 1.0,
                 opacity_texture: None,
                 invert_opacity_map_value: false,

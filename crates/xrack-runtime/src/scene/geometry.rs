@@ -59,6 +59,7 @@ struct ScrollInteraction {
 #[derive(Default)]
 struct SceneViewObservation {
     query: Property<SceneViewQuery>,
+    raster: Property<Option<[u32; 2]>>,
     texture_sources: Option<Property<Option<Arc<SceneTextureSources>>>>,
 }
 
@@ -295,7 +296,17 @@ impl GeometryHandle {
         self.0
             .scene_view
             .as_ref()
-            .map_or_else(Default::default, |view| view.query.get(Default::default))
+            .map_or_else(Default::default, |view| {
+                view.query
+                    .get(Default::default)
+                    .with_raster(view.raster.get(|| None))
+            })
+    }
+
+    pub fn publish_scene_raster(&self, size: [u32; 2]) {
+        if let Some(view) = &self.0.scene_view {
+            view.raster.set_if_changed(Some(size));
+        }
     }
 
     pub fn scene_item_hit(&self, point: Point2D) -> Hit3D {
@@ -315,7 +326,7 @@ impl GeometryHandle {
             .as_ref()
             .and_then(|view| {
                 let sources = view.texture_sources.as_ref()?.get(|| None)?;
-                Some(query(view.query.get(Default::default), &sources))
+                Some(query(self.scene_view(), &sources))
             })
             .unwrap_or_default()
     }
@@ -484,6 +495,9 @@ impl GeometryHandle {
         self.publish_preload_request(None);
         self.publish_baseline(0.0);
         self.publish_scene_texture_size([0; 2]);
+        if let Some(view) = &self.0.scene_view {
+            view.raster.set_if_changed(None);
+        }
         self.publish_render_stats(RenderStats3D::default());
         self.publish_scroll_interaction(false, false, false);
         self.publish_scroll_thumb(0.0, 0.0);

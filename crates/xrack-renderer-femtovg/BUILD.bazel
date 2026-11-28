@@ -36,6 +36,8 @@ rust_library(
         "src/scene3d/model_blend.wgsl",
         "src/scene3d/particle_trail_render.wgsl",
         "src/scene3d/physics_debug.wgsl",
+        "src/scene3d/point_raster.wgsl",
+        "src/scene3d/line_raster.wgsl",
         "src/scene3d/probe_debug.wgsl",
         "src/frame/pixel_blit.wgsl",
         "src/scene3d/reflection_filter.wgsl",

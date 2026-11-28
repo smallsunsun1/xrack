@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -208,6 +209,60 @@ def update_lock(
     subprocess.run(command, cwd=workspace, env=env, check=True)
 
 
+def benchmark_renderer(workspace: Path, *, offline: bool) -> None:
+    """Run the Bazel transcript fixture against the staged Cargo packages."""
+    benchmark = workspace / ".tools" / "transcript-benchmark"
+    benchmark.mkdir(parents=True)
+    for source in ("transcript_layout_benchmark.rs", "gpu_readback.rs"):
+        shutil.copyfile(bundles.ROOT / "tests" / source, benchmark / source)
+    # Resolve the standalone test from the same locked dependencies as the SDK.
+    shutil.copyfile(workspace / "Cargo.lock", benchmark / "Cargo.lock")
+
+    dependencies = tomllib.loads(
+        (workspace / "Cargo.toml").read_text(encoding="utf-8")
+    )["workspace"]["dependencies"]
+    wgpu = dependencies["wgpu"]
+    wgpu_declaration = (
+        f"version = {json.dumps(wgpu['version'])}, "
+        f"default-features = {json.dumps(wgpu['default-features'])}, "
+        f"features = {json.dumps(wgpu['features'])}"
+    )
+    (benchmark / "Cargo.toml").write_text(
+        f"""[workspace]
+
+[package]
+name = "xrack-transcript-benchmark"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+xrack-layout = {{ path = "../../crates/xrack-layout" }}
+xrack-renderer-femtovg = {{ path = "../../crates/xrack-renderer-femtovg" }}
+xrack-runtime = {{ path = "../../crates/xrack-runtime" }}
+pollster = {json.dumps(dependencies["pollster"])}
+wgpu = {{ {wgpu_declaration} }}
+
+[lib]
+name = "gpu_readback"
+path = "gpu_readback.rs"
+
+[[test]]
+name = "transcript_layout_benchmark"
+path = "transcript_layout_benchmark.rs"
+""",
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    env.setdefault("CARGO_TARGET_DIR", str(workspace / ".tools" / "cargo-build"))
+    command = ["cargo", "test", "--release", "--test", "transcript_layout_benchmark"]
+    if offline:
+        command.append("--offline")
+    command.extend(["--", "--nocapture"])
+    print(f"Running the transcript benchmark with staged {PACKAGE}", flush=True)
+    subprocess.run(command, cwd=benchmark, env=env, check=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -223,6 +278,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--package", action="store_true", help="build the renderer dependency archives"
+    )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="run the GPU transcript benchmark with the staged renderer",
     )
     args = parser.parse_args()
     workspace: Path = args.workspace.resolve()
@@ -244,6 +304,8 @@ def main() -> None:
         for name in RUNTIME_PACKAGES:
             command.extend(("-p", name))
         subprocess.run(command, cwd=workspace, check=True)
+    if args.benchmark:
+        benchmark_renderer(workspace, offline=args.offline)
 
 
 if __name__ == "__main__":

@@ -221,7 +221,7 @@ struct TransformPlacement {
     parent_space: Option<Rc<TransformSpace>>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 struct LayoutDetails {
     texture_only: bool,
     baseline_offset: f32,
@@ -241,17 +241,23 @@ struct LayoutDetails {
     viewport_handle: Option<xrack_runtime::ViewportHandle>,
     transform: Option<Box<TransformPlacement>>,
     table_pane: Option<(Rect, Transform2D<LayoutSpace, LayoutSpace>)>,
+    window_child_changes: Option<Rc<frame::WindowChildChanges>>,
+}
+
+impl PartialEq for LayoutDetails {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_placement(other, None)
+    }
 }
 
 impl LayoutDetails {
-    fn matches_clip_translation(&self, other: &Self, offset: Point) -> bool {
+    fn same_placement(&self, other: &Self, clip_offset: Option<Point>) -> bool {
         macro_rules! compare {
             ($($field:ident),+ $(,)?) => {{
-                let Self { child_shape, $($field,)+ } = self;
-                let shapes_match = match (*child_shape, other.child_shape) {
-                    (Some(before), Some(after)) => before.translates_to(after, offset),
-                    (None, None) => true,
-                    _ => false,
+                let Self { child_shape, window_child_changes: _, $($field,)+ } = self;
+                let shapes_match = match (*child_shape, other.child_shape, clip_offset) {
+                    (Some(before), Some(after), Some(offset)) => before.translates_to(after, offset),
+                    (before, after, _) => before == after,
                 };
                 shapes_match $(&& *$field == other.$field)+
             }};
@@ -494,7 +500,12 @@ impl LayoutNode {
                     (Some(before), Some(after), Some(offset))
                         if before.child_shape.is_some() || after.child_shape.is_some() =>
                     {
-                        before.matches_clip_translation(after, offset)
+                        before.same_placement(after, Some(offset))
+                    }
+                    (Some(details), None, _) | (None, Some(details), _)
+                        if details.window_child_changes.is_some() =>
+                    {
+                        *details == LayoutDetails::default()
                     }
                     _ => self.details == other.details,
                 }
@@ -765,6 +776,21 @@ impl LayoutNode {
             self.details
                 .get_or_insert_with(|| Rc::new(LayoutDetails::default())),
         )
+    }
+
+    /// Return paths and bounds of rectangles changed in this exact frame pair.
+    #[doc(hidden)]
+    pub fn window_child_changes_from(
+        &self,
+        before: &Self,
+        before_scene: &Node,
+        current_scene: &Node,
+    ) -> Option<&[(Vec<usize>, Rect)]> {
+        self.details
+            .as_deref()?
+            .window_child_changes
+            .as_deref()?
+            .between(before, self, before_scene, current_scene)
     }
 
     fn overlay_index(&self) -> Option<&modal::OverlayIndex> {
@@ -4030,6 +4056,10 @@ fn absolute_child(text: &mut impl TextMeasurer, child: &Node, content: Rect) -> 
                 absolute_height(child, metrics.y, content.height),
             )
         });
+    absolute_child_bounds(child, content, size)
+}
+
+fn absolute_child_bounds(child: &Node, content: Rect, size: Size) -> Rect {
     Rect::new(
         content.x + child.length("x").unwrap_or(0.0),
         content.y + child.length("y").unwrap_or(0.0),

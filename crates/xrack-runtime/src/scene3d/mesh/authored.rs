@@ -1,7 +1,9 @@
-//! Turn application vertex and index models into shared triangle meshes.
+//! Turn application vertex and index models into shared meshes.
 mod morph;
+mod topology;
 
 use morph::AuthoredMorph;
+use topology::{Expansion, Mode};
 
 use super::{
     morph::MAX_MORPH_DELTAS,
@@ -25,8 +27,8 @@ use crate::{
     Color, Point3D, RecordValue, Value, VecModel, Vector3D,
     scene3d::lighting::linear_color,
     scene3d::{
-        MAX_SKIN_JOINTS, Mesh3D, MeshInfluence, MeshTangent, MeshVertex, SKIN_INFLUENCES,
-        SceneGeometryInput,
+        MAX_SKIN_JOINTS, Mesh3D, MeshInfluence, MeshTangent, MeshTopology, MeshVertex,
+        SKIN_INFLUENCES, SceneGeometryInput,
     },
 };
 
@@ -113,10 +115,10 @@ impl SceneMeshInputs {
         &self,
         vertices: &VecModel<T>,
         indices: SceneMeshIndices<'_>,
-        subsets: Option<Vec<SceneMeshSubset>>,
+        draw: (&str, Option<Vec<SceneMeshSubset>>),
         vertex: impl FnMut(&T) -> Option<SceneMeshVertex>,
     ) -> Option<SceneGeometryInput<'static>> {
-        self.geometry_cached(vertices, indices, subsets, vertex, (None, None), |_| {
+        self.geometry_cached(vertices, indices, draw, vertex, (None, None), |_| {
             Some(Deformations::default())
         })
     }
@@ -125,7 +127,7 @@ impl SceneMeshInputs {
         &self,
         vertices: &VecModel<T>,
         indices: SceneMeshIndices<'_>,
-        subsets: Option<Vec<SceneMeshSubset>>,
+        draw: (&str, Option<Vec<SceneMeshSubset>>),
         vertex: impl FnMut(&T) -> Option<SceneMeshVertex>,
         (weights, weight): (
             Option<&VecModel<W>>,
@@ -145,7 +147,7 @@ impl SceneMeshInputs {
         self.geometry_cached(
             vertices,
             indices,
-            subsets,
+            draw,
             vertex,
             (skin_stamp, morph_stamp),
             |vertices| {
@@ -166,7 +168,7 @@ impl SceneMeshInputs {
         &self,
         vertices: &VecModel<T>,
         indices: SceneMeshIndices<'_>,
-        subsets: Option<Vec<SceneMeshSubset>>,
+        draw: (&str, Option<Vec<SceneMeshSubset>>),
         vertex: impl FnMut(&T) -> Option<SceneMeshVertex>,
         stamps: DeformationStamps,
         deformations: impl FnOnce(&[Vertex]) -> Option<Deformations>,
@@ -179,16 +181,27 @@ impl SceneMeshInputs {
             }
             SceneMeshIndices::Slice(_) => None,
         };
+        let (mode, subsets) = draw;
         let Some(subsets) = subsets else {
-            return Some(SceneGeometryInput::Triangles(None));
+            return Some(SceneGeometryInput::Authored(None));
         };
-        if stamps == (None, None) && vertices.is_empty() && indices.is_empty() && subsets.is_empty()
-        {
+        let index_count = indices.len();
+        let vertex_count = vertices.len();
+        if stamps == (None, None) && vertex_count == 0 && index_count == 0 && subsets.is_empty() {
             return None;
         }
-        let mesh = Self::mesh(vertices, indices, vertex, key, deformations)
-            .and_then(|base| with_subsets(base, subsets));
-        Some(SceneGeometryInput::Triangles(mesh))
+        let source_count = if index_count == 0 {
+            vertex_count
+        } else {
+            index_count
+        };
+        let mesh = Mode::named(mode)
+            .and_then(|mode| Expansion::prepare(mode, subsets, source_count))
+            .and_then(|(expansion, layout)| {
+                Self::mesh(vertices, indices, vertex, key, expansion, deformations)
+                    .and_then(|base| with_layout(base, layout))
+            });
+        Some(SceneGeometryInput::Authored(mesh))
     }
 
     fn mesh<T>(
@@ -196,27 +209,32 @@ impl SceneMeshInputs {
         indices: SceneMeshIndices<'_>,
         vertex: impl FnMut(&T) -> Option<SceneMeshVertex>,
         key: Option<GeometryKey>,
+        expansion: Expansion,
         deformations: impl FnOnce(&[Vertex]) -> Option<Deformations>,
     ) -> Option<Mesh3D> {
         let cache = CACHE.get_or_init(Mutex::default);
 
-        if let Some(mesh) =
-            key.and_then(|key| cache.lock().ok()?.get(|entry| entry.key == Some(key)))
-        {
+        if let Some(mesh) = key.and_then(|key| {
+            cache
+                .lock()
+                .ok()?
+                .get(|entry| entry.key == Some(key) && entry.expansion == expansion)
+        }) {
             return Some(mesh);
         }
         let (count, rows) = vertices.inspect_rows(0, MAX_VERTICES, vertex);
-        if !(3..=MAX_VERTICES).contains(&count) {
+        if !(1..=MAX_VERTICES).contains(&count) {
             return None;
         }
         let vertices: Vec<_> = rows
             .into_iter()
             .map(|row| row.and_then(SceneMeshVertex::prepare))
             .collect::<Option<_>>()?;
-        let indices = indices.prepare(count)?;
+        let indices = expansion.indices(indices.prepare(count)?)?;
         let deformations = deformations(&vertices)?;
         let matches = |entry: &CacheEntry| {
-            entry.vertices == vertices
+            entry.expansion == expansion
+                && entry.vertices == vertices
                 && entry.indices == indices
                 && entry.deformations == deformations
         };
@@ -239,7 +257,16 @@ impl SceneMeshInputs {
         } else {
             Vec::new()
         };
-        let mesh = Mesh3D::prepare_authored_triangles(triangles(&vertices, &indices)?, tangents)?;
+        let topology = expansion.mode.topology();
+        let prepared = if topology == MeshTopology::Triangles {
+            triangles(&vertices, &indices)?
+        } else {
+            indices
+                .iter()
+                .map(|&index| vertices[index as usize].with_normal([0.0, 0.0, 1.0]))
+                .collect()
+        };
+        let mesh = Mesh3D::prepare_authored_mesh(topology, prepared, tangents)?;
         let mesh = if let Some(skin) = &deformations.skin {
             mesh.with_skin_weights(indices.iter().map(|&index| skin[index as usize]).collect())?
         } else {
@@ -260,6 +287,7 @@ impl SceneMeshInputs {
             }
             cache.insert(CacheEntry {
                 key,
+                expansion,
                 vertices,
                 indices,
                 deformations,
@@ -336,7 +364,7 @@ fn prepare_weights<W>(
         .collect()
 }
 
-/// A material assignment to a contiguous range of triangle elements.
+/// A material assignment to a contiguous range of authored elements.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct SceneMeshSubset {
@@ -365,13 +393,7 @@ impl SceneMeshSubset {
         let start = usize::try_from(self.offset).ok()?;
         let count = usize::try_from(self.count).ok()?;
         let end = start.checked_add(count)?;
-        if count == 0
-            || end > limit
-            || !start.is_multiple_of(3)
-            || !count.is_multiple_of(3)
-            || self.name.is_empty()
-            || self.name.len() > 256
-        {
+        if count == 0 || end > limit || self.name.is_empty() || self.name.len() > 256 {
             return None;
         }
         Some(SceneMeshPart {
@@ -387,51 +409,10 @@ pub(crate) struct SceneMeshPart {
     pub range: Range<usize>,
 }
 
-fn mesh_layout(subsets: Vec<SceneMeshSubset>, limit: usize) -> Option<Vec<SceneMeshPart>> {
-    let mut subsets: Vec<_> = subsets
-        .into_iter()
-        .map(|subset| subset.prepare(limit))
-        .collect::<Option<_>>()?;
-    subsets.sort_unstable_by_key(|part| part.range.start);
-    let mut layout = Vec::<SceneMeshPart>::with_capacity(subsets.len());
-    let mut add = |part: SceneMeshPart| {
-        if let Some(previous) = layout.last_mut()
-            && previous.name == part.name
-            && previous.range.end == part.range.start
-        {
-            previous.range.end = part.range.end;
-        } else {
-            layout.push(part);
-        }
-    };
-    let mut start = 0;
-    for part in subsets {
-        if part.range.start < start {
-            return None;
-        }
-        if start < part.range.start {
-            add(SceneMeshPart {
-                name: "surface".into(),
-                range: start..part.range.start,
-            });
-        }
-        start = part.range.end;
-        add(part);
-    }
-    if start < limit {
-        add(SceneMeshPart {
-            name: "surface".into(),
-            range: start..limit,
-        });
-    }
-    Some(layout)
-}
-
-fn with_subsets(base: Mesh3D, subsets: Vec<SceneMeshSubset>) -> Option<Mesh3D> {
-    if subsets.is_empty() {
+fn with_layout(base: Mesh3D, layout: Vec<SceneMeshPart>) -> Option<Mesh3D> {
+    if layout.is_empty() {
         return Some(base);
     }
-    let layout = mesh_layout(subsets, base.vertices().len())?;
     if layout.len() == 1 && layout[0].name == "surface" {
         return Some(base);
     }
@@ -465,11 +446,11 @@ pub enum SceneMeshIndices<'a> {
 }
 
 impl SceneMeshIndices<'_> {
-    fn is_empty(&self) -> bool {
+    fn len(&self) -> usize {
         match self {
-            Self::Sequential => true,
-            Self::Model(indices) => indices.is_empty(),
-            Self::Slice(indices) => indices.is_empty(),
+            Self::Sequential => 0,
+            Self::Model(indices) => indices.len(),
+            Self::Slice(indices) => indices.len(),
         }
     }
 
@@ -491,12 +472,7 @@ impl SceneMeshIndices<'_> {
             }
         };
         if values.is_empty() {
-            return vertices
-                .is_multiple_of(3)
-                .then(|| (0..vertices as u32).collect());
-        }
-        if !values.len().is_multiple_of(3) {
-            return None;
+            return Some((0..vertices as u32).collect());
         }
         values
             .into_iter()
@@ -618,6 +594,18 @@ fn prepared_direction(direction: Vector3D) -> Option<Option<[f32; 3]>> {
     }))
 }
 
+impl Vertex {
+    fn with_normal(self, fallback: [f32; 3]) -> MeshVertex {
+        MeshVertex {
+            position: self.position,
+            normal: self.normal.unwrap_or(fallback),
+            uv: self.uv,
+            uv1: self.uv1,
+            color: self.color,
+        }
+    }
+}
+
 fn triangles(vertices: &[Vertex], indices: &[u32]) -> Option<Vec<MeshVertex>> {
     let mut normals = vec![Vector3::zeros(); vertices.len()];
     let mut faces = Vec::with_capacity(indices.len() / 3);
@@ -639,18 +627,7 @@ fn triangles(vertices: &[Vertex], indices: &[u32]) -> Option<Vec<MeshVertex>> {
         faces
             .into_iter()
             .flat_map(|(ids, face)| {
-                ids.map(|index| {
-                    let v = vertices[index];
-                    MeshVertex {
-                        position: v.position,
-                        normal: v
-                            .normal
-                            .unwrap_or_else(|| normals[index].unwrap_or(face).into()),
-                        uv: v.uv,
-                        uv1: v.uv1,
-                        color: v.color,
-                    }
-                })
+                ids.map(|index| vertices[index].with_normal(normals[index].unwrap_or(face).into()))
             })
             .collect(),
     )
@@ -664,6 +641,7 @@ struct Deformations {
 
 struct CacheEntry {
     key: Option<GeometryKey>,
+    expansion: Expansion,
     vertices: Vec<Vertex>,
     indices: Vec<u32>,
     deformations: Deformations,
@@ -751,7 +729,8 @@ mod tests {
 
     #[test]
     fn layouts_merge_adjacent_ranges_and_cover_gaps() {
-        let layout = mesh_layout(
+        let (_, layout) = Expansion::prepare(
+            Mode::Triangles,
             vec![
                 subset("badge", 9, 3),
                 subset("badge", 3, 6),
@@ -786,7 +765,7 @@ mod tests {
             vec![subset("detail", 0, 6), subset("badge", 3, 3)],
             vec![subset("", 0, 3)],
         ] {
-            assert!(mesh_layout(subsets, 12).is_none());
+            assert!(Expansion::prepare(Mode::Triangles, subsets, 12).is_none());
         }
     }
 }

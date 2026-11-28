@@ -48,7 +48,7 @@ impl MorphAttributes {
 pub(super) struct MorphTable {
     pub offsets: Vec<u32>,
     pub deltas: Vec<MorphDelta>,
-    // Empty for glTF and authored targets that only modify position, normal or tangent.
+    // Empty when targets only modify position, normal or tangent.
     pub attributes: Vec<MorphAttributes>,
 }
 

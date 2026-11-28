@@ -1,5 +1,8 @@
 //! Material data shared by 3D resources, rendering, and picking.
-use super::{cubemap::TextureAsset3D, texture_data::TextureData2D};
+use super::{
+    basis::MeshBasisTexture, blocks::MeshTextureBlocks, cubemap::TextureAsset3D,
+    texture_data::TextureData2D,
+};
 use crate::{
     Color, RecordValue, Value, Vector3D,
     scene3d::effect::{BufferInput, CaptureRead, ExternalTexture, record_buffer_inputs},
@@ -84,17 +87,85 @@ impl TextureColorSpace {
 #[derive(Debug)]
 pub struct MeshImage {
     size: [u32; 2],
-    rgba: Box<[u8]>,
+    pixels: MeshPixels,
     mips: [OnceLock<Box<[u8]>>; 2],
+}
+
+#[derive(Debug)]
+enum MeshPixels {
+    Rgba(Box<[u8]>),
+    Compressed(Box<CompressedPixels>),
+    Basis(Box<MeshBasisTexture>),
+}
+
+#[derive(Debug)]
+struct CompressedPixels {
+    blocks: MeshTextureBlocks,
+    rgba: OnceLock<Box<[u8]>>,
 }
 
 impl MeshImage {
     pub fn new(size: [u32; 2], rgba: Vec<u8>) -> Option<Self> {
         (Self::byte_len(size)? == rgba.len()).then(|| Self {
             size,
-            rgba: rgba.into_boxed_slice(),
+            pixels: MeshPixels::Rgba(rgba.into_boxed_slice()),
             mips: Default::default(),
         })
+    }
+
+    #[doc(hidden)]
+    pub fn from_blocks(
+        size: [u32; 2],
+        vulkan_format: u32,
+        levels: u32,
+        bytes: Vec<u8>,
+    ) -> Option<Self> {
+        Self::byte_len(size)?;
+        let blocks = MeshTextureBlocks::new(size, vulkan_format, levels, bytes)?;
+        Some(Self::with_blocks(size, blocks))
+    }
+
+    fn with_blocks(size: [u32; 2], blocks: MeshTextureBlocks) -> Self {
+        Self {
+            size,
+            pixels: MeshPixels::Compressed(Box::new(CompressedPixels {
+                blocks,
+                rgba: OnceLock::new(),
+            })),
+            mips: Default::default(),
+        }
+    }
+
+    pub fn blocks(&self) -> Option<&MeshTextureBlocks> {
+        match &self.pixels {
+            MeshPixels::Compressed(image) => Some(&image.blocks),
+            _ => None,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn from_basis_ktx2(bytes: &[u8]) -> Result<Self, String> {
+        let texture = MeshBasisTexture::parse(bytes)?;
+        Ok(Self {
+            size: texture.size(),
+            pixels: MeshPixels::Basis(Box::new(texture)),
+            mips: Default::default(),
+        })
+    }
+
+    pub fn basis(&self) -> Option<&MeshBasisTexture> {
+        match &self.pixels {
+            MeshPixels::Basis(texture) => Some(texture),
+            _ => None,
+        }
+    }
+
+    pub fn authored_level_count(&self) -> Option<u32> {
+        match &self.pixels {
+            MeshPixels::Rgba(_) => None,
+            MeshPixels::Compressed(image) => Some(image.blocks.level_count()),
+            MeshPixels::Basis(image) => Some(image.level_count()),
+        }
     }
 
     fn byte_len([width, height]: [u32; 2]) -> Option<usize> {
@@ -110,6 +181,16 @@ impl MeshImage {
     #[doc(hidden)]
     pub fn from_packed(size: [u32; 2], bytes: &[u8]) -> Option<Self> {
         let len = Self::byte_len(size)?;
+        if bytes.starts_with(MeshTextureBlocks::PACKED_TAG) {
+            return Some(Self::with_blocks(
+                size,
+                MeshTextureBlocks::unpack(size, bytes)?,
+            ));
+        }
+        if MeshBasisTexture::is_container(bytes) {
+            let image = Self::from_basis_ktx2(bytes).ok()?;
+            return (image.size() == size).then_some(image);
+        }
         let mut decoder = flate2::read::ZlibDecoder::new(bytes);
         let mut flags = [0];
         decoder.read_exact(&mut flags).ok()?;
@@ -136,11 +217,22 @@ impl MeshImage {
 
     /// RGBA bytes in top-to-bottom row order. The texture slot determines RGB's encoding.
     pub fn rgba(&self) -> &[u8] {
-        &self.rgba
+        match &self.pixels {
+            MeshPixels::Rgba(rgba) => rgba,
+            MeshPixels::Compressed(image) => image.rgba.get_or_init(|| {
+                image
+                    .blocks
+                    .rgba_levels(image.blocks.levels().take(1), rgba_len(self.size))
+            }),
+            MeshPixels::Basis(image) => image.base_rgba(),
+        }
     }
 
     pub fn mip_extents(&self) -> impl Iterator<Item = [u32; 2]> + use<> {
-        mip_extents(self.size)
+        let count = self
+            .authored_level_count()
+            .map_or(usize::MAX, |levels| (levels - 1) as usize);
+        mip_extents(self.size).take(count)
     }
 
     pub fn mip_byte_len(&self) -> usize {
@@ -148,12 +240,24 @@ impl MeshImage {
     }
 
     pub fn prepared_mips(&self, color: TextureColorSpace) -> Option<&[u8]> {
-        self.mips[color.slot()].get().map(Box::as_ref)
+        let slot = if self.authored_level_count().is_some() {
+            0
+        } else {
+            color.slot()
+        };
+        self.mips[slot].get().map(Box::as_ref)
     }
 
     /// Build each requested interpretation once. Color channels of sRGB maps are
     /// filtered in linear light. Data maps and alpha are averaged as linear values.
     pub fn prepare_mips(&self, color: TextureColorSpace) -> &[u8] {
+        if let Some(blocks) = self.blocks() {
+            return self.mips[0]
+                .get_or_init(|| blocks.rgba_levels(blocks.levels().skip(1), self.mip_byte_len()));
+        }
+        if let Some(basis) = self.basis() {
+            return self.mips[0].get_or_init(|| basis.rgba(1..basis.level_count()));
+        }
         self.mips[color.slot()].get_or_init(|| {
             let decode = (color == TextureColorSpace::Srgb).then(|| {
                 std::array::from_fn(|index| {
@@ -173,7 +277,7 @@ impl MeshImage {
                 chain.resize(start + rgba_len(size), 0);
                 let (previous, output) = chain.split_at_mut(start);
                 let source = if previous.is_empty() {
-                    &self.rgba
+                    self.rgba()
                 } else {
                     &previous[previous_start..]
                 };
@@ -543,6 +647,10 @@ pub struct SceneMaterialMaps {
     pub base_color_map: Option<Option<MeshTexture>>,
     pub opacity_map: Option<Option<MeshTexture>>,
     pub height_map: Option<Option<MeshTexture>>,
+    pub sheen_color_map: Option<Option<MeshTexture>>,
+    pub sheen_roughness_map: Option<Option<MeshTexture>>,
+    pub iridescence_map: Option<Option<MeshTexture>>,
+    pub iridescence_thickness_map: Option<Option<MeshTexture>>,
     pub metallic_roughness_map: Option<Option<MeshTexture>>,
     pub metalness_map: Option<Option<MeshTexture>>,
     pub roughness_map: Option<Option<MeshTexture>>,
@@ -575,6 +683,10 @@ impl SceneMaterialMaps {
             base_color_map: map("base-color-map"),
             opacity_map: map("opacity-map"),
             height_map: map("height-map"),
+            sheen_color_map: map("sheen-color-map"),
+            sheen_roughness_map: map("sheen-roughness-map"),
+            iridescence_map: map("iridescence-map"),
+            iridescence_thickness_map: map("iridescence-thickness-map"),
             metallic_roughness_map: map("metallic-roughness-map"),
             metalness_map: map("metalness-map"),
             roughness_map: map("roughness-map"),
@@ -641,13 +753,12 @@ impl MeshTexture {
         let [wrap_u, wrap_v] = self.sampling.wrap;
         let x = wrap_u.coordinate(f64::from(uv[0])) * width as f64;
         let y = wrap_v.coordinate(f64::from(uv[1])) * height as f64;
+        let rgba = self.image.rgba();
         let texel = |x, y| {
             let column = wrap_u.offset(x, width);
             let row = wrap_v.offset(y, height);
             let start = (row * width as usize + column) * 4;
-            convert(std::array::from_fn(|channel| {
-                self.image.rgba[start + channel]
-            }))
+            convert(std::array::from_fn(|channel| rgba[start + channel]))
         };
         if self.sampling.mag_filter == TextureFilter::Nearest {
             return texel(x.floor() as i64, y.floor() as i64);
@@ -812,9 +923,12 @@ pub enum MaterialChannel {
     Glossiness,
     Opacity,
     Height,
+    Iridescence,
+    IridescenceThickness,
+    SheenRoughness,
 }
 
-const CHANNEL_FIELDS: [(&str, TextureChannel); 14] = [
+const CHANNEL_FIELDS: [(&str, TextureChannel); 17] = [
     ("base-color-channel", TextureChannel::Rgb),
     ("emissive-channel", TextureChannel::Rgb),
     ("metalness-channel", TextureChannel::Blue),
@@ -829,6 +943,9 @@ const CHANNEL_FIELDS: [(&str, TextureChannel); 14] = [
     ("glossiness-channel", TextureChannel::Alpha),
     ("opacity-channel", TextureChannel::Alpha),
     ("height-channel", TextureChannel::Red),
+    ("iridescence-channel", TextureChannel::Red),
+    ("iridescence-thickness-channel", TextureChannel::Green),
+    ("sheen-roughness-channel", TextureChannel::Alpha),
 ];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -895,7 +1012,7 @@ impl MaterialChannels {
         self.overrides
             .iter()
             .zip(CHANNEL_FIELDS)
-            // Opacity and height channel selection happen when packing their GPU buffer.
+            // Packed scalar channels are selected during GPU upload.
             .take(MaterialChannel::Opacity as usize)
             .any(|(channel, (_, default))| channel.is_some_and(|value| value != default))
     }
@@ -1009,6 +1126,10 @@ impl VertexColorMasks {
 
 #[derive(Clone, Debug)]
 pub struct MeshMaterial {
+    /// Diameter of point primitives in render-target pixels.
+    pub point_size: f32,
+    /// Width of line primitives in render-target pixels.
+    pub line_width: f32,
     pub base_color: [f32; 4],
     pub opacity: f32,
     pub opacity_texture: Option<MeshTexture>,
@@ -1184,6 +1305,8 @@ pub struct MeshPbr {
     /// Linear G/B roughness and metallic, or the selected glossiness channel.
     pub surface_texture: Option<MeshTexture>,
     pub height_map: Option<Box<MeshHeightMap>>,
+    pub iridescence: Option<Box<MeshIridescence>>,
+    pub sheen: Option<Box<MeshSheen>>,
     pub specular_reflection: Option<Box<MeshSpecularReflection>>,
     pub separate_surface_maps: Option<Box<MeshSurfaceMaps>>,
     pub emissive_texture: Option<MeshTexture>,
@@ -1192,6 +1315,80 @@ pub struct MeshPbr {
     pub clearcoat: Option<MeshClearcoat>,
     pub dielectric: Option<Box<MeshDielectric>>,
     pub transmission: Option<Box<MeshTransmission>>,
+}
+
+/// A fabric layer with a linear RGB tint and perceptual roughness.
+#[derive(Clone, Debug, Default)]
+pub struct MeshSheen {
+    pub color: [f32; 3],
+    pub roughness: f32,
+    pub color_texture: Option<MeshTexture>,
+    pub roughness_texture: Option<MeshTexture>,
+}
+
+impl MeshSheen {
+    #[doc(hidden)]
+    pub fn is_active(&self) -> bool {
+        self.color.into_iter().any(|component| component > 0.0)
+    }
+
+    #[doc(hidden)]
+    pub fn is_valid(&self) -> bool {
+        self.color
+            .into_iter()
+            .chain([self.roughness])
+            .all(|value| (0.0..=1.0).contains(&value))
+            && [&self.color_texture, &self.roughness_texture]
+                .into_iter()
+                .flatten()
+                .all(MeshTexture::is_valid)
+    }
+}
+
+/// Dielectric thin film as specified by KHR_materials_iridescence.
+#[derive(Clone, Debug)]
+pub struct MeshIridescence {
+    pub factor: f32,
+    pub ior: f32,
+    pub thickness_nm: [f32; 2],
+    pub factor_texture: Option<MeshTexture>,
+    pub thickness_texture: Option<MeshTexture>,
+}
+
+impl Default for MeshIridescence {
+    fn default() -> Self {
+        Self {
+            factor: 0.0,
+            ior: 1.3,
+            thickness_nm: [100.0, 400.0],
+            factor_texture: None,
+            thickness_texture: None,
+        }
+    }
+}
+
+impl MeshIridescence {
+    #[doc(hidden)]
+    pub fn is_active(&self) -> bool {
+        self.factor > 0.0
+            && (self.thickness_nm[1] > 0.0
+                || self.thickness_texture.is_some() && self.thickness_nm[0] > 0.0)
+    }
+
+    #[doc(hidden)]
+    pub fn is_valid(&self) -> bool {
+        (0.0..=1.0).contains(&self.factor)
+            && self.ior.is_finite()
+            && self.ior >= 1.0
+            && self
+                .thickness_nm
+                .into_iter()
+                .all(|value| value.is_finite() && value >= 0.0)
+            && [&self.factor_texture, &self.thickness_texture]
+                .into_iter()
+                .flatten()
+                .all(MeshTexture::is_valid)
+    }
 }
 
 /// Linear height data and the bounded number of steps in its parallax ray.
@@ -1276,6 +1473,7 @@ pub struct MeshDielectric {
     /// glTF uses zero to represent an infinite index of refraction.
     pub ior: f32,
     pub specular: f32,
+    pub tint: f32,
     pub color: [f32; 3],
     pub specular_texture: Option<MeshTexture>,
     pub color_texture: Option<MeshTexture>,
@@ -1284,6 +1482,12 @@ pub struct MeshDielectric {
 impl MeshDielectric {
     pub const DEFAULT_IOR: f32 = 1.5;
     pub const DEFAULT_F0: f32 = 0.04;
+
+    /// Mix white and linear base color for the dielectric Fresnel response.
+    pub fn base_color_tint(&self, base: [f32; 3]) -> [f32; 3] {
+        let white = 1.0 - self.tint;
+        base.map(|value| white + value * self.tint)
+    }
 
     pub fn normal_reflectance(&self) -> f32 {
         if self.ior == 0.0 {
@@ -1301,6 +1505,7 @@ impl MeshDielectric {
     fn is_valid(&self) -> bool {
         Self::valid_ior(self.ior)
             && (0.0..=1.0).contains(&self.specular)
+            && (0.0..=1.0).contains(&self.tint)
             && self
                 .color
                 .into_iter()
@@ -1435,6 +1640,12 @@ impl MeshPbr {
                 .height_map
                 .as_deref()
                 .is_none_or(MeshHeightMap::is_valid)
+            && self.sheen.as_deref().is_none_or(|sheen| {
+                self.workflow == MeshWorkflow::MetallicRoughness && sheen.is_valid()
+            })
+            && self.iridescence.as_deref().is_none_or(|film| {
+                self.workflow == MeshWorkflow::MetallicRoughness && film.is_valid()
+            })
             && self.normal_map.as_ref().is_none_or(MeshNormalMap::is_valid)
             && self.clearcoat.as_ref().is_none_or(MeshClearcoat::is_valid)
             && self
@@ -1600,6 +1811,8 @@ impl SceneAppearance {
 #[doc(hidden)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SceneMaterial {
+    pub point_size: Option<f64>,
+    pub line_width: Option<f64>,
     pub base_item: Option<Option<Arc<SceneItemTexture>>>,
     pub specular_reflection_item: Option<Option<Arc<SceneItemTexture>>>,
     pub channels: MaterialChannels,
@@ -1612,6 +1825,12 @@ pub struct SceneMaterial {
     pub opacity: Option<f64>,
     pub invert_opacity_map_value: Option<bool>,
     pub height_amount: Option<f64>,
+    pub sheen_color: Option<Color>,
+    pub sheen_roughness: Option<f64>,
+    pub iridescence_factor: Option<f64>,
+    pub iridescence_index_of_refraction: Option<f64>,
+    pub iridescence_thickness_minimum: Option<f64>,
+    pub iridescence_thickness_maximum: Option<f64>,
     pub min_height_map_samples: Option<i64>,
     pub max_height_map_samples: Option<i64>,
     pub workflow: Option<MeshWorkflow>,
@@ -1621,6 +1840,7 @@ pub struct SceneMaterial {
     pub anisotropy_rotation: Option<f64>,
     pub roughness: Option<f64>,
     pub emissive_color: Option<Color>,
+    pub emissive_factor: Option<Vector3D>,
     pub emissive_strength: Option<f64>,
     pub alpha_mode: Option<MeshAlphaMode>,
     pub blend_mode: Option<MeshBlendMode>,
@@ -1646,6 +1866,7 @@ pub struct SceneMaterial {
     pub thickness: Option<f64>,
     pub specular_color: Option<Color>,
     pub specular_amount: Option<f64>,
+    pub specular_tint: Option<f64>,
     pub occlusion_amount: Option<f64>,
     pub material_shader: Option<Option<Arc<str>>>,
     pub shader_parameters: Option<Vector3D>,
@@ -1723,12 +1944,20 @@ impl SceneMaterial {
                     _ => None,
                 },
             )),
+            point_size: number("point-size"),
+            line_width: number("line-width"),
             normal_strength: number("normal-strength"),
             clearcoat_normal_strength: number("clearcoat-normal-strength"),
             base_color: color("base-color"),
             opacity: number("opacity"),
             invert_opacity_map_value: boolean("invert-opacity-map-value"),
             height_amount: number("height-amount"),
+            sheen_color: color("sheen-color"),
+            sheen_roughness: number("sheen-roughness"),
+            iridescence_factor: number("iridescence-factor"),
+            iridescence_index_of_refraction: number("iridescence-index-of-refraction"),
+            iridescence_thickness_minimum: number("iridescence-thickness-minimum"),
+            iridescence_thickness_maximum: number("iridescence-thickness-maximum"),
             min_height_map_samples: match record.field("min-height-map-samples") {
                 Some(Value::Int(value)) => Some(*value),
                 _ => None,
@@ -1747,6 +1976,10 @@ impl SceneMaterial {
             anisotropy_rotation: number("anisotropy-rotation"),
             roughness: number("roughness"),
             emissive_color: color("emissive-color"),
+            emissive_factor: match record.field("emissive-factor") {
+                Some(Value::Vector3D(factor)) => Some(*factor),
+                _ => None,
+            },
             emissive_strength: number("emissive-strength"),
             alpha_mode: match record.field("alpha-mode") {
                 Some(Value::String(name)) => Self::alpha(name, alpha_cutoff),
@@ -1784,6 +2017,7 @@ impl SceneMaterial {
             thickness: number("thickness"),
             specular_color: color("specular-color"),
             specular_amount: number("specular-amount"),
+            specular_tint: number("specular-tint"),
             occlusion_amount: number("occlusion-amount"),
         })
     }
@@ -1814,6 +2048,7 @@ impl SceneMaterial {
         self.index_of_refraction = clamp(self.index_of_refraction, 1.0, 3.0);
         self.occlusion_amount = clamp(self.occlusion_amount, 0.0, 1.0);
         self.specular_amount = clamp(self.specular_amount, 0.0, 1.0);
+        self.specular_tint = clamp(self.specular_tint, 0.0, 1.0);
         let [min_power, max_power] = MeshFresnel::POWER_RANGE;
         let [min_scale, max_scale] = MeshFresnel::SCALE_RANGE;
         let [min_bias, max_bias] = MeshFresnel::BIAS_RANGE;
@@ -1824,9 +2059,20 @@ impl SceneMaterial {
         self.clearcoat_fresnel_scale = clamp(self.clearcoat_fresnel_scale, min_scale, max_scale);
         self.clearcoat_fresnel_bias = clamp(self.clearcoat_fresnel_bias, min_bias, max_bias);
         let upper = f64::from(f32::MAX);
+        self.emissive_factor = self.emissive_factor.map(|factor| {
+            let [x, y, z] = [factor.x, factor.y, factor.z]
+                .map(|component| clamp(Some(component), 0.0, upper).unwrap_or(0.0));
+            Vector3D::new(x, y, z)
+        });
         self.thickness = clamp(self.thickness, 0.0, upper);
         self.attenuation_distance = clamp(self.attenuation_distance, 0.0, upper);
         self.dispersion = clamp(self.dispersion, 0.0, upper);
+        self.sheen_roughness = clamp(self.sheen_roughness, 0.0, 1.0);
+        self.iridescence_factor = clamp(self.iridescence_factor, 0.0, 1.0);
+        self.iridescence_index_of_refraction =
+            clamp(self.iridescence_index_of_refraction, 1.0, upper);
+        self.iridescence_thickness_minimum = clamp(self.iridescence_thickness_minimum, 0.0, upper);
+        self.iridescence_thickness_maximum = clamp(self.iridescence_thickness_maximum, 0.0, upper);
         self
     }
 
@@ -1847,6 +2093,10 @@ impl SceneMaterial {
         if let Some(textures) = &later.shader_textures {
             self.shader_textures = Some(textures.clone());
         }
+        if later.emissive_factor.is_some() || later.emissive_color.is_some() {
+            self.emissive_factor = later.emissive_factor;
+            self.emissive_color = later.emissive_color;
+        }
         macro_rules! overlay_factors {
             ($($field:ident),+ $(,)?) => {
                 $(self.$field = later.$field.or(self.$field);)+
@@ -1858,6 +2108,12 @@ impl SceneMaterial {
             opacity,
             invert_opacity_map_value,
             height_amount,
+            sheen_color,
+            sheen_roughness,
+            iridescence_factor,
+            iridescence_index_of_refraction,
+            iridescence_thickness_minimum,
+            iridescence_thickness_maximum,
             min_height_map_samples,
             max_height_map_samples,
             workflow,
@@ -1866,7 +2122,6 @@ impl SceneMaterial {
             anisotropy_strength,
             anisotropy_rotation,
             roughness,
-            emissive_color,
             emissive_strength,
             alpha_mode,
             blend_mode,
@@ -1892,6 +2147,7 @@ impl SceneMaterial {
             thickness,
             specular_color,
             specular_amount,
+            specular_tint,
             occlusion_amount,
             normal_strength,
             clearcoat_normal_strength,
@@ -1913,6 +2169,10 @@ impl SceneMaterial {
                 base_color_map,
                 opacity_map,
                 height_map,
+                sheen_color_map,
+                sheen_roughness_map,
+                iridescence_map,
+                iridescence_thickness_map,
                 metallic_roughness_map,
                 metalness_map,
                 roughness_map,
@@ -1975,6 +2235,8 @@ impl SceneMaterial {
         if let (Some(displacement), Some(shader)) = (self.shader_displacement, &mut result.shader) {
             shader.displacement = displacement as f32;
         }
+        result.point_size = factor(self.point_size, result.point_size, 1.0, f64::from(f32::MAX));
+        result.line_width = factor(self.line_width, result.line_width, 1.0, f64::from(f32::MAX));
         result.channels.overlay(self.channels);
         result.vertex_colors = self.vertex_colors.unwrap_or(source.vertex_colors);
         result.vertex_masks.overlay(self.vertex_masks);
@@ -2103,7 +2365,11 @@ impl SceneMaterial {
             pbr.occlusion_strength =
                 factor(self.occlusion_amount, pbr.occlusion_strength, 0.0, 1.0);
             let strength = factor(self.emissive_strength, 1.0, 0.0, 64.0);
-            if let Some(color) = self.emissive_color {
+            if let Some(emissive) = self.emissive_factor {
+                let [x, y, z] = [emissive.x, emissive.y, emissive.z];
+                pbr.emissive =
+                    [x, y, z].map(|value| factor(Some(value), 0.0, 0.0, f64::from(f32::MAX)));
+            } else if let Some(color) = self.emissive_color {
                 pbr.emissive = linear_color(color);
             }
             replace_map(&mut pbr.emissive_texture, &maps.emissive_map);
@@ -2149,6 +2415,8 @@ impl SceneMaterial {
             }
             self.apply_anisotropy(pbr, maps);
             self.apply_dielectric(pbr, maps);
+            self.apply_iridescence(pbr, maps);
+            self.apply_sheen(pbr, maps);
             self.apply_transmission(pbr, maps);
         }
         result
@@ -2173,6 +2441,9 @@ impl SceneMaterial {
         if self.index_of_refraction.is_none()
             && self.specular_amount.is_none()
             && self.specular_color.is_none()
+            && self
+                .specular_tint
+                .is_none_or(|tint| tint == 0.0 && pbr.dielectric.is_none())
             && maps.specular_map.is_none()
             && maps.specular_color_map.is_none()
         {
@@ -2182,6 +2453,7 @@ impl SceneMaterial {
             Box::new(MeshDielectric {
                 ior: MeshDielectric::DEFAULT_IOR,
                 specular: 1.0,
+                tint: 0.0,
                 color: [1.0; 3],
                 specular_texture: None,
                 color_texture: None,
@@ -2189,11 +2461,67 @@ impl SceneMaterial {
         });
         dielectric.ior = factor(self.index_of_refraction, dielectric.ior, 1.0, 3.0);
         dielectric.specular = factor(self.specular_amount, dielectric.specular, 0.0, 1.0);
+        dielectric.tint = factor(self.specular_tint, dielectric.tint, 0.0, 1.0);
         if let Some(color) = self.specular_color {
             dielectric.color = linear_color(color);
         }
         replace_map(&mut dielectric.specular_texture, &maps.specular_map);
         replace_map(&mut dielectric.color_texture, &maps.specular_color_map);
+    }
+
+    fn apply_sheen(&self, pbr: &mut MeshPbr, maps: &SceneMaterialMaps) {
+        if pbr.workflow != MeshWorkflow::MetallicRoughness {
+            pbr.sheen = None;
+            return;
+        }
+        if self.sheen_color.is_none()
+            && self.sheen_roughness.is_none()
+            && maps.sheen_color_map.is_none()
+            && maps.sheen_roughness_map.is_none()
+        {
+            return;
+        }
+        let sheen = pbr.sheen.get_or_insert_with(Default::default);
+        if let Some(color) = self.sheen_color {
+            sheen.color = crate::scene3d::lighting::linear_color(color);
+        }
+        sheen.roughness = factor(self.sheen_roughness, sheen.roughness, 0.0, 1.0);
+        replace_map(&mut sheen.color_texture, &maps.sheen_color_map);
+        replace_map(&mut sheen.roughness_texture, &maps.sheen_roughness_map);
+    }
+
+    fn apply_iridescence(&self, pbr: &mut MeshPbr, maps: &SceneMaterialMaps) {
+        if pbr.workflow != MeshWorkflow::MetallicRoughness {
+            pbr.iridescence = None;
+            return;
+        }
+        if self.iridescence_factor.is_none()
+            && self.iridescence_index_of_refraction.is_none()
+            && self.iridescence_thickness_minimum.is_none()
+            && self.iridescence_thickness_maximum.is_none()
+            && maps.iridescence_map.is_none()
+            && maps.iridescence_thickness_map.is_none()
+        {
+            return;
+        }
+        let film = pbr.iridescence.get_or_insert_with(Default::default);
+        let max = f64::from(f32::MAX);
+        film.factor = factor(self.iridescence_factor, film.factor, 0.0, 1.0);
+        film.ior = factor(self.iridescence_index_of_refraction, film.ior, 1.0, max);
+        film.thickness_nm[0] = factor(
+            self.iridescence_thickness_minimum,
+            film.thickness_nm[0],
+            0.0,
+            max,
+        );
+        film.thickness_nm[1] = factor(
+            self.iridescence_thickness_maximum,
+            film.thickness_nm[1],
+            0.0,
+            max,
+        );
+        replace_map(&mut film.factor_texture, &maps.iridescence_map);
+        replace_map(&mut film.thickness_texture, &maps.iridescence_thickness_map);
     }
 
     fn apply_transmission(&self, pbr: &mut MeshPbr, maps: &SceneMaterialMaps) {
@@ -2289,6 +2617,8 @@ impl MeshPbr {
             occlusion_strength: 1.0,
             surface_texture: None,
             height_map: None,
+            iridescence: None,
+            sheen: None,
             specular_reflection: None,
             separate_surface_maps: None,
             emissive_texture: None,
@@ -2530,8 +2860,38 @@ impl MeshMaterial {
     }
 }
 
+/// Primitive topology for a contiguous mesh section. Strips and loops are expanded on import.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MeshTopology {
+    #[default]
+    Triangles,
+    Lines,
+    Points,
+}
+
+impl MeshTopology {
+    pub const fn vertices_per_primitive(self) -> usize {
+        match self {
+            Self::Triangles => 3,
+            Self::Lines => 2,
+            Self::Points => 1,
+        }
+    }
+}
+
+/// Per-part shading imposed by the primitive's available vertex attributes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MeshLighting {
+    #[default]
+    Material,
+    VertexNormal,
+    BaseAndEmission,
+}
+
 #[derive(Clone, Debug)]
 pub struct MeshPart {
+    pub lighting: MeshLighting,
+    pub topology: MeshTopology,
     pub vertices: Range<usize>,
     pub material: usize,
     /// Maps directions from the prepared geometry back into the glTF mesh space.
@@ -2577,6 +2937,34 @@ mod tests {
 #[cfg(test)]
 mod material_slot_tests {
     use super::*;
+
+    #[test]
+    fn emissive_factors_feed_the_lightmap_and_yield_to_later_color_overrides() {
+        use crate::scene3d::{Mesh3D, SceneObject};
+
+        let source = Mesh3D::Box.material_source().unwrap();
+        let mesh = SceneObject::cuboid("emitter", [0.0; 3], [1.0; 3], [0.0; 3], Color(0xffffffff))
+            .unwrap();
+        let mut style = SceneMaterial {
+            emissive_factor: Some(Vector3D::new(2.0, 0.25, -4.0)),
+            emissive_color: Some(Color(0xff0000ff)),
+            emissive_strength: Some(0.5),
+            ..SceneMaterial::default()
+        }
+        .normalized();
+        let baked = |material: &SceneMaterial| {
+            let prepared = material.prepare(&source.materials[0]);
+            mesh.bake_sample(0, [1.0, 0.0, 0.0], Some(&prepared), false)
+                .unwrap()
+                .emission
+        };
+        assert_eq!(baked(&style), [1.0, 0.125, 0.0]);
+        style.overlay(&SceneMaterial {
+            emissive_color: Some(Color(0x00ff00ff)),
+            ..SceneMaterial::default()
+        });
+        assert_eq!(baked(&style), [0.0, 0.5, 0.0]);
+    }
 
     #[test]
     fn texture_pivot_and_flips_compose_in_sampling_space() {
@@ -2660,6 +3048,8 @@ mod material_slot_tests {
             .prepare(true, |_| Some(Arc::clone(&image)))
         };
         let mut base = MeshMaterial {
+            point_size: 1.0,
+            line_width: 1.0,
             opacity: 1.0,
             opacity_texture: None,
             invert_opacity_map_value: false,
@@ -2699,6 +3089,8 @@ mod material_slot_tests {
             ..SceneMaterial::default()
         };
         let base = MeshMaterial {
+            point_size: 1.0,
+            line_width: 1.0,
             opacity: 1.0,
             opacity_texture: None,
             invert_opacity_map_value: false,

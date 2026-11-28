@@ -1,0 +1,76 @@
+struct TargetVertex { position: point3d, u: float, v: float, color: color }
+struct TargetMesh { vertices: [TargetVertex], topology: string }
+struct TargetMaterial {
+    unlit: bool, base-color: color, point-size: float, line-width: float,
+    alpha-mode: string, alpha-cutoff: float,
+}
+struct TargetActor {
+    id: string, mesh: string, geometry: TargetMesh, material: TargetMaterial,
+    x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color,
+    camera-kind: string, camera-height: float, pickable: bool,
+}
+
+export component RasterPickingDemo inherits Window {
+    title <- "XRack · Screen-space picking";
+    width <- 160px;
+    height <- 120px;
+    in-out property <point2d> cursor: Point2D.new(49px, 34px);
+    in-out property <point2d> marquee-start: Point2D.new(39px, 27px);
+    in-out property <point2d> marquee-end: Point2D.new(42px, 31px);
+    in-out property <bool> double-resolution: false;
+    in-out property <bool> masked: false;
+    in-out property <float> far-end: 0;
+    in-out property <bool> point-pickable: true;
+    property <TargetMaterial> plain: TargetMaterial {
+        unlit: true, base-color: #26334b, point-size: 1, line-width: 1, alpha-mode: "opaque", alpha-cutoff: 0.5,
+    };
+    property <TargetActor> defaults: TargetActor {
+        id: "", mesh: "", geometry: TargetMesh { vertices: [], topology: "" }, material: root.plain,
+        x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0, scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
+        camera-kind: "", camera-height: 3, pickable: true,
+    };
+    property <[TargetActor]> world <- [
+        TargetActor { id: "eye", z: 4, camera-kind: "orthographic", ..root.defaults },
+        TargetActor { id: "background", mesh: "primitive:rectangle", scale-x: 4, scale-y: 3, ..root.defaults },
+        TargetActor {
+            id: "marker", pickable: root.point-pickable, z: 0.4,
+            geometry: TargetMesh { topology: "points", vertices: [
+                TargetVertex { position: Point3D.new(-0.9, 0.65, 0), u: 0.3, v: 0.7, color: #fff },
+            ] },
+            material: TargetMaterial { base-color: #f26c42, point-size: 14, ..root.plain },
+            ..root.defaults
+        },
+        TargetActor {
+            id: "stroke", z: 0.35,
+            geometry: TargetMesh { topology: "lines", vertices: [
+                TargetVertex { position: Point3D.new(-0.8, -0.5, 0), u: 0, v: 0, color: #fff },
+                TargetVertex { position: Point3D.new(0.7, -0.5, root.far-end), u: 1, v: 1, color: #ffffff00 },
+            ] },
+            material: TargetMaterial {
+                base-color: #42eeb8, line-width: 10, alpha-mode: root.masked ? "mask" : "opaque", ..root.plain
+            },
+            ..root.defaults
+        },
+    ];
+
+    out property <hit3d> hit <- view.hit(root.cursor);
+    out property <string> picked <- view.pick(root.cursor);
+    out property <[hit3d]> layers <- view.hit-all(root.cursor);
+    out property <[int]> rows <- view.pick-in-rect(root.marquee-start, root.marquee-end);
+    out property <hit3d> logical <- Scene3D.hit-camera(
+        root.world, "eye", Point2D.new(160px, 120px), root.cursor);
+    out property <hit3d> world-ray <- view.ray-hit(
+        Point3D.new(-0.9, 0.65, 3), Vector3D.new(0, 0, -1), 7);
+
+    view := SceneView3D {
+        width <- 160px;
+        height <- 120px;
+        camera <- "eye";
+        model <- root.world;
+        texture-width <- root.double-resolution ? 320 : 160;
+        texture-height <- root.double-resolution ? 240 : 120;
+        scene-background <- #111722;
+        scene-tone-map <- none;
+    }
+}

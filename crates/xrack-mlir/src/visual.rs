@@ -1384,6 +1384,7 @@ pub fn visual_cache_operand(
                 | "xr.texture_url"
                 | "xr.shader_url"
                 | "xr.material_shader_url"
+                | "xr.sky_shader_url"
                 | "xr.environment_url"
                 | "xr.particle_shape_url"
                 | "xr.param"

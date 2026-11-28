@@ -3,6 +3,12 @@ use serde::Deserialize;
 use std::{collections::BTreeMap, ops::Range};
 
 pub const TEXTURE_TRANSFORM: &str = "KHR_texture_transform";
+pub const TEXTURE_WEBP: &str = "EXT_texture_webp";
+pub const TEXTURE_BASIS: &str = "KHR_texture_basisu";
+pub const MESH_QUANTIZATION: &str = "KHR_mesh_quantization";
+pub const EXT_MESHOPT_COMPRESSION: &str = "EXT_meshopt_compression";
+pub const KHR_MESHOPT_COMPRESSION: &str = "KHR_meshopt_compression";
+pub const DRACO_COMPRESSION: &str = "KHR_draco_mesh_compression";
 pub const MESH_GPU_INSTANCING: &str = "EXT_mesh_gpu_instancing";
 pub const INSTANCE_COLOR_ATTRIBUTE: &str = "_COLOR_0";
 pub const INSTANCE_COLOR_ALIAS: &str = "_COLOR";
@@ -18,7 +24,9 @@ pub const VOLUME: &str = "KHR_materials_volume";
 pub const DISPERSION: &str = "KHR_materials_dispersion";
 pub const ANISOTROPY: &str = "KHR_materials_anisotropy";
 pub const SPECULAR_GLOSSINESS: &str = "KHR_materials_pbrSpecularGlossiness";
-pub const EXTENDED_MATERIALS: [&str; 9] = [
+pub const IRIDESCENCE: &str = "KHR_materials_iridescence";
+pub const SHEEN: &str = "KHR_materials_sheen";
+pub const EXTENDED_MATERIALS: [&str; 11] = [
     SPECULAR_GLOSSINESS,
     CLEARCOAT,
     EMISSIVE_STRENGTH,
@@ -28,6 +36,8 @@ pub const EXTENDED_MATERIALS: [&str; 9] = [
     VOLUME,
     DISPERSION,
     ANISOTROPY,
+    IRIDESCENCE,
+    SHEEN,
 ];
 
 #[derive(Deserialize)]
@@ -200,11 +210,31 @@ struct GltfMesh {
 
 #[derive(Deserialize)]
 struct GltfPrimitive {
+    #[serde(default)]
+    attributes: GltfPrimitiveAttributes,
+    mode: Option<usize>,
     material: Option<usize>,
     #[serde(default)]
-    targets: Vec<serde::de::IgnoredAny>,
+    targets: Vec<BTreeMap<String, usize>>,
     #[serde(default)]
     extensions: GltfPrimitiveExtensions,
+}
+
+#[derive(Default, Deserialize)]
+struct GltfPrimitiveAttributes {
+    #[serde(rename = "NORMAL")]
+    normal: Option<usize>,
+    #[serde(rename = "TANGENT")]
+    tangent: Option<usize>,
+}
+
+#[derive(Default)]
+pub struct GltfPrimitiveSummary {
+    /// Number of primitive groups for each of the seven glTF draw modes.
+    pub modes: [usize; 7],
+    pub point_line_unlit: usize,
+    pub point_line_normals: usize,
+    pub point_line_tangents: usize,
 }
 
 #[derive(Deserialize)]
@@ -218,6 +248,24 @@ enum MeshExtras {
 }
 
 impl GltfMetadata {
+    pub fn primitive_summary(&self) -> GltfPrimitiveSummary {
+        let mut summary = GltfPrimitiveSummary::default();
+        for primitive in self.meshes.iter().flat_map(|mesh| &mesh.primitives) {
+            let mode = primitive.mode.unwrap_or(4);
+            if let Some(count) = summary.modes.get_mut(mode) {
+                *count += 1;
+            }
+            if mode < 4 {
+                match (primitive.attributes.normal, primitive.attributes.tangent) {
+                    (None, _) => summary.point_line_unlit += 1,
+                    (Some(_), None) => summary.point_line_normals += 1,
+                    (Some(_), Some(_)) => summary.point_line_tangents += 1,
+                }
+            }
+        }
+        summary
+    }
+
     pub fn gpu_instance_attributes(
         &self,
     ) -> impl Iterator<Item = (usize, &BTreeMap<String, usize>)> {
@@ -341,6 +389,56 @@ impl GltfMetadata {
             .iter()
             .flat_map(|mesh| &mesh.primitives)
             .any(|part| part.material.is_none())
+    }
+
+    pub fn meshopt_extensions(&self) -> impl Iterator<Item = &'static str> + '_ {
+        [EXT_MESHOPT_COMPRESSION, KHR_MESHOPT_COMPRESSION]
+            .into_iter()
+            .filter(|name| {
+                self.extensions_used
+                    .iter()
+                    .chain(&self.extensions_required)
+                    .any(|entry| entry == name)
+            })
+    }
+
+    pub fn uses_draco_compression(&self) -> bool {
+        self.extensions_used
+            .iter()
+            .any(|name| name == DRACO_COMPRESSION)
+    }
+
+    pub fn uses_webp_textures(&self) -> bool {
+        self.extensions_used.iter().any(|name| name == TEXTURE_WEBP)
+    }
+
+    pub fn uses_basis_textures(&self) -> bool {
+        self.extensions_used
+            .iter()
+            .any(|name| name == TEXTURE_BASIS)
+    }
+
+    pub fn requires_mesh_quantization(&self) -> bool {
+        self.extensions_required
+            .iter()
+            .any(|name| name == MESH_QUANTIZATION)
+    }
+
+    pub fn morph_texcoord_accessors(
+        &self,
+        mesh: usize,
+        primitive: usize,
+        target: usize,
+    ) -> impl Iterator<Item = (u32, usize)> + '_ {
+        self.meshes
+            .get(mesh)
+            .and_then(|mesh| mesh.primitives.get(primitive))
+            .and_then(|primitive| primitive.targets.get(target))
+            .into_iter()
+            .flatten()
+            .filter_map(|(name, &accessor)| {
+                Some((name.strip_prefix("TEXCOORD_")?.parse().ok()?, accessor))
+            })
     }
 
     pub fn uses_texture_transform(&self) -> bool {

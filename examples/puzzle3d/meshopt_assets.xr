@@ -1,0 +1,43 @@
+struct CompressedActor {
+    id: string, mesh: string, animation: string, animation-time: float,
+    x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color,
+    camera-kind: string, camera-height: float,
+}
+struct CompressedLight {
+    kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+    color: color, intensity: float, range: float, inner-angle: float, outer-angle: float,
+}
+
+export component MeshoptAssetsDemo inherits Window {
+    title <- "XRack · Meshopt buffer views";
+    width <- 200px;
+    height <- 144px;
+    in-out property <int> encoding: 1;
+    in-out property <float> pose-time: 0;
+    property <CompressedActor> defaults <- CompressedActor {
+        id: "", mesh: "", animation: "", animation-time: 0,
+        x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, color: #fff, camera-kind: "", camera-height: 3,
+    };
+    property <[CompressedActor]> actors <- [
+        CompressedActor { id: "eye", z: 4, camera-kind: "orthographic", ..root.defaults },
+        CompressedActor {
+            id: "panel", animation: "turn", animation-time: root.pose-time,
+            mesh: root.encoding == 0 ? @mesh-url("models/meshopt-reference.glb")
+                : (root.encoding == 1 ? @mesh-url("models/meshopt-v0.glb") : @mesh-url("models/meshopt-v1.gltf")),
+            ..root.defaults
+        },
+    ];
+    out property <hit3d> contact <- Scene3D.ray-hit(
+        root.actors, Point3D.new(0.2, 0.1, 4), Vector3D.new(0, 0, -1), 6);
+
+    SceneView3D {
+        width <- 200px; height <- 144px; camera <- "eye"; model <- root.actors;
+        scene-background <- #172132; scene-tone-map <- none; ambient-intensity <- 0.35;
+        lights <- [CompressedLight {
+            kind: "directional", x: 0, y: 0, z: 0, yaw: 20, elevation: 25,
+            color: #fff, intensity: 1.6, range: 0, inner-angle: 18, outer-angle: 40,
+        }];
+    }
+}

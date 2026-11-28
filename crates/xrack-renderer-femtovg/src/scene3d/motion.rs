@@ -1,14 +1,14 @@
 //! Capture previous-frame coordinates for the visible 3D surfaces.
 use std::{collections::HashMap, num::NonZeroU64, sync::Arc};
 
-use xrack_runtime::scene3d::{Mesh3D, MeshCullMode, SceneCamera, SceneObject};
+use xrack_runtime::scene3d::{Mesh3D, MeshCullMode, MeshTopology, SceneCamera, SceneObject};
 
 use super::{
     Attachment, DEPTH_FORMAT, HDR_FORMAT, MeshCache, MeshColorDraws, append_floats,
     attachment_view, buffer,
     capture_region::CaptureRegion,
     deform::{Deformation, DeformationBinding, DeformationLayouts, SKIN_LAYOUT},
-    pipeline::{GEOMETRY_LAYOUTS, INSTANCE_DATA_LAYOUT, culled_face, orient_depth_compare},
+    pipeline::{GEOMETRY_LAYOUTS, INSTANCE_DATA_LAYOUT, mesh_primitive, orient_depth_compare},
     vertex_program::VertexPipelines,
     wireframe::{self, RasterMode},
 };
@@ -234,10 +234,13 @@ impl MotionPass {
                         .filter(|binding| binding.mode == mode)
                         .unwrap_or(current);
                     encoder.set_bind_group(2, &old.group, &[]);
-                    encoder.set_bind_group(3, &current.group, &[]);
                 }
+                let mut bound_wide = None;
                 for (index, part) in parts {
                     let key = Variant {
+                        wide_points: part.surface.wide_points,
+                        wide_lines: part.surface.wide_lines,
+                        topology: part.surface.topology,
                         phase,
                         mode,
                         coverage: part.mask || part.surface.blend,
@@ -245,7 +248,7 @@ impl MotionPass {
                         reflected: object.is_reflected() ^ reverses_winding,
                         reverse_depth,
                         lod_fade: draws.geometry.lod_fade,
-                        raster,
+                        raster: raster.for_topology(part.surface.topology),
                     };
                     let program = part.material.vertex.as_ref();
                     let selection = (
@@ -255,6 +258,10 @@ impl MotionPass {
                     if active != Some(selection) {
                         encoder.set_pipeline(pipelines.get(device, key, program));
                         active = Some(selection);
+                    }
+                    if bound_wide != Some(key.wide_lines) {
+                        mesh.bind_deformation(&mut encoder, current, key.wide_lines);
+                        bound_wide = Some(key.wide_lines);
                     }
                     let offset = program
                         .and_then(|_| {
@@ -332,6 +339,24 @@ fn append_previous_parameters(
 }
 
 fn same_vertex_programs(current: &Mesh3D, previous: &Mesh3D) -> bool {
+    if let (Mesh3D::Imported(current_data), Mesh3D::Imported(previous_data)) = (current, previous)
+        && (current_data.wide_points().is_some()
+            || previous_data.wide_points().is_some()
+            || current_data.wide_lines().is_some()
+            || previous_data.wide_lines().is_some())
+        && (current_data.wide_points() != previous_data.wide_points()
+            || current_data.wide_lines() != previous_data.wide_lines()
+            || current
+                .materials()
+                .iter()
+                .map(|m| (m.point_size, m.line_width))
+                .ne(previous
+                    .materials()
+                    .iter()
+                    .map(|m| (m.point_size, m.line_width))))
+    {
+        return false;
+    }
     if current.shader_displacement() == 0.0 && previous.shader_displacement() == 0.0 {
         return true;
     }
@@ -406,6 +431,9 @@ enum Phase {
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 struct Variant {
+    wide_points: bool,
+    wide_lines: bool,
+    topology: MeshTopology,
     phase: Phase,
     mode: Deformation,
     coverage: bool,
@@ -418,7 +446,8 @@ struct Variant {
 
 struct MotionPipelines {
     globals: wgpu::BindGroupLayout,
-    layouts: [wgpu::PipelineLayout; 4],
+    layouts: [wgpu::PipelineLayout; 8],
+    wide_pipelines: [Option<VertexPipelines<Variant>>; 4],
     pipelines: VertexPipelines<Variant>,
     wire_pipelines: Option<VertexPipelines<Variant>>,
 }
@@ -464,12 +493,14 @@ impl MotionPipelines {
                 },
             ],
         });
-        let layouts = Deformation::ALL.map(|mode| {
-            let deformation = deformations.get(mode);
-            let groups = [Some(&globals), Some(materials), deformation, deformation];
+        let layouts = std::array::from_fn(|index| {
+            let (mode, wide) = Deformation::at_pipeline(index);
+            let previous = deformations.get(mode);
+            let current = deformations.get_for_line(mode, wide);
+            let groups = [Some(&globals), Some(materials), previous, current];
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("XRack motion pipeline layout"),
-                bind_group_layouts: &groups[..if deformation.is_some() { 4 } else { 2 }],
+                bind_group_layouts: &groups[..if current.is_some() { 4 } else { 2 }],
                 immediate_size: 0,
             })
         });
@@ -478,6 +509,7 @@ impl MotionPipelines {
             layouts,
             pipelines: VertexPipelines::new(device, include_str!("motion.wgsl")),
             wire_pipelines: None,
+            wide_pipelines: Default::default(),
         }
     }
 
@@ -487,7 +519,14 @@ impl MotionPipelines {
         variant: Variant,
         program: Option<&Arc<str>>,
     ) -> &wgpu::RenderPipeline {
-        let pipelines = if variant.raster == RasterMode::ShaderLine {
+        let pipelines = if variant.wide_lines {
+            self.wide_pipelines[variant.mode as usize].get_or_insert_with(|| {
+                VertexPipelines::new(
+                    device,
+                    super::primitive_raster::line_shader(include_str!("motion.wgsl"), variant.mode),
+                )
+            })
+        } else if variant.raster == RasterMode::ShaderLine {
             self.wire_pipelines.get_or_insert_with(|| {
                 VertexPipelines::new(device, wireframe::mesh(include_str!("motion.wgsl")))
             })
@@ -511,7 +550,7 @@ impl MotionPipelines {
             });
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("XRack motion vector pipeline"),
-                layout: Some(&self.layouts[variant.mode as usize]),
+                layout: Some(&self.layouts[variant.mode.pipeline_index(variant.wide_lines)]),
                 vertex: wgpu::VertexState {
                     module,
                     entry_point: Some(match variant.mode {
@@ -520,7 +559,10 @@ impl MotionPipelines {
                         Deformation::Morph => "morphed",
                         Deformation::SkinMorph => "skinned_morphed",
                     }),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[("WIDE_POINTS", f64::from(variant.wide_points))],
+                        ..Default::default()
+                    },
                     buffers: &buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -543,16 +585,13 @@ impl MotionPipelines {
                     },
                     targets: &targets,
                 }),
-                primitive: wgpu::PrimitiveState {
-                    front_face: if variant.reflected {
-                        wgpu::FrontFace::Cw
-                    } else {
-                        wgpu::FrontFace::Ccw
-                    },
-                    cull_mode: culled_face(variant.cull),
-                    polygon_mode: variant.raster.polygon_mode(),
-                    ..Default::default()
-                },
+                primitive: mesh_primitive(
+                    variant.topology,
+                    variant.wide_points || variant.wide_lines,
+                    variant.raster,
+                    variant.reflected,
+                    variant.cull,
+                ),
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
                     depth_write_enabled: Some(variant.phase != Phase::Translucent),

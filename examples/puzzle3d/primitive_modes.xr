@@ -1,0 +1,40 @@
+struct PrimitiveActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-height: float,
+}
+
+export component PrimitiveModesDemo inherits Window {
+    title <- "XRack · glTF primitives";
+    width <- 160px;
+    height <- 120px;
+
+    in-out property <bool> wireframe: false;
+    in-out property <bool> temporal: false;
+    in-out property <float> offset: 0;
+    property <PrimitiveActor> defaults: PrimitiveActor {
+        id: "", mesh: "", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #fff, camera-kind: "", camera-height: 3,
+    };
+    property <[PrimitiveActor]> actors <- [
+        PrimitiveActor { id: "eye", z: 4, camera-kind: "orthographic", ..root.defaults },
+        PrimitiveActor { id: "mixed", mesh: @mesh-url("models/primitive-modes.gltf"), x: root.offset, ..root.defaults }
+    ];
+    out property <hit3d> triangle <- Scene3D.ray-hit(root.actors,
+        Point3D.new(root.offset, 0, 4), Vector3D.new(0, 0, -1), 6);
+    out property <hit3d> line <- Scene3D.ray-hit(root.actors,
+        Point3D.new(root.offset - 1.55, -0.5, 4), Vector3D.new(0, 0, -1), 6);
+
+    SceneView3D {
+        width <- 160px;
+        height <- 120px;
+        camera <- "eye";
+        model <- root.actors;
+        scene-background <- #101020;
+        scene-tone-map <- none;
+        debug-wireframe <- root.wireframe;
+        temporal-aa <- root.temporal;
+        temporal-aa-mode <- "motion-vectors";
+    }
+}

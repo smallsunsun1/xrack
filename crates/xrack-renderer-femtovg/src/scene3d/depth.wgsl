@@ -17,14 +17,17 @@ struct Material {
     shader_parameters: vec4<f32>,
     opacity_uv: TextureTransform,
     opacity_sampling: vec4<u32>,
+    primitive_sizes: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> clip: Projection;
+@group(0) @binding(1) var<uniform> point_extent: vec4<f32>;
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var base_texture: texture_2d<f32>;
 @group(1) @binding(2) var base_sampler: sampler;
 
 struct Geometry {
+    @builtin(vertex_index) index: u32,
     @location(0) position: vec3<f32>,
     @location(4) x: vec4<f32>,
     @location(5) y: vec4<f32>,
@@ -34,11 +37,18 @@ struct Geometry {
     @location(15) instance_data: vec4<f32>,
 }
 
-fn project(vertex: Geometry) -> vec4<f32> {
-    let local = vec4(xr_displaced_vertex(vertex.position, material.shader_parameters, vertex.instance_data,
+fn geometry_clip(vertex: Geometry, position: vec3<f32>) -> vec4<f32> {
+    let local = vec4(xr_displaced_vertex(position, material.shader_parameters, vertex.instance_data,
         xr_instance_number(vertex.metadata.x), vertex.tint, mat3x4(vertex.x, vertex.y, vertex.z)), 1.0);
     let world = vec4<f32>(dot(vertex.x, local), dot(vertex.y, local), dot(vertex.z, local), 1.0);
-    return vec4<f32>(dot(clip.x, world), dot(clip.y, world), dot(clip.z, world), dot(clip.w, world));
+    return vec4(dot(clip.x, world), dot(clip.y, world), dot(clip.z, world), dot(clip.w, world));
+}
+
+fn project(vertex: Geometry) -> vec4<f32> {
+    let center = geometry_clip(vertex, vertex.position);
+    var position = xr_point_corner(center, vertex.index, material.primitive_sizes.x, point_extent.xy);
+    // XRack widen depth
+    return position;
 }
 
 @vertex
@@ -95,35 +105,34 @@ fn vertex_skin_mask(vertex: Geometry, weights: SkinWeights, @location(2) uv: vec
 }
 
 @vertex
-fn vertex_morph_opaque(vertex: Geometry, @builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+fn vertex_morph_opaque(vertex: Geometry) -> @builtin(position) vec4<f32> {
     var deformed = vertex;
-    deformed.position += morph_displacement(index, 0u).position;
+    deformed.position += morph_displacement(vertex.index, 0u).position;
     return project(deformed);
 }
 
 @vertex
-fn vertex_morph_mask(vertex: Geometry, @builtin(vertex_index) index: u32, @location(2) uv: vec2<f32>,
+fn vertex_morph_mask(vertex: Geometry, @location(2) uv: vec2<f32>,
                      @location(3) color: vec4<f32>,
     @location(9) uv1: vec2<f32>) -> MaskVertex {
-    let delta = morph_displacement(index, MORPH_COVERAGE);
+    let delta = morph_displacement(vertex.index, MORPH_COVERAGE);
     var deformed = vertex;
     deformed.position = vertex.position + delta.position;
     return MaskVertex(project(deformed), vec4(uv, uv1) + delta.uvs, vec2<f32>(clamp(color.a + delta.color.a, 0.0, 1.0), vertex.tint.a), vertex.metadata.x);
 }
 
 @vertex
-fn vertex_skin_morph_opaque(vertex: Geometry, weights: SkinWeights,
-                            @builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+fn vertex_skin_morph_opaque(vertex: Geometry, weights: SkinWeights) -> @builtin(position) vec4<f32> {
     var deformed = vertex;
-    deformed.position = skin_point(skin_transform(weights), vertex.position + morph_displacement(index, 0u).position);
+    deformed.position = skin_point(skin_transform(weights), vertex.position + morph_displacement(vertex.index, 0u).position);
     return project(deformed);
 }
 
 @vertex
-fn vertex_skin_morph_mask(vertex: Geometry, weights: SkinWeights, @builtin(vertex_index) index: u32,
+fn vertex_skin_morph_mask(vertex: Geometry, weights: SkinWeights,
                           @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>,
     @location(9) uv1: vec2<f32>) -> MaskVertex {
-    let delta = morph_displacement(index, MORPH_COVERAGE);
+    let delta = morph_displacement(vertex.index, MORPH_COVERAGE);
     var deformed = vertex;
     deformed.position = skin_point(skin_transform(weights), vertex.position + delta.position);
     return MaskVertex(project(deformed), vec4(uv, uv1) + delta.uvs, vec2<f32>(clamp(color.a + delta.color.a, 0.0, 1.0), vertex.tint.a), vertex.metadata.x);

@@ -4,7 +4,12 @@ load("@crates//:defs.bzl", "all_crate_deps")
 rust_library(
     name = "xrack_runtime",
     srcs = glob(["src/**/*.rs"]),
-    compile_data = ["src/scene3d/texture_footprint.wgsl"],
+    compile_data = [
+        "src/scene3d/sky_program.wgsl",
+        "src/scene3d/sky_ray.wgsl",
+        "src/scene3d/sky_screen.wgsl",
+        "src/scene3d/texture_footprint.wgsl",
+    ],
     crate_name = "xrack_runtime",
     crate_root = "src/lib.rs",
     edition = "2024",

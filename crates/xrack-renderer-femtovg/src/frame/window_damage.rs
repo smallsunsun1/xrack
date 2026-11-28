@@ -63,6 +63,21 @@ impl DamageRegions {
             .all(|rect| self.insert(rect.as_rect()))
     }
 
+    fn extend_or_union(&mut self, other: Self) {
+        if self.extend(other) {
+            return;
+        }
+        let extent = self
+            .rectangles()
+            .iter()
+            .chain(other.rectangles())
+            .map(|rect| rect.as_rect())
+            .reduce(shadow::union)
+            .unwrap_or_default();
+        *self = Self::default();
+        self.insert(extent);
+    }
+
     // Restart when a union grows. That union may reach an earlier rectangle.
     fn insert(&mut self, mut extent: Rect) -> bool {
         if !shadow::nonempty(extent) {
@@ -92,6 +107,38 @@ impl DamageRegions {
         self.rects[..self.len].sort_unstable_by_key(|rect| (rect.y, rect.x));
         true
     }
+}
+
+struct SolidUpdate {
+    region: DamageRect,
+    pixels: SolidPixels,
+}
+
+enum SolidPixels {
+    Single([u8; 4]),
+    Pieces(Vec<(DamageRect, [u8; 4])>),
+}
+
+fn split_uncovered(piece: Rect, covered: Rect, rest: &mut Vec<Rect>) {
+    let right = covered.x + covered.width;
+    let bottom = covered.y + covered.height;
+    let pieces = [
+        Rect::new(piece.x, piece.y, piece.width, covered.y - piece.y),
+        Rect::new(
+            piece.x,
+            bottom,
+            piece.width,
+            piece.y + piece.height - bottom,
+        ),
+        Rect::new(piece.x, covered.y, covered.x - piece.x, covered.height),
+        Rect::new(
+            right,
+            covered.y,
+            piece.x + piece.width - right,
+            covered.height,
+        ),
+    ];
+    rest.extend(pieces.into_iter().filter(|&piece| shadow::nonempty(piece)));
 }
 
 fn overlap(first: Rect, second: Rect) -> bool {
@@ -159,33 +206,42 @@ impl WindowDamage {
         {
             return Self::Full;
         }
+        let previous_batches: &[Rect] = if same_geometry {
+            &[]
+        } else {
+            &before.geometry.batches
+        };
+        Self::resolve_damage(damage, &after.geometry, previous_batches)
+    }
+
+    fn resolve_damage(
+        mut damage: DamageRegions,
+        geometry: &Geometry,
+        previous_batches: &[Rect],
+    ) -> Self {
         if damage.len == 0 {
             return Self::Unchanged;
         }
         // Bound large texture replays independently of the CPU savings
         // estimate used to choose whether an eligible plan is profitable.
-        let maximum_area =
-            after.geometry.index.viewport.width * after.geometry.index.viewport.height * 0.7;
+        let maximum_area = geometry.index.viewport.width * geometry.index.viewport.height * 0.7;
         // Preserve complete overlapping paint groups and batches, including
         // their original coverage math. A group crossing two regions merges them.
         for _ in 0..4 {
             let old = damage;
             for region in old.rectangles() {
                 let query = region.as_rect();
-                if !after
-                    .geometry
-                    .index
-                    .visit(query, |extent, _| damage.insert(extent))
-                {
+                if !geometry.index.visit(query, |entry, extent, _| {
+                    geometry.replay_index.as_ref().is_some_and(|replay| {
+                        replay.children[entry].is_some_and(|child| child.clipped_surface)
+                    }) || damage.insert(extent)
+                }) {
                     return Self::Full;
                 }
-                if !same_geometry
-                    && !before
-                        .geometry
-                        .batches
-                        .iter()
-                        .filter(|&&extent| overlap(extent, query))
-                        .all(|&extent| damage.insert(extent))
+                if !previous_batches
+                    .iter()
+                    .filter(|&&extent| overlap(extent, query))
+                    .all(|&extent| damage.insert(extent))
                 {
                     return Self::Full;
                 }
@@ -259,8 +315,8 @@ impl Scene {
         layout: &LayoutNode,
         frame: PaintFrame<'_>,
         target: &wgpu::Texture,
-        previous: Option<&Self>,
-    ) -> Option<Self> {
+        previous: &mut Option<Self>,
+    ) -> Option<(Self, Option<WindowDamage>)> {
         let input = frame.input;
         if !matches!(item_paint(scene), ItemPaint::Window)
             || scene.opacity() != 1.0
@@ -288,50 +344,197 @@ impl Scene {
             generation: renderer.scene_generation,
         };
         let layout_key = frame.prepared_layout.cloned();
+        if let Some(last) = previous.as_mut()
+            && last.style == style
+            && last.geometry.scale == frame.scale
+            && last.geometry.index.viewport.width == target.width() as f32
+            && last.geometry.index.viewport.height == target.height() as f32
+            && let Some(layout) = frame.prepared_layout
+            && let Some(damage) = last.update_rectangles(scene, layout, frame)
+        {
+            let current = previous.take()?;
+            let planned = WindowDamage::resolve_damage(damage, &current.geometry, &[]);
+            return Some((current, Some(planned)));
+        }
+        let previous = previous.as_ref();
         let mut paint_updates = DamageRegions::default();
         let mut paint_since_geometry = DamageRegions::default();
-        let can_reuse = previous
-            .filter(|previous| {
-                previous.style == style
-                    && same_layout(previous.layout.as_ref(), layout_key.as_ref())
-                    && previous.geometry.scale == frame.scale
-                    && previous.geometry.index.viewport.width == target.width() as f32
-                    && previous.geometry.index.viewport.height == target.height() as f32
-                    && collect_background_changes(
-                        &previous.root,
-                        scene,
-                        layout,
-                        frame,
-                        previous.geometry.index.viewport,
-                        &mut paint_updates,
-                    )
-            })
-            .filter(|previous| {
-                paint_since_geometry = previous.paint_since_geometry;
-                paint_since_geometry.extend(paint_updates)
-            });
+        let can_reuse = previous.filter(|previous| {
+            previous.style == style
+                && same_layout(previous.layout.as_ref(), layout_key.as_ref())
+                && previous.geometry.scale == frame.scale
+                && previous.geometry.index.viewport.width == target.width() as f32
+                && previous.geometry.index.viewport.height == target.height() as f32
+                && collect_background_changes(
+                    &previous.root,
+                    scene,
+                    layout,
+                    frame,
+                    previous.geometry.index.viewport,
+                    &mut paint_updates,
+                )
+        });
         let geometry = if let Some(previous) = can_reuse {
+            // This history is replayed only when the index is replaced.
+            // Keep the current frame's independently bounded paint updates.
+            paint_since_geometry = previous.paint_since_geometry;
+            paint_since_geometry.extend_or_union(paint_updates);
             previous.geometry.index.enable_grid();
             previous.geometry.clone()
         } else {
             paint_updates = DamageRegions::default();
-            paint_since_geometry = DamageRegions::default();
             let viewport = Rect::new(0.0, 0.0, target.width() as f32, target.height() as f32);
-            let mut geometry = Geometry::new(viewport, frame.scale);
-            geometry.capture_item(scene, layout, &mut Vec::new(), frame)?;
+            let replay = can_replay_children(scene, layout, frame);
+            let mut geometry = Geometry::new(viewport, frame.scale, target.format(), replay);
+            let previous = previous.filter(|previous| previous.style == style);
+            geometry.capture_item(scene, layout, &mut Vec::new(), 0, frame, previous)?;
             xrack_runtime::update_profile::build_window_geometry();
             Rc::new(geometry)
         };
-        Some(Self {
-            root: scene.clone(),
-            layout: layout_key,
-            input: geometry.paint_input(frame),
-            active_viewports: geometry.active_viewports(scene, layout, frame),
-            geometry,
-            style,
-            paint_updates,
-            paint_since_geometry,
-        })
+        Some((
+            Self {
+                root: scene.clone(),
+                layout: layout_key,
+                input: geometry.paint_input(frame),
+                active_viewports: geometry.active_viewports(scene, layout, frame),
+                geometry,
+                style,
+                paint_updates,
+                paint_since_geometry,
+            },
+            None,
+        ))
+    }
+
+    fn update_rectangles(
+        &mut self,
+        scene: &Node,
+        layout: &Rc<LayoutNode>,
+        frame: PaintFrame<'_>,
+    ) -> Option<DamageRegions> {
+        // Batch records and root children keep their existing paint order.
+        // Validate every change before updating the previous frame.
+        let geometry = Rc::get_mut(&mut self.geometry)?;
+        let replay = geometry.replay_index.as_ref()?;
+        let children = &replay.children;
+        let before = self.layout.as_ref()?;
+        if Rc::ptr_eq(before, layout)
+            || !self.root.same_own_paint_inputs(scene)
+            || before.children.len() != layout.children.len()
+            || !layout.world_transform().is_identity()
+            || before.bounds != layout.bounds
+            || before.clip != layout.clip
+        {
+            return None;
+        }
+        if children.len() != geometry.index.entries.len() {
+            return None;
+        }
+        let changes = layout.window_child_changes_from(before, &self.root, scene);
+        if changes.is_none()
+            && (!replay.groups[0].opaque
+                || children.len() != scene.children.len()
+                || children.len() != self.root.children.len()
+                || children.len() + 1 != geometry.items.len()
+                || !layout
+                    .child_paint_order()
+                    .eq(children.iter().flatten().map(|child| child.index)))
+        {
+            return None;
+        }
+        let projected = changes.into_iter().flatten().filter_map(|(path, _)| {
+            let entry = replay.entry_for_path(path);
+            if entry.is_none() {
+                let clipped = |root: &Node, layout: &LayoutNode| {
+                    root.at_path(path)
+                        .zip(layout.at_path(path))
+                        .is_some_and(|(node, item)| {
+                            !shadow::nonempty(paint_extent(node, item, frame))
+                        })
+                };
+                // A leaf wholly outside its ancestor clip has no index record.
+                if clipped(&self.root, before) && clipped(scene, layout) {
+                    return None;
+                }
+            }
+            Some(entry)
+        });
+        let scan_count = if changes.is_some() { 0 } else { children.len() };
+        let scan = (0..scan_count).map(Some);
+        let mut damage = DamageRegions::default();
+        let mut updates = Vec::new();
+        for entry in projected.chain(scan) {
+            let entry = entry?;
+            let child = children[entry]?;
+            if !child.opaque_fill {
+                return None;
+            }
+            let item = child.item;
+            let parent = &replay.groups[child.group].path;
+            let old_node = self.root.at_path(parent)?.child_at(child.index)?;
+            let new_node = scene.at_path(parent)?.child_at(child.index)?;
+            let prior = before.at_path(parent)?.child_at(child.index)?;
+            let placed = layout.at_path(parent)?.child_at(child.index)?;
+            if prior.visible != placed.visible
+                || prior.clip != placed.clip
+                || prior.enabled != placed.enabled
+            {
+                return None;
+            }
+            if prior.bounds == placed.bounds && old_node.shares_storage_with(new_node) {
+                continue;
+            }
+            if !old_node.same_own_paint_except_position_and_background(new_node)
+                || !placed.world_transform().is_identity()
+                || can_clip_surface(new_node, placed, frame)
+                || updates.len() == MAX_REGIONS
+            {
+                return None;
+            }
+            let rectangle = crate::rectangle::Solid::from_node(new_node, placed, frame.scale)?;
+            rectangle.opaque_rect()?;
+            let logical = paint_extent(new_node, placed, frame);
+            let extent = device_extent(new_node, placed, logical, frame.scale)
+                .intersect(geometry.index.viewport);
+            if !shadow::nonempty(extent)
+                || !damage.insert(geometry.index.entries[entry].0)
+                || !damage.insert(extent)
+            {
+                return None;
+            }
+            updates.push((entry, item, new_node, placed.bounds, extent));
+        }
+        if updates.is_empty() && changes.is_none() {
+            return None;
+        }
+        let input = geometry.paint_input(frame);
+        for &index in self.input.keys().chain(input.keys()) {
+            let previous = self.input.get(&index).copied().unwrap_or_default();
+            let current = input.get(&index).copied().unwrap_or_default();
+            if previous.needs_damage(current) && !damage.insert(geometry.items[index].extent) {
+                return None;
+            }
+        }
+        let active_viewports = geometry.active_viewports(scene, layout, frame);
+        for &position in self.active_viewports.iter().chain(&active_viewports) {
+            if !damage.insert(geometry.items[geometry.islands[position].item].extent) {
+                return None;
+            }
+        }
+        geometry.index.enable_grid();
+        for (entry, item, node, bounds, extent) in updates {
+            geometry.index.reposition(entry, extent);
+            let item = &mut geometry.items[item];
+            item.node = node.clone();
+            item.bounds = bounds;
+            item.extent = extent;
+        }
+        self.root = scene.clone();
+        self.layout = Some(layout.clone());
+        self.input = input;
+        self.active_viewports = active_viewports;
+        self.paint_updates = damage;
+        Some(damage)
     }
 
     fn viewport_damage(&self, after: &Self, damage: &mut DamageRegions) -> bool {
@@ -344,9 +547,9 @@ impl Scene {
         old.iter()
             .zip(new)
             .enumerate()
-            .all(|(position, (&old, &new))| {
-                let before = &self.geometry.items[old];
-                let current = &after.geometry.items[new];
+            .all(|(position, (old, new))| {
+                let before = &self.geometry.items[old.item];
+                let current = &after.geometry.items[new.item];
                 if before.path != current.path {
                     return false;
                 }
@@ -355,12 +558,15 @@ impl Scene {
                 // Scrolling changes the viewport's placement even when
                 // its large scene subtree is mostly unchanged.
                 let unchanged = !active
-                    && (same_layout
-                        || self.layout.as_ref().zip(after.layout.as_ref()).is_some_and(
-                            |(old, new)| old.at_path(&before.path) == new.at_path(&current.path),
-                        ))
-                    && (before.node.shares_storage_with(&current.node)
-                        || before.node == current.node);
+                    && (Rc::ptr_eq(&old.work, &new.work)
+                        || ((same_layout
+                            || self.layout.as_ref().zip(after.layout.as_ref()).is_some_and(
+                                |(old, new)| {
+                                    old.at_path(&before.path) == new.at_path(&current.path)
+                                },
+                            ))
+                            && (before.node.shares_storage_with(&current.node)
+                                || before.node == current.node)));
                 unchanged || damage.insert(before.extent) && damage.insert(current.extent)
             })
     }
@@ -368,7 +574,7 @@ impl Scene {
     fn input_changed(&self, old: usize, after: &Self, new: usize) -> bool {
         let old = self.input.get(&old).copied().unwrap_or_default();
         let new = after.input.get(&new).copied().unwrap_or_default();
-        old.editing || new.editing || old.drop_target || new.drop_target || old != new
+        old.needs_damage(new)
     }
 
     fn changed_geometry(&self, after: &Self, damage: &mut DamageRegions) -> bool {
@@ -427,21 +633,26 @@ fn collect_background_changes(
         return false;
     }
     if !before.same_own_paint_inputs(after) {
-        let visible_fill = |node| {
-            crate::rectangle::Solid::from_node(node, layout, frame.scale)
-                .is_some_and(|rectangle| rectangle.visible())
+        if !matches!(item_paint(after), ItemPaint::Rectangle)
+            || !after.children.is_empty()
+            || !before.same_own_paint_except_background(after)
+        {
+            return false;
+        }
+        let fill = |node| crate::rectangle::Solid::from_node(node, layout, frame.scale);
+        let (Some(old), Some(new)) = (fill(before), fill(after)) else {
+            return false;
         };
+        // An update behind an ancestor clip cannot change the backing image
+        // or the existing spatial index.
+        if !old.visible() && !new.visible() {
+            return true;
+        }
         let opaque = |node: &Node| {
             node.color("background")
                 .is_some_and(|color| color.0 & 0xff == 0xff)
         };
-        if !matches!(item_paint(after), ItemPaint::Rectangle)
-            || !after.children.is_empty()
-            || !before.same_own_paint_except_background(after)
-            || opaque(before) != opaque(after)
-            || !visible_fill(before)
-            || !visible_fill(after)
-        {
+        if !old.visible() || !new.visible() || opaque(before) != opaque(after) {
             return false;
         }
         let bounds = paint_extent(after, layout, frame);
@@ -468,13 +679,80 @@ struct Geometry {
     paths: BTreeMap<Vec<usize>, usize>,
     // Text state and synthetic button presses can change without a pointer event.
     independent: Vec<usize>,
-    islands: Vec<usize>,
+    islands: Vec<PaintViewport>,
     index: PaintIndex,
+    replay_index: Option<PaintReplayIndex>,
     scale: f32,
 }
 
+pub(crate) type PaintReplay<'a> = BTreeMap<&'a [usize], Vec<crate::PaintChild>>;
+
+struct PaintReplayIndex {
+    // One entry per spatial index record. Batch bounds have no child.
+    children: Vec<Option<IndexedChild>>,
+    groups: Vec<ReplayGroup>,
+}
+
+struct ReplayGroup {
+    path: Vec<usize>,
+    opaque: bool,
+    first_entry: usize,
+}
+
+#[derive(Clone, Copy)]
+struct IndexedChild {
+    group: usize,
+    index: usize,
+    item: usize,
+    opaque_fill: bool,
+    // A panel is selected by its whole bounds, then paints only inside the damage.
+    clipped_surface: bool,
+}
+
+impl PaintReplayIndex {
+    fn entry_for_path(&self, path: &[usize]) -> Option<usize> {
+        let (&child, parent) = path.split_last()?;
+        let group = self.groups.iter().position(|group| group.path == parent)?;
+        let first_entry = self.groups[group].first_entry;
+        let matches = |entry: &Option<IndexedChild>| {
+            entry.is_some_and(|entry| entry.group == group && entry.index == child)
+        };
+        let candidate = first_entry.checked_add(child)?;
+        if self.children.get(candidate).is_some_and(matches) {
+            return Some(candidate);
+        }
+        self.children[first_entry..]
+            .iter()
+            .position(matches)
+            .map(|offset| first_entry + offset)
+    }
+}
+
+struct PaintViewport {
+    item: usize,
+    // Sharing this handle across snapshots certifies that the viewport's
+    // node and complete layout are unchanged.
+    work: Rc<u32>,
+}
+
 impl Geometry {
-    fn new(viewport: Rect, scale: f32) -> Self {
+    fn new(viewport: Rect, scale: f32, format: wgpu::TextureFormat, can_replay: bool) -> Self {
+        let replay_index = (can_replay
+            && matches!(
+                format,
+                wgpu::TextureFormat::Rgba8Unorm
+                    | wgpu::TextureFormat::Rgba8UnormSrgb
+                    | wgpu::TextureFormat::Bgra8Unorm
+                    | wgpu::TextureFormat::Bgra8UnormSrgb
+            ))
+        .then(|| PaintReplayIndex {
+            children: Vec::new(),
+            groups: vec![ReplayGroup {
+                path: Vec::new(),
+                opaque: true,
+                first_entry: 0,
+            }],
+        });
         Self {
             items: Vec::new(),
             batches: Vec::new(),
@@ -482,8 +760,222 @@ impl Geometry {
             independent: Vec::new(),
             islands: Vec::new(),
             index: PaintIndex::new(viewport),
+            replay_index,
             scale,
         }
+    }
+
+    fn patch_key(&self, scene: &Node, regions: DamageRegions) -> Option<PatchKey> {
+        const MAX_PATCH_PIXELS: u64 = 32_768;
+        const MAX_PATCH_FILLS: usize = 256;
+        let [region] = regions.rectangles() else {
+            return None;
+        };
+        if u64::from(region.width) * u64::from(region.height) > MAX_PATCH_PIXELS {
+            return None;
+        }
+        let replay = self.replay_index.as_ref()?;
+        let mut fills = Vec::new();
+        let supported = self.index.visit(region.as_rect(), |index, _, _| {
+            let Some(entry) = replay.children[index] else {
+                return true;
+            };
+            if entry.clipped_surface {
+                return true;
+            }
+            let Some(node) = scene
+                .at_path(&replay.groups[entry.group].path)
+                .and_then(|node| node.child_at(entry.index))
+            else {
+                return false;
+            };
+            match item_paint(node) {
+                ItemPaint::Rectangle => {
+                    if let Some(color) = node.color("background") {
+                        fills.push((index, color.0));
+                    }
+                    fills.len() <= MAX_PATCH_FILLS
+                }
+                ItemPaint::Label | ItemPaint::Text => true,
+                _ => false,
+            }
+        });
+        if !supported || fills.is_empty() {
+            return None;
+        }
+        fills.sort_unstable_by_key(|&(index, _)| index);
+        Some(PatchKey {
+            region: *region,
+            fills,
+        })
+    }
+
+    fn solid_updates(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        regions: DamageRegions,
+        frame: PaintFrame<'_>,
+    ) -> Option<Vec<SolidUpdate>> {
+        const MAX_SOLID_UPLOAD_PIXELS: u64 = 4096;
+        const MAX_PAINTERS: usize = 64;
+        const MAX_PIECES: usize = 16;
+        let replay = self.replay_index.as_ref()?;
+        let area = regions
+            .rectangles()
+            .iter()
+            .map(|rect| u64::from(rect.width) * u64::from(rect.height))
+            .sum::<u64>();
+        if area > MAX_SOLID_UPLOAD_PIXELS {
+            return None;
+        }
+        let background = || {
+            crate::window_clear_background(scene, layout, layout.bounds, frame.scale)
+                .or_else(|| {
+                    (!scene.is_item_delegate() && !scene.properties.contains_key("background"))
+                        .then_some(frame.theme.window)
+                })
+                .filter(|color| color.0 & 0xff == 0xff)
+                .map(|color| color.0.to_be_bytes())
+        };
+        let opaque_source = |entry: IndexedChild| {
+            let path = &replay.groups[entry.group].path;
+            let node = scene.at_path(path)?.child_at(entry.index)?;
+            let layout = layout.at_path(path)?.child_at(entry.index)?;
+            let (bounds, color) = if entry.opaque_fill {
+                crate::rectangle::Solid::from_node(node, layout, self.scale)?.opaque_rect()?
+            } else if entry.clipped_surface
+                && crate::rectangle::plain_surface(node, layout)
+                && !node.is_item_delegate()
+                && crate::pixel_aligned(layout.bounds, frame.scale)
+                && can_clip_surface(node, layout, frame)
+            {
+                (
+                    layout.bounds.intersect(layout.clip),
+                    node.color("background")?.0,
+                )
+            } else {
+                return None;
+            };
+            Some((
+                crate::retained_layers::device_bounds(bounds, self.scale),
+                color.to_be_bytes(),
+            ))
+        };
+        regions
+            .rectangles()
+            .iter()
+            .map(|rect| {
+                let region = rect.as_rect();
+                let mut top = None;
+                self.index.visit(region, |index, _, _| {
+                    if replay.children[index].is_some() && top.is_none_or(|top| index > top) {
+                        top = Some(index);
+                    }
+                    true
+                });
+                let Some(top) = top else {
+                    return Some(SolidUpdate {
+                        region: *rect,
+                        pixels: SolidPixels::Single(background()?),
+                    });
+                };
+                let (bounds, color) = opaque_source(replay.children[top]?)?;
+                if region.intersect(bounds) == region {
+                    return Some(SolidUpdate {
+                        region: *rect,
+                        pixels: SolidPixels::Single(color),
+                    });
+                }
+                let mut entries = Vec::new();
+                let collected = self.index.visit(region, |index, extent, _| {
+                    if let Some(child) = replay.children[index] {
+                        entries.push((index, extent, child));
+                    }
+                    entries.len() <= MAX_PAINTERS
+                });
+                if !collected {
+                    return None;
+                }
+                // Only the topmost visible painter contributes to a filled piece.
+                entries.sort_unstable_by_key(|(index, _, _)| std::cmp::Reverse(*index));
+                let mut pending = vec![region];
+                let mut remainder = Vec::new();
+                let mut fills = Vec::new();
+                for (_, extent, entry) in entries {
+                    if !pending.iter().any(|&piece| overlap(piece, extent)) {
+                        continue;
+                    }
+                    let (bounds, color) = opaque_source(entry)?;
+                    for piece in pending.drain(..) {
+                        let painted = piece.intersect(bounds);
+                        if !shadow::nonempty(painted) {
+                            remainder.push(piece);
+                            continue;
+                        }
+                        fills.push((DamageRect::from_rect(painted), color));
+                        split_uncovered(piece, painted, &mut remainder);
+                    }
+                    std::mem::swap(&mut pending, &mut remainder);
+                    if fills.len() + pending.len() > MAX_PIECES {
+                        return None;
+                    }
+                    if pending.is_empty() {
+                        break;
+                    }
+                }
+                if !pending.is_empty() {
+                    let color = background()?;
+                    fills.extend(
+                        pending
+                            .into_iter()
+                            .map(|piece| (DamageRect::from_rect(piece), color)),
+                    );
+                }
+                Some(SolidUpdate {
+                    region: *rect,
+                    pixels: SolidPixels::Pieces(fills),
+                })
+            })
+            .collect()
+    }
+
+    fn damaged_children(&self, regions: DamageRegions) -> Option<PaintReplay<'_>> {
+        let replay = self.replay_index.as_ref()?;
+        if replay.children.len() != self.index.entries.len() {
+            return None;
+        }
+        let mut entries = Vec::new();
+        for region in regions.rectangles() {
+            self.index.visit(region.as_rect(), |index, _, _| {
+                entries.push(index);
+                true
+            });
+        }
+        // Grid traversal is in spatial order. Replay the original paint order
+        // so overlapping children still occlude each other at the same pixels.
+        entries.sort_unstable();
+        entries.dedup();
+        let mut previous = vec![None; replay.groups.len()];
+        let mut selected = PaintReplay::new();
+        for entry in entries {
+            let Some(child) = replay.children[entry] else {
+                continue;
+            };
+            let group = &replay.groups[child.group];
+            // A skipped painter still separates batches in a mixed group.
+            let last = &mut previous[child.group];
+            let flush_before = !group.opaque && last.is_some_and(|prior| prior + 1 != entry);
+            *last = Some(entry);
+            selected
+                .entry(group.path.as_slice())
+                .or_default()
+                .push(crate::PaintChild {
+                    index: child.index,
+                    flush_before,
+                });
+        }
+        Some(selected)
     }
 
     fn active_viewports(
@@ -509,8 +1001,8 @@ impl Geometry {
         self.islands
             .iter()
             .enumerate()
-            .filter_map(|(position, &index)| {
-                let item = &self.items[index];
+            .filter_map(|(position, viewport)| {
+                let item = &self.items[viewport.item];
                 let active = input
                     .window_paint_targets()
                     .any(|path| path.starts_with(item.path.as_slice()))
@@ -533,6 +1025,9 @@ impl Geometry {
 
     fn paint_input(&self, frame: PaintFrame<'_>) -> BTreeMap<usize, PaintInput> {
         let mut states = BTreeMap::new();
+        if self.paths.is_empty() && self.independent.is_empty() {
+            return states;
+        }
         let targeted = frame
             .input
             .window_paint_targets()
@@ -550,6 +1045,11 @@ impl Geometry {
     fn record_batch(&mut self, run: Option<Rect>) {
         if let Some(run) = run {
             self.batches.push(run);
+            if let Some(root) = &mut self.replay_index
+                && shadow::nonempty(run)
+            {
+                root.children.push(None);
+            }
             self.index.add(run, 0);
         }
     }
@@ -559,7 +1059,9 @@ impl Geometry {
         node: &Node,
         layout: &LayoutNode,
         path: &mut Vec<usize>,
+        group: usize,
         frame: PaintFrame<'_>,
+        previous: Option<&Scene>,
     ) -> Option<Batchable> {
         let paint = item_paint(node);
         if !layout.visible
@@ -577,7 +1079,18 @@ impl Geometry {
             if layout.allows_overflow() {
                 return None;
             }
-            Some(static_viewport_work(node, layout)?)
+            let retained = previous.and_then(|previous| {
+                let viewport = previous.geometry.islands.get(self.islands.len())?;
+                let item = &previous.geometry.items[viewport.item];
+                (item.path == *path
+                    && item.node.shares_storage_with(node)
+                    && previous.layout.as_ref()?.at_path(path)? == layout)
+                    .then(|| viewport.work.clone())
+            });
+            Some(match retained {
+                Some(work) => work,
+                None => Rc::new(static_viewport_work(node, layout)?),
+            })
         } else {
             if !basic_painter(paint)
                 || layout.scroll.is_some()
@@ -640,14 +1153,53 @@ impl Geometry {
             overflow: layout.allows_overflow(),
         });
         let paintless = paintless_container(node);
-        if !path.is_empty() && !paintless && !can_clip_surface(node, layout, frame) {
+        let clip_surface = !path.is_empty() && can_clip_surface(node, layout, frame);
+        let clipped_surface = clip_surface && self.replay_index.is_some();
+        let indexed = !path.is_empty() && !paintless && (!clip_surface || clipped_surface);
+        let rectangle = if matches!(paint, ItemPaint::Rectangle) {
+            crate::rectangle::Solid::from_node(node, layout, frame.scale)
+        } else {
+            None
+        };
+        let opaque_fill = self.replay_index.is_some()
+            && indexed
+            && shadow::nonempty(extent)
+            && layout.world_transform().is_identity()
+            && rectangle.is_some_and(|rectangle| rectangle.opaque_rect().is_some());
+        let mut child_group = group;
+        if let Some(replay) = &mut self.replay_index
+            && let Some(&child) = path.last()
+        {
+            replay.groups[group].opaque &= opaque_fill;
+            if indexed && shadow::nonempty(extent) {
+                replay.children.push(Some(IndexedChild {
+                    group,
+                    index: child,
+                    item: index,
+                    opaque_fill,
+                    clipped_surface,
+                }));
+            }
+            if clipped_surface {
+                child_group = replay.groups.len();
+                replay.groups.push(ReplayGroup {
+                    path: path.clone(),
+                    opaque: true,
+                    first_entry: replay.children.len(),
+                });
+            }
+        }
+        if indexed {
             self.index.add(
                 extent,
-                island_work.unwrap_or_else(|| paint_weight(node, button, editor)),
+                island_work
+                    .as_deref()
+                    .copied()
+                    .unwrap_or_else(|| paint_weight(node, button, editor)),
             );
         }
-        if viewport {
-            self.islands.push(index);
+        if let Some(work) = island_work {
+            self.islands.push(PaintViewport { item: index, work });
             return Some(Batchable::Barrier);
         }
         if tracks_input {
@@ -660,7 +1212,7 @@ impl Geometry {
         let mut has_barrier = false;
         for (index, child, item) in layout.children_in_paint_order(node) {
             path.push(index);
-            let batchable = self.capture_item(child, item, path, frame)?;
+            let batchable = self.capture_item(child, item, path, child_group, frame, previous)?;
             path.pop();
             match batchable {
                 Batchable::Primitives(Some(bounds)) => {
@@ -676,7 +1228,10 @@ impl Geometry {
         self.record_batch(run);
         // Retain a superset of each paint run so culling never changes its atlas
         // or glyph batch membership.
-        let batchable = if paintless
+        let batchable = if opaque_fill {
+            // Pixel-aligned opaque fills preserve their coverage when replayed alone.
+            Batchable::Primitives(None)
+        } else if paintless
             && !has_barrier
             && layout.child_clip_shape().is_none()
             && Renderer::is_unpainted_group(node, layout)
@@ -685,8 +1240,7 @@ impl Geometry {
         } else if matches!(
             paint,
             ItemPaint::Text | ItemPaint::Label | ItemPaint::Image { animated: false }
-        ) || matches!(paint, ItemPaint::Rectangle)
-            && crate::rectangle::Solid::from_node(node, layout, frame.scale).is_some()
+        ) || rectangle.is_some()
         {
             Batchable::Primitives(shadow::nonempty(extent).then_some(extent))
         } else {
@@ -694,6 +1248,41 @@ impl Geometry {
         };
         Some(batchable)
     }
+}
+
+fn can_replay_children(node: &Node, layout: &LayoutNode, frame: PaintFrame<'_>) -> bool {
+    layout
+        .children_in_paint_order(node)
+        .all(|(_, child, placed)| {
+            let opacity = child.opacity();
+            let paint = item_paint(child);
+            if !placed.visible
+                || opacity == 0.0
+                || child.scene_texture_only()
+                || matches!(paint, ItemPaint::Shortcut)
+            {
+                return true;
+            }
+            if matches!(paint, ItemPaint::DropArea) && paintless_container(child) {
+                // Its drag outline can appear without an indexed fill.
+                return false;
+            }
+            // Shrinking a batch must not switch fractional coverage or an independent
+            // opacity between different paint paths.
+            opacity == 1.0
+                && if child.children.is_empty() {
+                    !matches!(paint, ItemPaint::Rectangle)
+                        || placed.world_transform().is_identity()
+                            && crate::pixel_aligned(placed.bounds, frame.scale)
+                            && crate::pixel_aligned(
+                                placed.bounds.intersect(placed.clip),
+                                frame.scale,
+                            )
+                } else {
+                    can_clip_surface(child, placed, frame)
+                        && can_replay_children(child, placed, frame)
+                }
+        })
 }
 
 pub(crate) fn is_paint_viewport(paint: ItemPaint) -> bool {
@@ -823,6 +1412,14 @@ struct PaintInput {
 }
 
 impl PaintInput {
+    fn needs_damage(self, current: Self) -> bool {
+        self.editing
+            || current.editing
+            || self.drop_target
+            || current.drop_target
+            || self != current
+    }
+
     fn capture(node: &Node, path: &[usize], frame: PaintFrame<'_>) -> Self {
         let paint = item_paint(node);
         let button = matches!(paint, ItemPaint::Button(_));
@@ -894,6 +1491,33 @@ impl PaintIndex {
         }
     }
 
+    fn cells_crossed(&self, extent: Rect) -> impl Iterator<Item = usize> + use<> {
+        let (x0, y0) = self.cell(extent.x, extent.y);
+        let (x1, y1) = self.cell(
+            extent.x + extent.width - 1.0,
+            extent.y + extent.height - 1.0,
+        );
+        (y0..=y1).flat_map(move |y| (x0..=x1).map(move |x| y * BANDS + x))
+    }
+
+    fn reposition(&mut self, entry: usize, extent: Rect) {
+        let previous = self.entries[entry].0;
+        if previous == extent {
+            return;
+        }
+        let remove = self.cells_crossed(previous);
+        let add = self.cells_crossed(extent);
+        if let Some(cells) = self.cells.get_mut() {
+            for cell in remove {
+                cells[cell].retain(|&index| index != entry);
+            }
+            for cell in add {
+                cells[cell].push(entry);
+            }
+        }
+        self.entries[entry].0 = extent;
+    }
+
     fn enable_grid(&self) {
         // Small or one-off layouts are cheaper to scan than to index.
         if self.entries.len() < BANDS * BANDS {
@@ -902,27 +1526,23 @@ impl PaintIndex {
         self.cells.get_or_init(|| {
             let mut cells: [Vec<usize>; BANDS * BANDS] = std::array::from_fn(|_| Vec::new());
             for (index, &(extent, _)) in self.entries.iter().enumerate() {
-                let (x0, y0) = self.cell(extent.x, extent.y);
-                let (x1, y1) = self.cell(
-                    extent.x + extent.width - 1.0,
-                    extent.y + extent.height - 1.0,
-                );
-                for y in y0..=y1 {
-                    for x in x0..=x1 {
-                        cells[y * BANDS + x].push(index);
-                    }
+                for cell in self.cells_crossed(extent) {
+                    cells[cell].push(index);
                 }
             }
             cells
         });
     }
 
-    fn visit(&self, region: Rect, mut visit: impl FnMut(Rect, u32) -> bool) -> bool {
+    fn visit(&self, region: Rect, mut visit: impl FnMut(usize, Rect, u32) -> bool) -> bool {
         let Some(cells) = self.cells.get() else {
             return self
                 .entries
                 .iter()
-                .all(|&(extent, work)| !overlap(region, extent) || visit(extent, work));
+                .enumerate()
+                .all(|(index, &(extent, work))| {
+                    !overlap(region, extent) || visit(index, extent, work)
+                });
         };
         let (x0, y0) = self.cell(region.x, region.y);
         let (x1, y1) = self.cell(
@@ -936,7 +1556,7 @@ impl PaintIndex {
                     let intersection = region.intersect(extent);
                     if shadow::nonempty(intersection)
                         && self.cell(intersection.x, intersection.y) == (x, y)
-                        && !visit(extent, work)
+                        && !visit(index, extent, work)
                     {
                         return false;
                     }
@@ -951,7 +1571,7 @@ impl PaintIndex {
         if let Some(regions) = regions {
             let regions = regions.rectangles();
             for (index, region) in regions.iter().enumerate() {
-                self.visit(region.as_rect(), |extent, work| {
+                self.visit(region.as_rect(), |_, extent, work| {
                     if !regions[..index]
                         .iter()
                         .any(|region| overlap(region.as_rect(), extent))
@@ -1110,27 +1730,49 @@ pub(crate) fn intersects_damage(
     node: &Node,
     layout: &LayoutNode,
     frame: PaintFrame<'_>,
-    damage: DamageRegions,
+    damage: crate::PaintDamage<'_>,
 ) -> bool {
     let extent = paint_extent(node, layout, frame);
-    shadow::nonempty(extent) && damage.intersects(device_extent(node, layout, extent, frame.scale))
+    shadow::nonempty(extent)
+        && damage
+            .regions
+            .intersects(device_extent(node, layout, extent, frame.scale))
+}
+
+#[derive(PartialEq, Eq)]
+struct PatchKey {
+    region: DamageRect,
+    fills: Vec<(usize, u32)>,
+}
+
+struct PatchEntry {
+    key: PatchKey,
+    texture: Option<wgpu::Texture>,
+}
+
+struct PatchCopy {
+    texture: wgpu::Texture,
+    region: DamageRect,
+    restore: bool,
 }
 
 struct WindowBacking {
     texture: wgpu::Texture,
     scale: f32,
     valid: bool,
-    blitter: Option<WindowBlitter>,
+    transfer_source: Option<wgpu::BindGroup>,
+    upload: Vec<u8>,
+    patches: std::collections::VecDeque<PatchEntry>,
 }
 
 struct WindowBlitter {
+    format: wgpu::TextureFormat,
+    layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
-    source: wgpu::BindGroup,
 }
 
 impl WindowBlitter {
-    fn new(device: &wgpu::Device, source: &wgpu::Texture) -> Self {
-        let format = source.format();
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("XRack window image input"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -1178,19 +1820,31 @@ impl WindowBlitter {
             multiview_mask: None,
             cache: None,
         });
+        Self {
+            format,
+            layout,
+            pipeline,
+        }
+    }
+
+    fn bind_source(&self, device: &wgpu::Device, source: &wgpu::Texture) -> wgpu::BindGroup {
         let view = source.create_view(&Default::default());
-        let source = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("XRack window image input"),
-            layout: &layout,
+            layout: &self.layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::TextureView(&view),
             }],
-        });
-        Self { pipeline, source }
+        })
     }
 
-    fn copy(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::Texture) {
+    fn copy(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::BindGroup,
+        target: &wgpu::Texture,
+    ) {
         let view = target.create_view(&Default::default());
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("XRack transfer window image"),
@@ -1207,22 +1861,90 @@ impl WindowBlitter {
             ..Default::default()
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.source, &[]);
+        pass.set_bind_group(0, source, &[]);
         pass.draw(0..3, 0..1);
     }
 }
 
 impl WindowBacking {
+    fn upload_solid_updates(&mut self, queue: &wgpu::Queue, updates: &[SolidUpdate]) {
+        let bgra = self.texture.format() == wgpu::TextureFormat::Bgra8Unorm;
+        let texture_color = |mut color: [u8; 4]| {
+            if bgra {
+                color.swap(0, 2);
+            }
+            color
+        };
+        let fill_pixels = |bytes: &mut [u8], color: [u8; 4]| {
+            for pixel in bytes.chunks_exact_mut(4) {
+                pixel.copy_from_slice(&color);
+            }
+        };
+        for update in updates {
+            let rect = update.region;
+            let stride = rect.width as usize * 4;
+            let size = stride * rect.height as usize;
+            self.upload.resize(size, 0);
+            match &update.pixels {
+                SolidPixels::Single(color) => fill_pixels(&mut self.upload, texture_color(*color)),
+                SolidPixels::Pieces(fills) => {
+                    for &(fill, color) in fills {
+                        let color = texture_color(color);
+                        let left = (fill.x - rect.x) as usize * 4;
+                        let width = fill.width as usize * 4;
+                        let first_row = (fill.y - rect.y) as usize;
+                        for row in first_row..first_row + fill.height as usize {
+                            let start = row * stride + left;
+                            fill_pixels(&mut self.upload[start..start + width], color);
+                        }
+                    }
+                }
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: rect.x,
+                        y: rect.y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &self.upload,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(rect.width * 4),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: rect.width,
+                    height: rect.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            xrack_runtime::update_profile::texture_upload(size);
+        }
+    }
+
     fn new(renderer: &Renderer, target: &wgpu::Texture, scale: f32) -> Option<Self> {
         let format = target.format();
-        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC;
-        if !renderer
+        let allowed = renderer
             .adapter
             .get_texture_format_features(format)
-            .allowed_usages
-            .contains(usage)
+            .allowed_usages;
+        let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC;
+        // Non-sRGB formats store the fill's original bytes without conversion.
+        if matches!(
+            format,
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+        ) && allowed.contains(wgpu::TextureUsages::COPY_DST)
+        {
+            usage |= wgpu::TextureUsages::COPY_DST;
+        }
+        if !allowed.contains(usage)
             || !matches!(
                 format.sample_type(None, Some(renderer.device.features())),
                 Some(wgpu::TextureSampleType::Float { .. })
@@ -1244,7 +1966,9 @@ impl WindowBacking {
             texture,
             scale,
             valid: false,
-            blitter: None,
+            transfer_source: None,
+            upload: Vec::new(),
+            patches: Default::default(),
         })
     }
 
@@ -1254,16 +1978,76 @@ impl WindowBacking {
             && self.scale == scale
     }
 
+    fn prepare_patch(&mut self, device: &wgpu::Device, key: PatchKey) -> Option<PatchCopy> {
+        const PATCH_COUNT: usize = 8;
+        let Some(index) = self.patches.iter().position(|entry| entry.key == key) else {
+            // Observe the state twice before reserving GPU memory.
+            if self.patches.len() == PATCH_COUNT {
+                self.patches.pop_front();
+            }
+            self.patches.push_back(PatchEntry { key, texture: None });
+            return None;
+        };
+        let mut entry = self.patches.remove(index)?;
+        let region = entry.key.region;
+        let restore = entry.texture.is_some();
+        let texture = entry
+            .texture
+            .get_or_insert_with(|| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("XRack repeat damage"),
+                    size: wgpu::Extent3d {
+                        width: region.width,
+                        height: region.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.texture.format(),
+                    usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                })
+            })
+            .clone();
+        self.patches.push_back(entry);
+        Some(PatchCopy {
+            texture,
+            region,
+            restore,
+        })
+    }
+
     fn encode_transfer(
         &mut self,
         renderer: &Renderer,
         target: &wgpu::Texture,
+        transfer_pipeline: &mut Option<WindowBlitter>,
+        patch: Option<&PatchCopy>,
     ) -> wgpu::CommandBuffer {
         let mut encoder = renderer
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("XRack transfer window image"),
             });
+        if let Some(patch) = patch {
+            let region = patch.region;
+            let window = wgpu::TexelCopyTextureInfo {
+                origin: wgpu::Origin3d {
+                    x: region.x,
+                    y: region.y,
+                    z: 0,
+                },
+                ..self.texture.as_image_copy()
+            };
+            let patch_source = patch.texture.as_image_copy();
+            let (source, destination) = if patch.restore {
+                (patch_source, window)
+            } else {
+                (window, patch_source)
+            };
+            encoder.copy_texture_to_texture(source, destination, patch.texture.size());
+        }
         if target.usage().contains(wgpu::TextureUsages::COPY_DST) {
             encoder.copy_texture_to_texture(
                 self.texture.as_image_copy(),
@@ -1271,9 +2055,19 @@ impl WindowBacking {
                 target.size(),
             );
         } else {
-            self.blitter
-                .get_or_insert_with(|| WindowBlitter::new(&renderer.device, &self.texture))
-                .copy(&mut encoder, target);
+            let format = target.format();
+            if transfer_pipeline
+                .as_ref()
+                .is_some_and(|blitter| blitter.format != format)
+            {
+                *transfer_pipeline = None;
+            }
+            let blitter = transfer_pipeline
+                .get_or_insert_with(|| WindowBlitter::new(&renderer.device, format));
+            let source = self
+                .transfer_source
+                .get_or_insert_with(|| blitter.bind_source(&renderer.device, &self.texture));
+            blitter.copy(&mut encoder, source, target);
         }
         encoder.finish()
     }
@@ -1289,6 +2083,9 @@ const MIN_SKIPPED_WORK: u64 = 64;
 pub(crate) struct WindowDamageState {
     forced: bool,
     backing: Option<WindowBacking>,
+    // The pipeline depends on the target format. A resize only needs a new
+    // backing texture and source binding.
+    transfer_pipeline: Option<WindowBlitter>,
     previous: Option<Scene>,
     direct: DirectPaintCost,
     small_frames: u8,
@@ -1431,27 +2228,19 @@ impl WindowDamageState {
             target.height() as f32 / frame.scale,
         );
         let current = (window == layout.bounds)
-            .then(|| {
-                Scene::capture(
-                    renderer,
-                    scene,
-                    layout,
-                    frame,
-                    target,
-                    self.previous.as_ref(),
-                )
-            })
+            .then(|| Scene::capture(renderer, scene, layout, frame, target, &mut self.previous))
             .flatten();
-        let Some(current) = current else {
+        let Some((current, projected)) = current else {
             self.previous = None;
             self.defer_analysis();
             return self.direct_paint(renderer, scene, layout, target, frame);
         };
 
-        let planned = self
-            .previous
-            .as_ref()
-            .map(|previous| WindowDamage::between(previous, &current));
+        let planned = projected.or_else(|| {
+            self.previous
+                .as_ref()
+                .map(|previous| WindowDamage::between(previous, &current))
+        });
         if planned == Some(WindowDamage::Full) {
             if self.forced {
                 self.previous = Some(current);
@@ -1486,13 +2275,71 @@ impl WindowDamageState {
             self.defer_analysis();
             return self.direct_paint(renderer, scene, layout, target, frame);
         };
-        let transfer = backing.encode_transfer(renderer, target);
+        // A shared index proves that only eligible background values changed.
+        // Position updates consume the previous snapshot before we get here.
+        let same_geometry = self
+            .previous
+            .as_ref()
+            .is_some_and(|previous| Rc::ptr_eq(&previous.geometry, &current.geometry));
+        if !same_geometry {
+            backing.patches.clear();
+        }
         let work = if valid {
             planned.unwrap_or(WindowDamage::Full)
         } else {
             WindowDamage::Full
         };
-        if work == WindowDamage::Unchanged {
+        let can_update_pixels = valid
+            && backing
+                .texture
+                .usage()
+                .contains(wgpu::TextureUsages::COPY_DST)
+            && !renderer.needs_redraw
+            && !renderer.geometry_cache.enabled
+            && !renderer.inspect_scene
+            && current.input.is_empty()
+            && current.geometry.islands.is_empty()
+            && renderer.scene_item_textures.is_idle();
+        let texture_sources_idle = || {
+            !scene.contains_scene_feature(xrack_runtime::SceneFeature::SceneTextureSource)
+                && !scene.contains_scene_feature(xrack_runtime::SceneFeature::SceneImageTexture)
+        };
+        let solid_updates = if can_update_pixels
+            && let Some(regions) = damage
+            && let Some(updates) = current
+                .geometry
+                .solid_updates(scene, layout, regions, frame)
+            && texture_sources_idle()
+        {
+            Some(updates)
+        } else {
+            None
+        };
+        let patch = if can_update_pixels
+            && same_geometry
+            && solid_updates.is_none()
+            && renderer.display_batching
+            && let Some(regions) = damage
+            && let Some(key) = current.geometry.patch_key(scene, regions)
+            && texture_sources_idle()
+        {
+            backing.prepare_patch(&renderer.device, key)
+        } else {
+            None
+        };
+        let transfer = backing.encode_transfer(
+            renderer,
+            target,
+            &mut self.transfer_pipeline,
+            patch.as_ref(),
+        );
+        if work == WindowDamage::Unchanged
+            || solid_updates.is_some()
+            || patch.as_ref().is_some_and(|patch| patch.restore)
+        {
+            if let Some(updates) = solid_updates {
+                backing.upload_solid_updates(&renderer.queue, &updates);
+            }
             if renderer.geometry_cache.enabled || renderer.inspect_scene {
                 renderer.scene_changes = renderer
                     .render_scene
@@ -1502,12 +2349,17 @@ impl WindowDamageState {
             xrack_runtime::update_profile::transfer_window_image();
             renderer.queue.submit([transfer]);
         } else {
+            let damage = if valid { damage } else { None };
+            let replay = damage.and_then(|regions| current.geometry.damaged_children(regions));
             renderer.paint_frame_with_transfer(
                 scene,
                 layout,
                 &backing.texture,
                 PaintFrame {
-                    damage: if valid { damage } else { None },
+                    damage: damage.map(|regions| crate::PaintDamage {
+                        regions,
+                        replay: replay.as_ref(),
+                    }),
                     ..frame
                 },
                 Some(transfer),

@@ -541,8 +541,8 @@ fn scene_asset_extensions(
         "@environment-url" => Some((&["hdr", "ktx", "ktx2"], &["("])),
         "@instance-table-url" => Some((&["xml", "bin"], &["("])),
         "@particle-shape-url" => Some((&["cbor"], &["("])),
-        "@shader-url" | "@material-shader-url" => Some((&["wgsl"], &["("])),
-        "@texture-url" => Some((&["png", "jpg", "jpeg", "ktx", "ktx2"], &["("])),
+        "@shader-url" | "@material-shader-url" | "@sky-shader-url" => Some((&["wgsl"], &["("])),
+        "@texture-url" => Some((&["png", "jpg", "jpeg", "webp", "ktx", "ktx2"], &["("])),
         "@image-url"
             if index >= 2
                 && matches!(
@@ -1612,8 +1612,10 @@ fn authored_mesh_slots(tokens: &[Token<'_>], row: usize) -> Option<BTreeMap<Stri
         return None;
     }
     literal_field_value(tokens, geometry, "vertices")?;
-    let mut slots =
-        BTreeMap::from([("surface".into(), "Material for unassigned triangles".into())]);
+    let mut slots = BTreeMap::from([(
+        "surface".into(),
+        "Material for unassigned primitives".into(),
+    )]);
     if let Some(subsets) = literal_field_value(tokens, geometry, "subsets")
         && tokens.get(subsets)?.text == "["
     {
@@ -2185,7 +2187,7 @@ pub(super) fn scene_camera_values(
     }).collect())
 }
 
-fn in_capture_record(tokens: &[Token<'_>], position: usize, name: &str) -> bool {
+fn in_named_record(tokens: &[Token<'_>], position: usize, name: &str) -> bool {
     let Some(record) =
         enclosing_block(tokens, position).and_then(|open| tokens.get(open.checked_sub(1)?))
     else {
@@ -2193,6 +2195,23 @@ fn in_capture_record(tokens: &[Token<'_>], position: usize, name: &str) -> bool 
     };
     tokens.windows(3).any(|field| {
         field[0].text == name && matches!(field[1].text, ":" | "<-") && field[2].text == record.text
+    })
+}
+
+fn in_authored_geometry(tokens: &[Token<'_>], position: usize) -> bool {
+    if in_named_record(tokens, position, "geometry") {
+        return true;
+    }
+    let Some(record) =
+        enclosing_block(tokens, position).and_then(|open| tokens.get(open.checked_sub(1)?))
+    else {
+        return false;
+    };
+    tokens.windows(3).enumerate().any(|(index, field)| {
+        field[0].text == "struct"
+            && field[1].text == record.text
+            && field[2].text == "{"
+            && literal_field_value(tokens, index + 2, "vertices").is_some()
     })
 }
 
@@ -2250,31 +2269,35 @@ pub(super) fn scene_string_options(
             xrack_parser::builtins::SCENE_COLLISION_SHAPES
         }
         "shape" => xrack_parser::builtins::SCENE_PARAMETRIC_SHAPES,
+        "topology" if in_authored_geometry(tokens, end - 3) => {
+            xrack_parser::builtins::SCENE_MESH_TOPOLOGIES
+        }
         "body-kind" => xrack_parser::builtins::SCENE_PHYSICS_BODY_KINDS,
         "joint-kind" => xrack_parser::builtins::SCENE_PHYSICS_JOINT_KINDS,
         "camera-kind" => xrack_parser::builtins::SCENE_CAMERA_KINDS,
         "camera-fov-axis" => xrack_parser::builtins::SCENE_CAMERA_FOV_AXES,
         "camera-clip-space" => xrack_parser::builtins::SCENE_CAMERA_CLIP_SPACES,
+        "skybox-mode" => xrack_parser::builtins::SCENE_SKYBOX_MODES,
         "material-workflow" => xrack_parser::builtins::SCENE_MATERIAL_WORKFLOWS,
         "alpha-mode" => xrack_parser::builtins::SCENE_ALPHA_MODES,
         "color-model" => xrack_parser::builtins::SCENE_RANDOM_COLOR_MODELS,
-        "blend-mode" if in_capture_record(tokens, end - 3, "pipeline-state") => {
+        "blend-mode" if in_named_record(tokens, end - 3, "pipeline-state") => {
             xrack_parser::builtins::SCENE_CAPTURE_BLENDS
         }
         "blend-mode" => xrack_parser::builtins::SCENE_MATERIAL_BLEND_MODES,
-        "compare" if in_capture_record(tokens, end - 3, "stencil") => {
+        "compare" if in_named_record(tokens, end - 3, "stencil") => {
             xrack_parser::builtins::SCENE_CAPTURE_DEPTH_COMPARES
         }
-        "fail" | "depth-fail" | "pass" if in_capture_record(tokens, end - 3, "stencil") => {
+        "fail" | "depth-fail" | "pass" if in_named_record(tokens, end - 3, "stencil") => {
             xrack_parser::builtins::SCENE_CAPTURE_STENCIL_OPS
         }
         "color-operation" | "alpha-operation"
-            if in_capture_record(tokens, end - 3, "target-blend") =>
+            if in_named_record(tokens, end - 3, "target-blend") =>
         {
             xrack_parser::builtins::SCENE_CAPTURE_BLEND_OPERATIONS
         }
         "source-color" | "destination-color" | "source-alpha" | "destination-alpha"
-            if in_capture_record(tokens, end - 3, "target-blend") =>
+            if in_named_record(tokens, end - 3, "target-blend") =>
         {
             xrack_parser::builtins::SCENE_CAPTURE_BLEND_FACTORS
         }
@@ -2616,8 +2639,83 @@ pub(super) fn mesh_asset_hover(
     let metadata = scene_metadata(&asset, workspace)?;
     let mut meshes = metadata.mesh_morph_counts().peekable();
     let mut message = String::new();
+    if metadata.requires_mesh_quantization() {
+        message.push_str("glTF quantized mesh attributes (KHR_mesh_quantization)");
+    }
+    for extension in metadata.meshopt_extensions() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        let _ = write!(
+            message,
+            "glTF meshopt-compressed buffer views ({extension})"
+        );
+    }
+    if metadata.uses_draco_compression() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("glTF Draco-compressed primitives (KHR_draco_mesh_compression)");
+    }
+    if metadata.uses_webp_textures() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("glTF WebP material textures (EXT_texture_webp)");
+    }
+    if metadata.uses_basis_textures() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("glTF Basis Universal material textures (KHR_texture_basisu)");
+    }
+    let primitives = metadata.primitive_summary();
+    if primitives.modes[..4].iter().any(|count| *count != 0) {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("glTF primitive topology");
+        for (name, count) in [
+            "POINTS",
+            "LINES",
+            "LINE_LOOP",
+            "LINE_STRIP",
+            "TRIANGLES",
+            "TRIANGLE_STRIP",
+            "TRIANGLE_FAN",
+        ]
+        .into_iter()
+        .zip(primitives.modes)
+        {
+            if count != 0 {
+                let _ = write!(message, "\n{name}  {count}");
+            }
+        }
+        for (label, count) in [
+            (
+                "Base color + emission (no NORMAL)",
+                primitives.point_line_unlit,
+            ),
+            (
+                "Vertex lighting (NORMAL only)",
+                primitives.point_line_normals,
+            ),
+            (
+                "Authored tangent frame (NORMAL + TANGENT)",
+                primitives.point_line_tangents,
+            ),
+        ] {
+            if count != 0 {
+                let _ = write!(message, "\n{label}  {count}");
+            }
+        }
+        message.push_str("\nViewport picking uses point size and line width. World rays and mesh collision use triangle surfaces.");
+    }
     let mut groups = metadata.gpu_instance_groups().peekable();
     if groups.peek().is_some() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
         message.push_str("glTF GPU instancing (EXT_mesh_gpu_instancing)");
         for (index, name, count, attributes) in groups.by_ref().take(8) {
             let _ = write!(message, "\nNode #{index}");

@@ -3345,7 +3345,8 @@ impl PreviewScene {
 
     fn publish_window_status(&mut self, mut status: xrack_runtime::WindowStatus) {
         status.active = self.window_selected && status.minimized != Some(true);
-        if self.window_status.active && !status.active {
+        let deactivated = self.window_status.active && !status.active;
+        if deactivated {
             self.input.cancel_text_composition(None);
             self.cancel_pointer();
             self.direct_pointers.clear();
@@ -3359,6 +3360,16 @@ impl PreviewScene {
         self.window_status = status;
         self.input.set_editor_window_active(status.active);
         self.component.publish_window_status(status);
+        if deactivated && let Some(frame) = &self.frame {
+            let (scene, layout) = frame.parts();
+            // Clear reactive focus and deliver loss before the next frame's
+            // animations can use input held by the previous active window.
+            let _scroll = self.scroll.enter();
+            let _focus = self.focus.enter();
+            for event in self.focus_observers.sync(&self.input, scene, layout, false) {
+                event.apply(&mut self.component, scene);
+            }
+        }
     }
 
     pub fn window_status(&self) -> xrack_runtime::WindowStatus {

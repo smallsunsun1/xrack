@@ -10,24 +10,102 @@ use jpeg_decoder::{Decoder, PixelFormat};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Write,
+    io::{Cursor, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
 use xrack_assets::files::{asset_path, local_path, read_asset};
 use xrack_runtime::scene3d::{
     MeshAlphaMode, MeshAnisotropy, MeshClearcoat, MeshCullMode, MeshDielectric, MeshImage,
-    MeshMaterial, MeshMaterialSlot, MeshNormalMap, MeshPbr, MeshTexture, MeshTransmission,
-    MeshVolume, MeshWorkflow, TextureColorSpace, TextureFilter, TextureSampling, TextureTransform,
-    TextureWrap,
+    MeshIridescence, MeshMaterial, MeshMaterialSlot, MeshNormalMap, MeshPbr, MeshSheen,
+    MeshTexture, MeshTransmission, MeshVolume, MeshWorkflow, TextureColorSpace, TextureFilter,
+    TextureSampling, TextureTransform, TextureWrap,
 };
 use xrack_syntax::gltf_metadata::{
     ANISOTROPY, CLEARCOAT, DISPERSION, EMISSIVE_STRENGTH, EXTENDED_MATERIALS, GltfMetadata, IOR,
-    SPECULAR, SPECULAR_GLOSSINESS, TEXTURE_TRANSFORM, TRANSMISSION, VOLUME,
+    IRIDESCENCE, SHEEN, SPECULAR, SPECULAR_GLOSSINESS, TEXTURE_BASIS, TEXTURE_TRANSFORM,
+    TEXTURE_WEBP, TRANSMISSION, VOLUME,
 };
 
 const MAX_DECODED_TEXTURE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MIP_BYTES: usize = 64 * 1024 * 1024;
+const WEBP_MIME: &str = "image/webp";
+const BASIS_MIME: &str = "image/ktx2";
+
+/// Resolve supported alternatives before glTF validation checks texture sources.
+/// With both versions present, use the source that can stay GPU-compressed.
+pub(super) fn prepare_texture_sources(root: &mut gltf::json::Root) -> Result<(), String> {
+    #[derive(Deserialize)]
+    struct ImageSource {
+        source: u32,
+    }
+
+    let formats = [
+        (TEXTURE_WEBP, WEBP_MIME, "WebP"),
+        (TEXTURE_BASIS, BASIS_MIME, "Basis KTX2"),
+    ];
+    let declared = formats.map(|(extension, mime, name)| {
+        let used = root.extensions_used.iter().any(|value| value == extension);
+        let required = root
+            .extensions_required
+            .iter()
+            .any(|value| value == extension);
+        (extension, mime, name, used, required)
+    });
+    for (extension, _, _, used, required) in declared {
+        if required && !used {
+            return Err(format!("glTF must declare {extension} in extensionsUsed"));
+        }
+    }
+
+    for (index, texture) in root.textures.iter_mut().enumerate() {
+        let Some(extensions) = &texture.extensions else {
+            continue;
+        };
+        let fallback = texture.source.value();
+        let has_required_source = declared.iter().any(|(extension, _, _, _, required)| {
+            *required && extensions.others.contains_key(*extension)
+        });
+        for (extension, mime, name, used, _) in declared {
+            let Some(raw) = extensions.others.get(extension) else {
+                continue;
+            };
+            let context = |error: &str| format!("glTF texture #{index} {extension}: {error}");
+            if !used {
+                return Err(context("missing declaration in extensionsUsed"));
+            }
+            if fallback == u32::MAX as usize {
+                if !has_required_source {
+                    return Err(context(
+                        "a texture without a fallback requires the extension",
+                    ));
+                }
+            } else if fallback >= root.images.len() {
+                return Err(context("invalid fallback image index"));
+            }
+            let ImageSource { source } =
+                ImageSource::deserialize(raw).map_err(|error| context(&error.to_string()))?;
+            let image = root
+                .images
+                .get_mut(source as usize)
+                .ok_or_else(|| context(&format!("invalid {name} image index")))?;
+            match (&image.uri, image.buffer_view, &image.mime_type) {
+                (Some(_), None, None) => {
+                    image.mime_type = Some(gltf::json::image::MimeType(mime.to_owned()));
+                }
+                (Some(_), None, Some(actual)) | (None, Some(_), Some(actual))
+                    if actual.0 == mime => {}
+                _ => {
+                    return Err(context(&format!(
+                        "expected a {name} URI or a buffer view with {mime} MIME type"
+                    )));
+                }
+            }
+            texture.source = gltf::json::Index::new(source);
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct PreparedMaterial {
@@ -173,6 +251,7 @@ impl<'a> Materials<'a> {
                     let dielectric = MeshDielectric {
                         ior: MeshDielectric::DEFAULT_IOR,
                         specular: 1.0,
+                        tint: 0.0,
                         color: glossy.specular_factor,
                         specular_texture: None,
                         color_texture: packed.clone(),
@@ -258,6 +337,8 @@ impl<'a> Materials<'a> {
                 separate_surface_maps: None,
                 specular_reflection: None,
                 height_map: None,
+                iridescence: self.iridescence(&material, &mut uv_sets)?.map(Box::new),
+                sheen: self.sheen(&material, &mut uv_sets)?.map(Box::new),
                 emissive_texture,
                 occlusion_texture,
                 normal_map,
@@ -288,6 +369,8 @@ impl<'a> Materials<'a> {
                 MeshCullMode::Back
             };
         self.materials.push(MeshMaterial {
+            point_size: 1.0,
+            line_width: 1.0,
             opacity: 1.0,
             opacity_texture: None,
             invert_opacity_map_value: false,
@@ -401,6 +484,74 @@ impl<'a> Materials<'a> {
         }))
     }
 
+    fn sheen(
+        &mut self,
+        material: &Material<'_>,
+        uv_sets: &mut [Option<u32>; 2],
+    ) -> Result<Option<MeshSheen>, String> {
+        let Some(term) = extension::<Sheen>(material, SHEEN)? else {
+            return Ok(None);
+        };
+        if material.extension_value(SPECULAR_GLOSSINESS).is_some() {
+            return Err("glTF KHR_materials_sheen requires a metallic-roughness material".into());
+        }
+        let mut sheen = MeshSheen {
+            color: term.sheen_color_factor,
+            roughness: term.sheen_roughness_factor,
+            ..MeshSheen::default()
+        };
+        if !sheen.is_valid() {
+            return Err(
+                "glTF KHR_materials_sheen requires color and roughness factors in 0..=1".into(),
+            );
+        }
+        sheen.color_texture = term
+            .sheen_color_texture
+            .map(|info| self.texture_info(info, uv_sets, TextureColorSpace::Srgb))
+            .transpose()?;
+        sheen.roughness_texture = term
+            .sheen_roughness_texture
+            .map(|info| self.texture_info(info, uv_sets, TextureColorSpace::Linear))
+            .transpose()?;
+        Ok(Some(sheen))
+    }
+
+    fn iridescence(
+        &mut self,
+        material: &Material<'_>,
+        uv_sets: &mut [Option<u32>; 2],
+    ) -> Result<Option<MeshIridescence>, String> {
+        let Some(term) = extension::<Iridescence>(material, IRIDESCENCE)? else {
+            return Ok(None);
+        };
+        if material.extension_value(SPECULAR_GLOSSINESS).is_some() {
+            return Err(
+                "glTF KHR_materials_iridescence requires a metallic-roughness material".into(),
+            );
+        }
+        let mut film = MeshIridescence {
+            factor: term.iridescence_factor,
+            ior: term.iridescence_ior,
+            thickness_nm: [
+                term.iridescence_thickness_minimum,
+                term.iridescence_thickness_maximum,
+            ],
+            ..MeshIridescence::default()
+        };
+        if !film.is_valid() {
+            return Err("glTF KHR_materials_iridescence requires factor 0..=1, finite IOR >= 1 and nonnegative finite thickness".into());
+        }
+        film.factor_texture = term
+            .iridescence_texture
+            .map(|info| self.texture_info(info, uv_sets, TextureColorSpace::Linear))
+            .transpose()?;
+        film.thickness_texture = term
+            .iridescence_thickness_texture
+            .map(|info| self.texture_info(info, uv_sets, TextureColorSpace::Linear))
+            .transpose()?;
+        Ok(Some(film))
+    }
+
     fn dielectric(
         &mut self,
         material: &Material<'_>,
@@ -440,6 +591,7 @@ impl<'a> Materials<'a> {
         Ok(Some(MeshDielectric {
             ior,
             specular: specular.factor,
+            tint: 0.0,
             color: specular.color,
             specular_texture,
             color_texture,
@@ -576,7 +728,19 @@ impl<'a> Materials<'a> {
             }
         };
         let image = self.image(texture.source())?;
-        if mip_filter.is_some() && image.size() != [1, 1] && image.prepared_mips(color).is_none() {
+        if let Some(basis) = image.basis()
+            && !basis.matches_gltf_color(color)
+        {
+            return Err(format!(
+                "glTF texture #{} {TEXTURE_BASIS}: color profile does not match the material slot",
+                texture.index()
+            ));
+        }
+        if image.authored_level_count().is_none()
+            && mip_filter.is_some()
+            && image.size() != [1, 1]
+            && image.prepared_mips(color).is_none()
+        {
             self.images.mip_bytes += image.mip_byte_len();
             if self.images.mip_bytes > MAX_MIP_BYTES {
                 return Err(
@@ -635,9 +799,16 @@ impl<'a> Materials<'a> {
                 pixels
             }
         };
-        self.images.decoded_bytes += pixels.rgba().len();
+        let [width, height] = pixels.size();
+        self.images.decoded_bytes += width as usize * height as usize * 4;
         if self.images.decoded_bytes > MAX_DECODED_TEXTURE_BYTES {
             return Err("glTF material textures exceed 64 MiB of decoded pixels".into());
+        }
+        if pixels.authored_level_count().is_some() {
+            self.images.mip_bytes += pixels.mip_byte_len();
+            if self.images.mip_bytes > MAX_MIP_BYTES {
+                return Err("glTF material textures exceed 64 MiB of authored mip pixels".into());
+            }
         }
         let pixels = Arc::new(pixels);
         self.images.images.insert(index, pixels.clone());
@@ -812,6 +983,40 @@ impl Default for Specular {
     }
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct Sheen {
+    sheen_color_factor: [f32; 3],
+    sheen_roughness_factor: f32,
+    sheen_color_texture: Option<TextureInfo>,
+    sheen_roughness_texture: Option<TextureInfo>,
+}
+
+#[derive(Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct Iridescence {
+    iridescence_factor: f32,
+    iridescence_ior: f32,
+    iridescence_thickness_minimum: f32,
+    iridescence_thickness_maximum: f32,
+    iridescence_texture: Option<TextureInfo>,
+    iridescence_thickness_texture: Option<TextureInfo>,
+}
+
+impl Default for Iridescence {
+    fn default() -> Self {
+        let film = MeshIridescence::default();
+        Self {
+            iridescence_factor: film.factor,
+            iridescence_ior: film.ior,
+            iridescence_thickness_minimum: film.thickness_nm[0],
+            iridescence_thickness_maximum: film.thickness_nm[1],
+            iridescence_texture: None,
+            iridescence_thickness_texture: None,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EmissiveStrength {
@@ -869,12 +1074,17 @@ pub fn prepare_scene_texture(bytes: &[u8]) -> Result<MeshImage, String> {
 }
 
 pub(super) fn decode(bytes: &[u8], mime: Option<&str>) -> Result<MeshImage, String> {
+    if mime == Some(BASIS_MIME) {
+        return MeshImage::from_basis_ktx2(bytes);
+    }
     const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
     let mime = mime.or_else(|| {
         if bytes.starts_with(PNG_SIGNATURE) {
             Some("image/png")
         } else if bytes.starts_with(&[0xff, 0xd8]) {
             Some("image/jpeg")
+        } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+            Some(WEBP_MIME)
         } else {
             None
         }
@@ -885,7 +1095,8 @@ pub(super) fn decode(bytes: &[u8], mime: Option<&str>) -> Result<MeshImage, Stri
             (pixels.size, pixels.rgba)
         }
         Some("image/jpeg") => decode_jpeg(bytes)?,
-        _ => return Err("glTF material textures require PNG or JPEG".into()),
+        Some(WEBP_MIME) => decode_webp(bytes)?,
+        _ => return Err("glTF material textures require PNG, JPEG, WebP, or Basis KTX2".into()),
     };
     MeshImage::new(size, rgba).ok_or_else(|| "invalid glTF texture dimensions".into())
 }
@@ -908,8 +1119,38 @@ fn decode_jpeg(bytes: &[u8]) -> Result<([u32; 2], Vec<u8>), String> {
     Ok((size, rgba))
 }
 
+fn decode_webp(bytes: &[u8]) -> Result<([u32; 2], Vec<u8>), String> {
+    let mut decoder = image_webp::WebPDecoder::new(Cursor::new(bytes))
+        .map_err(|error| format!("invalid WebP texture: {error}"))?;
+    let (width, height) = decoder.dimensions();
+    let size = xrack_assets::validate_image_size([width, height])?;
+    if decoder.is_animated() {
+        return Err("3D WebP textures require a still image".into());
+    }
+    let count = width as usize * height as usize;
+    let channels = if decoder.has_alpha() { 4 } else { 3 };
+    let mut pixels = vec![0; count * 4];
+    decoder.set_memory_limit(MAX_DECODED_TEXTURE_BYTES);
+    decoder
+        .read_image(&mut pixels[..count * channels])
+        .map_err(|error| format!("invalid WebP texture: {error}"))?;
+    if channels == 3 {
+        for index in (0..count).rev() {
+            pixels.copy_within(index * 3..index * 3 + 3, index * 4);
+            pixels[index * 4 + 3] = 255;
+        }
+    }
+    Ok((size, pixels))
+}
+
 /// Pack the prepared pixels instead of decoding and filtering source images at AOT startup.
 pub fn pack_mesh_image(image: &MeshImage) -> Result<Vec<u8>, String> {
+    if let Some(basis) = image.basis() {
+        return Ok(basis.source_bytes().to_vec());
+    }
+    if let Some(blocks) = image.blocks() {
+        return Ok(blocks.pack());
+    }
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
     let levels = TextureColorSpace::ALL.map(|color| image.prepared_mips(color));
     let flags = u8::from(levels[0].is_some()) | (u8::from(levels[1].is_some()) << 1);
@@ -930,10 +1171,90 @@ mod tests {
     use super::*;
 
     #[test]
+    fn webp_sources_preserve_the_fallback_for_other_textures() -> Result<(), String> {
+        let mut asset = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": [TEXTURE_WEBP],
+            "textures": [
+                {"source": 0, "extensions": {TEXTURE_WEBP: {"source": 1}}},
+                {"source": 0},
+            ],
+            "images": [{"uri": "fallback.png"}, {"uri": "source.webp"}],
+        });
+        let prepare = |asset: &serde_json::Value| -> Result<gltf::json::Root, String> {
+            let mut root =
+                gltf::json::Root::deserialize(asset).map_err(|error| error.to_string())?;
+            prepare_texture_sources(&mut root)?;
+            Ok(root)
+        };
+        let root = prepare(&asset)?;
+        assert_eq!(root.textures[0].source.value(), 1);
+        assert_eq!(root.textures[1].source.value(), 0);
+        assert_eq!(root.images[1].mime_type.as_ref().unwrap().0, WEBP_MIME);
+
+        asset["textures"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("source");
+        assert!(
+            prepare(&asset)
+                .unwrap_err()
+                .contains("requires the extension")
+        );
+        asset["extensionsRequired"] = serde_json::json!([TEXTURE_WEBP]);
+        assert_eq!(prepare(&asset)?.textures[0].source.value(), 1);
+        asset["images"][1]["mimeType"] = serde_json::json!("image/png");
+        assert!(
+            prepare(&asset)
+                .unwrap_err()
+                .contains("image/webp MIME type")
+        );
+        asset["textures"][0]["extensions"][TEXTURE_WEBP]["source"] = serde_json::json!(3);
+        assert!(
+            prepare(&asset)
+                .unwrap_err()
+                .contains("invalid WebP image index")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn lossless_webp_decodes_rgb_and_preserves_alpha() -> Result<(), String> {
+        let rgba = [
+            201, 47, 14, 63, 92, 201, 125, 169, 35, 81, 187, 8, 3, 186, 57, 255,
+        ];
+        let rgb: Vec<_> = rgba
+            .chunks_exact(4)
+            .flat_map(|pixel| &pixel[..3])
+            .copied()
+            .collect();
+        let opaque: Vec<_> = rgb
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect();
+        use image_webp::{ColorType, WebPEncoder};
+        for (source, kind, expected) in [
+            (rgb.as_slice(), ColorType::Rgb8, opaque.as_slice()),
+            (rgba.as_slice(), ColorType::Rgba8, rgba.as_slice()),
+        ] {
+            let mut data = Vec::new();
+            WebPEncoder::new(&mut data)
+                .encode(source, 2, 2, kind)
+                .map_err(|error| error.to_string())?;
+            let image = decode(&data, None)?;
+            assert_eq!(image.size(), [2, 2]);
+            assert_eq!(image.rgba(), expected);
+            assert!(decode(&data[..12], Some(WEBP_MIME)).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn dielectric_reflectance_accepts_the_gltf_domain() {
         let mut material = MeshDielectric {
             ior: MeshDielectric::DEFAULT_IOR,
             specular: 1.0,
+            tint: 0.0,
             color: [1.0; 3],
             specular_texture: None,
             color_texture: None,

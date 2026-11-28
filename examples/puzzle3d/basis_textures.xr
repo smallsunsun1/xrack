@@ -1,0 +1,51 @@
+struct CardMap {
+    source: string, min-filter: string, mag-filter: string, mip-filter: string,
+    wrap-u: string, wrap-v: string,
+}
+struct CardStyle { enabled: bool, base-color-map: CardMap }
+struct CardActor {
+    id: string, mesh: string, material: CardStyle, color: color,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, camera-kind: string, camera-height: float,
+}
+
+export component BasisTexturesDemo inherits Window {
+    title <- "XRack · glTF Basis Universal";
+    width <- 176px; height <- 128px;
+    in-out property <int> encoding: 0;
+    in-out property <float> camera-height: 2.8;
+    property <CardActor> defaults <- CardActor {
+        id: "", mesh: "", color: #fff,
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, camera-kind: "", camera-height: root.camera-height,
+        material: CardStyle {
+            enabled: false,
+            base-color-map: CardMap {
+                source: @texture-url("models/basis-card-uastc.ktx2"),
+                min-filter: "linear", mag-filter: "linear", mip-filter: "linear",
+                wrap-u: "repeat", wrap-v: "repeat",
+            },
+        },
+    };
+
+    property <[CardActor]> actors <- [
+        CardActor { id: "eye", z: 4, camera-kind: "orthographic", ..root.defaults },
+        CardActor {
+            id: "card",
+            mesh: root.encoding == 1 ? @mesh-url("models/basis-card-embedded.glb")
+                : @mesh-url("models/basis-card-external.gltf"),
+            material: CardStyle { enabled: root.encoding == 2, ..root.defaults.material },
+            ..root.defaults
+        },
+    ];
+    out property <string> solid <- Scene3D.pick-camera(
+        root.actors, "eye", Point2D.new(176px, 128px), Point2D.new(67px, 64px));
+    out property <string> cutout <- Scene3D.pick-camera(
+        root.actors, "eye", Point2D.new(176px, 128px), Point2D.new(88px, 64px));
+
+    SceneView3D {
+        width <- 176px; height <- 128px; camera <- "eye";
+        scene-background <- #172132; scene-tone-map <- none;
+        model <- root.actors;
+    }
+}

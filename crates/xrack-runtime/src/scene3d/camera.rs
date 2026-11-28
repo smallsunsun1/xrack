@@ -1458,6 +1458,8 @@ pub struct SceneViewQuery {
     active_camera: Option<ActiveCamera>,
     model: Option<Arc<SceneModel>>,
     scissor: Option<SceneScissor>,
+    viewport: [f64; 2],
+    raster: Option<[u32; 2]>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -1472,6 +1474,8 @@ impl PartialEq for SceneViewQuery {
         self.camera == other.camera
             && self.active_camera == other.active_camera
             && self.scissor == other.scissor
+            && self.viewport == other.viewport
+            && self.raster == other.raster
             && match (&self.model, &other.model) {
                 (Some(model), Some(other)) => Arc::ptr_eq(model, other),
                 (None, None) => true,
@@ -1498,7 +1502,22 @@ impl SceneViewQuery {
             }),
             model,
             scissor: SceneScissor::for_view(node),
+            viewport,
+            raster: None,
         }
+    }
+
+    pub(crate) fn with_raster(mut self, raster: Option<[u32; 2]>) -> Self {
+        self.raster = raster;
+        self
+    }
+
+    fn raster_scale(&self) -> [f64; 2] {
+        self.raster
+            .filter(|size| !size.contains(&0))
+            .map_or([1.0; 2], |size| {
+                std::array::from_fn(|axis| f64::from(size[axis]) / self.viewport[axis])
+            })
     }
 
     pub fn has_active_camera(&self) -> bool {
@@ -1660,7 +1679,7 @@ impl SceneViewQuery {
         origin: Point3D,
         direction: Vector3D,
         max: f64,
-        query: impl FnOnce(SceneRay, &SceneGeometry) -> T,
+        query: impl FnOnce(SceneRay<'_>, &SceneGeometry) -> T,
     ) -> Option<T> {
         let camera = self.camera.filter(|camera| camera.layer_mask() != 0)?;
         let ray = world_query(origin, direction, max, Some(camera.layer_mask() as i64))?
@@ -1697,7 +1716,7 @@ impl SceneViewQuery {
             }
             None => [start, end],
         };
-        pick_rect_rows(model, self.camera, points)
+        pick_rect_rows(model, self.camera, points, self.raster_scale())
     }
 
     fn contains(&self, point: Point2D) -> bool {
@@ -1708,10 +1727,10 @@ impl SceneViewQuery {
     fn trace<T>(
         &self,
         point: Point2D,
-        query: impl FnOnce(SceneRay, &SceneGeometry) -> T,
+        query: impl FnOnce(SceneRay<'_>, &SceneGeometry) -> T,
     ) -> Option<T> {
-        let camera = self.camera.filter(|_| self.contains(point))?;
-        let ray = camera.scene_ray(point)?;
+        let camera = self.camera.as_ref().filter(|_| self.contains(point))?;
+        let ray = camera.scene_ray_with_scale(point, self.raster_scale())?;
         Some(query(ray, &self.model.as_ref()?.geometry(&camera)))
     }
 
@@ -1728,6 +1747,7 @@ impl SceneViewQuery {
 
 fn pick(geometry: &[SceneObject], camera: Option<SceneCamera>, point: Point2D) -> String {
     camera
+        .as_ref()
         .and_then(|camera| camera.scene_ray(point))
         .and_then(|query| trace_id(geometry, query))
         .map_or_else(String::new, str::to_owned)
@@ -1787,6 +1807,7 @@ pub fn pick_camera(
 
 fn hit(geometry: &[SceneObject], camera: Option<SceneCamera>, point: Point2D) -> Hit3D {
     camera
+        .as_ref()
         .and_then(|camera| camera.scene_ray(point))
         .and_then(|query| trace_surfaces(geometry, query))
         .map_or_else(Hit3D::default, Hit3D::from)
@@ -1848,6 +1869,7 @@ fn pick_rect_rows(
     model: &SceneModel,
     camera: Option<SceneCamera>,
     corners: [Point2D; 2],
+    scale: [f64; 2],
 ) -> VecModel<i64> {
     let Some(camera) = camera.filter(|camera| camera.layer_mask() != 0) else {
         return VecModel::default();
@@ -1868,6 +1890,23 @@ fn pick_rect_rows(
             rows.push(i64::from(row));
         }
     });
+    if geometry.raster_size() > 0.0 {
+        let view = super::screen_pick::RasterView::new(&camera, scale);
+        if let Some(rectangle) = view.rectangle(corners)
+            && let Some(region) = view.candidate_region(rectangle, geometry.raster_size())
+        {
+            geometry.visit_selection(&region, |index, _| {
+                let object = &geometry[index];
+                if object.layers & camera.layer_mask() != 0
+                    && object.visible_at_distance(eye)
+                    && let Some(row) = object.scene_row()
+                    && object.raster_intersects(view, &region, rectangle)
+                {
+                    rows.push(i64::from(row));
+                }
+            });
+        }
+    }
     rows.sort_unstable();
     rows.dedup();
     rows.into()
@@ -1886,7 +1925,7 @@ pub fn pick_in_rect(
 ) -> VecModel<i64> {
     let camera = SceneCamera::new(yaw, pitch, distance, [viewport.x.0, viewport.y.0])
         .map(|camera| camera.with_layer_mask(layers));
-    pick_rect_rows(model, camera, corners)
+    pick_rect_rows(model, camera, corners, [1.0; 2])
 }
 
 #[doc(hidden)]
@@ -1900,13 +1939,17 @@ pub fn pick_in_rect_camera(
     let camera = model
         .camera(id, [viewport.x.0, viewport.y.0])
         .map(|camera| camera.with_layer_mask(layers));
-    pick_rect_rows(model, camera, corners)
+    pick_rect_rows(model, camera, corners, [1.0; 2])
 }
 
 impl SceneCamera {
-    fn scene_ray(&self, point: Point2D) -> Option<SceneRay> {
+    fn scene_ray(&self, point: Point2D) -> Option<SceneRay<'_>> {
+        self.scene_ray_with_scale(point, [1.0; 2])
+    }
+
+    fn scene_ray_with_scale(&self, point: Point2D, scale: [f64; 2]) -> Option<SceneRay<'_>> {
         let (ray, min, max) = self.pointer_ray(point)?;
-        Some(SceneRay::new(ray, min, max, self.layer_mask()).with_camera(self.eye_position()))
+        Some(SceneRay::new(ray, min, max, self.layer_mask()).with_viewport(self, point, scale))
     }
 }
 

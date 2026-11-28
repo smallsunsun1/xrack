@@ -1,8 +1,139 @@
-use std::f32::consts::TAU;
+use std::{f32::consts::TAU, sync::Arc};
 
 use nalgebra::Vector3;
 
-use crate::{Color, RecordValue, Value, scene3d::lighting::linear_color};
+use crate::{
+    Color, RecordValue, Value,
+    scene3d::{effect::BufferInput, lighting::linear_color},
+};
+
+use super::sky_uniforms::SkyShader;
+
+/// Raw shader entrypoint shared by compile-time WGSL validation and the GPU.
+#[doc(hidden)]
+pub const SKY_PROGRAM_ENTRY: &str = include_str!("sky_program.wgsl");
+
+#[doc(hidden)]
+pub const SKY_RAY_WGSL: &str = include_str!("sky_ray.wgsl");
+
+#[doc(hidden)]
+pub const SKY_SCREEN_ENTRY: &str = include_str!("sky_screen.wgsl");
+
+#[doc(hidden)]
+pub fn prepare_sky_record(
+    record: RecordValue,
+    resolve: impl FnOnce(&str) -> Option<Arc<SkyShader>>,
+    textures: impl FnOnce(&RecordValue) -> Vec<BufferInput>,
+) -> Value {
+    if record.field("enabled") != Some(&Value::Bool(false))
+        && let Some(Value::String(key)) = record.field("shader")
+        && let Some(shader) = resolve(key).filter(|shader| !shader.source.is_empty())
+    {
+        let inputs = textures(&record);
+        return Value::SceneSky(Arc::new(SkyProgram::new(&record, shader, inputs)));
+    }
+    Value::Record(record)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyProgramSettings {
+    pub resolution: u32,
+    pub samples: u32,
+    pub parameters: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SkyboxMode {
+    #[default]
+    Cubemap,
+    ScreenSpaceFull,
+    ScreenSpaceHalf,
+    ScreenSpaceQuarter,
+}
+
+impl SkyboxMode {
+    #[doc(hidden)]
+    pub const fn screen_divisor(self) -> Option<u32> {
+        match self {
+            Self::Cubemap => None,
+            Self::ScreenSpaceFull => Some(1),
+            Self::ScreenSpaceHalf => Some(2),
+            Self::ScreenSpaceQuarter => Some(4),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkyProgram {
+    pub shader: Arc<SkyShader>,
+    pub uniforms: Arc<[[u32; 4]]>,
+    pub settings: SkyProgramSettings,
+    pub render_frames: u32,
+    pub skybox_mode: SkyboxMode,
+    pub textures: Arc<[BufferInput]>,
+}
+
+impl SkyProgram {
+    /// Screen scale and frame scheduling leave the radiance unchanged.
+    #[doc(hidden)]
+    pub fn same_radiance(&self, other: &Self) -> bool {
+        self.settings == other.settings
+            && self.shader == other.shader
+            && self.uniforms == other.uniforms
+            && self.textures == other.textures
+    }
+
+    fn new(record: &RecordValue, shader: Arc<SkyShader>, textures: Vec<BufferInput>) -> Self {
+        let parameters = match record.field("shader-parameters") {
+            Some(Value::Vector3D(value)) => [value.x, value.y, value.z].map(|value| {
+                let value = value as f32;
+                if value.is_finite() { value } else { 0.0 }
+            }),
+            _ => [0.0; 3],
+        };
+        let samples = match record.field("ibl-samples") {
+            Some(Value::Int(samples)) => (*samples).clamp(1, 1024) as u32,
+            _ => 32,
+        };
+        let render_frames = match record.field("ibl-render-frames") {
+            Some(Value::Int(frames)) => (*frames).clamp(0, i64::from(samples)) as u32,
+            _ => 0,
+        };
+        let skybox_mode = match record.field("skybox-mode") {
+            Some(Value::String(mode)) => match mode.as_str() {
+                "screen-space-full" => SkyboxMode::ScreenSpaceFull,
+                "screen-space-half" => SkyboxMode::ScreenSpaceHalf,
+                "screen-space-quarter" => SkyboxMode::ScreenSpaceQuarter,
+                _ => SkyboxMode::Cubemap,
+            },
+            _ => SkyboxMode::Cubemap,
+        };
+        let values = match record.field("shader-uniforms") {
+            Some(Value::Record(values)) => Some(values),
+            _ => None,
+        };
+        let uniforms = shader.pack_uniforms(values);
+        Self {
+            shader,
+            uniforms,
+            render_frames,
+            skybox_mode,
+            settings: SkyProgramSettings {
+                resolution: sky_resolution(record),
+                samples,
+                parameters,
+            },
+            textures: textures.into(),
+        }
+    }
+}
+
+fn sky_resolution(record: &RecordValue) -> u32 {
+    match record.field("resolution") {
+        Some(Value::Int(value)) => ((*value).clamp(32, 256) as u32).next_power_of_two(),
+        _ => 128,
+    }
+}
 
 /// The scene-linear environment shared by the GPU and the lightmap baker.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -83,10 +214,6 @@ impl SkySettings {
         let (x, z) = longitude.sin_cos();
         let outer = number("sun-angle-max", 6.0).clamp(0.1, 75.0);
         let inner = number("sun-angle-min", 2.0).clamp(0.0, outer);
-        let resolution = match record.field("resolution") {
-            Some(Value::Int(value)) => (*value).clamp(32, 256) as u32,
-            _ => 128,
-        };
         Some(Self {
             gradients: [
                 [
@@ -113,7 +240,7 @@ impl SkySettings {
                 inner.to_radians().cos() as f32,
             ],
             sun_curve: number("sun-curve", 1.0).clamp(0.05, 16.0) as f32,
-            resolution: resolution.next_power_of_two(),
+            resolution: sky_resolution(record),
         })
     }
 

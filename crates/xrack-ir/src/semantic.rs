@@ -2899,6 +2899,17 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
             )?;
             weighted_geometry = true;
         }
+        if let Some(topology) = schema.fields.iter().find(|field| field.name == "topology") {
+            if topology.ty != Type::String {
+                return fail(
+                    value.span,
+                    "3D geometry field `topology` requires type string",
+                );
+            }
+            if !schema.fields.iter().any(|field| field.name == "vertices") {
+                return fail(value.span, "3D geometry topology requires vertices");
+            }
+        }
         let mut tangent_morph = false;
         let mut binormal_morph = false;
         if let Some(deltas) = schema
@@ -3131,20 +3142,19 @@ fn validate_shader_texture_inputs(
     ty: &Type,
     property: &str,
 ) -> Result<()> {
-    let input = if property == "shader-textures" {
-        "material shader texture"
-    } else {
-        "capture augment texture"
+    let input = match property {
+        "shader-textures" => "material shader texture",
+        "sky shader-textures" => "sky shader texture",
+        _ => "capture augment texture",
     };
     let Type::RecordList(inputs) = ty else {
         return fail(value.span, format!("3D {property} requires a record list"));
     };
     let ty = |name| record_field_type(&scope.records, inputs, name);
-    let valid_data = |ty| {
-        ty == Type::TextureData2D || (property == "shader-textures" && ty == Type::TextureData3D)
-    };
+    let volume = property != "augment-textures";
+    let valid_data = |ty| ty == Type::TextureData2D || volume && ty == Type::TextureData3D;
     if ty("data").is_some_and(|ty| !valid_data(ty)) {
-        let expected = if property == "shader-textures" {
+        let expected = if volume {
             "texturedata2d or texturedata3d"
         } else {
             "texturedata2d"
@@ -3154,15 +3164,34 @@ fn validate_shader_texture_inputs(
             format!("3D {input} field `data` requires {expected}"),
         );
     }
-    if !ty("data").is_some_and(valid_data)
-        && ["texture", "item", "capture"]
+    let sky = property == "sky shader-textures";
+    if sky
+        && ["item", "capture"]
             .into_iter()
-            .all(|name| ty(name) != Some(Type::String))
+            .any(|name| ty(name).is_some())
+    {
+        return fail(
+            value.span,
+            "3D sky shader textures use texture assets or direct texture data",
+        );
+    }
+    let sources: &[_] = if sky {
+        &["texture"]
+    } else {
+        &["texture", "item", "capture"]
+    };
+    if !ty("data").is_some_and(valid_data)
+        && sources.iter().all(|name| ty(name) != Some(Type::String))
     {
         return fail(
             value.span,
             format!(
-                "3D {input} requires a shader texture data field or a string field named texture, item or capture"
+                "3D {input} requires a shader texture data field or a string field named {}",
+                if sky {
+                    "texture"
+                } else {
+                    "texture, item or capture"
+                }
             ),
         );
     }
@@ -9154,6 +9183,52 @@ fn element<'a>(
                                 );
                             }
                         }
+                        if let Some(uniforms) = schema
+                            .fields
+                            .iter()
+                            .find(|field| field.name == "shader-uniforms")
+                        {
+                            let Type::Record(record) = &uniforms.ty else {
+                                return fail(
+                                    value.span,
+                                    "3D sky shader-uniforms requires a record",
+                                );
+                            };
+                            let Some(layout) = scope
+                                .records
+                                .get(record.as_ref())
+                                .filter(|record| record.variants.is_empty())
+                            else {
+                                return fail(
+                                    value.span,
+                                    "3D sky shader-uniforms requires a record",
+                                );
+                            };
+                            for field in &layout.fields {
+                                if !builtins::SCENE_SKY_UNIFORM_TYPES.contains(&field.ty) {
+                                    return fail(
+                                        value.span,
+                                        format!(
+                                            "3D sky uniform `{}` has unsupported type {}",
+                                            field.name,
+                                            field.ty.name()
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        if let Some(textures) = schema
+                            .fields
+                            .iter()
+                            .find(|field| field.name == "shader-textures")
+                        {
+                            validate_shader_texture_inputs(
+                                &value,
+                                scope,
+                                &textures.ty,
+                                "sky shader-textures",
+                            )?;
+                        }
                     } else if b.name == "lights" {
                         validate_scene_records(
                             &value,
@@ -11809,7 +11884,9 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 ..ir::Expr::operation("instance_table_url", Type::InstanceTable3D, vec![], span)
             }
         }
-        ExprKind::ShaderUrl(path) | ExprKind::MaterialShaderUrl(path) => {
+        ExprKind::ShaderUrl(path)
+        | ExprKind::MaterialShaderUrl(path)
+        | ExprKind::SkyShaderUrl(path) => {
             let value = serde_json::from_str::<String>(path).map_err(|error| Diagnostic {
                 span,
                 message: format!("invalid shader path: {error}"),
@@ -11820,10 +11897,10 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             ir::Expr {
                 value,
                 ..ir::Expr::operation(
-                    if matches!(e.kind, ExprKind::MaterialShaderUrl(_)) {
-                        "material_shader_url"
-                    } else {
-                        "shader_url"
+                    match &e.kind {
+                        ExprKind::MaterialShaderUrl(_) => "material_shader_url",
+                        ExprKind::SkyShaderUrl(_) => "sky_shader_url",
+                        _ => "shader_url",
                     },
                     Type::String,
                     vec![],

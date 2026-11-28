@@ -22,9 +22,14 @@ impl Mesh3D {
         transform: SceneTransform,
         row: SceneTransform,
     ) -> (Self, SceneTransform) {
-        let Some(blend) =
-            blend.filter(|_| self.skin_geometry().is_none() && self.morph_geometry().is_none())
-        else {
+        let Some(blend) = blend.filter(|_| {
+            self.skin_geometry().is_none()
+                && self.morph_geometry().is_none()
+                && self
+                    .parts()
+                    .iter()
+                    .all(|part| part.topology == crate::scene3d::MeshTopology::Triangles)
+        }) else {
             return (self, transform);
         };
         let Some(pose) = blend.pose(
@@ -131,13 +136,32 @@ impl Mesh3D {
         offsets: Vec<u32>,
         deltas: Vec<MorphDelta>,
     ) -> Option<Self> {
+        self.with_morph_uvs(target_count, names, offsets, deltas, Vec::new())
+    }
+
+    #[doc(hidden)]
+    pub fn with_morph_uvs(
+        self,
+        target_count: usize,
+        names: Arc<[String]>,
+        offsets: Vec<u32>,
+        deltas: Vec<MorphDelta>,
+        uvs: Vec<[[f32; 2]; 2]>,
+    ) -> Option<Self> {
         self.with_morph_table(
             target_count,
             names,
             MorphTable {
                 offsets,
                 deltas,
-                attributes: Vec::new(),
+                attributes: uvs
+                    .into_iter()
+                    .map(|[uv, uv1]| MorphAttributes {
+                        uv,
+                        uv1,
+                        ..Default::default()
+                    })
+                    .collect(),
             },
         )
     }
@@ -311,8 +335,12 @@ mod tests {
             color: [1.0; 4],
         });
         let mesh = || {
-            Mesh3D::prepare_authored_triangles(triangle.to_vec(), vec![[32767, 0, 0, 32767]; 3])
-                .unwrap()
+            Mesh3D::prepare_authored_mesh(
+                crate::scene3d::MeshTopology::Triangles,
+                triangle.to_vec(),
+                vec![[32767, 0, 0, 32767]; 3],
+            )
+            .unwrap()
         };
         let attributes = MorphAttributes {
             uv: [0.5, -0.25],
@@ -347,7 +375,7 @@ mod tests {
                 .eq(decoded.morph_geometry().unwrap().packed_words())
         );
         let subset = decoded
-            .triangle_subset(&[1, 2, 0], decoded.parts().to_vec())
+            .primitive_subset(&[1, 2, 0], decoded.parts().to_vec())
             .unwrap();
         let geometry = subset.morph_geometry().unwrap();
         assert_eq!(geometry.vertex_attributes(0), &[attributes]);

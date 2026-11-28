@@ -1168,9 +1168,7 @@ fn warm_native_masks<'a>(
     baseline: f32,
     fragments: impl Iterator<Item = &'a StyledFragment>,
 ) {
-    use femtovg::{
-        Color, FontId, ImageFlags, PixelFormat, PositionedGlyph, renderer::RenderTarget,
-    };
+    use femtovg::{Color, CompositeOperation, FontId, PositionedGlyph};
     use std::collections::HashSet;
 
     // The caller admits only untransformed text at exact device scales.
@@ -1249,26 +1247,19 @@ fn warm_native_masks<'a>(
     if outlines < 32 {
         return;
     }
-    let Ok(target) = canvas.create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::NEAREST)
-    else {
-        return;
-    };
-    // FemtoVG records atlas writes before drawing a run. Prepare the masks
-    // on a private target so those writes don't interrupt the main text pass.
+    // FemtoVG writes the masks in its internal offscreen pass. The transparent
+    // glyph draws preserve the destination and reuse its source-over pipeline.
     let paint = Paint::color(Color::white()).with_font_size(size);
     canvas.save();
-    canvas.with_render_target(RenderTarget::Image(target), |canvas| {
-        canvas.set_global_alpha(0.0);
-        canvas.set_shadow_color(Color::rgba(0, 0, 0, 0));
-        canvas.reset_scissor();
-        for (font, glyphs) in runs {
-            if canvas.fill_glyph_run(font, &[], glyphs, &paint).is_err() {
-                break;
-            }
+    canvas.set_global_alpha(0.0);
+    canvas.set_shadow_color(Color::rgba(0, 0, 0, 0));
+    canvas.global_composite_operation(CompositeOperation::SourceOver);
+    for (font, glyphs) in runs {
+        if canvas.fill_glyph_run(font, &[], glyphs, &paint).is_err() {
+            break;
         }
-    });
+    }
     canvas.restore();
-    canvas.delete_image(target);
 }
 
 pub(crate) fn draw(
@@ -1327,15 +1318,16 @@ pub(crate) fn draw(
         None
     };
     #[cfg(not(any(xrack_femtovg_glyph_samples, target_os = "android", target_os = "ios")))]
-    if document.text().len() >= 64 * 1024
+    if system.native_styled_masks_pending.get()
+        && document.text().len() >= 64 * 1024
         && selection.is_empty()
         && let Some(range) = &visible
         && (16..=256).contains(&range.len())
         && matches!(scale, 1.0 | 2.0)
         && !layout.has_ancestor_clip_chain()
         && crate::has_device_scale(crate::canvas_transform(canvas), scale)
-        && !system.native_styled_masks_warmed.replace(true)
     {
+        system.native_styled_masks_pending.set(false);
         warm_native_masks(
             canvas,
             system,

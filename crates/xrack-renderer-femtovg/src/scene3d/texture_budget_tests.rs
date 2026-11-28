@@ -38,6 +38,23 @@ fn scene(coated: bool, opacity: Option<TextureData2D>) -> Node {
             ("specular-reflection-map", scalar([30, 225, 168, 255])),
             ("height-map", scalar([128, 0, 0, 255])),
             ("height-amount", Value::Float(if maps { 0.15 } else { 0.0 })),
+            (
+                "iridescence-factor",
+                Value::Float(if maps { 0.8 } else { 0.0 }),
+            ),
+            ("iridescence-map", scalar([204, 0, 0, 255])),
+            ("iridescence-thickness-map", scalar([0, 170, 0, 255])),
+            (
+                "sheen-color",
+                Value::Color(if maps {
+                    Color(0xffffffff)
+                } else {
+                    Color(0x000000ff)
+                }),
+            ),
+            ("sheen-roughness", Value::Float(0.8)),
+            ("sheen-color-map", scalar([240, 68, 242, 255])),
+            ("sheen-roughness-map", scalar([255, 255, 0, 170])),
             ("clearcoat", Value::Float(0.5)),
             (
                 "opacity-map",

@@ -2419,6 +2419,102 @@ fn procedural_sky_completes_property_and_structural_fields() {
             .any(|item| item["label"] == "sun-latitude" && item["detail"] == "float"),
         "{fields:?}"
     );
+    let fields = complete_at(
+        "struct Sky { shader: string, shader-parameters: vector3d } component App inherits Window {
+           SceneView3D { skybox-sky: Sky { shader-pa| } }
+        }",
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|item| { item["label"] == "shader-parameters" && item["detail"] == "vector3d" })
+    );
+    let invalid = r#"struct Sky { shader: int } component App inherits Window {
+        SceneView3D { environment-sky: Sky { shader: 1 }; }
+    }"#;
+    assert!(
+        analysis::analyze(URI, invalid, None)
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|issue| {
+                issue["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("shader") && message.contains("string"))
+            })
+    );
+    let frames = complete_at(
+        "struct Sky { ibl-render-frames: int } component App inherits Window {
+            SceneView3D { environment-sky: Sky { ibl-render-f| } }
+        }",
+    );
+    assert!(
+        frames
+            .iter()
+            .any(|item| { item["label"] == "ibl-render-frames" && item["detail"] == "int" })
+    );
+    let modes = complete_at(
+        r#"struct Sky { skybox-mode: string } component App inherits Window {
+            SceneView3D { skybox-sky: Sky { skybox-mode: "screen-space-|" }; }
+        }"#,
+    );
+    for mode in [
+        "screen-space-full",
+        "screen-space-half",
+        "screen-space-quarter",
+    ] {
+        assert!(modes.iter().any(|item| item["label"] == mode), "{modes:?}");
+    }
+    let textures = complete_at(
+        "struct Input { texture: string } struct Sky { shader-textures: [Input] }
+        component App inherits Window { SceneView3D { environment-sky: Sky { shader-tex| }; } }",
+    );
+    assert!(
+        textures
+            .iter()
+            .any(|item| item["label"] == "shader-textures")
+    );
+    let uniforms = complete_at(
+        "struct Uniforms { sky-gain: float } struct Sky { shader-uniforms: Uniforms }
+        component App inherits Window { SceneView3D { skybox-sky: Sky { shader-uni| }; } }",
+    );
+    assert!(
+        uniforms
+            .iter()
+            .any(|item| item["label"] == "shader-uniforms")
+    );
+    let invalid_uniform = r#"struct Uniforms { gain: string }
+        struct Sky { shader-uniforms: Uniforms }
+        component App inherits Window {
+            SceneView3D { environment-sky: Sky { shader-uniforms: Uniforms { gain: "" } }; }
+        }"#;
+    assert!(
+        analysis::analyze(URI, invalid_uniform, None)
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|issue| {
+                issue["message"].as_str().is_some_and(|message| {
+                    message.contains("sky uniform `gain`") && message.contains("string")
+                })
+            })
+    );
+    let invalid_texture = r#"struct Input { data: string }
+        struct Sky { shader-textures: [Input] }
+        component App inherits Window {
+            SceneView3D { environment-sky: Sky { shader-textures: [Input { data: "" }] }; }
+        }"#;
+    assert!(
+        analysis::analyze(URI, invalid_texture, None)
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|issue| {
+                issue["message"].as_str().is_some_and(|message| {
+                    message.contains("sky shader texture") && message.contains("texturedata3d")
+                })
+            })
+    );
 }
 
 #[test]
@@ -4651,6 +4747,10 @@ fn authored_texture_maps_complete_wrapping_and_sampler_filtering() {
         "roughness-map",
         "specular-reflection-map",
         "height-map",
+        "iridescence-map",
+        "iridescence-thickness-map",
+        "sheen-color-map",
+        "sheen-roughness-map",
     ] {
         let source = source.replace("base-color-map", field);
         let wrapping = complete_at(&source.replace("PREFIX", r#"wrap-u: "mi|""#));
@@ -4948,6 +5048,7 @@ fn scene_asset_urls_complete_and_link_local_resources() {
         "room.wgsl",
         "room.png",
         "room.svg",
+        "tile.webp",
     ] {
         std::fs::write(models.join(file), []).unwrap();
     }
@@ -4996,6 +5097,15 @@ fn scene_asset_urls_complete_and_link_local_resources() {
     assert_eq!(
         links[0]["target"],
         workspace.uri(&models.join("room.png")).unwrap()
+    );
+    let webp = texture.replace("models/ro", "models/ti");
+    let candidates = completion::complete(&webp, 0, webp.len(), Some(&workspace));
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["textEdit"]["newText"], "tile.webp");
+    let complete_webp = webp + r#"le.webp"); }"#;
+    assert_eq!(
+        completion::document_links(&complete_webp, &workspace)[0]["target"],
+        workspace.uri(&models.join("tile.webp")).unwrap()
     );
     for field in [
         "specular-map",
@@ -5289,7 +5399,7 @@ fn glb_hover_lists_texture_samplers_and_material_metadata_without_binary_data() 
 
     let mut json = br#"{"extensionsUsed":["KHR_texture_transform"],"nodes":[{"camera":0,"name":"Hero"},{"camera":1},{"camera":1}],"cameras":[{"type":"perspective"},{"type":"orthographic","name":"Duplicate"}],"extensions":{"KHR_lights_punctual":{"lights":[{"type":"point","name":"Fill"},{"type":"spot"}]}},"materials":[
         {"extensions":{"KHR_materials_clearcoat":{},"KHR_materials_unknown":{}}},
-        {"extensions":{"KHR_materials_clearcoat":{},"KHR_materials_emissive_strength":{},"KHR_materials_ior":{},"KHR_materials_specular":{},"KHR_materials_transmission":{},"KHR_materials_volume":{},"KHR_materials_dispersion":{}}}
+        {"extensions":{"KHR_materials_clearcoat":{},"KHR_materials_emissive_strength":{},"KHR_materials_ior":{},"KHR_materials_specular":{},"KHR_materials_transmission":{},"KHR_materials_volume":{},"KHR_materials_dispersion":{},"KHR_materials_iridescence":{},"KHR_materials_sheen":{}}}
     ],"meshes":[
         {"primitives":[{"targets":[{},{}]}],"extras":{"targetNames":["extend","retract"]}},
         {"primitives":[{"targets":[{},{}]}],"extras":{"targetNames":["blink","blink"]}},
@@ -5329,7 +5439,7 @@ fn glb_hover_lists_texture_samplers_and_material_metadata_without_binary_data() 
     assert_eq!(hover["contents"]["kind"], "plaintext");
     assert_eq!(
         hover["contents"]["value"],
-        "glTF morph targets for morph-weights\n\nMesh #0\ntarget-0  extend\ntarget-1  retract\n\nMesh #1\ntarget-0\ntarget-1\n\nMesh #2\ntarget-0\n\nglTF material extensions\nKHR_materials_clearcoat\nKHR_materials_emissive_strength\nKHR_materials_ior\nKHR_materials_specular\nKHR_materials_transmission\nKHR_materials_volume\nKHR_materials_dispersion\n\nglTF texture coordinates\nKHR_texture_transform (offset, rotation, scale, UV set)\n\nglTF camera nodes (use row-id/selector)\n#0  perspective  Hero\n#1  orthographic\n#2  orthographic\n\nglTF punctual lights\nLight #0  point  Fill\nLight #1  spot\n\nglTF texture minification\nTexture #0  LINEAR_MIPMAP_NEAREST\nTexture #1  NEAREST\nTexture #2  LINEAR_MIPMAP_LINEAR (XRack default)"
+        "glTF morph targets for morph-weights\n\nMesh #0\ntarget-0  extend\ntarget-1  retract\n\nMesh #1\ntarget-0\ntarget-1\n\nMesh #2\ntarget-0\n\nglTF material extensions\nKHR_materials_clearcoat\nKHR_materials_emissive_strength\nKHR_materials_ior\nKHR_materials_specular\nKHR_materials_transmission\nKHR_materials_volume\nKHR_materials_dispersion\nKHR_materials_iridescence\nKHR_materials_sheen\n\nglTF texture coordinates\nKHR_texture_transform (offset, rotation, scale, UV set)\n\nglTF camera nodes (use row-id/selector)\n#0  perspective  Hero\n#1  orthographic\n#2  orthographic\n\nglTF punctual lights\nLight #0  point  Fill\nLight #1  spot\n\nglTF texture minification\nTexture #0  LINEAR_MIPMAP_NEAREST\nTexture #1  NEAREST\nTexture #2  LINEAR_MIPMAP_LINEAR (XRack default)"
     );
 }
 
@@ -5544,6 +5654,11 @@ fn builtin_signatures_work_in_incomplete_buffers_and_diagnostics_cover_function_
             "@shader-url(",
             0,
             "@shader-url(path: string literal) -> string",
+        ),
+        (
+            "@sky-shader-url(",
+            0,
+            "@sky-shader-url(path: string literal) -> string",
         ),
     ] {
         let text =
@@ -8435,6 +8550,57 @@ fn gltf_material_variant_selectors_complete_and_hover_inside_scene_rows() {
 }
 
 #[test]
+fn mesh_asset_hover_reports_point_line_and_triangle_modes() {
+    let directory = workspace_fixture("gltf-primitive-topology-hover");
+    std::fs::write(
+        directory.join("modes.gltf"),
+        r#"{"asset":{"version":"2.0"},"extensionsRequired":["KHR_mesh_quantization","EXT_meshopt_compression"],
+            "extensionsUsed":["KHR_meshopt_compression","KHR_draco_mesh_compression","EXT_texture_webp","KHR_texture_basisu"],"meshes":[{"primitives":[
+            {"mode":0},{"mode":1},
+            {"mode":2,"attributes":{"NORMAL":8}},
+            {"mode":3,"attributes":{"NORMAL":8,"TANGENT":9}},
+            {},{"mode":4},{"mode":5},{"mode":6}
+        ]}]}"#,
+    )
+    .unwrap();
+    let uri = workspace_file_uri(&directory.join("main.xr"));
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let source =
+        r#"component App inherits Window { property <string> mesh <- @mesh-url("modes.gltf"); }"#;
+    let cursor = analysis::Source::new(source).coordinates(source.find("modes.gltf").unwrap());
+    let hover = completion::query(
+        "textDocument/hover",
+        &uri,
+        source,
+        Some(cursor),
+        Some(&workspace),
+    );
+    let details = hover["contents"]["value"].as_str().unwrap();
+    assert!(details.contains("glTF quantized mesh attributes (KHR_mesh_quantization)"));
+    assert!(details.contains("glTF meshopt-compressed buffer views (EXT_meshopt_compression)"));
+    assert!(details.contains("glTF meshopt-compressed buffer views (KHR_meshopt_compression)"));
+    assert!(details.contains("glTF Draco-compressed primitives (KHR_draco_mesh_compression)"));
+    assert!(details.contains("glTF WebP material textures (EXT_texture_webp)"));
+    assert!(details.contains("glTF Basis Universal material textures (KHR_texture_basisu)"));
+    assert!(details.contains("glTF primitive topology"));
+    for label in [
+        "POINTS",
+        "LINES",
+        "LINE_LOOP",
+        "LINE_STRIP",
+        "TRIANGLE_STRIP",
+        "TRIANGLE_FAN",
+    ] {
+        assert!(details.contains(&format!("{label}  1")));
+    }
+    assert!(details.contains("Viewport picking uses point size and line width."));
+    assert!(details.contains("TRIANGLES  2"));
+    assert!(details.contains("Base color + emission (no NORMAL)  2"));
+    assert!(details.contains("Vertex lighting (NORMAL only)  1"));
+    assert!(details.contains("Authored tangent frame (NORMAL + TANGENT)  1"));
+}
+
+#[test]
 fn mesh_asset_hover_reports_gpu_instance_groups_and_accessors() {
     let directory = workspace_fixture("gltf-instanced-asset-hover");
     std::fs::write(
@@ -8625,6 +8791,55 @@ fn vertex_color_mask_options_complete_for_full_and_partial_values() {
         assert!(
             items.iter().any(|item| item["label"] == "none"),
             "{field}: {items:?}"
+        );
+    }
+}
+
+#[test]
+fn primitive_sizes_complete_and_accept_only_float_material_fields() {
+    let source = r##"
+struct PointFinish { WIDTH: float }
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: PointFinish,
+}
+export component Points inherits Window {
+    property <PointFinish> finish: PointFinish { FIELD };
+    SceneView3D { model: [
+        Actor {
+            id: "shape", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+            color: #fff, material: root.finish,
+        }
+    ]; }
+}
+"##;
+    for field in ["point-size", "line-width"] {
+        let source = source.replace("WIDTH", field);
+        let items = complete_at(&source.replace("FIELD", &format!("{}|", &field[..6])));
+        assert!(items.iter().any(|item| item["label"] == field));
+        let valid = source.replace("FIELD", &format!("{field}: 5"));
+        assert!(analysis::analyze(URI, &valid, None).diagnostics.is_empty());
+        let cursor = analysis::Source::new(&valid).coordinates(valid.rfind(field).unwrap());
+        let hover = completion::query("textDocument/hover", URI, &valid, Some(cursor), None);
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .is_some_and(|text| text.contains(&format!("{field}: float"))),
+            "{hover:?}"
+        );
+        let invalid = valid
+            .replace(&format!("{field}: float"), &format!("{field}: length"))
+            .replace(&format!("{field}: 5"), &format!("{field}: 5px"));
+        assert!(
+            analysis::analyze(URI, &invalid, None)
+                .diagnostics
+                .values()
+                .flatten()
+                .any(|item| item["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(field) && message.contains("float")))
         );
     }
 }
@@ -9394,6 +9609,38 @@ fn material_workflow_and_glossiness_channel_complete_and_type_check() {
             message.contains("max-height-map-samples") && message.contains("int")
         })
     }));
+    for (member, expected, wrong) in [
+        ("specular-tint", "float", "color"),
+        ("emissive-factor", "vector3d", "color"),
+        ("iridescence-factor", "float", "bool"),
+        ("iridescence-index-of-refraction", "float", "bool"),
+        ("iridescence-thickness-minimum", "float", "bool"),
+        ("iridescence-thickness-maximum", "float", "bool"),
+        ("iridescence-channel", "string", "bool"),
+        ("iridescence-thickness-channel", "string", "bool"),
+        ("sheen-color", "color", "string"),
+        ("sheen-roughness", "float", "bool"),
+        ("sheen-roughness-channel", "string", "bool"),
+    ] {
+        let complete = format!(
+            r#"struct Finish {{ {member}: {expected} }} component App inherits Window {{
+            property <Finish> finish: Finish {{ {}| }}
+        }}"#,
+            &member[..member.len() - 2]
+        );
+        assert!(
+            complete_at(&complete)
+                .iter()
+                .any(|item| item["label"] == member && item["detail"] == expected)
+        );
+        let invalid = source.replace("glossiness: string", &format!("{member}: {wrong}"));
+        let result = analysis::analyze(URI, &invalid, None);
+        assert!(result.diagnostics.values().flatten().any(|issue| {
+            issue["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(member) && message.contains(expected))
+        }));
+    }
 }
 
 #[test]
@@ -10134,6 +10381,49 @@ export component App inherits Window {
                 && message.contains("point3d")
         }),
         "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn authored_mesh_topology_completes_fields_values_and_types() {
+    let source = r##"
+struct Vertex { position: point3d }
+struct MeshData { vertices: [Vertex], topology: string }
+struct Actor {
+    id: string, x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color, geometry: MeshData,
+}
+export component App inherits Window {
+    property <MeshData> edge: MeshData { vertices: [], FIELD };
+    SceneView3D { model <- [
+        Actor { id: "edge", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, color: #fff, geometry: root.edge },
+    ]; }
+}
+"##;
+    let fields = complete_at(&source.replace("FIELD", "topo|"));
+    assert!(fields.iter().any(|item| item["label"] == "topology"));
+    for prefix in ["topology: \"line-|\"", "topology: \"line-|"] {
+        let modes = complete_at(&source.replace("FIELD", prefix));
+        for label in ["line-strip", "line-loop"] {
+            assert!(modes.iter().any(|item| item["label"] == label), "{modes:?}");
+        }
+    }
+    let valid = source.replace("FIELD", "topology: \"line-loop\"");
+    assert!(analysis::analyze(URI, &valid, None).diagnostics.is_empty());
+    let invalid = source
+        .replace("FIELD", "topology: 4")
+        .replace("topology: string", "topology: int");
+    let diagnostics = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(
+        diagnostics
+            .values()
+            .flatten()
+            .any(|item| item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("3D geometry")
+                    && message.contains("topology")
+                    && message.contains("string")))
     );
 }
 

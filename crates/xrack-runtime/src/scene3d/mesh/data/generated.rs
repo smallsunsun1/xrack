@@ -4,7 +4,10 @@ use std::sync::{Arc, OnceLock};
 
 use super::{Mesh3D, MeshTangent, MeshVertex};
 use crate::scene3d::mesh::{
-    material::{MeshAlphaMode, MeshCullMode, MeshMaterial, MeshMaterialSlot, MeshPart, MeshPbr},
+    material::{
+        MeshAlphaMode, MeshCullMode, MeshMaterial, MeshMaterialSlot, MeshPart, MeshPbr,
+        MeshTopology,
+    },
     primitives::{self, PrimitiveParts},
 };
 
@@ -49,7 +52,7 @@ impl Mesh3D {
     }
 
     fn prepare_primitive(kind: Primitive, parts: PrimitiveParts) -> Option<Self> {
-        Self::prepare_parts(Some(kind), parts, Vec::new())
+        Self::prepare_parts(Some(kind), MeshTopology::Triangles, parts, Vec::new())
     }
 
     pub(crate) fn prepare_capsule(parts: PrimitiveParts) -> Option<Self> {
@@ -57,18 +60,20 @@ impl Mesh3D {
     }
 
     pub(crate) fn prepare_procedural(parts: PrimitiveParts) -> Option<Self> {
-        Self::prepare_parts(None, parts, Vec::new())
+        Self::prepare_parts(None, MeshTopology::Triangles, parts, Vec::new())
     }
 
-    pub(crate) fn prepare_authored_triangles(
+    pub(crate) fn prepare_authored_mesh(
+        topology: MeshTopology,
         vertices: Vec<MeshVertex>,
         tangents: Vec<MeshTangent>,
     ) -> Option<Self> {
-        Self::prepare_parts(None, vec![("surface", vertices)], tangents)
+        Self::prepare_parts(None, topology, vec![("surface", vertices)], tangents)
     }
 
     fn prepare_parts(
         kind: Option<Primitive>,
+        topology: MeshTopology,
         parts: PrimitiveParts,
         tangents: Vec<MeshTangent>,
     ) -> Option<Self> {
@@ -80,6 +85,8 @@ impl Mesh3D {
             let start = vertices.len();
             vertices.extend(part);
             ranges.push(MeshPart {
+                lighting: Default::default(),
+                topology,
                 vertices: start..vertices.len(),
                 material: index,
                 volume_inverse: None,
@@ -89,6 +96,8 @@ impl Mesh3D {
                 name: Some(name.into()),
             });
             materials.push(MeshMaterial {
+                point_size: 1.0,
+                line_width: 1.0,
                 opacity: 1.0,
                 opacity_texture: None,
                 invert_opacity_map_value: false,
@@ -127,7 +136,7 @@ impl Mesh3D {
         }
     }
 
-    /// Triangles in model space, shared by rasterization and ray queries.
+    /// Expanded vertices in model space, grouped by the topology of each part.
     pub fn vertices(&self) -> &[MeshVertex] {
         static BOX: OnceLock<Vec<MeshVertex>> = OnceLock::new();
         static SPHERE: OnceLock<Vec<MeshVertex>> = OnceLock::new();

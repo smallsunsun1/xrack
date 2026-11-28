@@ -149,20 +149,22 @@ impl Mesh3D {
         parts: Vec<MeshPart>,
         materials: Arc<[MeshMaterial]>,
     ) -> Result<Self, &'static str> {
-        if vertices.is_empty()
-            || !vertices.len().is_multiple_of(3)
-            || vertices.len() > MAX_IMPORTED_VERTICES
-        {
-            return Err("mesh must contain complete triangles within the vertex limit");
+        if !(1..=MAX_IMPORTED_VERTICES).contains(&vertices.len()) {
+            return Err("mesh must contain vertices within the vertex limit");
         }
         let mut end = 0;
         for part in &parts {
             if part.vertices.start != end
                 || part.vertices.is_empty()
-                || !part.vertices.len().is_multiple_of(3)
+                || !part
+                    .vertices
+                    .len()
+                    .is_multiple_of(part.topology.vertices_per_primitive())
                 || part.material >= materials.len()
             {
-                return Err("mesh parts must cover contiguous triangles with valid materials");
+                return Err(
+                    "mesh parts must cover contiguous complete primitives with valid materials",
+                );
             }
             end = part.vertices.end;
         }
@@ -170,17 +172,22 @@ impl Mesh3D {
             return Err("mesh parts do not cover the vertex buffer");
         }
         let needs_tangents = parts.iter().any(|part| {
-            materials[part.material]
-                .pbr
-                .as_ref()
-                .and_then(MeshPbr::tangent_normal_map)
-                .is_some()
+            part.topology == crate::scene3d::MeshTopology::Triangles
+                && materials[part.material]
+                    .pbr
+                    .as_ref()
+                    .and_then(MeshPbr::tangent_normal_map)
+                    .is_some()
         });
         if (needs_tangents || !tangents.is_empty()) && tangents.len() != vertices.len() {
             return Err("mesh tangent data does not match the vertex buffer");
         }
         if materials.iter().any(|material| {
-            !(0.0..=1.0).contains(&material.opacity)
+            !material.point_size.is_finite()
+                || material.point_size < 1.0
+                || !material.line_width.is_finite()
+                || material.line_width < 1.0
+                || !(0.0..=1.0).contains(&material.opacity)
                 || material
                     .opacity_texture
                     .as_ref()
@@ -262,6 +269,7 @@ impl Mesh3D {
             heightfield: None,
             node_catalog: None,
             pick_tree: OnceLock::new(),
+            raster_tree: OnceLock::new(),
             primitive: None,
             authored_tangents: false,
         });

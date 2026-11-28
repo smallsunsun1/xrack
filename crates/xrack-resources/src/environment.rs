@@ -1,5 +1,6 @@
 //! Decode Radiance environment images and prefilter them in linear light.
 mod ktx;
+pub(crate) use ktx::decode_ktx2_image;
 
 use crate::assets::read_asset;
 use flate2::{Compression, write::ZlibEncoder};
@@ -527,7 +528,7 @@ impl EnvironmentRadiance {
     const SIDE: i32 = EnvironmentProbe::FACE_SIZE as i32;
     const BASE_PIXELS: usize = (Self::SIDE * Self::SIDE * 6) as usize;
 
-    pub(crate) fn new(input: ViewportEnvironment<'_>) -> Self {
+    pub(crate) fn new(input: ViewportEnvironment<'_>) -> Option<Self> {
         let orientation = Matrix3::from_rows(&input.orientation.rows().map(RowVector3::from));
         let (source, importance) = match input.source {
             EnvironmentSource::Panorama(probe) => {
@@ -568,13 +569,14 @@ impl EnvironmentRadiance {
                     EnvironmentImportance::new(&faces, orientation, input.horizon),
                 )
             }
+            EnvironmentSource::Program(_) => return None,
         };
-        Self {
+        Some(Self {
             source,
             orientation,
             horizon: input.horizon,
             importance,
-        }
+        })
     }
 
     pub(crate) fn sample(&self, direction: Vector3<f32>) -> Vector3<f32> {
@@ -768,11 +770,12 @@ mod tests {
         node.properties
             .insert("environment-pitch", Value::Float(90.0));
         let full = ViewportEnvironment::from_node(&node).ok_or("missing procedural probe")?;
-        let original = EnvironmentRadiance::new(full);
+        let original = EnvironmentRadiance::new(full).unwrap();
         let masked = EnvironmentRadiance::new(ViewportEnvironment {
             horizon: 1.0,
             ..full
-        });
+        })
+        .unwrap();
         assert!(original.sample(-Vector3::z()).norm() > 0.001);
         assert_eq!(masked.sample(-Vector3::z()), Vector3::zeros());
         assert_eq!(masked.sample(Vector3::z()), original.sample(Vector3::z()));
@@ -851,7 +854,7 @@ mod tests {
         node.properties
             .insert("environment-intensity", Value::Float(0.5));
         let input = ViewportEnvironment::from_node(&node).ok_or("missing declared sky")?;
-        let radiance = EnvironmentRadiance::new(input);
+        let radiance = EnvironmentRadiance::new(input).unwrap();
         assert_eq!(radiance.sample(Vector3::x()), Vector3::repeat(5.0));
         assert_eq!(radiance.sample(Vector3::z()), Vector3::zeros());
         let importance = radiance
@@ -876,7 +879,7 @@ mod tests {
             orientation: Default::default(),
             horizon: 0.0,
         };
-        let environment = EnvironmentRadiance::new(view);
+        let environment = EnvironmentRadiance::new(view).unwrap();
         assert!(
             environment.importance.is_none(),
             "a low-contrast probe uses cosine sampling"
@@ -901,7 +904,8 @@ mod tests {
         let rotated = EnvironmentRadiance::new(ViewportEnvironment {
             orientation: xrack_runtime::scene3d::EnvironmentOrientation::degrees([90.0, 0.0, 0.0]),
             ..view
-        });
+        })
+        .unwrap();
         assert!((rotated.sample(Vector3::z()) - environment.sample(-Vector3::x())).norm() < 0.006);
         Ok(())
     }
@@ -917,7 +921,8 @@ mod tests {
             intensity: 1.0,
             orientation: xrack_runtime::scene3d::EnvironmentOrientation::degrees([90.0, 0.0, 0.0]),
             horizon: 0.0,
-        });
+        })
+        .unwrap();
         let importance = environment
             .importance
             .as_ref()

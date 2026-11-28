@@ -115,6 +115,8 @@ pub enum BakeError {
     AtlasBytes,
     #[error("scene bounds or radiance exceed the supported lightmap range")]
     Radiance,
+    #[error("offline lightmap baking requires an HDR or analytic sky environment")]
+    ProgrammableSky,
     #[error("lightmap PNG: {0}")]
     Png(#[from] png::EncodingError),
     #[error("lightmap samples: {0}")]
@@ -231,7 +233,7 @@ pub fn bake_lightmaps_recording(
             || object.mesh.lightmap_uvs().is_empty()
             || !object
                 .mesh
-                .sections()
+                .triangle_sections()
                 .any(|(_, material)| receiver_material(material))
         {
             continue;
@@ -300,7 +302,8 @@ pub fn bake_lightmaps_recording(
         ambient: Vector3::from(ambient) * 0.22,
         environment: environment
             .filter(|environment| options.indirect_factor > 0.0 && environment.contributes_light())
-            .map(EnvironmentRadiance::new),
+            .map(|input| EnvironmentRadiance::new(input).ok_or(BakeError::ProgrammableSky))
+            .transpose()?,
         distance,
         visible_layers,
         options,
@@ -482,7 +485,7 @@ fn density_resolution(
         let object = &objects[index];
         let transform = object.transform_rows();
         let vertices = object.mesh.vertices();
-        for (range, material) in object.mesh.sections() {
+        for (range, material) in object.mesh.triangle_sections() {
             if !receiver_material(material) {
                 continue;
             }
@@ -601,7 +604,7 @@ fn rasterize<'a>(
     for &index in instances {
         let mesh = &objects[index].mesh;
         for (range, material) in mesh
-            .sections()
+            .triangle_sections()
             .filter(|(_, material)| receiver_material(*material))
         {
             for vertex in range.step_by(3) {
@@ -1094,6 +1097,8 @@ mod tests {
             .collect();
         let chart = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
         let material = MeshMaterial {
+            point_size: 1.0,
+            line_width: 1.0,
             opacity: 1.0,
             opacity_texture: None,
             invert_opacity_map_value: false,
@@ -1123,6 +1128,8 @@ mod tests {
                 separate_surface_maps: None,
                 specular_reflection: None,
                 height_map: None,
+                iridescence: None,
+                sheen: None,
                 workflow: Default::default(),
                 emissive_texture: None,
                 occlusion_texture: None,
@@ -1136,6 +1143,8 @@ mod tests {
             vertices,
             Vec::new(),
             vec![MeshPart {
+                lighting: Default::default(),
+                topology: xrack_runtime::scene3d::MeshTopology::Triangles,
                 vertices: 0..6,
                 material: 0,
                 volume_inverse: None,
@@ -1699,7 +1708,8 @@ mod tests {
             orientation: Default::default(),
             horizon: 0.0,
             intensity: 1.0,
-        });
+        })
+        .unwrap();
         let importance = environment
             .importance
             .as_ref()

@@ -89,7 +89,10 @@ impl ModelBlendBuffers {
         }
         let (_, rest) = self.inputs.entry(key as usize).or_insert_with(|| {
             self.source_uploads += 1;
-            (Arc::downgrade(streams), mesh_buffer(device, mesh, true))
+            (
+                Arc::downgrade(streams),
+                mesh_buffer(device, mesh, true, None),
+            )
         });
         let output = if let Some(entry) = self
             .outputs
@@ -121,6 +124,10 @@ impl ModelBlendBuffers {
                     index: None,
                     skin_weights: None,
                     morph: None,
+                    point_rows: None,
+                    point_ranges: Vec::new(),
+                    line_ranges: Vec::new(),
+                    line_vertices: None,
                     binormals: None,
                     lightmap_uv: Default::default(),
                 }),

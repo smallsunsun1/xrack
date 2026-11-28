@@ -16,9 +16,15 @@ override APPLY_VERTEX_MASKS: bool = false;
 override REMAP_MATERIAL_CHANNELS: bool = false;
 override SEPARATE_SURFACE_MAPS: bool = false;
 override HEIGHT_MAPPED: bool = false;
+override TINTED_DIELECTRIC: bool = false;
+override IRIDESCENT_MATERIAL: bool = false;
+override SHEEN_MATERIAL: bool = false;
 override NO_DEPTH_EFFECTS: bool = false;
 override LIMIT_BLEND_TINT: bool = false;
 override TANGENT_VERTEX: bool = false;
+// Point and line rendering has no surface parameterization to derive a tangent frame.
+override NON_TRIANGLE_PRIMITIVE: bool = false;
+override UNLIT_PRIMITIVE: bool = false;
 override VOLUMETRIC_FOG: bool = false;
 override FOG_SCATTERING: bool = false;
 override FOG_HEIGHT_PROFILE: bool = false;
@@ -79,6 +85,7 @@ struct Material {
     shader_parameters: vec4<f32>,
     opacity_uv: TextureTransform,
     opacity_sampling: vec4<u32>,
+    primitive_sizes: vec4<f32>,
     // Metallic, roughness, occlusion strength, shading workflow (0 unlit, 1 MR, 2 SG).
     pbr: vec4<f32>,
     // Emissive RGB and normal strength.
@@ -87,11 +94,11 @@ struct Material {
     map_slots: vec4<f32>,
     // RGB specular multiplier, A specular weight.
     specular: vec4<f32>,
-    // IOR-based F0, strength texture UV slot, color texture UV slot.
+    // IOR-based F0, strength/color UV slots, dielectric tint R.
     dielectric: vec4<f32>,
-    // Transmission strength, texture UV slot, IOR roughness scale.
+    // Transmission strength, texture UV slot, IOR roughness scale, dielectric tint G.
     transmission: vec4<f32>,
-    // Mesh-space thickness, thickness UV slot, reciprocal IOR.
+    // Mesh-space thickness, thickness UV slot, reciprocal IOR, dielectric tint B.
     volume: vec4<f32>,
     // Red and blue reciprocal IORs, followed by their roughness scales.
     spectral: vec4<f32>,
@@ -114,6 +121,16 @@ struct Material {
     height_uv: TextureTransform,
     height_sampling: vec4<u32>,
     height_parameters: vec4<f32>,
+    film_parameters: vec4<f32>,
+    film_factor_uv: TextureTransform,
+    film_thickness_uv: TextureTransform,
+    film_factor_sampling: vec4<u32>,
+    film_thickness_sampling: vec4<u32>,
+    sheen_factors: vec4<f32>,
+    sheen_color_uv: TextureTransform,
+    sheen_roughness_uv: TextureTransform,
+    sheen_color_sampling: vec4<u32>,
+    sheen_roughness_sampling: vec4<u32>,
 }
 
 struct ClearcoatSettings {
@@ -370,18 +387,32 @@ fn read_explicit_binormal(vertex: VertexOut) -> vec3<f32> {
     return vec3(0.0);
 }
 
-fn transform_vertex(vertex: VertexInput, tangent: vec4<f32>) -> VertexOut {
-    let local = vec4(xr_displaced_vertex(vertex.position, material.shader_parameters, vertex.instance_data,
+fn mesh_world(vertex: VertexInput, position: vec3<f32>) -> vec4<f32> {
+    let local = vec4(xr_displaced_vertex(position, material.shader_parameters, vertex.instance_data,
         xr_instance_number(vertex.metadata.x), vertex.tint, mat3x4(vertex.model0, vertex.model1, vertex.model2)), 1.0);
-    let world = vec4<f32>(
+    return vec4<f32>(
         dot(vertex.model0, local), dot(vertex.model1, local), dot(vertex.model2, local), 1.0,
     );
-    let clip = vec4<f32>(
+}
+
+fn mesh_clip_from_world(world: vec4<f32>) -> vec4<f32> {
+    return  vec4<f32>(
         dot(globals.clip0, world),
         dot(globals.clip1, world),
         dot(globals.clip2, world),
         dot(globals.clip3, world),
     );
+}
+
+fn mesh_clip(vertex: VertexInput, position: vec3<f32>) -> vec4<f32> {
+    return mesh_clip_from_world(mesh_world(vertex, position));
+}
+
+fn transform_vertex(vertex: VertexInput, tangent: vec4<f32>) -> VertexOut {
+    let world = mesh_world(vertex, vertex.position);
+    let center = mesh_clip_from_world(world);
+    var clip = xr_point_corner(center, vertex.index, material.primitive_sizes.x, globals.ao.zw);
+    // XRack widen color
     let x = vec3<f32>(vertex.model0.x, vertex.model1.x, vertex.model2.x);
     let y = vec3<f32>(vertex.model0.y, vertex.model1.y, vertex.model2.y);
     let z = vec3<f32>(vertex.model0.z, vertex.model1.z, vertex.model2.z);
@@ -404,10 +435,6 @@ fn transform_vertex(vertex: VertexInput, tangent: vec4<f32>) -> VertexOut {
         // XRack wireframe corner
         // XRack linked clip depth
     );
-}
-
-fn srgb_to_linear(color: vec3<f32>) -> vec3<f32> {
-    return select(color / 12.92, pow((color + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), color > vec3<f32>(0.04045));
 }
 
 fn linear_to_srgb(color: vec3<f32>) -> vec3<f32> {
@@ -529,6 +556,9 @@ fn mapped_normal(
 }
 
 fn alternate_tangent_frame(vertex: VertexOut, n: vec3<f32>, uv: UvDerivatives, slot: f32, transform: TextureTransform) -> TangentFrame {
+    if NON_TRIANGLE_PRIMITIVE {
+        return TangentFrame(vec3(0.0), 0.0, vec3(0.0));
+    }
     let px = dpdx(vertex.world_and_lightmap_v.xyz);
     let py = dpdy(vertex.world_and_lightmap_v.xyz);
     let dx = texture_gradient(transform, select(uv.dx0, uv.dx1, slot > 0.5));
@@ -665,7 +695,7 @@ fn coat_surface(vertex: VertexOut, uv: UvDerivatives, front_facing: bool) -> Coa
     let mapped = mapped_normal(vertex, normal, uv, frame, coat_normal_texture,
                                coat_normal_sampler, slot,
                                clearcoat.factors.z * vertex_mask(vertex.color, VERTEX_CLEARCOAT_NORMAL), transform);
-    if globals.specular_aa > 0.5 && clearcoat.factors.x > 0.0 {
+    if !NON_TRIANGLE_PRIMITIVE && globals.specular_aa > 0.5 && clearcoat.factors.x > 0.0 {
         roughness = filtered_roughness(roughness, specular_kernel(mapped));
     }
     return CoatSurface(select(-mapped, mapped, front_facing), amount, roughness, clearcoat.fresnel);
@@ -984,7 +1014,7 @@ fn sample_probe(lookup: vec3<f32>, lod: f32) -> vec3<f32> {
     return textureSampleLevel(probe, probe_sampler, lookup, lod).rgb;
 }
 
-fn environment_specular(world: vec3<f32>, direction: vec3<f32>, f0: vec3<f32>, f90: f32,
+fn environment_specular(world: vec3<f32>, direction: vec3<f32>, f0: vec3<f32>, f90: vec3<f32>,
     nv: f32, roughness: f32, curve: vec4<f32>, custom: bool) -> vec3<f32> {
     if !MATERIAL_REFLECTION_MAP && environment.specular.y < 0.0 {
         return vec3<f32>(0.0);
@@ -998,7 +1028,7 @@ fn environment_specular(world: vec3<f32>, direction: vec3<f32>, f0: vec3<f32>, f
     return radiance * reflection_response(f0, f90, nv, roughness, curve, custom) * environment.specular.x;
 }
 
-fn reflection_response(f0: vec3<f32>, f90: f32, nv: f32, roughness: f32,
+fn reflection_response(f0: vec3<f32>, f90: vec3<f32>, nv: f32, roughness: f32,
     curve: vec4<f32>, custom: bool) -> vec3<f32> {
     // Analytic fit of the integrated GGX environment BRDF (Lazarov).
     let fit = roughness * vec4<f32>(-1.0, -0.0275, -0.572, 0.022)
@@ -1061,54 +1091,38 @@ fn sky_vertex(@builtin(vertex_index) index: u32) -> SkyVertex {
 }
 
 fn custom_forward(world: vec3<f32>) -> vec3<f32> {
-    let viewer = globals.custom_viewer;
-    if viewer.w == 0.0 {
-        return viewer.xyz;
-    }
-    return normalize((world - viewer.xyz) * viewer.w);
+    return xr_sky_custom_forward(globals.custom_viewer, world);
 }
 
+override SCREEN_SPACE_SKY: bool = false;
+
 fn sky_color(vertex: SkyVertex) -> vec4<f32> {
-    let forward = globals.view_depth.xyz;
-    let lens = globals.lens;
-    let plane = (vertex.ndc - lens.zw) / lens.xy;
-    let orthographic = globals.eye.w > 0.5;
-    let shift = select(lens.zw, vec2<f32>(0.0), orthographic);
-    let right = (globals.clip0.xyz - shift.x * forward) / lens.x;
-    let up = (globals.clip1.xyz - shift.y * forward) / lens.y;
-    let offset = plane.x * right + plane.y * up;
-    var origin = globals.eye.xyz;
-    var direction = forward;
-    if orthographic {
-        origin += offset;
-    } else {
-        direction = normalize(forward + offset);
-    }
-    if globals.oblique_depth > 1.5 {
-        let p = vec4<f32>(vertex.ndc, 0.0, 1.0);
-        let inverse = globals.custom_inverse_clip;
-        origin = vec3<f32>(dot(inverse[0], p), dot(inverse[1], p), dot(inverse[2], p))
-            / dot(inverse[3], p);
-        direction = custom_forward(origin);
-    }
+    let camera = XrSkyCamera(globals.clip0, globals.clip1, globals.view_depth,
+        globals.lens, globals.eye, globals.custom_viewer, globals.custom_inverse_clip);
+    let ray = xr_sky_ray(camera, vertex.ndc, globals.oblique_depth > 1.5);
     var alpha = globals.background_alpha;
     var color = globals.volume_background.rgb * alpha;
     if !VOLUMETRIC_FOG || globals.volume_background.w > 0.5 {
-        let lookup = probe_dir(direction, environment.skybox);
-        let lod = environment.skybox[1].w;
-        if environment.sky.sun_curve.y > 0.5 && lod < 1.0 {
-            color = xr_sky_radiance(environment.sky, lookup);
-            if lod > 0.0 {
-                color = mix(color, sample_probe(lookup, 1.0), lod);
-            }
+        if SCREEN_SPACE_SKY {
+            let uv = vec2(0.5 + 0.5 * vertex.ndc.x, 0.5 - 0.5 * vertex.ndc.y);
+            color = textureSampleLevel(opaque_radiance, transmission_sampler, uv, 0.0).rgb;
         } else {
-            color = sample_probe(lookup, lod);
+            let lookup = probe_dir(ray.direction, environment.skybox);
+            let lod = environment.skybox[1].w;
+            if environment.sky.sun_curve.y > 0.5 && lod < 1.0 {
+                color = xr_sky_radiance(environment.sky, lookup);
+                if lod > 0.0 {
+                    color = mix(color, sample_probe(lookup, 1.0), lod);
+                }
+            } else {
+                color = sample_probe(lookup, lod);
+            }
         }
         color *= environment.skybox[0].w;
         alpha = 1.0;
     }
     if VOLUMETRIC_FOG {
-        let fog = fog_to_distance(FogRay(origin, direction), 3.402823e38);
+        let fog = fog_to_distance(FogRay(ray.origin, ray.direction), 3.402823e38);
         color = color * fog.transmission + fog.radiance;
         alpha = 1.0 - (1.0 - alpha) * fog.transmission;
     }
@@ -1213,12 +1227,12 @@ fn screen_ambient_visibility(vertex: VertexOut) -> f32 {
 
 struct Dielectric {
     f0: vec3<f32>,
-    f90: f32,
+    f90: vec3<f32>,
 }
 
 fn sample_dielectric(vertex: VertexOut, uv: UvDerivatives, metallic: f32) -> Dielectric {
     if metallic >= 1.0 {
-        return Dielectric(vec3<f32>(0.0), 1.0);
+        return Dielectric(vec3<f32>(0.0), vec3<f32>(1.0));
     }
     var weight = material.specular.a * vertex_mask(vertex.color, VERTEX_SPECULAR);
     var tint = material.specular.rgb;
@@ -1234,12 +1248,167 @@ fn sample_dielectric(vertex: VertexOut, uv: UvDerivatives, metallic: f32) -> Die
             tint *= color_texel(texel, 6u).rgb;
         }
     }
-    return Dielectric(min(tint * material.dielectric.x, vec3<f32>(1.0)) * weight, weight);
+    let f0 = min(tint * material.dielectric.x, vec3<f32>(1.0)) * weight;
+    if TINTED_DIELECTRIC {
+        let base_tint = vec3(material.dielectric.w, material.transmission.w, material.volume.w);
+        return Dielectric(f0 * base_tint, weight * base_tint);
+    }
+    return Dielectric(f0, vec3<f32>(weight));
 }
 
 fn diffuse_energy(dielectric: Dielectric, edge: f32) -> f32 {
-    let fresnel = base_fresnel(mix(dielectric.f0, vec3<f32>(dielectric.f90), edge));
+    let fresnel = base_fresnel(mix(dielectric.f0, dielectric.f90, edge));
     return 1.0 - max(fresnel.r, max(fresnel.g, fresnel.b));
+}
+
+struct ThinFilm {
+    strength: f32,
+    ior: f32,
+    thickness: f32,
+}
+
+fn sample_thin_film(vertex: VertexOut, uv: UvDerivatives) -> ThinFilm {
+    var strength = material.film_parameters.x;
+    if material.film_factor_sampling.w != 0u {
+        strength *= xr_sample_scalar_map(IRIDESCENCE_MAP, material.film_factor_uv,
+            material.film_factor_sampling, vertex.uvs, vec4(uv.dx0, uv.dx1), vec4(uv.dy0, uv.dy1));
+    }
+    var thickness = material.film_parameters.w;
+    if strength > 0.0 && material.film_thickness_sampling.w != 0u {
+        let factor = xr_sample_scalar_map(IRIDESCENCE_THICKNESS_MAP, material.film_thickness_uv,
+            material.film_thickness_sampling, vertex.uvs, vec4(uv.dx0, uv.dx1), vec4(uv.dy0, uv.dy1));
+        thickness = mix(material.film_parameters.z, thickness, factor);
+    }
+    return ThinFilm(select(0.0, strength, thickness > 0.0), material.film_parameters.y, thickness);
+}
+
+// Belcour and Barla's two-interface thin-film model, with the CIE fits in
+// the KHR_materials_iridescence appendix. The fitted bands below use nm.
+fn film_harmonics(path_nm: f32, phase_sign: vec3<f32>) -> mat2x3<f32> {
+    let strength = vec4(0.8465900, 1.0002219, 1.0011225, 0.1538683);
+    let decay = exp(-(path_nm * path_nm) * vec4(1.708547e-7, 3.673309e-7, 2.610352e-7, 1.787662e-7));
+    let wave = cos(path_nm * vec4(0.0105620345, 0.0112802026, 0.0138757864, 0.0140737068));
+    let first = strength * decay * wave;
+    // Double-angle cosine and the fourth power of Gaussian attenuation
+    // reuse the evaluations from the first harmonic.
+    let decay_squared = decay * decay;
+    let second = strength * (decay_squared * decay_squared) * (2.0 * wave * wave - vec4(1.0));
+    let xyz_to_rgb = mat3x3<f32>(
+        vec3(3.2404542, -0.9692660, 0.0556434),
+        vec3(-1.5371385, 1.8760108, -0.2040259),
+        vec3(-0.4985314, 0.0415560, 1.0572252),
+    );
+    return mat2x3(
+        xyz_to_rgb * (phase_sign * (first.xyz + vec3(first.w, 0.0, 0.0))),
+        xyz_to_rgb * (second.xyz + vec3(second.w, 0.0, 0.0)),
+    );
+}
+
+fn film_reflectance(film: ThinFilm, cosine: f32, base_f0: vec3<f32>) -> vec3<f32> {
+    let eta = mix(1.0, film.ior, smoothstep(0.0, 0.03, film.thickness));
+    let inverse_eta = 1.0 / eta;
+    let inside_cosine = sqrt(max(0.0, 1.0 - (1.0 - cosine * cosine) * inverse_eta * inverse_eta));
+    let outer_ratio = 1.0 - 2.0 / (eta + 1.0);
+    let front = mix(outer_ratio * outer_ratio, 1.0, fresnel_edge(cosine));
+    let root_f0 = sqrt(clamp(base_f0, vec3(0.0), vec3(0.9999)));
+    let substrate = (vec3(1.0) + root_f0) / (vec3(1.0) - root_f0);
+    let inner_ratio = (substrate - vec3(eta)) / (substrate + vec3(eta));
+    let back = mix(inner_ratio * inner_ratio, vec3(1.0), fresnel_edge(inside_cosine));
+
+    let product = clamp(front * back, vec3(1e-5), vec3(0.9999));
+    let repeated = sqrt(product);
+    let transmittance = 1.0 - front;
+    let internal = transmittance * transmittance * back / (vec3(1.0) - product);
+    let average = vec3(front) + internal;
+
+    // At long paths the interference terms vanish. Limiting the product
+    // before multiplying also keeps large finite material inputs safe.
+    let optical_index = eta * inside_cosine;
+    let half_path = min(film.thickness, 20000.0 / max(optical_index, 1e-20)) * optical_index;
+    let path = 2.0 * half_path;
+    if path >= 20000.0 {
+        return clamp(average, vec3(0.0), vec3(1.0));
+    }
+    // A phase shift of pi negates the first harmonic and leaves the second unchanged.
+    let phase_sign = select(vec3(-1.0), vec3(1.0), substrate < vec3(eta));
+    let harmonics = film_harmonics(path, phase_sign);
+    let first = (internal - vec3(transmittance)) * repeated;
+    let spectrum = average + 2.0 * first * (harmonics[0] + repeated * harmonics[1]);
+    return clamp(spectrum, vec3(0.0), vec3(1.0));
+}
+
+struct FilmReflection {
+    specular: vec3<f32>,
+    diffuse: f32,
+}
+
+fn thin_film_response(film: ThinFilm, dielectric: Dielectric, metal_f0: vec3<f32>,
+                      metallic: f32, cosine: f32, edge: f32) -> FilmReflection {
+    var dielectric_reflection = vec3(0.0);
+    var conductor_reflection = vec3(0.0);
+    var diffuse = 1.0;
+    if metallic < 1.0 {
+        let bare = base_fresnel(mix(dielectric.f0, dielectric.f90, edge));
+        dielectric_reflection = mix(bare, film_reflectance(film, cosine, dielectric.f0), film.strength);
+        let peak = max(dielectric_reflection.x, max(dielectric_reflection.y, dielectric_reflection.z));
+        diffuse = 1.0 - peak;
+    }
+    if metallic > 0.0 {
+        let bare = base_fresnel(mix(metal_f0, vec3(1.0), edge));
+        conductor_reflection = mix(bare, film_reflectance(film, cosine, metal_f0), film.strength);
+    }
+    return FilmReflection(mix(dielectric_reflection, conductor_reflection, metallic), diffuse);
+}
+
+struct SheenSurface {
+    color: vec3<f32>,
+    alpha: f32,
+}
+
+fn sample_sheen(vertex: VertexOut, uv: UvDerivatives) -> SheenSurface {
+    var color = material.sheen_factors.rgb;
+    var roughness = material.sheen_factors.w;
+    let dx = vec4(uv.dx0, uv.dx1);
+    let dy = vec4(uv.dy0, uv.dy1);
+    if material.sheen_color_sampling.w != 0u {
+        color *= xr_sample_packed_map(SHEEN_COLOR_MAP, material.sheen_color_uv,
+            material.sheen_color_sampling, vertex.uvs, dx, dy);
+    }
+    if any(color > vec3(0.0)) && material.sheen_roughness_sampling.w != 0u {
+        roughness *= xr_sample_scalar_map(SHEEN_ROUGHNESS_MAP, material.sheen_roughness_uv,
+            material.sheen_roughness_sampling, vertex.uvs, dx, dy);
+    }
+    return SheenSurface(color, max(0.005, roughness * roughness));
+}
+
+// Imageworks directional-albedo fit for Charlie with Ashikhmin visibility,
+// from MaterialX 1.38's mx_microfacet_sheen.glsl. Horner form avoids a texture.
+fn sheen_albedo(cosine: f32, alpha: f32) -> f32 {
+    let numerator = 13.673 + cosine * (60.28956 * cosine - 68.78018)
+        + alpha * (799.08825 - 905.00061 * cosine + 1086.96473 * alpha);
+    let denominator = 1.0 + cosine * (61.57746 + 121.81241 * cosine)
+        + alpha * (442.78211 + 2597.49308 * cosine + 3045.55075 * alpha);
+    return clamp(numerator / denominator, 0.0, 1.0);
+}
+
+fn sheen_scattering(alpha: f32, nv: f32, nl: f32, nh: f32) -> f32 {
+    let inverse = 1.0 / alpha;
+    let distribution = (2.0 + inverse) * pow(max(0.0, 1.0 - nh * nh), 0.5 * inverse)
+        * 0.15915494309;
+    return distribution / max(4.0 * (nv + nl - nv * nl), 1e-5);
+}
+
+fn sheen_probe(world: vec3<f32>, direction: vec3<f32>, alpha: f32) -> vec3<f32> {
+    // Use the existing roughness-prefiltered radiance for the broad fabric lobe.
+    let roughness = sqrt(alpha);
+    if MATERIAL_REFLECTION_MAP {
+        return sample_probe(direction, roughness * f32(textureNumLevels(probe) - 1u));
+    }
+    if environment.specular.y < 0.0 {
+        return vec3(0.0);
+    }
+    let lookup = probe_dir(box_reflection(world, direction), environment.specular_basis);
+    return sample_probe(lookup, roughness * environment.specular.y) * environment.specular.x;
 }
 
 fn transmission_strength(vertex: VertexOut, uv: UvDerivatives, metallic: f32) -> f32 {
@@ -1578,6 +1747,15 @@ fn debug_lighting(color: vec3<f32>) -> SurfaceLight {
     return SurfaceLight(color, vec3(0.0), vec3(0.0), 0.0);
 }
 
+fn material_emission(vertex: VertexOut, uv: UvDerivatives) -> vec3<f32> {
+    var emissive = material.emissive.rgb;
+    if material.map_slots.y >= 0.0 {
+        let texel = sample_material_map(emissive_texture, emissive_sampler, vertex, uv, material.map_slots.y, material.transforms[1]);
+        emissive *= color_texel(texel, 1u).rgb;
+    }
+    return emissive;
+}
+
 fn shade_pbr(
     vertex: VertexOut, initial_normal: vec3<f32>, initial_albedo: vec3<f32>, uv: UvDerivatives, coat: CoatSurface,
     specular_filter: f32, brush: TangentFrame, front_facing: bool,
@@ -1612,11 +1790,7 @@ fn shade_pbr(
         roughness *= xr_sample_scalar_map(ROUGHNESS_MAP, material.roughness_uv,
             material.roughness_sampling, vertex.uvs, vec4(uv.dx0, uv.dx1), vec4(uv.dy0, uv.dy1));
     }
-    var emissive = material.emissive.rgb;
-    if material.map_slots.y >= 0.0 {
-        let texel = sample_material_map(emissive_texture, emissive_sampler, vertex, uv, material.map_slots.y, material.transforms[1]);
-        emissive *= color_texel(texel, 1u).rgb;
-    }
+    var emissive = material_emission(vertex, uv);
     var n = initial_normal;
     var albedo = initial_albedo;
     if CUSTOM_MATERIAL {
@@ -1657,20 +1831,59 @@ fn shade_pbr(
     roughness = filtered_roughness(roughness, specular_filter);
     let dielectric = sample_dielectric(vertex, uv, metallic);
     let f0 = mix(dielectric.f0, albedo, metallic);
+    var film = ThinFilm(0.0, 1.0, 0.0);
+    if IRIDESCENT_MATERIAL {
+        film = sample_thin_film(vertex, uv);
+    }
     if DEBUG_MATERIAL && globals.material_debug == DEBUG_F0 {
+        if IRIDESCENT_MATERIAL && film.strength > 0.0 {
+            return debug_lighting(thin_film_response(film, dielectric, albedo, metallic, 1.0, 0.0).specular);
+        }
         return debug_lighting(f0);
     }
-    let f90 = mix(dielectric.f90, 1.0, metallic);
+    let f90 = mix(dielectric.f90, vec3<f32>(1.0), metallic);
     let v = material_view_direction(vertex.world_and_lightmap_v.xyz);
     let nv = clamp(dot(n, v), 0.0, 1.0);
     let transmission = transmission_strength(vertex, uv, metallic);
     let base_albedo = albedo * (1.0 - metallic);
     let diffuse_albedo = base_albedo * (1.0 - transmission);
     let view_edge = curve_edge(nv, fresnel_edge(nv), material.fresnel, CUSTOM_BASE_FRESNEL);
-    let energy = diffuse_energy(dielectric, view_edge);
+    var energy = diffuse_energy(dielectric, view_edge);
+    var probe_f0 = f0;
+    var probe_f90 = f90;
+    let film_active = IRIDESCENT_MATERIAL && film.strength > 0.0;
+    if film_active {
+        let view_reflection = thin_film_response(film, dielectric, albedo, metallic, nv, view_edge);
+        energy = view_reflection.diffuse;
+        // The split-sum fit consumes endpoints of a Schlick curve. Match
+        // the colored film at this view angle before using that fit.
+        let edge = fresnel_edge(nv);
+        let facing = 1.0 - edge;
+        probe_f0 = clamp((view_reflection.specular - f90 * edge) / max(facing, 1e-5), vec3(0.0), vec3(1.0));
+        if edge > 1e-5 {
+            probe_f90 = clamp((view_reflection.specular - probe_f0 * facing) / edge, vec3(0.0), vec3(1.0));
+        }
+    }
+    var sheen = SheenSurface(vec3(0.0), 1.0);
+    var sheen_strength = 0.0;
+    var sheen_view_albedo = 0.0;
+    var sheen_base_scale = 1.0;
+    var sheen_indirect = vec3(0.0);
+    if SHEEN_MATERIAL {
+        sheen = sample_sheen(vertex, uv);
+        sheen_strength = max(sheen.color.r, max(sheen.color.g, sheen.color.b));
+        if sheen_strength > 0.0 {
+            sheen_view_albedo = sheen_albedo(nv, sheen.alpha);
+            sheen_base_scale -= sheen_strength * sheen_view_albedo;
+            energy *= sheen_base_scale;
+            let world = vertex.world_and_lightmap_v.xyz;
+            let radiance = sheen_probe(world, reflect(-v, n), sheen.alpha) + lighting.ambient.rgb * 0.22;
+            sheen_indirect = radiance * sheen.color * sheen_view_albedo;
+        }
+    }
     let ambient_diffuse = diffuse_albedo * energy;
     let shading = XrLightingInput(material_input(vertex, uv, front_facing, v),
-        XrMaterialSurface(albedo, emissive, n, roughness, metallic), f0);
+        XrMaterialSurface(albedo, emissive, n, roughness, metallic), probe_f0);
     var transmitted = vec3<f32>(0.0);
     var uncovered = 0.0;
     let background_weight = (transmission * energy) * base_albedo;
@@ -1683,7 +1896,7 @@ fn shade_pbr(
             uncovered = dot(sample.uncovered * background_weight, vec3<f32>(0.2126, 0.7152, 0.0722));
         }
     }
-    let constant = (ambient_diffuse * 0.22 + albedo * metallic * 0.065) * lighting.ambient.rgb;
+    let constant = (ambient_diffuse * 0.22 + albedo * metallic * 0.065 * sheen_base_scale) * lighting.ambient.rgb;
     let environment_irradiance = environment_diffuse(n);
     let diffuse_env = environment_irradiance * ambient_diffuse;
     var indirect_diffuse = ambient_diffuse * (lighting.ambient.rgb * 0.22) + diffuse_env;
@@ -1693,16 +1906,17 @@ fn shade_pbr(
         lobe = brush_direction(vertex, n, uv, brush);
         reflection_normal = anisotropic_probe_normal(n, v, lobe, roughness);
     }
-    let reflection = environment_specular(vertex.world_and_lightmap_v.xyz, reflect(-v, reflection_normal), f0, f90, nv, roughness,
-        material.fresnel, CUSTOM_BASE_FRESNEL);
-    var ambient = (constant + diffuse_env + reflection) * occlusion;
+    let reflection = environment_specular(vertex.world_and_lightmap_v.xyz, reflect(-v, reflection_normal), probe_f0, probe_f90, nv, roughness,
+        material.fresnel, CUSTOM_BASE_FRESNEL && !film_active) * sheen_base_scale;
+    var ambient = (constant + diffuse_env + reflection + sheen_indirect) * occlusion;
     // The clear layer is a dielectric with IOR 1.5 (F0 = 0.04).
     let coat_nv = clamp(dot(coat.normal, v), 0.0, 1.0);
     let ao = screen_ambient_visibility(vertex);
     if XRACK_AMBIENT_PROGRAM {
         let input = XrAmbientInput(shading, lighting.ambient.rgb * 0.22 + environment_irradiance, occlusion * ao);
         indirect_diffuse = valid_program_light(scene_ambient(input, indirect_diffuse), indirect_diffuse);
-        let ambient_specular = (albedo * metallic * 0.065) * lighting.ambient.rgb + reflection;
+        let ambient_specular = (albedo * metallic * 0.065 * sheen_base_scale) * lighting.ambient.rgb
+            + reflection + sheen_indirect;
         ambient = (indirect_diffuse + ambient_specular) * occlusion;
     }
     var base_attenuation = 1.0;
@@ -1711,7 +1925,7 @@ fn shade_pbr(
         let weight = coat.amount * coat_fresnel(coat_nv, fresnel_edge(coat_nv), coat.fresnel);
         base_attenuation = 1.0 - weight;
         coat_reflection = environment_specular(vertex.world_and_lightmap_v.xyz, reflect(-v, coat.normal),
-            vec3<f32>(0.04), 1.0, coat_nv, coat.roughness, coat.fresnel, CUSTOM_COAT_FRESNEL);
+            vec3<f32>(0.04), vec3<f32>(1.0), coat_nv, coat.roughness, coat.fresnel, CUSTOM_COAT_FRESNEL);
         ambient = ambient * base_attenuation + coat_reflection * (coat.amount * occlusion);
         emissive *= base_attenuation;
         transmitted *= base_attenuation;
@@ -1727,8 +1941,8 @@ fn shade_pbr(
             select(existing_diffuse, vec3<f32>(0.0), baked_surface));
     }
     if SCREEN_REFLECTIONS && nv > 0.0 {
-        let base_weight = reflection_response(f0, f90, nv, roughness, material.fresnel, CUSTOM_BASE_FRESNEL) * base_attenuation;
-        let coat_weight = reflection_response(vec3<f32>(0.04), 1.0, coat_nv, coat.roughness, coat.fresnel, CUSTOM_COAT_FRESNEL) * coat.amount;
+        let base_weight = reflection_response(probe_f0, probe_f90, nv, roughness, material.fresnel, CUSTOM_BASE_FRESNEL && !film_active) * base_attenuation * sheen_base_scale;
+        let coat_weight = reflection_response(vec3<f32>(0.04), vec3<f32>(1.0), coat_nv, coat.roughness, coat.fresnel, CUSTOM_COAT_FRESNEL) * coat.amount;
         let visibility = ao * occlusion;
         // A single ray follows the lobe most likely to resolve visible detail.
         // The other lobe remains in the probe-lit color.
@@ -1794,20 +2008,34 @@ fn shade_pbr(
         var fresnel = vec3<f32>(0.0);
         var response = vec3<f32>(0.0);
         var standard = XrLightResponse(vec3(0.0), vec3(0.0));
+        var light_energy = 1.0;
         if base_lit || programmable {
             base_edge = curve_edge(vh, edge, material.fresnel, CUSTOM_BASE_FRESNEL);
-            fresnel = base_fresnel(mix(f0, vec3<f32>(f90), base_edge));
+            if film_active {
+                let colored = thin_film_response(film, dielectric, albedo, metallic, vh, base_edge);
+                fresnel = colored.specular;
+                light_energy = colored.diffuse;
+            } else {
+                fresnel = base_fresnel(mix(f0, f90, base_edge));
+                light_energy = diffuse_energy(dielectric, base_edge);
+            }
         }
         if base_lit {
             let nh = clamp(dot(n, h), 0.0, 1.0);
-            let diffuse = diffuse_energy(dielectric, base_edge) * diffuse_factor;
+            var diffuse = light_energy * diffuse_factor;
             var microfacet: f32;
             if ANISOTROPIC_MATERIAL {
                 microfacet = anisotropic_scale(lobe, l, v, h, nl, nv, nh, r2, smith_v);
             } else {
                 microfacet = ggx_scale(nl, nv, nh, alpha2, smith_v);
             }
-            let specular = fresnel * microfacet;
+            var specular = fresnel * microfacet;
+            if SHEEN_MATERIAL && sheen_strength > 0.0 {
+                let albedo = max(sheen_albedo(nl, sheen.alpha), sheen_view_albedo);
+                let base_scale = 1.0 - sheen_strength * albedo;
+                diffuse *= base_scale;
+                specular = specular * base_scale + sheen.color * sheen_scattering(sheen.alpha, nv, nl, nh);
+            }
             response = (diffuse + specular) * nl;
             if programmable || DEBUG_MATERIAL {
                 standard = XrLightResponse(diffuse * nl, specular * nl);
@@ -2003,31 +2231,39 @@ fn parallax_vertex(vertex: VertexOut, front_facing: bool, uv: UvDerivatives) -> 
     if dot(travel, travel) < 1e-12 {
         return vertex;
     }
-    let steps = u32(round(mix(material.height_parameters.z, material.height_parameters.y, nv)));
-    let step = 1.0 / f32(steps);
-    let size = xr_scalar_size(HEIGHT_MAP);
-    let mapping = material.height_uv;
-    let start = texture_uv(mapping, select(vertex.uvs.xy, vertex.uvs.zw, use_uv1));
-    let delta = texture_gradient(mapping, travel);
-    let du = texture_gradient(mapping, select(uv.dx0, uv.dx1, use_uv1));
-    let dv = texture_gradient(mapping, select(uv.dy0, uv.dy1, use_uv1));
-    let footprint = max(length(du * vec2<f32>(size)), length(dv * vec2<f32>(size)));
-    let flags = material.height_sampling.y;
-    let level = material.height_sampling.z;
-    var previous = xr_scalar_filter(HEIGHT_MAP, size, start, footprint, flags, level);
-    if previous <= 0.0 {
-        return vertex;
-    }
-    var hit = 1.0;
-    for (var i = 1u; i <= steps; i += 1u) {
-        let layer = f32(i) * step;
-        let gap = xr_scalar_filter(HEIGHT_MAP, size, start + layer * delta, footprint, flags, level) - layer;
-        if gap <= 0.0 {
-            let between = clamp(previous / max(previous - gap, 1e-6), 0.0, 1.0);
-            hit = layer - (1.0 - between) * step;
-            break;
+    let header = xr_height_header();
+    let minimum = f32(header.w & 255u) / 255.0;
+    let maximum = f32((header.w >> 8u) & 255u) / 255.0;
+    var hit = minimum;
+    if minimum != maximum {
+        let steps = u32(round(mix(material.height_parameters.z, material.height_parameters.y, nv)));
+        let step = 1.0 / f32(steps);
+        let mapping = material.height_uv;
+        let start = texture_uv(mapping, select(vertex.uvs.xy, vertex.uvs.zw, use_uv1));
+        let delta = texture_gradient(mapping, travel);
+        let du = texture_gradient(mapping, select(uv.dx0, uv.dx1, use_uv1));
+        let dv = texture_gradient(mapping, select(uv.dy0, uv.dy1, use_uv1));
+        let footprint = max(length(du * vec2<f32>(header.xy)), length(dv * vec2<f32>(header.xy)));
+        let filtering = xr_height_filter(header, footprint, material.height_sampling.y, material.height_sampling.z);
+        // Layers below the minimum cannot cross the height field. Keep the
+        // original layer grid and bracket the first crossing as before.
+        let first = max(1u, u32(floor(minimum * f32(steps))));
+        let preceding = f32(first - 1u) * step;
+        var previous = xr_height_sample(filtering, start + preceding * delta) - preceding;
+        if previous <= 0.0 {
+            return vertex;
         }
-        previous = gap;
+        hit = 1.0;
+        for (var i = first; i <= steps; i += 1u) {
+            let layer = f32(i) * step;
+            let gap = xr_height_sample(filtering, start + layer * delta) - layer;
+            if gap <= 0.0 {
+                let between = clamp(previous / max(previous - gap, 1e-6), 0.0, 1.0);
+                hit = layer - (1.0 - between) * step;
+                break;
+            }
+            previous = gap;
+        }
     }
     let offset = travel * hit;
     var shifted = vertex;
@@ -2038,7 +2274,8 @@ fn parallax_vertex(vertex: VertexOut, front_facing: bool, uv: UvDerivatives) -> 
 fn plain_surface(vertex: VertexOut, front_facing: bool) -> vec4<f32> {
     // XRack wireframe distance
     var uv: UvDerivatives;
-    if HEIGHT_MAPPED || SEPARATE_SURFACE_MAPS || xr_has_opacity_map(material.channels.w)
+    let mapped_sheen = SHEEN_MATERIAL && (material.sheen_color_sampling.w | material.sheen_roughness_sampling.w) != 0u;
+    if HEIGHT_MAPPED || IRIDESCENT_MATERIAL || mapped_sheen || SEPARATE_SURFACE_MAPS || xr_has_opacity_map(material.channels.w)
         || (DEBUG_MATERIAL && debug_tangent_mode()) || XRACK_MATERIAL_UV_GRADIENTS
         || (CAPTURE_AUGMENT && XRACK_AUGMENT_UV_GRADIENTS)
         || (material.pbr.w > 0.5 && (any(material.map_slots >= vec4<f32>(0.0)) ||
@@ -2167,7 +2404,7 @@ fn fog_curve(amount: f32, curve: f32) -> f32 {
 fn fragment_surface(vertex: VertexOut, coverage_uvs: vec4<f32>, front_facing: bool,
                     uv: UvDerivatives, coat: CoatSurface) -> vec4<f32> {
     let normal = normalize(vertex.normal);
-    let filter_specular = material.pbr.w > 0.5 && globals.specular_aa > 0.5;
+    let filter_specular = !NON_TRIANGLE_PRIMITIVE && material.pbr.w > 0.5 && globals.specular_aa > 0.5;
     let geometric_normal = select(-normal, normal, front_facing);
     var tangent = tangent_frame(vertex);
     var brush = tangent;
@@ -2252,7 +2489,7 @@ fn fragment_surface(vertex: VertexOut, coverage_uvs: vec4<f32>, front_facing: bo
         if DEBUG_MATERIAL && debug_tangent_mode() {
             return vec4(debug_frame * alpha, alpha);
         }
-        if material.pbr.w > 0.5 {
+        if !UNLIT_PRIMITIVE && material.pbr.w > 0.5 {
             if !filter_specular {
                 mapped = mapped_normal(vertex, normal, uv, tangent,
                     normal_texture, normal_sampler, material.map_slots.w, normal_strength, material.transforms[3]);
@@ -2267,7 +2504,11 @@ fn fragment_surface(vertex: VertexOut, coverage_uvs: vec4<f32>, front_facing: bo
             uncovered = lighting.uncovered;
         } else {
             let oriented = select(-normal, normal, front_facing);
-            var surface = XrMaterialSurface(albedo, vec3(0.0), oriented, 1.0, 0.0);
+            var emission = vec3<f32>(0.0);
+            if UNLIT_PRIMITIVE {
+                emission = material_emission(vertex, uv);
+            }
+            var surface = XrMaterialSurface(albedo, emission, oriented, 1.0, 0.0);
             if CUSTOM_MATERIAL {
                 surface = apply_surface_program(vertex, uv, front_facing, surface);
             }

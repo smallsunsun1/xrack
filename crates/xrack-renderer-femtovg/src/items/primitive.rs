@@ -759,6 +759,24 @@ impl Renderer {
         let animate_feedback = feedback && node.boolean("scene-effect-animate", false);
         self.needs_redraw |= animate_feedback;
         let internal_passes = !node.scene_internal_passes_disabled();
+        let prepared_sky = if internal_passes
+            && camera.is_some()
+            && matches!(
+                node.properties.get("environment-sky"),
+                Some(Value::SceneSky(_))
+            ) {
+            let encoder = native_encoder(&mut self.custom_encoder, &self.device);
+            let (prepared, needs_redraw) = self.scene3d.prepare_program_sky(
+                node,
+                (&self.device, &self.queue, encoder),
+                effect_owner,
+            );
+            self.needs_redraw |= needs_redraw;
+            prepared
+        } else {
+            None
+        };
+        let node = prepared_sky.as_ref().unwrap_or(node);
         let reflections = if internal_passes
             && crate::scene3d::has_scene_reflections(node)
             && let Some(camera) = camera

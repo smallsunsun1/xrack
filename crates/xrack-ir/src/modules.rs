@@ -698,6 +698,7 @@ fn rewrite_expr(
         | TextureUrl(spelling)
         | ShaderUrl(spelling)
         | MaterialShaderUrl(spelling)
+        | SkyShaderUrl(spelling)
         | ParticleShapeUrl(spelling)
         | InstanceTableUrl(spelling)
         | SlicedImageUrl { path: spelling, .. } => rebase_asset(spelling, prefix),

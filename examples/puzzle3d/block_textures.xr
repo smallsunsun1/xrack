@@ -1,0 +1,43 @@
+struct BlockMap {
+    source: string, min-filter: string, mag-filter: string, mip-filter: string,
+    wrap-u: string, wrap-v: string,
+}
+struct BlockStyle { unlit: bool, base-color-map: BlockMap }
+struct BlockActor {
+    id: string, mesh: string, material: BlockStyle, color: color,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, camera-kind: string, camera-height: float,
+}
+
+export component BlockTextureDemo inherits Window {
+    title <- "XRack · KTX2 material textures";
+    width <- 128px; height <- 128px;
+    in-out property <int> encoding: 0;
+    in-out property <float> camera-height: 4;
+    in-out property <bool> sample-mips: true;
+    property <BlockActor> defaults <- BlockActor {
+        id: "", mesh: "", color: #fff,
+        x: 0, y: 0, z: 0, scale-x: 2, scale-y: 2, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, camera-kind: "", camera-height: root.camera-height,
+        material: BlockStyle {
+            unlit: true,
+            base-color-map: BlockMap {
+                source: root.encoding == 0 ? @texture-url("models/block-bc3.ktx2")
+                    : (root.encoding == 1 ? @texture-url("models/block-etc2.ktx2")
+                        : (root.encoding == 2 ? @texture-url("models/block-astc.ktx2")
+                            : @texture-url("models/block-bc3-unaligned.ktx2"))),
+                min-filter: "nearest", mag-filter: "nearest",
+                mip-filter: root.sample-mips ? "nearest" : "none",
+                wrap-u: "clamp", wrap-v: "clamp",
+            },
+        },
+    };
+    SceneView3D {
+        width <- 128px; height <- 128px; camera <- "eye";
+        scene-background <- #172132; scene-tone-map <- none;
+        model <- [
+            BlockActor { id: "eye", z: 4, camera-kind: "orthographic", ..root.defaults },
+            BlockActor { id: "card", mesh: "primitive:rectangle", ..root.defaults },
+        ];
+    }
+}

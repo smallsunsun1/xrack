@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use super::SceneObject;
 use crate::scene3d::{
-    JointPalette, Mesh3D, MeshInfluence, MeshPbr, MeshTangent, MeshVertex, ModelBlendPose,
-    MorphGeometry, MorphWeights, SceneTransform,
+    JointPalette, Mesh3D, MeshInfluence, MeshPbr, MeshTangent, MeshTopology, MeshVertex,
+    ModelBlendPose, MorphGeometry, MorphWeights, SceneTransform,
     bounds::Bounds3D,
     mesh::{morph::MorphPose, skin::SkinPose},
 };
@@ -132,7 +132,6 @@ impl SceneObject {
             return;
         }
         let pose = self.pick_pose();
-        let triangles = self.mesh.vertices().as_chunks::<3>().0;
         self.styled_blend_centers = Some(
             self.mesh
                 .blended_parts()
@@ -145,12 +144,29 @@ impl SceneObject {
                     }
                     let mut min = [f32::INFINITY; 3];
                     let mut max = [f32::NEG_INFINITY; 3];
-                    for vertex in self.mesh.parts()[index].vertices.clone().step_by(3) {
-                        for vertex in pose.deform::<false>(vertex, triangles[vertex / 3]) {
-                            for axis in 0..3 {
-                                min[axis] = min[axis].min(vertex.position[axis]);
-                                max[axis] = max[axis].max(vertex.position[axis]);
+                    let part = &self.mesh.parts()[index];
+                    let mut include = |vertex: MeshVertex| {
+                        for axis in 0..3 {
+                            min[axis] = min[axis].min(vertex.position[axis]);
+                            max[axis] = max[axis].max(vertex.position[axis]);
+                        }
+                    };
+                    if part.topology == MeshTopology::Triangles {
+                        for vertex in part.vertices.clone().step_by(3) {
+                            for vertex in
+                                pose.deform::<false>(vertex, *self.mesh.triangle_at(vertex))
+                            {
+                                include(vertex);
                             }
+                        }
+                    } else {
+                        for vertex in part.vertices.clone() {
+                            include(
+                                pose.deform_vertices::<false, 1>(
+                                    vertex,
+                                    [self.mesh.vertices()[vertex]],
+                                )[0],
+                            );
                         }
                     }
                     (
@@ -189,14 +205,11 @@ impl SceneObject {
     pub(crate) fn posed_triangles(&self) -> impl Iterator<Item = [[f32; 3]; 3]> + '_ {
         let deformation = self.pick_pose();
         self.mesh
-            .vertices()
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .enumerate()
-            .map(move |(index, triangle)| {
+            .triangle_sections()
+            .flat_map(|(range, _)| range.step_by(3))
+            .map(move |vertex| {
                 let mut points = deformation
-                    .deform::<false>(index * 3, *triangle)
+                    .deform::<false>(vertex, *self.mesh.triangle_at(vertex))
                     .map(|vertex| {
                         (self.transform.origin
                             + self.transform.linear * Vector3::from(vertex.position))
@@ -221,40 +234,62 @@ impl SceneObject {
         let mut vertices = Vec::with_capacity(self.mesh.vertices().len());
         let normal_transform = self.transform.inverse.transpose();
         let mut triangle_bases = Vec::new();
-        for (index, triangle) in self.mesh.vertices().as_chunks::<3>().0.iter().enumerate() {
-            let vertices_in_pose = if let Some(blend) = pose.blend
-                && !self.mesh.tangents().is_empty()
-            {
-                let (deformed, basis) =
-                    blend.deform_with_basis::<true, true>(index as u32, *triangle);
-                triangle_bases.push(basis);
-                deformed
-            } else {
-                pose.deform::<true>(index * 3, *triangle)
-            };
-            vertices.extend(vertices_in_pose.map(|mut vertex| {
-                vertex.position = (self.transform.origin
-                    + self.transform.linear * Vector3::from(vertex.position))
-                .into();
-                let normal = normal_transform * Vector3::from(vertex.normal);
-                vertex.normal = normal.try_normalize(1e-12).unwrap_or(Vector3::y()).into();
-                vertex
-            }));
+        let mut parts = Mesh3D::Imported(mesh.clone()).parts().to_vec();
+        let mut push = |mut vertex: MeshVertex| {
+            vertex.position = (self.transform.origin
+                + self.transform.linear * Vector3::from(vertex.position))
+            .into();
+            let normal = normal_transform * Vector3::from(vertex.normal);
+            vertex.normal = normal.try_normalize(1e-12).unwrap_or(Vector3::y()).into();
+            vertices.push(vertex);
+        };
+        for part in &parts {
+            if part.topology != MeshTopology::Triangles {
+                for vertex in part.vertices.clone() {
+                    let [posed] =
+                        pose.deform_vertices::<true, 1>(vertex, [self.mesh.vertices()[vertex]]);
+                    push(posed);
+                }
+                continue;
+            }
+            for vertex in part.vertices.clone().step_by(3) {
+                let triangle = *self.mesh.triangle_at(vertex);
+                let vertices_in_pose = if let Some(blend) = pose.blend
+                    && !self.mesh.tangents().is_empty()
+                {
+                    let (deformed, basis) =
+                        blend.deform_with_basis::<true, true>((vertex / 3) as u32, triangle);
+                    triangle_bases.push(basis);
+                    deformed
+                } else {
+                    pose.deform::<true>(vertex, triangle)
+                };
+                vertices_in_pose.into_iter().for_each(&mut push);
+            }
         }
         let (mut tangents, mut binormals) =
             self.bake_particle_tangent_frame(&pose, &triangle_bases);
         if self.is_reflected() {
-            for triangle in vertices.as_chunks_mut::<3>().0 {
-                triangle.swap(1, 2);
-            }
-            for triangle in tangents.as_chunks_mut::<3>().0 {
-                triangle.swap(1, 2);
-            }
-            for triangle in binormals.as_chunks_mut::<3>().0 {
-                triangle.swap(1, 2);
+            for range in parts
+                .iter()
+                .filter(|part| part.topology == MeshTopology::Triangles)
+                .map(|part| part.vertices.clone())
+            {
+                for triangle in vertices[range.clone()].as_chunks_mut::<3>().0 {
+                    triangle.swap(1, 2);
+                }
+                if let Some(tangents) = tangents.get_mut(range.clone()) {
+                    for triangle in tangents.as_chunks_mut::<3>().0 {
+                        triangle.swap(1, 2);
+                    }
+                }
+                if let Some(binormals) = binormals.get_mut(range) {
+                    for triangle in binormals.as_chunks_mut::<3>().0 {
+                        triangle.swap(1, 2);
+                    }
+                }
             }
         }
-        let mut parts = Mesh3D::Imported(mesh.clone()).parts().to_vec();
         for part in &mut parts {
             let material = &mesh.materials[part.material];
             if material.pbr.as_ref().and_then(MeshPbr::volume).is_some() {
@@ -393,38 +428,47 @@ impl PickPose<'_> {
             || self.morph.is_some_and(|(pose, _)| pose.moves_positions())
     }
 
-    pub(super) fn material_triangle(
+    pub(super) fn material_vertices<const N: usize>(
         &self,
         vertex: usize,
-        mut triangle: [MeshVertex; 3],
-    ) -> [MeshVertex; 3] {
+        mut vertices: [MeshVertex; N],
+    ) -> [MeshVertex; N] {
         if let Some((pose, geometry)) = self.morph {
-            for (i, point) in triangle.iter_mut().enumerate() {
+            for (i, point) in vertices.iter_mut().enumerate() {
                 *point = geometry.deform_surface(vertex + i, &pose.weights, *point);
             }
         }
-        triangle
+        vertices
     }
 
     pub(super) fn deform<const NORMALS: bool>(
         &self,
         vertex: usize,
-        mut triangle: [MeshVertex; 3],
+        triangle: [MeshVertex; 3],
     ) -> [MeshVertex; 3] {
+        let triangle = self.deform_vertices::<NORMALS, 3>(vertex, triangle);
+        self.blend.map_or(triangle, |blend| {
+            blend.deform::<NORMALS>((vertex / 3) as u32, triangle)
+        })
+    }
+
+    pub(super) fn deform_vertices<const NORMALS: bool, const N: usize>(
+        &self,
+        vertex: usize,
+        mut vertices: [MeshVertex; N],
+    ) -> [MeshVertex; N] {
         if let Some((pose, geometry)) = self.morph
             && (NORMALS || pose.moves_positions())
         {
-            for (i, point) in triangle.iter_mut().enumerate() {
+            for (i, point) in vertices.iter_mut().enumerate() {
                 *point = geometry.deform::<NORMALS, NORMALS>(vertex + i, &pose.weights, *point);
             }
         }
         if let Some((pose, weights)) = self.skin {
-            for (i, point) in triangle.iter_mut().enumerate() {
+            for (i, point) in vertices.iter_mut().enumerate() {
                 *point = pose.deform::<NORMALS>(weights[vertex + i], *point);
             }
         }
-        self.blend.map_or(triangle, |blend| {
-            blend.deform::<NORMALS>((vertex / 3) as u32, triangle)
-        })
+        vertices
     }
 }

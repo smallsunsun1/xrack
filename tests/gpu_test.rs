@@ -6045,6 +6045,7 @@ fn mixed_table_text_matches_after_prewarming_between_the_frozen_panes() {
         (0.0, 0.0, 1.0),
         (padding_only, 7.0, 1.0),
         (19.0, 17.0, 1.0),
+        (19.125, 17.125, 1.0),
         (110.0, 41.0, 1.0),
         (27.0, 53.0, 0.65),
     ] {
@@ -17078,6 +17079,7 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
     }
     let mut base = Rc::new(scene);
     let mut previous_layout = Rc::new(proof.layout);
+    let mut frame_cache = xrack_layout::FrameCache::default();
     let mut paint_frame = |renderer: &mut Renderer,
                            base: &mut Rc<Node>,
                            frame,
@@ -17103,8 +17105,16 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
         } else {
             Duration::ZERO
         };
-        let (scene, layout) = renderer.prepare_scene(&Cards, base.clone(), viewport, &input);
-        let layout = Rc::new(layout);
+        let (scene, layout) = if window_entry {
+            frame_cache
+                .prepare_reusing(base.clone(), viewport, &input, |base, previous| {
+                    renderer.prepare_scene_recycling(&Cards, base, viewport, &input, previous)
+                })
+                .into_parts()
+        } else {
+            let (scene, layout) = renderer.prepare_scene(&Cards, base.clone(), viewport, &input);
+            (scene, Rc::new(layout))
+        };
         let prepared = start.elapsed();
         if window_entry {
             renderer.draw_window_prepared(
@@ -18097,6 +18107,11 @@ fn benchmark_wide_table(resize: bool) {
         Some(value) => panic!("unsupported table benchmark text: {value}"),
     };
     let vertical = std::env::var_os("XRACK_TABLE_BENCH_VERTICAL").is_some();
+    let horizontal_step = std::env::var("XRACK_TABLE_BENCH_STEP").ok().map(|value| {
+        let step = value.parse::<f32>().expect("expected a table scroll step");
+        assert!(step.is_finite() && step > 0.0);
+        step
+    });
     for (count, step) in [(512, 137.0), (8192, 1229.0)] {
         let model = Rc::new(VecModel::from((0..50_000).collect::<Vec<usize>>()));
         let rows = TableRowOrder::default().rows(model);
@@ -18243,7 +18258,7 @@ fn benchmark_wide_table(resize: bool) {
             let (axis, step) = if vertical {
                 (Orientation::Vertical, 17.0)
             } else {
-                (Orientation::Horizontal, step)
+                (Orientation::Horizontal, horizontal_step.unwrap_or(step))
             };
             profile_scroll_frames(
                 &format!("50,000 rows x {count} columns"),

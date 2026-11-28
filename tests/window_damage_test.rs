@@ -118,6 +118,436 @@ fn assert_small(work: WindowDamage, screen: [u32; 2]) {
 }
 
 #[test]
+fn flat_opaque_rectangles_replay_local_damage_in_paint_order() -> TestResult {
+    use xrack_runtime::Color;
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut harness = Harness {
+        incremental: Renderer::with_device(gpu.clone())?,
+        reference: Renderer::with_device(gpu)?,
+        scale: 1.0,
+        width: 320,
+        height: 200,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        sample: Default::default(),
+    };
+    harness.incremental.set_window_damage_forced(true);
+    let rectangle = |x, y, width, height, color: Color| {
+        let mut node = Node::new("Rectangle", None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            node.properties.insert(name, Length(value).into());
+        }
+        node.properties.insert("background", color.into());
+        node
+    };
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xffffffff).into());
+    // The first child paints last and overlaps the tile that will change.
+    let mut foreground = rectangle(21.0, 4.0, 10.0, 8.0, Color(0x45acdbff));
+    foreground.properties.insert("z", 10.0.into());
+    scene.children.push(foreground);
+    for index in 0..240 {
+        let x = 2.0 + 16.0 * f64::from(index % 20);
+        let y = 2.0 + 16.0 * f64::from(index / 20);
+        let mut tile = rectangle(x, y, 12.0, 12.0, Color(0x923bb1ff));
+        tile.mark_paint_only_background();
+        scene.children.push(tile);
+    }
+
+    let input = Interaction::default();
+    let viewport = Size::new(320.0, 200.0);
+    let mut scene = Rc::new(scene);
+    let mut cache = FrameCache::default();
+    let prepare = |cache: &mut FrameCache, renderer: &mut Renderer, scene: &Rc<Node>| {
+        cache
+            .prepare_reusing(scene.clone(), viewport, &input, |scene, _| {
+                let layout = renderer.layout_with_input(&scene, viewport, &input);
+                (scene, layout)
+            })
+            .into_parts()
+            .1
+    };
+    let layout = prepare(&mut cache, &mut harness.incremental, &scene);
+    let (work, initial) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert_eq!(work, WindowDamage::Full);
+    Rc::make_mut(&mut scene).children[2]
+        .properties
+        .insert("background", Color(0xd4612dff).into());
+    let layout = prepare(&mut cache, &mut harness.incremental, &scene);
+    let (work, recolored) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert_small(work, [320, 200]);
+    assert_ne!(initial, recolored);
+    assert_eq!(harness.sample.window_geometry_builds, 0);
+
+    let children = &mut Rc::make_mut(&mut scene).children;
+    children[2].properties.insert("x", Length(19.0).into());
+    children[2]
+        .properties
+        .insert("background", Color(0xd49b51ff).into());
+    children[61]
+        .properties
+        .insert("background", Color(0x719742ff).into());
+    let layout = prepare(&mut cache, &mut harness.incremental, &scene);
+    let (work, moved) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert!(matches!(work, WindowDamage::PartialRegions(_)), "{work:?}");
+    assert_ne!(recolored, moved);
+    assert_eq!(harness.sample.window_geometry_builds, 0);
+    assert!(harness.sample.texture_upload_bytes > 0);
+
+    // Prepare without painting, then move another tile into a new grid cell.
+    // The painter must include both changes when its last frame is older.
+    Rc::make_mut(&mut scene).children[50]
+        .properties
+        .insert("x", Length(147.0).into());
+    prepare(&mut cache, &mut harness.incremental, &scene);
+    Rc::make_mut(&mut scene).children[2]
+        .properties
+        .insert("x", Length(48.0).into());
+    let layout = prepare(&mut cache, &mut harness.incremental, &scene);
+    let (work, moved_across_cells) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert!(matches!(work, WindowDamage::PartialRegions(_)), "{work:?}");
+    assert_ne!(moved, moved_across_cells);
+    assert_eq!(harness.sample.window_geometry_builds, 0);
+
+    Rc::make_mut(&mut scene).children[2]
+        .properties
+        .insert("background", Color(0x6a914cff).into());
+    let (work, recolored_after_move) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert_small(work, [320, 200]);
+    assert_ne!(moved_across_cells, recolored_after_move);
+    assert_eq!(harness.sample.window_geometry_builds, 0);
+
+    // A subpixel edge takes the usual antialiased paint path.
+    Rc::make_mut(&mut scene).children[2]
+        .properties
+        .insert("x", Length(48.25).into());
+    let layout = prepare(&mut cache, &mut harness.incremental, &scene);
+    let (_, fractional) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert_ne!(recolored_after_move, fractional);
+    assert_eq!(harness.sample.window_geometry_builds, 1);
+
+    Rc::make_mut(&mut scene).children[2]
+        .properties
+        .insert("x", Length(48.0).into());
+    let layout = prepare(&mut cache, &mut harness.incremental, &scene);
+    harness.compare_prepared(&scene, &layout, &input, true)?;
+
+    let tile = &mut Rc::make_mut(&mut scene).children[2];
+    tile.properties.insert("x", Length(49.0).into());
+    tile.properties
+        .insert("background", Color(0x6a914c80).into());
+    let layout = prepare(&mut cache, &mut harness.incremental, &scene);
+    let (_, translucent) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert_ne!(recolored_after_move, translucent);
+    assert_eq!(harness.sample.window_geometry_builds, 1);
+    Ok(())
+}
+
+#[test]
+fn opaque_tile_damage_stays_local_under_text_and_translucent_overlays() -> TestResult {
+    use xrack_runtime::Color;
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut harness = Harness {
+        incremental: Renderer::with_device(gpu.clone())?,
+        reference: Renderer::with_device(gpu)?,
+        scale: 1.0,
+        width: 320,
+        height: 200,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        sample: Default::default(),
+    };
+    harness.incremental.set_window_damage_forced(true);
+    let placed = |kind, x, y, width, height| {
+        let mut node = Node::new(kind, None);
+        for (key, length) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            node.properties.insert(key, Length(length).into());
+        }
+        node
+    };
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xf8f8fcff).into());
+    for index in 0..240 {
+        let mut tile = placed(
+            "Rectangle",
+            2.0 + 16.0 * f64::from(index % 20),
+            2.0 + 16.0 * f64::from(index / 20),
+            12.0,
+            12.0,
+        );
+        tile.properties
+            .insert("background", Color(0x458abaff).into());
+        tile.mark_paint_only_background();
+        scene.children.push(tile);
+    }
+    let mut card = placed("Rectangle", 16.0, 1.0, 46.0, 27.0);
+    card.properties
+        .insert("background", Color(0x68308f88).into());
+    card.properties.insert("border-radius", Length(6.0).into());
+    let mut shade = placed("Rectangle", 24.0, 4.0, 43.0, 22.0);
+    shade
+        .properties
+        .insert("background", Color(0xdda16377).into());
+    let mut label = placed("Label", 17.0, 1.0, 59.0, 18.0);
+    label.properties.insert("text", "Status".to_owned().into());
+    label.properties.insert("color", Color(0x312642ff).into());
+    let mut button = placed("Button", 200.0, 125.0, 68.0, 30.0);
+    button.properties.insert("text", "Apply".to_owned().into());
+    scene.children.extend([card, shade, label, button]);
+
+    let mut scene = Rc::new(scene);
+    let mut input = Interaction::default();
+    let mut cache = FrameCache::default();
+    let viewport = Size::new(320.0, 200.0);
+    let prepare =
+        |cache: &mut FrameCache, renderer: &mut Renderer, scene: &Rc<Node>, input: &Interaction| {
+            cache
+                .prepare_reusing(scene.clone(), viewport, input, |scene, _| {
+                    let layout = renderer.layout_with_input(&scene, viewport, input);
+                    (scene, layout)
+                })
+                .into_parts()
+                .1
+        };
+    let mut layout = prepare(&mut cache, &mut harness.incremental, &scene, &input);
+    let (work, mut previous) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert_eq!(work, WindowDamage::Full);
+    // Exercise both a tile underneath the overlays and a distant tile.
+    for index in [1, 189] {
+        Rc::make_mut(&mut scene).children[index]
+            .properties
+            .insert("background", Color(0x4bb564ff).into());
+        layout = prepare(&mut cache, &mut harness.incremental, &scene, &input);
+        let (work, updated) = harness.compare_prepared(&scene, &layout, &input, true)?;
+        assert_small(work, [320, 200]);
+        assert_ne!(updated, previous);
+        assert_eq!(harness.sample.window_geometry_builds, 0);
+        previous = updated;
+    }
+
+    // A moving tile and an unrelated hover both contribute to the same plan.
+    input.pointer_move(&scene, &layout, Point { x: 231.0, y: 137.0 });
+    assert!(input.is_hovered(&[243]));
+    Rc::make_mut(&mut scene).children[1]
+        .properties
+        .insert("x", Length(19.0).into());
+    let layout = prepare(&mut cache, &mut harness.incremental, &scene, &input);
+    let (work, moved) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert!(matches!(work, WindowDamage::PartialRegions(_)), "{work:?}");
+    assert_ne!(previous, moved);
+    assert_eq!(harness.sample.window_geometry_builds, 0);
+
+    input.pointer_move(&scene, &layout, Point { x: 319.0, y: 199.0 });
+    assert!(!input.is_hovered(&[243]));
+    Rc::make_mut(&mut scene).children[1]
+        .properties
+        .insert("x", Length(18.0).into());
+    let layout = prepare(&mut cache, &mut harness.incremental, &scene, &input);
+    let (work, restored) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert!(matches!(work, WindowDamage::PartialRegions(_)), "{work:?}");
+    assert_eq!(restored, previous);
+    assert_eq!(harness.sample.window_geometry_builds, 0);
+
+    let tints = [Color(0x517abaff), Color(0x355794ff)];
+    let mut states = [Vec::new(), Vec::new()];
+    for step in 0..6 {
+        let state = step % tints.len();
+        Rc::make_mut(&mut scene).children[1]
+            .properties
+            .insert("background", tints[state].into());
+        let (work, pixels) = harness.compare_prepared(&scene, &layout, &input, true)?;
+        assert_small(work, [320, 200]);
+        if step < tints.len() {
+            states[state] = pixels;
+        } else {
+            assert_eq!(pixels, states[state]);
+        }
+        if step >= 4 {
+            assert_eq!(harness.sample.draw_primitives, 0);
+        }
+    }
+    // New foreground content invalidates pixels recorded for an earlier scene.
+    Rc::make_mut(&mut scene).children[242]
+        .properties
+        .insert("text", "Updated".to_owned().into());
+    Rc::make_mut(&mut scene).children[1]
+        .properties
+        .insert("background", tints[0].into());
+    let layout = prepare(&mut cache, &mut harness.incremental, &scene, &input);
+    let (_, updated) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert_ne!(updated, states[0]);
+    assert_eq!(harness.sample.window_geometry_builds, 1);
+
+    // Keep the full rectangle batch when a separate opacity would be
+    // rounded to a byte by the color atlas.
+    Rc::make_mut(&mut scene).children.truncate(240);
+    let mut shade = placed("Rectangle", 20.0, 4.0, 6.0, 6.0);
+    shade
+        .properties
+        .insert("background", Color(0xcca052ff).into());
+    shade.properties.insert("opacity", 0.433.into());
+    Rc::make_mut(&mut scene).children.push(shade);
+    harness.incremental.set_window_damage_forced(false);
+    harness.incremental.set_window_damage_forced(true);
+    let input = Interaction::default();
+    let layout = prepare(&mut cache, &mut harness.incremental, &scene, &input);
+    harness.compare_prepared(&scene, &layout, &input, true)?;
+    Rc::make_mut(&mut scene).children[1]
+        .properties
+        .insert("background", Color(0x3d5267ff).into());
+    let (work, _) = harness.compare_prepared(&scene, &layout, &input, true)?;
+    assert_eq!(work, WindowDamage::Full);
+    Ok(())
+}
+
+#[test]
+fn nested_opaque_panels_repaint_only_intersecting_tiles_and_surfaces() -> TestResult {
+    use xrack_runtime::Color;
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut harness = Harness {
+        incremental: Renderer::with_device(gpu.clone())?,
+        reference: Renderer::with_device(gpu)?,
+        scale: 1.0,
+        width: 320,
+        height: 200,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        sample: Default::default(),
+    };
+    harness.incremental.set_window_damage_forced(true);
+    let rectangle = |x, y, width, height, tint: Color| {
+        let mut node = Node::new("Rectangle", None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            node.properties.insert(name, Length(value).into());
+        }
+        node.properties.insert("background", tint.into());
+        node
+    };
+    let mut outer = rectangle(0.0, 0.0, 318.0, 197.0, Color(0xe6edf6ff));
+    outer.properties.insert("clip", true.into());
+    let mut inner = rectangle(4.0, 4.0, 304.0, 180.0, Color(0xf2f5faff));
+    inner.properties.insert("clip", true.into());
+    for index in 0..240 {
+        let x = 2.0 + 16.0 * f64::from(index % 20);
+        let y = 2.0 + 16.0 * f64::from(index / 20);
+        let mut tile = rectangle(x, y, 12.0, 12.0, Color(0x5092bbff));
+        tile.mark_paint_only_background();
+        inner.children.push(tile);
+    }
+    outer.children.push(inner);
+
+    // This panel partially covers the first tile. Its text is away from the
+    // update, so only the panel fill should repaint over the tile.
+    let mut cover = rectangle(12.0, 4.0, 128.0, 36.0, Color(0x39465fff));
+    cover.properties.insert("clip", true.into());
+    let mut label = Node::new("Label", None);
+    for (name, value) in [("x", 28.0), ("y", 5.0), ("width", 96.0), ("height", 20.0)] {
+        label.properties.insert(name, Length(value).into());
+    }
+    label.properties.insert("text", "Summary".to_owned().into());
+    cover.children.push(label);
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xf9fafcff).into());
+    scene.children.extend([outer, cover]);
+
+    let input = Interaction::default();
+    let viewport = Size::new(320.0, 200.0);
+    let prepare = |cache: &mut FrameCache, renderer: &mut Renderer, scene: &Rc<Node>| {
+        cache
+            .prepare_reusing(scene.clone(), viewport, &input, |scene, _| {
+                let layout = renderer.layout_with_input(&scene, viewport, &input);
+                (scene, layout)
+            })
+            .into_parts()
+            .1
+    };
+    for format in [
+        wgpu::TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Rgba8Unorm,
+    ] {
+        harness.format = format;
+        harness.incremental.set_window_damage_forced(false);
+        harness.incremental.set_window_damage_forced(true);
+        let mut cache = FrameCache::default();
+        let mut scene = Rc::new(scene.clone());
+        let mut layout = prepare(&mut cache, &mut harness.incremental, &scene);
+        let (work, mut previous) = harness.compare_prepared(&scene, &layout, &input, true)?;
+        assert_eq!(work, WindowDamage::Full);
+        // Visible pixels come from opaque fills even where panels overlap.
+        for (index, visible, uploaded) in [
+            (0, true, 12 * 12 * 4),
+            (19, false, 0),
+            (165, true, 12 * 12 * 4),
+        ] {
+            Rc::make_mut(&mut scene).children[0].children[0].children[index]
+                .properties
+                .insert("background", Color(0xab6e24ff).into());
+            layout = prepare(&mut cache, &mut harness.incremental, &scene);
+            let (work, pixels) = harness.compare_prepared(&scene, &layout, &input, true)?;
+            if visible {
+                assert_small(work, [320, 200]);
+                assert_ne!(previous, pixels);
+            } else {
+                assert_eq!(work, WindowDamage::Unchanged);
+                assert_eq!(previous, pixels);
+            }
+            assert_eq!(harness.sample.window_geometry_builds, 0);
+            assert_eq!(harness.sample.texture_upload_bytes, uploaded);
+            previous = pixels;
+        }
+        for (index, x, visible, builds) in [
+            (0, 3.0, true, 0),
+            (19, 307.0, false, 0),
+            (19, 298.0, true, 1),
+        ] {
+            Rc::make_mut(&mut scene).children[0].children[0].children[index]
+                .properties
+                .insert("x", Length(x).into());
+            layout = prepare(&mut cache, &mut harness.incremental, &scene);
+            let (work, pixels) = harness.compare_prepared(&scene, &layout, &input, true)?;
+            if visible {
+                if builds == 0 {
+                    assert_small(work, [320, 200]);
+                    assert_eq!(harness.sample.texture_upload_bytes, 13 * 12 * 4);
+                } else {
+                    // Rebuilding also resolves paint changes since the old
+                    // index was captured, which can produce disjoint regions.
+                    assert!(
+                        matches!(
+                            work,
+                            WindowDamage::Partial { .. } | WindowDamage::PartialRegions(_)
+                        ),
+                        "{work:?}",
+                    );
+                }
+                assert_ne!(previous, pixels);
+            } else {
+                assert_eq!(work, WindowDamage::Unchanged);
+                assert_eq!(previous, pixels);
+            }
+            assert_eq!(harness.sample.window_geometry_builds, builds);
+            previous = pixels;
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn background_updates_reuse_geometry_and_remain_dirty_across_a_rebuild() -> TestResult {
     use xrack_runtime::Color;
 
@@ -158,6 +588,16 @@ fn background_updates_reuse_geometry_and_remain_dirty_across_a_rebuild() -> Test
     label.properties.insert("text", "Static".to_owned().into());
     card.children.push(label);
     scene.children.push(card);
+    for index in 1..8 {
+        let mut badge = scene.children[0].clone();
+        badge
+            .properties
+            .insert("x", Length(8.0 + 72.0 * f64::from(index % 4)).into());
+        badge
+            .properties
+            .insert("y", Length(8.0 + 24.0 * f64::from(index / 4)).into());
+        scene.children.push(badge);
+    }
 
     let input = Interaction::default();
     let viewport = Size::new(320.0, 200.0);
@@ -182,6 +622,19 @@ fn background_updates_reuse_geometry_and_remain_dirty_across_a_rebuild() -> Test
         harness.compare_prepared(&scene, &layout, &input, true)?.0,
         WindowDamage::Unchanged
     );
+
+    // Separate paint-only updates can fill the history without filling the
+    // current frame's damage. Keep using the prepared geometry in that case.
+    for index in 2..scene.children.len() {
+        scene.children[index]
+            .properties
+            .insert("background", Color(0x5d94aba0).into());
+        assert_small(
+            harness.compare_prepared(&scene, &layout, &input, true)?.0,
+            [640, 400],
+        );
+        assert_eq!(harness.sample.window_geometry_builds, 0);
+    }
 
     // The rebuilt geometry has the same badge color as the original index.
     // The current backing still contains the second color and needs repainting.
@@ -478,6 +931,35 @@ fn window_damage_keeps_direct_frames_off_the_backing() -> TestResult {
     assert_small(harness.compare(&scene, &input, false)?.0, [320, 200]);
     assert_eq!(harness.sample.window_image_transfers, 1);
     assert_eq!(harness.sample.gpu_submissions, 1);
+
+    // Rebind the transfer source on resize and choose the matching pipeline
+    // on a format change. The reference reads the entire new image each time.
+    for (width, format) in [
+        (336, wgpu::TextureFormat::Bgra8Unorm),
+        (336, wgpu::TextureFormat::Rgba8Unorm),
+        (320, wgpu::TextureFormat::Bgra8Unorm),
+    ] {
+        harness.width = width;
+        harness.format = format;
+        scene
+            .properties
+            .insert("width", Length(f64::from(width)).into());
+        assert_eq!(
+            harness.compare(&scene, &input, false)?.0,
+            WindowDamage::Full
+        );
+        assert_eq!(harness.sample.window_image_transfers, 0);
+        assert_eq!(
+            harness.compare(&scene, &input, false)?.0,
+            WindowDamage::Full
+        );
+        assert_eq!(harness.sample.window_image_transfers, 1);
+        assert_eq!(
+            harness.compare(&scene, &input, false)?.0,
+            WindowDamage::Unchanged
+        );
+        assert_eq!(harness.sample.window_image_transfers, 1);
+    }
     Ok(())
 }
 
@@ -529,9 +1011,32 @@ fn an_idle_scroll_view_repaints_after_programmatic_scroll_and_a_late_child_edit(
     }
     let mut scene = Node::new("Window", None);
     scene.children.push(view);
+    let mut badge = Node::new("Rectangle", None);
+    for (name, length) in [
+        ("x", 180.0),
+        ("y", 100.0),
+        ("width", 30.0),
+        ("height", 18.0),
+    ] {
+        badge.properties.insert(name, Length(length).into());
+    }
+    badge
+        .properties
+        .insert("background", Color(0x8892d6ff).into());
+    scene.children.push(badge);
     let input = Interaction::default();
     let (work, first) = harness.compare(&scene, &input, true)?;
     assert_eq!(work, WindowDamage::Full);
+
+    scene.children[1]
+        .properties
+        .insert("x", Length(190.0).into());
+    let (work, moved) = harness.compare(&scene, &input, false)?;
+    assert!(
+        matches!(work, WindowDamage::Partial { x, .. } if x >= 96),
+        "{work:?}"
+    );
+    assert_ne!(first, moved);
 
     offset.set(1984.0);
     let layout = Rc::new(harness.incremental.layout_with_input(
@@ -542,7 +1047,7 @@ fn an_idle_scroll_view_repaints_after_programmatic_scroll_and_a_late_child_edit(
     assert_eq!(layout.children[0].scroll.unwrap().offset, 1984.0);
     let (work, scrolled) = harness.compare_prepared(&scene, &layout, &input, true)?;
     assert_small(work, [320, 200]);
-    assert_ne!(first, scrolled);
+    assert_ne!(moved, scrolled);
 
     scene.children[0].children[127]
         .properties

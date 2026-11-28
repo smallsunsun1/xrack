@@ -2411,6 +2411,7 @@ macro_rules! bridge_values {
                 HostValue::ComboModel(_) => Err(PyTypeError::new_err("invalid public XRack combo projection")),
                 HostValue::SceneLights(_)
                 | HostValue::SceneEnvironment(_)
+                | HostValue::SceneSky(_)
                 | HostValue::SceneReflections(_)
                 | HostValue::PhysicsDebugLines(_)
                 | HostValue::SceneFogVolumes(_)

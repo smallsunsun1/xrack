@@ -17,6 +17,7 @@ impl Mesh3D {
             return None;
         };
         let material = base.materials.first()?;
+        let topology = base.parts.first()?.topology;
         let mut part_centers = Vec::with_capacity(layout.len());
         let mut parts = Vec::with_capacity(layout.len());
         let mut slots = Vec::new();
@@ -42,6 +43,8 @@ impl Mesh3D {
                 f32::midpoint(low[axis], high[axis])
             }));
             parts.push(MeshPart {
+                lighting: Default::default(),
+                topology,
                 vertices: part.range.clone(),
                 material: slot,
                 volume_inverse: None,
@@ -51,6 +54,7 @@ impl Mesh3D {
             parts,
             part_centers,
             pick_tree: OnceLock::new(),
+            raster_tree: OnceLock::new(),
             ..(*base.geometry).clone()
         });
         let materials = vec![material.clone(); slots.len()].into();
@@ -84,9 +88,9 @@ impl Mesh3D {
             reference.vertex_streams().clone();
     }
 
-    /// Rebuild surviving triangles with the original materials and vertex deformation data.
+    /// Rebuild selected primitives with the original materials and vertex deformation data.
     #[doc(hidden)]
-    pub fn triangle_subset(&self, vertices: &[usize], parts: Vec<MeshPart>) -> Option<Self> {
+    pub fn primitive_subset(&self, vertices: &[usize], parts: Vec<MeshPart>) -> Option<Self> {
         let Self::Imported(source) = self else {
             return None;
         };

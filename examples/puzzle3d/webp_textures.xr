@@ -1,0 +1,45 @@
+struct CardMap {
+    source: string, min-filter: string, mag-filter: string, mip-filter: string,
+    wrap-u: string, wrap-v: string,
+}
+struct CardStyle { enabled: bool, base-color-map: CardMap }
+struct CardActor {
+    id: string, mesh: string, material: CardStyle, color: color,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, camera-kind: string, camera-height: float,
+}
+
+export component WebpTexturesDemo inherits Window {
+    title <- "XRack · glTF WebP";
+    width <- 176px; height <- 128px;
+    in-out property <int> encoding: 1;
+    in-out property <float> camera-height: 2.8;
+    property <CardActor> defaults <- CardActor {
+        id: "", mesh: "", color: #fff,
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, camera-kind: "", camera-height: root.camera-height,
+        material: CardStyle {
+            enabled: false,
+            base-color-map: CardMap {
+                source: @texture-url("models/webp-card.webp"),
+                min-filter: "linear", mag-filter: "linear", mip-filter: "linear",
+                wrap-u: "repeat", wrap-v: "repeat",
+            },
+        },
+    };
+    SceneView3D {
+        width <- 176px; height <- 128px; camera <- "eye";
+        scene-background <- #172132; scene-tone-map <- none;
+        model <- [
+            CardActor { id: "eye", z: 4, camera-kind: "orthographic", ..root.defaults },
+            CardActor {
+                id: "card",
+                mesh: root.encoding == 1 ? @mesh-url("models/webp-card-external.gltf")
+                    : (root.encoding == 2 ? @mesh-url("models/webp-card-embedded.glb")
+                        : @mesh-url("models/webp-card-reference.glb")),
+                material: CardStyle { enabled: root.encoding == 3, ..root.defaults.material },
+                ..root.defaults
+            },
+        ];
+    }
+}

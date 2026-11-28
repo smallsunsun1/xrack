@@ -32,6 +32,7 @@ struct Material {
     shader_parameters: vec4<f32>,
     opacity_uv: TextureTransform,
     opacity_sampling: vec4<u32>,
+    primitive_sizes: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> cameras: Cameras;
@@ -71,18 +72,29 @@ struct RasterVertex {
     // XRack wireframe varying
 }
 
+fn motion_world(vertex: Vertex, local: vec3<f32>) -> vec4<f32> {
+    let position = vec4(xr_displaced_vertex(local, material.shader_parameters, vertex.instance_data,
+        xr_instance_number(vertex.metadata.x), vertex.tint, mat3x4(vertex.x, vertex.y, vertex.z)), 1.0);
+    return vec4(dot(vertex.x, position), dot(vertex.y, position), dot(vertex.z, position), 1.0);
+}
+
+fn previous_motion_world(old: PreviousInstance, local: vec3<f32>) -> vec4<f32> {
+    let tint = vec4<f32>((vec4<u32>(old.tint) >> vec4<u32>(24u, 16u, 8u, 0u)) & vec4<u32>(255u)) / 255.0;
+    let position = vec4(xr_displaced_vertex(local, previous_vertex_parameters, old.instance_data,
+        old.index_and_enabled >> 1u, tint, mat3x4(old.x, old.y, old.z)), 1.0);
+    return vec4(dot(old.x, position), dot(old.y, position), dot(old.z, position), 1.0);
+}
+
 fn paired_vertex(vertex: Vertex, index: u32, current: vec3<f32>, previous: vec3<f32>) -> RasterVertex {
     let old = previous_instances[index];
-    let p = vec4(xr_displaced_vertex(current, material.shader_parameters, vertex.instance_data,
-        xr_instance_number(vertex.metadata.x), vertex.tint, mat3x4(vertex.x, vertex.y, vertex.z)), 1.0);
-    let old_tint = vec4<f32>((vec4<u32>(old.tint) >> vec4<u32>(24u, 16u, 8u, 0u)) & vec4<u32>(255u)) / 255.0;
-    let q = vec4(xr_displaced_vertex(previous, previous_vertex_parameters, old.instance_data,
-        old.index_and_enabled >> 1u, old_tint, mat3x4(old.x, old.y, old.z)), 1.0);
-    let world = vec4<f32>(dot(vertex.x, p), dot(vertex.y, p), dot(vertex.z, p), 1.0);
-    let previous_world = vec4<f32>(dot(old.x, q), dot(old.y, q), dot(old.z, q), 1.0);
+    let world = motion_world(vertex, current);
+    let previous_world = previous_motion_world(old, previous);
+    var current_clip = xr_point_corner(world * cameras.current.clip, vertex.index, material.primitive_sizes.x, cameras.extent.xy);
+    var previous_clip = xr_point_corner(previous_world * cameras.previous.clip, vertex.index, material.primitive_sizes.x, cameras.extent.xy);
+    // XRack widen motion
     return RasterVertex(
-        world * cameras.current.clip,
-        previous_world * cameras.previous.clip,
+        current_clip,
+        previous_clip,
         vec2<f32>(dot(cameras.current.depth, world), dot(cameras.previous.depth, previous_world)),
         vec4(vertex.uv, vertex.uv1),
         vec2<f32>(vertex.color.a, vertex.tint.a),
@@ -105,7 +117,8 @@ fn previous_skin_point(weights: SkinWeights, point: vec3<f32>) -> vec3<f32> {
     return skin_point(rows, point);
 }
 
-fn previous_morph_point(index: u32, point: vec3<f32>) -> vec3<f32> {
+fn previous_morph_point(vertex: u32, point: vec3<f32>) -> vec3<f32> {
+    let index = morph_vertex_row(vertex);
     var result = point;
     let end = morph_entries[index + 1u];
     for (var entry = morph_entries[index]; entry < end; entry += 1u) {

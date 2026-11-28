@@ -19,6 +19,7 @@ const MORPH_BINORMAL: u32 = 8u;
 
 @group(3) @binding(1) var<uniform> morph_settings: MorphSettings;
 @group(3) @binding(2) var<storage, read> morph_entries: array<u32>;
+@group(3) @binding(3) var<storage, read> morph_source_rows: array<u32>;
 
 fn morph_vector(offset: u32) -> vec3<f32> {
     return vec3<f32>(
@@ -32,7 +33,15 @@ fn morph_vector4(offset: u32) -> vec4<f32> {
     return vec4<f32>(morph_vector(offset), bitcast<f32>(morph_entries[offset + 3u]));
 }
 
-fn morph_displacement(vertex: u32, channels: u32) -> MorphDisplacement {
+fn morph_vertex_row(index: u32) -> u32 {
+    if morph_settings.geometry.z != 0u {
+        return morph_source_rows[index];
+    }
+    return index;
+}
+
+fn morph_displacement(index: u32, channels: u32) -> MorphDisplacement {
+    let vertex = morph_vertex_row(index);
     var delta: MorphDisplacement;
     let stride = morph_settings.geometry.y;
     let end = morph_entries[vertex + 1u];

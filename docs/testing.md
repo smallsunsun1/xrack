@@ -100,7 +100,7 @@ bazel test //tests:gpu_test -c opt --nocache_test_results --test_output=all \
 
 用 `--test_env=XRACK_CARD_BENCH_SUBPIXEL=1` 测连续的小数平移，或用 `--test_env=XRACK_CARD_BENCH_SUBPIXEL=independent` 测四组不同的采样位置。
 
-加上 `--test_env=XRACK_CARD_BENCH_WINDOW_ENTRY=1` 可走桌面窗口的绘制入口。再同时设置 `XRACK_CARD_BENCH_SCROLL_PROGRESS=1`、`XRACK_CARD_BENCH_STATIC_SCROLL_CONTENT=1` 和 `XRACK_CARD_BENCH_STEADY_SCROLL=1`，可测试圆角裁剪下滚动半透明卡片的稳态开销。回到相同设备像素相位时，完整图层的跨帧复用计入 `reuses`。图集内的复用单独计入 `opacity tiles reused`，跨帧保留的图集块计入 `retained opacity tiles reused`。整层纹理与跨帧保留的图集块共用窗口合成图集。空间不足时，图集在下一次窗口合成开始前按现有显存预算扩容，并保留已分配的图块位置。
+加上 `--test_env=XRACK_CARD_BENCH_WINDOW_ENTRY=1` 可经由桌面宿主使用的 `FrameCache` 准备场景，并走窗口绘制入口。再同时设置 `XRACK_CARD_BENCH_SCROLL_PROGRESS=1`、`XRACK_CARD_BENCH_STATIC_SCROLL_CONTENT=1` 和 `XRACK_CARD_BENCH_STEADY_SCROLL=1`，可测试圆角裁剪下滚动半透明卡片的稳态开销。回到相同设备像素相位时，完整图层的跨帧复用计入 `reuses`。图集内的复用单独计入 `opacity tiles reused`，跨帧保留的图集块计入 `retained opacity tiles reused`。整层纹理与跨帧保留的图集块共用窗口合成图集。空间不足时，图集在下一次窗口合成开始前按现有显存预算扩容，并保留已分配的图块位置。
 
 普通绘制也可复用同相位的图集块。合成时应用当前位置的外部裁剪，图块内部的裁剪需要与图块一起移动。
 
@@ -141,6 +141,14 @@ bazel test //tests:transcript_layout_benchmark -c opt --nocache_test_results --t
 
 在 macOS Metal 的 Bazel 构建上，基准把窗口文字管线的后台准备算进首帧。设 `XRACK_PEER_LAZY_PIPELINES=1` 可在同一二进制中对照按需创建。
 
+用 Python 3.11 或更新版本可按 Cargo 发布流程暂存渲染器，再运行同一份会话基准。暂存流程从锁定的上游源码应用 Bazel 补丁并启用对应的渲染路径。直接从源码工作区运行 Cargo 会使用上游 FemtoVG，测得的是另一条路径。
+
+```sh
+stage=$(mktemp -d)/sdk
+XRACK_PEER_ROWS=2048 XRACK_PEER_PARAGRAPHS=2400 XRACK_PEER_TRACE_FRAMES=1 \
+  python3 tools/femtovg_bundle.py "$stage" --benchmark
+```
+
 富文本交互基准预先布局 10,000 段文档并滚到末尾，分别测链接矩形枚举、鼠标命中、Tab 导航、选区命中和水平光标移动。输出包含普通和旋转视口的 CPU 耗时。
 
 ```sh
@@ -158,6 +166,8 @@ bazel test //tests:gpu_test -c opt --nocache_test_results --test_output=all \
 加 `--test_env=XRACK_TABLE_BENCH_VERTICAL=1` 可用同一份数据测量每帧滚动 17 个逻辑像素的纵向路径。加 `--test_env=XRACK_TABLE_BENCH_TEXT=mixed` 测试混合中文和希伯来文及部分居中单元格。`--test_env=XRACK_TABLE_BENCH_TEXT=cjk` 会随行变化使用不同的汉字，配合纵向滚动会绘制 1,080 帧，用来观察持续引入新字形时的帧耗时。
 
 设 `--test_env=XRACK_TABLE_BENCH_TARGET=bgra` 或 `bgra-srgb` 可使用窗口常见的目标格式，也可用 `rgba` 或 `rgba-srgb`。读回文件统一存为 RGBA 通道顺序。运行同一测试目标并将过滤名改为 `benchmark_wide_table_resize` 可量测拖动冻结列宽的开销。
+
+加 `--test_env=XRACK_TABLE_BENCH_STEP=13.125` 可测试小数像素的横向滚动。数值是每帧移动的逻辑像素数。
 
 加 `--test_env=XRACK_TABLE_BENCH_WINDOW_ENTRY=1` 会交替使用两个离屏目标调用窗口渲染入口，并报告全量、局部和未变化的帧数。计时截至 GPU 完成。基准报告稳定阶段的整帧 P99，以及前 20 帧的整帧 P95 和最大值，便于分别观察持续滚动的长尾和预热开销。
 

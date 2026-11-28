@@ -10,9 +10,10 @@ use xrack_runtime::scene_effect::{
     ShaderTextureKinds,
 };
 use xrack_runtime::scene3d::{
-    CubeTexture3D, MaterialChannel, MeshAlphaMode, MeshDielectric, MeshFresnel, MeshImage,
-    MeshMaterial, MeshShader, MeshTexture, MeshWorkflow, TextureChannel, TextureColorSpace,
-    TextureFilter, TextureSampling, TextureTransform, TextureWrap, VolumeImage3D,
+    CubeTexture3D, MaterialChannel, MeshAlphaMode, MeshBlockFormat, MeshDielectric, MeshFresnel,
+    MeshImage, MeshMaterial, MeshShader, MeshTexture, MeshWorkflow, TextureChannel,
+    TextureColorSpace, TextureFilter, TextureSampling, TextureTransform, TextureWrap,
+    VolumeImage3D,
 };
 
 use super::{
@@ -115,6 +116,9 @@ pub(super) struct MaterialBindings {
     unprogrammed_coat: Option<wgpu::BindGroup>,
     pub coated: bool,
     pub height_mapped: bool,
+    pub tinted_dielectric: bool,
+    pub iridescent: bool,
+    pub sheen: bool,
     pub reflection_map: Option<(wgpu::TextureView, wgpu::Sampler)>,
     shader: Option<(Arc<str>, usize)>,
     kinds: ShaderTextureKinds,
@@ -170,8 +174,8 @@ impl ImageViews {
             })
         };
         Self {
-            linear: view(wgpu::TextureFormat::Rgba8Unorm),
-            srgb: view(wgpu::TextureFormat::Rgba8UnormSrgb),
+            linear: view(texture.format()),
+            srgb: view(texture.format().add_srgb_suffix()),
         }
     }
 }
@@ -181,41 +185,56 @@ struct UploadedTexture {
     base: Option<ImageViews>,
 }
 
+impl UploadedTexture {
+    fn view(&self, color: TextureColorSpace, mipmapped: bool) -> wgpu::TextureView {
+        let views = if mipmapped {
+            &self.full
+        } else {
+            self.base.as_ref().unwrap_or(&self.full)
+        };
+        match color {
+            TextureColorSpace::Linear => views.linear.clone(),
+            TextureColorSpace::Srgb => views.srgb.clone(),
+        }
+    }
+}
+
 struct UploadedImage {
     owner: Weak<MeshImage>,
     // Source-only, linear mips, and sRGB mips. Both kinds of view can share level zero.
     variants: [Option<UploadedTexture>; 3],
+    compressed: OnceCell<Option<UploadedTexture>>,
 }
 
-type ScalarInput<'a> = (&'a MeshTexture, TextureChannel);
-type ScalarKey = (usize, u32, bool);
+type PackedInput<'a> = (&'a MeshTexture, TextureChannel);
+type PackedMapKey = (usize, u8, bool);
+type PackedBindingKey = ([Option<PackedMapKey>; 3], bool);
 
-struct UploadedScalar {
-    owner: Weak<MeshImage>,
-    companion: Option<Weak<MeshImage>>,
+struct UploadedMaps {
+    owners: [Option<Weak<MeshImage>>; 3],
     buffer: wgpu::Buffer,
 }
 
 #[derive(Default)]
 pub(super) struct Images {
     images: HashMap<usize, UploadedImage>,
-    scalars: HashMap<(ScalarKey, Option<ScalarKey>), UploadedScalar>,
+    packed_maps: HashMap<PackedBindingKey, UploadedMaps>,
     cubemaps: HashMap<usize, (Weak<CubeTexture3D>, wgpu::TextureView)>,
     volumes: HashMap<usize, (Weak<VolumeImage3D>, ImageViews)>,
     pub mip_levels_uploaded: u64,
     pub uploads: u64,
+    pub block_bytes_uploaded: u64,
 }
 
 pub(super) type SharedImages = Rc<RefCell<Images>>;
 
 impl Images {
     pub fn prune(&mut self) {
-        self.scalars.retain(|_, image| {
-            image.owner.strong_count() != 0
-                && image
-                    .companion
-                    .as_ref()
-                    .is_none_or(|owner| owner.strong_count() != 0)
+        self.packed_maps.retain(|_, maps| {
+            maps.owners
+                .iter()
+                .flatten()
+                .all(|owner| owner.strong_count() != 0)
         });
         self.images
             .retain(|_, image| image.owner.strong_count() != 0);
@@ -225,45 +244,57 @@ impl Images {
             .retain(|_, (owner, _)| owner.strong_count() != 0);
     }
 
-    fn scalar_map(
+    fn packed_map(
         &mut self,
         device: &wgpu::Device,
-        input: ScalarInput<'_>,
-        companion: Option<ScalarInput<'_>>,
-    ) -> wgpu::Buffer {
-        let key = |(map, channel): ScalarInput<'_>| {
-            (
-                Arc::as_ptr(&map.image) as usize,
-                channel as u32,
-                map.sampling.mip_filter.is_some() && map.image.size() != [1, 1],
-            )
-        };
-        self.scalars
-            .entry((key(input), companion.map(key)))
-            .or_insert_with(|| {
-                let mut bytes = Vec::new();
-                self.mip_levels_uploaded += append_scalar_map(&mut bytes, input);
-                if let Some(height) = companion {
-                    // The first header records the second block's position relative
-                    // to its own texels. Both channels share the opacity binding.
-                    let offset = ((bytes.len() - SCALAR_HEADER_BYTES) / 4) as u32;
-                    bytes[8..12].copy_from_slice(&offset.to_le_bytes());
-                    self.mip_levels_uploaded += append_scalar_map(&mut bytes, height);
-                }
-                self.uploads += 1;
-                UploadedScalar {
-                    owner: Arc::downgrade(&input.0.image),
-                    companion: companion.map(|(map, _)| Arc::downgrade(&map.image)),
-                    buffer: buffer(
-                        device,
-                        "XRack 3D scalar map pixels",
-                        &bytes,
-                        wgpu::BufferUsages::STORAGE,
-                    ),
-                }
+        inputs: [Option<PackedInput<'_>>; 3],
+        height_range: bool,
+    ) -> Option<wgpu::Buffer> {
+        let key = inputs.map(|input| {
+            input.map(|(map, channel)| {
+                (
+                    Arc::as_ptr(&map.image) as usize,
+                    channel as u8,
+                    map.sampling.mip_filter.is_some() && map.image.size() != [1, 1],
+                )
             })
-            .buffer
-            .clone()
+        });
+        if key.iter().all(Option::is_none) {
+            return None;
+        }
+        Some(
+            self.packed_maps
+                .entry((key, height_range))
+                .or_insert_with(|| {
+                    let mut bytes = Vec::new();
+                    for (slot, input) in inputs.into_iter().enumerate() {
+                        let Some(input) = input else { continue };
+                        if !bytes.is_empty() {
+                            // The base header stores companion offsets relative to its first texel.
+                            // The opacity/height binding uses the last word for the height range.
+                            let offset = ((bytes.len() - PACKED_HEADER_BYTES) / 4) as u32;
+                            let header_word = 4 + 4 * slot;
+                            bytes[header_word..header_word + 4]
+                                .copy_from_slice(&offset.to_le_bytes());
+                        }
+                        self.mip_levels_uploaded +=
+                            append_packed_map(&mut bytes, input, height_range && slot == 1);
+                    }
+                    self.uploads += 1;
+                    UploadedMaps {
+                        owners: inputs
+                            .map(|input| input.map(|(map, _)| Arc::downgrade(&map.image))),
+                        buffer: buffer(
+                            device,
+                            "XRack 3D packed material maps",
+                            &bytes,
+                            wgpu::BufferUsages::STORAGE,
+                        ),
+                    }
+                })
+                .buffer
+                .clone(),
+        )
     }
 
     pub fn volume_view(
@@ -411,18 +442,80 @@ impl Images {
         color: TextureColorSpace,
         (mipmapped, prepared): (bool, bool),
     ) -> wgpu::TextureView {
-        let mipmapped = mipmapped && image.size() != [1, 1];
+        let blocks = image.blocks();
+        let authored_levels = image.authored_level_count();
+        let mipmapped =
+            mipmapped && authored_levels.map_or(image.size() != [1, 1], |levels| levels > 1);
         let entry = self
             .images
             .entry(Arc::as_ptr(image) as usize)
             .or_insert_with(|| UploadedImage {
                 owner: Arc::downgrade(image),
                 variants: Default::default(),
+                compressed: OnceCell::new(),
             });
+        let mut upload_blocks = |blocks: &xrack_runtime::scene3d::MeshTextureBlocks, format| {
+            self.uploads += 1;
+            self.mip_levels_uploaded += u64::from(blocks.level_count() - 1);
+            let levels = blocks.levels().inspect(|(_, bytes)| {
+                self.block_bytes_uploaded += bytes.len() as u64;
+            });
+            upload(device, queue, image.size(), format, levels)
+        };
+        let compressed = if let Some(basis) = image.basis() {
+            entry
+                .compressed
+                .get_or_init(|| {
+                    let astc = MeshBlockFormat::Astc([4, 4]);
+                    let bc7 = MeshBlockFormat::Bc7;
+                    let etc2 = MeshBlockFormat::Etc2Rgba;
+                    // UASTC's block representation is closest to ASTC. ETC1S
+                    // can retain its ETC color blocks on ETC2-only devices.
+                    let candidates = if basis.is_uastc() {
+                        [astc, bc7, etc2]
+                    } else {
+                        [bc7, etc2, astc]
+                    };
+                    let features = device.features();
+                    candidates.into_iter().find_map(|candidate| {
+                        let format = block_format(candidate)?;
+                        if !features.contains(format.required_features()) {
+                            return None;
+                        }
+                        let blocks = basis.transcode_blocks(candidate)?;
+                        Some(upload_blocks(&blocks, format))
+                    })
+                })
+                .as_ref()
+        } else if let Some(blocks) = blocks
+            && let Some(format) = block_format(blocks.format())
+            && (color == TextureColorSpace::Linear || format.add_srgb_suffix() != format)
+            && device.features().contains(format.required_features())
+            && blocks.native_equivalent()
+            && image
+                .size()
+                .into_iter()
+                .zip(blocks.format().block_size())
+                .all(|(size, block)| size.is_multiple_of(block))
+        {
+            entry
+                .compressed
+                .get_or_init(|| Some(upload_blocks(blocks, format)))
+                .as_ref()
+        } else {
+            None
+        };
+        if let Some(uploaded) = compressed {
+            return uploaded.view(color, mipmapped);
+        }
         // The two encodings share level zero. For a base-level sampler use any
         // resident copy before allocating another texture.
         let colors = [color, TextureColorSpace::ALL[1 - color.slot()]];
-        let chain_color = if mipmapped {
+        let chain_color = if let Some(levels) = authored_levels {
+            // Authored levels have the same bytes for both texture views.
+            (levels > 1 && (mipmapped || entry.variants[1].is_some()))
+                .then_some(TextureColorSpace::Linear)
+        } else if mipmapped {
             Some(color)
         } else if entry.variants[0].is_some() {
             None
@@ -455,35 +548,39 @@ impl Images {
                 self.mip_levels_uploaded += image.mip_extents().count() as u64;
             }
             self.uploads += 1;
-            upload(device, queue, image.size(), image.rgba(), levels)
+            upload(
+                device,
+                queue,
+                image.size(),
+                wgpu::TextureFormat::Rgba8Unorm,
+                std::iter::once((image.size(), image.rgba())).chain(levels),
+            )
         });
-        let views = if mipmapped {
-            &uploaded.full
-        } else {
-            uploaded.base.as_ref().unwrap_or(&uploaded.full)
-        };
-        match color {
-            TextureColorSpace::Linear => views.linear.clone(),
-            TextureColorSpace::Srgb => views.srgb.clone(),
-        }
+        uploaded.view(color, mipmapped)
     }
 }
 
-// Four header words, sixteen level offsets, then four texels per word.
-const SCALAR_HEADER_BYTES: usize = 80;
+// Four header words, sixteen level offsets, then packed texels.
+const PACKED_HEADER_BYTES: usize = 80;
 
-fn append_scalar_map(bytes: &mut Vec<u8>, (map, channel): ScalarInput<'_>) -> u64 {
+fn append_packed_map(
+    bytes: &mut Vec<u8>,
+    (map, channel): PackedInput<'_>,
+    record_height_range: bool,
+) -> u64 {
     let image = &map.image;
     let [width, height] = image.size();
     let start = bytes.len();
-    let end_header = start + SCALAR_HEADER_BYTES;
+    let end_header = start + PACKED_HEADER_BYTES;
     bytes.resize(end_header, 0);
     bytes[start..start + 4].copy_from_slice(&width.to_le_bytes());
     bytes[start + 4..start + 8].copy_from_slice(&height.to_le_bytes());
-    let mips = map
-        .sampling
-        .mip_filter
-        .map(|_| image.prepare_mips(TextureColorSpace::Linear));
+    let colors = if channel == TextureChannel::Rgb {
+        TextureColorSpace::Srgb
+    } else {
+        TextureColorSpace::Linear
+    };
+    let mips = map.sampling.mip_filter.map(|_| image.prepare_mips(colors));
     let mut offset = 0;
     let mut uploaded = 0;
     let levels = std::iter::once(image.rgba()).chain(image.mip_extents().filter_map(|[w, h]| {
@@ -496,7 +593,27 @@ fn append_scalar_map(bytes: &mut Vec<u8>, (map, channel): ScalarInput<'_>) -> u6
         let offset = ((bytes.len() - end_header) / 4) as u32;
         let header = start + 16 + level * 4;
         bytes[header..header + 4].copy_from_slice(&offset.to_le_bytes());
-        bytes.extend(rgba.chunks_exact(4).map(|pixel| pixel[channel as usize]));
+        let pixels = bytes.len();
+        if channel == TextureChannel::Rgb {
+            // RGB8 keeps a fully mipmapped 4K color map and two 4K scalar maps
+            // below the portable 128 MiB storage-buffer binding limit.
+            bytes.extend(
+                rgba.chunks_exact(4)
+                    .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]]),
+            );
+        } else {
+            bytes.extend(rgba.chunks_exact(4).map(|pixel| pixel[channel as usize]));
+        }
+        if record_height_range && level == 0 {
+            // Linear filters and averaged mip levels stay within this range.
+            let [min, max] = bytes[pixels..]
+                .iter()
+                .fold([u8::MAX, 0], |[min, max], &next| {
+                    [min.min(next), max.max(next)]
+                });
+            bytes[start + 12] = min;
+            bytes[start + 13] = max;
+        }
         bytes.resize(bytes.len().next_multiple_of(4), 0);
         uploaded += u64::from(level != 0);
     }
@@ -553,7 +670,14 @@ impl Materials {
             shader_layouts,
             spatial_layouts: HashMap::new(),
             spatial_sampler: OnceCell::new(),
-            white: upload(device, queue, [1, 1], &[255; 4], std::iter::empty()).full,
+            white: upload(
+                device,
+                queue,
+                [1, 1],
+                wgpu::TextureFormat::Rgba8Unorm,
+                std::iter::once(([1, 1], &[255; 4][..])),
+            )
+            .full,
             empty_scalar_map: buffer(
                 device,
                 "XRack 3D empty scalar map",
@@ -593,6 +717,20 @@ impl Materials {
         let height_map = pbr
             .and_then(|pbr| pbr.height_map.as_deref())
             .filter(|map| map.amount > 0.0);
+        let sheen = pbr
+            .and_then(|pbr| pbr.sheen.as_deref())
+            .filter(|sheen| sheen.is_active());
+        let sheen_color_map = sheen.and_then(|sheen| sheen.color_texture.as_ref());
+        let sheen_roughness_map = sheen
+            .filter(|sheen| sheen.roughness > 0.0)
+            .and_then(|sheen| sheen.roughness_texture.as_ref());
+        let film = pbr
+            .and_then(|pbr| pbr.iridescence.as_deref())
+            .filter(|film| film.is_active());
+        let film_factor = film.and_then(|film| film.factor_texture.as_ref());
+        let film_thickness = film
+            .filter(|film| film.thickness_nm[0] != film.thickness_nm[1])
+            .and_then(|film| film.thickness_texture.as_ref());
         let scalar_maps = [
             (
                 material.and_then(|material| material.opacity_texture.as_ref()),
@@ -713,7 +851,12 @@ impl Materials {
         let normal_scale = normal.map_or(1.0, |normal| normal.scale);
         let slot =
             |texture: Option<&MeshTexture>| texture.map_or(-1.0, |tex| f32::from(tex.uv_slot));
+        let [r_base, g_base, b_base, _] = rgba;
         let [sr, sg, sb] = dielectric.map_or([1.0; 3], |material| material.color);
+        let tinted = dielectric.filter(|material| !glossy && material.tint > 0.0);
+        let [tint_r, tint_g, tint_b] = tinted.map_or([1.0; 3], |material| {
+            material.base_color_tint([r_base, g_base, b_base])
+        });
         let specular = dielectric.map_or(1.0, |material| material.specular);
         let f0 = if glossy {
             1.0
@@ -741,25 +884,47 @@ impl Materials {
         // The sign bit marks the independent map. The scalar is always nonnegative.
         channels[3] = material.map_or(1.0, |material| material.opacity).to_bits() & 0x7fff_ffff;
         channels[3] |= u32::from(scalar_maps[0].0.is_some()) << 31;
-        let height = height_map.zip(material).map(|(map, style)| {
-            (
-                &map.texture,
-                style.channels.channel(MaterialChannel::Height),
+        let companion_maps = [
+            (height_map.map(|map| &map.texture), MaterialChannel::Height),
+            (film_factor, MaterialChannel::Iridescence),
+            (film_thickness, MaterialChannel::IridescenceThickness),
+        ];
+        let [primary_maps, companion_maps] = [scalar_maps, companion_maps].map(|maps| {
+            maps.map(|(map, role)| {
+                map.zip(material)
+                    .map(|(map, style)| (map, style.channels.channel(role)))
+            })
+        });
+        let height = companion_maps[0];
+        let sheen_maps = [
+            None,
+            sheen_color_map.map(|map| (map, TextureChannel::Rgb)),
+            sheen_roughness_map
+                .zip(material)
+                .map(|(map, style)| (map, style.channels.channel(MaterialChannel::SheenRoughness))),
+        ];
+        let scalar_buffers = std::array::from_fn::<_, 3, _>(|slot| {
+            self.images.borrow_mut().packed_map(
+                device,
+                [primary_maps[slot], companion_maps[slot], sheen_maps[slot]],
+                slot == 0 && height.is_some(),
             )
         });
-        let scalar_buffers = std::array::from_fn::<_, 3, _>(|slot| {
-            let (map, role) = scalar_maps[slot];
-            let input = map
-                .zip(material)
-                .map(|(map, style)| (map, style.channels.channel(role)));
-            let height = height.filter(|_| slot == 0);
-            let primary = input.or(height)?;
-            let companion = height.filter(|_| input.is_some());
-            Some(
-                self.images
-                    .borrow_mut()
-                    .scalar_map(device, primary, companion),
-            )
+        let (sheen_color_uv, sheen_color_sampling) = scalar_sampler(sheen_color_map);
+        let (sheen_roughness_uv, sheen_roughness_sampling) = scalar_sampler(sheen_roughness_map);
+        let sheen_factors = sheen.map_or([0.0; 4], |sheen| {
+            let [r, g, b] = sheen.color;
+            [r, g, b, sheen.roughness]
+        });
+        let (film_factor_uv, film_factor_sampling) = scalar_sampler(film_factor);
+        let (film_thickness_uv, film_thickness_sampling) = scalar_sampler(film_thickness);
+        let film_parameters = film.map_or([0.0; 4], |film| {
+            [
+                film.factor,
+                film.ior,
+                film.thickness_nm[0],
+                film.thickness_nm[1],
+            ]
         });
         let (height_transform, height_sampling) = scalar_sampler(height.map(|(map, _)| map));
         let height_parameters = height_map.map_or([0.0; 4], |map| {
@@ -842,6 +1007,12 @@ impl Materials {
             .chain(parameters)
             .chain(opacity_transform)
             .chain(opacity_sampling.map(f32::from_bits))
+            .chain([
+                material.map_or(1.0, |value| value.point_size),
+                material.map_or(1.0, |value| value.line_width),
+                0.0,
+                0.0,
+            ])
             .chain(factors)
             .chain([r, g, b, normal_scale])
             .chain([
@@ -851,18 +1022,18 @@ impl Materials {
                 slot(normal_texture),
             ])
             .chain([sr, sg, sb, specular])
-            .chain([f0, slot(specular_texture), slot(specular_color), 0.0])
+            .chain([f0, slot(specular_texture), slot(specular_color), tint_r])
             .chain([
                 transmission.map_or(0.0, |term| term.factor),
                 slot(transmission_texture),
                 lod_g,
-                0.0,
+                tint_g,
             ])
             .chain([
                 volume.map_or(0.0, |volume| volume.thickness),
                 slot(thickness_texture),
                 inv_g,
-                0.0,
+                tint_b,
             ])
             .chain([inv_r, inv_b, lod_r, lod_b])
             .chain([ar, ag, ab, distance])
@@ -901,6 +1072,16 @@ impl Materials {
             .chain(height_transform)
             .chain(height_sampling.map(f32::from_bits))
             .chain(height_parameters)
+            .chain(film_parameters)
+            .chain(film_factor_uv)
+            .chain(film_thickness_uv)
+            .chain(film_factor_sampling.map(f32::from_bits))
+            .chain(film_thickness_sampling.map(f32::from_bits))
+            .chain(sheen_factors)
+            .chain(sheen_color_uv)
+            .chain(sheen_roughness_uv)
+            .chain(sheen_color_sampling.map(f32::from_bits))
+            .chain(sheen_roughness_sampling.map(f32::from_bits))
             .flat_map(f32::to_ne_bytes)
             .collect();
         let uniform = buffer(
@@ -997,6 +1178,9 @@ impl Materials {
             unprogrammed_coat,
             coated: coat.is_some(),
             height_mapped: height.is_some(),
+            tinted_dielectric: tinted.is_some(),
+            iridescent: film.is_some(),
+            sheen: sheen.is_some(),
             reflection_map,
             shader: shader.map(|shader| (shader.source.clone(), slots)),
             kinds,
@@ -1289,45 +1473,89 @@ fn upload<'a>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     [width, height]: [u32; 2],
-    rgba: &'a [u8],
+    format: wgpu::TextureFormat,
     levels: impl Iterator<Item = ([u32; 2], &'a [u8])>,
 ) -> UploadedTexture {
-    let levels: Vec<_> = std::iter::once(([width, height], rgba))
-        .chain(levels)
-        .collect();
+    let levels: Vec<_> = levels.collect();
     let mip_level_count = levels.len() as u32;
     let extent = |width, height| wgpu::Extent3d {
         width,
         height,
         depth_or_array_layers: 1,
     };
+    let srgb = format.add_srgb_suffix();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("XRack 3D material texture"),
         size: extent(width, height),
         mip_level_count,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+        view_formats: if format == srgb {
+            &[]
+        } else {
+            std::slice::from_ref(&srgb)
+        },
     });
-    for (mip_level, ([width, height], rgba)) in levels.into_iter().enumerate() {
+    let (block_width, block_height) = format.block_dimensions();
+    let block_bytes = format.block_copy_size(None).unwrap_or(4);
+    for (mip_level, ([width, height], bytes)) in levels.into_iter().enumerate() {
+        let physical = extent(width, height).physical_size(format);
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 mip_level: mip_level as u32,
                 ..texture.as_image_copy()
             },
-            rgba,
+            bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
+                bytes_per_row: Some(physical.width / block_width * block_bytes),
+                rows_per_image: Some(physical.height / block_height),
             },
-            extent(width, height),
+            physical,
         );
     }
     UploadedTexture {
         full: ImageViews::new(&texture, None),
         base: (mip_level_count > 1).then(|| ImageViews::new(&texture, Some(1))),
     }
+}
+
+fn block_format(format: MeshBlockFormat) -> Option<wgpu::TextureFormat> {
+    use wgpu::{AstcBlock, AstcChannel, TextureFormat as F};
+    Some(match format {
+        MeshBlockFormat::Bc1Rgb | MeshBlockFormat::Bc1Rgba => F::Bc1RgbaUnorm,
+        MeshBlockFormat::Bc2 => F::Bc2RgbaUnorm,
+        MeshBlockFormat::Bc3 => F::Bc3RgbaUnorm,
+        MeshBlockFormat::Bc4 => F::Bc4RUnorm,
+        MeshBlockFormat::Bc5 => F::Bc5RgUnorm,
+        MeshBlockFormat::Bc7 => F::Bc7RgbaUnorm,
+        MeshBlockFormat::Etc2Rgb => F::Etc2Rgb8Unorm,
+        MeshBlockFormat::Etc2RgbA1 => F::Etc2Rgb8A1Unorm,
+        MeshBlockFormat::Etc2Rgba => F::Etc2Rgba8Unorm,
+        MeshBlockFormat::Astc(size) => {
+            let block = match size {
+                [4, 4] => AstcBlock::B4x4,
+                [5, 4] => AstcBlock::B5x4,
+                [5, 5] => AstcBlock::B5x5,
+                [6, 5] => AstcBlock::B6x5,
+                [6, 6] => AstcBlock::B6x6,
+                [8, 5] => AstcBlock::B8x5,
+                [8, 6] => AstcBlock::B8x6,
+                [8, 8] => AstcBlock::B8x8,
+                [10, 5] => AstcBlock::B10x5,
+                [10, 6] => AstcBlock::B10x6,
+                [10, 8] => AstcBlock::B10x8,
+                [10, 10] => AstcBlock::B10x10,
+                [12, 10] => AstcBlock::B12x10,
+                [12, 12] => AstcBlock::B12x12,
+                _ => return None,
+            };
+            F::Astc {
+                block,
+                channel: AstcChannel::Unorm,
+            }
+        }
+    })
 }

@@ -10,8 +10,10 @@ description = "Load OBJ, glTF, and heightfield assets for XRack 3D"
 [dependencies]
 base64 = "0.22"
 bevy_mikktspace = "=1.0.0"
+draco-core = { version = "=2.5.1", default-features = false, features = ["decoder", "edgebreaker_valence_decode", "legacy_bitstream_decode"] }
 flate2.workspace = true
-gltf = { version = "=1.4.1", default-features = false, features = ["utils", "extensions", "KHR_materials_unlit"] }
+gltf = { version = "=1.4.1", default-features = false, features = ["utils", "extensions", "extras", "KHR_materials_unlit"] }
+image-webp = "=0.2.4"
 jpeg-decoder = { version = "=0.3.2", default-features = false }
 nalgebra.workspace = true
 png.workspace = true

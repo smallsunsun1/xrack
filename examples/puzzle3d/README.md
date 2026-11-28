@@ -61,6 +61,10 @@ bazel run --repo_env=CARGO_BAZEL_ISOLATED=false --run_env=XRACK_LIVE_PROJECT="$P
 
 运行 `bazel run //examples/puzzle3d:play_material_debug`，或在 VS Code 预览 [material_debug.xr](material_debug.xr)。下拉菜单可切换材质和光照的诊断通道。右侧面板用自定义材质改动底色、发光、粗糙度和金属度，左侧保留内建材质。勾选「线框」可组合查看材质通道和三角形拓扑。切换「后期效果」和「透明面」可查看诊断颜色与最终渲染的区别。
 
+打开「薄膜虹彩」后拖动右侧滑块可调节厚度。勾选「虹彩贴图」可分别观察强度和厚度通道的影响。勾选「glTF」会切换左侧面板的网格与材质，可用 `f0` 视图对照薄膜的正视反射颜色。
+
+运行 `bazel run //examples/puzzle3d:play_material_sheen`，或在 VS Code 预览 [material_sheen.xr](material_sheen.xr)。左侧面板可切换织物光泽、分条贴图和 glTF 自带材质，右侧面板保留基本材质供对照。两个滑块分别调节光泽粗糙度和观看角度，直射光与环境光可独立开关。
+
 ## 阴影调试
 
 运行 `bazel run //examples/puzzle3d:play_shadow_debug`，或在 VS Code 预览 [shadow_debug.xr](shadow_debug.xr)。点击左上方按钮依次查看级联切分、灯光投影、投影与受光物体包围盒，以及级联相交轮廓。选中「冻结阴影相机」再勾选「侧面观察」或「移远相机」，可以从另一个位置查看同一组投影。
@@ -310,6 +314,14 @@ bazel run //examples/puzzle3d:play_authored_texture
 ## 程序化天空
 
 运行 `bazel run //examples/puzzle3d:play_procedural_sky` 或在 VS Code 中预览 [procedural_sky.xr](procedural_sky.xr)。左球显示漫反射，右球显示金属镜面反射。「暮色」改变天空颜色，「移动太阳」改变太阳仰角。「显示天空」可单独隐藏背景，「程序天空」切换到同场景的文件探针。
+
+运行 `bazel run //examples/puzzle3d:play_program_sky` 或预览 [program_sky.xr](program_sky.xr)，可以比较同一 WGSL 天空的背景和环境光。移动太阳会更新天空和两个球体的受光，单独调整相机可观察立方体复用。
+
+勾选「分帧构建」会把 32 个过滤样本分到 4 帧。移动太阳时，背景先更新，两个球体等完整的环境光准备好后再一起更新。
+
+「背景模式」可在立方体和三种屏幕空间分辨率之间切换。关闭「环境光」时，可以独立观察太阳在背景中的清晰度。开启「环境光」后，切换背景模式复用同一份 IBL 结果。
+
+勾选「纹理天空」后，同一个天空着色器会混合二维色带、KTX2 立方体和三维体数据。可以先切换背景模式，再开关环境光，观察两条路径如何使用相同的纹理输入。
 
 运行 `bazel run //examples/puzzle3d:play_skybox` 或预览 [skybox.xr](skybox.xr)，在 HDR 十字图、程序化背景和受光环境之间切换。可以单独旋转和模糊背景，用前面的两个球体对照受光。
 

@@ -2,7 +2,7 @@
 use crate::{
     scene3d::bounds::{Bounds3D, BoundsTree},
     scene3d::visibility::Frustum,
-    scene3d::{MeshPart, MeshVertex},
+    scene3d::{MeshPart, MeshTopology, MeshVertex},
 };
 use nalgebra::Vector3;
 
@@ -23,6 +23,7 @@ impl PickTree {
         let candidates = parts
             .iter()
             .enumerate()
+            .filter(|(_, section)| section.topology == MeshTopology::Triangles)
             .flat_map(|(part, section)| {
                 section.vertices.clone().step_by(3).map(move |vertex| {
                     let [a, b, c] = std::array::from_fn(|axis| {
@@ -90,14 +91,14 @@ impl PickTree {
     }
 }
 
-fn visit_selection(
-    tree: &BoundsTree<PickTriangle>,
+pub(super) fn visit_selection<T: Copy>(
+    tree: &BoundsTree<T>,
     index: usize,
     region: &Frustum,
     rows: [[f32; 4]; 3],
     planes: u8,
     test_faces: bool,
-    visit: &mut impl FnMut(PickTriangle, u8) -> bool,
+    visit: &mut impl FnMut(T, u8) -> bool,
 ) -> bool {
     let node = &tree.nodes[index];
     let Some(planes) = region.intersecting_planes(node.bounds.transform(rows), planes) else {
@@ -257,6 +258,8 @@ mod tests {
         let tree = PickTree::new(
             &vertices,
             &[MeshPart {
+                lighting: Default::default(),
+                topology: MeshTopology::Triangles,
                 vertices: 0..vertices.len(),
                 material: 0,
                 volume_inverse: None,
@@ -314,6 +317,8 @@ mod tests {
         let tree = PickTree::new(
             &vertices,
             &[MeshPart {
+                lighting: Default::default(),
+                topology: MeshTopology::Triangles,
                 vertices: 0..vertices.len(),
                 material: 0,
                 volume_inverse: None,
@@ -351,6 +356,8 @@ mod tests {
         let tree = PickTree::new(
             &vertices,
             &[MeshPart {
+                lighting: Default::default(),
+                topology: MeshTopology::Triangles,
                 vertices: 0..vertices.len(),
                 material: 0,
                 volume_inverse: None,

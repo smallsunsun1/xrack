@@ -923,11 +923,23 @@ struct ShapeSpec {
 
 `segments` 和 `rings` 使用 `int`，最大值为 64。它们分别控制周向和纵向细分。平面和盒面使用两个方向的网格细分，胶囊的 `rings` 表示每个半球的细分数。GPU 绘制、阴影、射线和球体扫掠共用三角网格，圆环的空心区域可以穿过。相同参数共享准备后的网格，改颜色、材质或物体变换时复用网格。 [参数化网格示例](../examples/puzzle3d/parametric_geometry.xr)
 
-运行时可为生成网格、导入的 glTF 和各级 LOD 使用 GPU 索引。只有位置、法线、UV、颜色以及适用的切线、光照贴图坐标、关节权重和形变增量全部一致时才合并顶点。颜色、阴影、深度和运动向量共用该索引，并沿用三角形顺序和材质分段。Rust 的 `Renderer::scene_draw_stats()` 提供 `mesh_vertex_bytes_uploaded`、`mesh_index_bytes_uploaded`、`mesh_deformation_bytes_uploaded` 和 `indexed_mesh_uploads`。`color_vertices` 统计提交的顶点引用数。
+运行时可为生成网格、导入的 glTF 和各级 LOD 使用 GPU 索引。只有位置、法线、UV、颜色以及适用的切线、光照贴图坐标、关节权重和形变增量全部一致时才合并顶点。颜色、阴影、深度和运动向量共用该索引，并沿用图元顺序和材质分段。Rust 的 `Renderer::scene_draw_stats()` 提供 `mesh_vertex_bytes_uploaded`、`mesh_index_bytes_uploaded`、`mesh_deformation_bytes_uploaded` 和 `indexed_mesh_uploads`。`color_vertices` 统计提交的顶点引用数。
 
-#### 自定义三角网格
+#### glTF 点、线和三角面
 
-`geometry` 记录也可声明 `vertices: [Vertex]` 和可选的 `indices: [int]`，直接绑定应用生成的顶点和三角形。两张表都为空时，该行可以使用自己的 `mesh` 或作为只提供变换的节点。
+`@mesh-url` 可从同一个 glTF 网格导入点、独立线段、折线、闭合折线和三角面。可以混用有索引和无索引的分段。导入时折线会展开成线段列表，闭合折线额外连接末点和首点。GPU 按各分段的材质和拓扑绘制，点和线默认覆盖一个视口纹素。开启 `debug-wireframe` 后会显示三角形边缘，资产里的点和线仍按各自的拓扑绘制。
+
+glTF 点和线缺少 `NORMAL` 时，按线性底色乘顶点色，再加上自发光（含贴图）进行绘制。提供 `NORMAL` 后参与场景光照，提供同一 UV 集的 `TANGENT` 后可使用法线贴图。共用材质的分段各自采用对应的着色方式，VS Code 悬停会列出资产里三类点线分段的数量。 [点线材质示例](../examples/puzzle3d/point_line_lighting.xr) · [glTF 规范](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#point-and-line-materials)
+
+材质记录或材质槽可以声明 `point-size: float`。默认值为 1，单位是当前渲染目标的像素。更大的值按点中心绘制屏幕空间方形，点的位置、深度和材质属性沿用原顶点。颜色、深度、阴影和运动向量使用同一个方形。动态修改大于 1 的尺寸会复用同一份 GPU 几何。该字段适用于 glTF 和 `geometry.topology: "points"`。 [可调点大小示例](../examples/puzzle3d/wide_points.xr)
+
+线材质可声明 `line-width: float`，单位同样是当前渲染目标的像素，默认值为 1。更宽的线段在投影后沿屏幕法线展开。各段使用平头端点，条带和闭合折线沿用导入或自定义网格的线段拓扑。两个端点分别按当前姿态计算蒙皮、形变和材质顶点位移，颜色、深度、阴影和运动向量会共用线宽。已展开的线段支持在运行时调整宽度并复用 GPU 几何。 [可调线宽示例](../examples/puzzle3d/wide_lines.xr)
+
+视口的点选、命中列表和框选会使用点和线的屏幕覆盖范围。点命中返回中心位置，线命中返回中心线上对应的位置以及透视正确插值的 UV。布局视口使用实际渲染纹理尺寸，显式传入视口尺寸的 `Scene3D.hit-camera` 系列按该坐标空间计算覆盖。世界射线、网格碰撞、基于面积的粒子发射和光照贴图烘焙使用三角面。 [点线拾取示例](../examples/puzzle3d/raster_picking.xr)`auto-lod` 简化三角面时保留原来的点和线。VS Code 悬停 `@mesh-url` 可以看到各 glTF 图元模式的分段数量。 [点、线和三角面混合示例](../examples/puzzle3d/primitive_modes.xr)
+
+#### 自定义网格
+
+`geometry` 记录也可声明 `vertices: [Vertex]` 、可选的 `indices: [int]` 和 `topology: string`，直接绑定应用生成的顶点与索引。两张表都为空时，该行可以使用自己的 `mesh` 或作为只提供变换的节点。
 
 ```xr
 struct Vertex {
@@ -935,22 +947,45 @@ struct Vertex {
     u1: float, v1: float, color: color,
 }
 struct MeshSubset { offset: int, count: int, name: string }
-struct MeshData { vertices: [Vertex], indices: [int], subsets: [MeshSubset] }
+struct MeshData { vertices: [Vertex], indices: [int], topology: string, subsets: [MeshSubset] }
 ```
 
-顶点必须声明 `position`。省略 `normal` 或设置零向量时，运行时根据共享顶点相邻的三角形生成面积加权法线。`u`、`v` 默认为 0。`u1`、`v1` 可为使用第二组 UV 的材质贴图提供坐标，省略时沿用第一组的对应分量。顶点色默认白色。索引从 0 开始，每三个索引组成一个三角形，正面按照逆时针绕序定义。省略索引表或传空表时，按每三行顶点直接生成一个三角形。
+顶点必须声明 `position`。省略 `normal` 或设置零向量时，运行时根据共享顶点相邻的三角形生成面积加权法线。`u`、`v` 默认为 0。`u1`、`v1` 可为使用第二组 UV 的材质贴图提供坐标，省略时沿用第一组的对应分量。顶点色默认白色。索引从 0 开始。省略索引表或传空表时，按顶点顺序组装图元。三角形正面按逆时针绕序定义。点和线省略法线时采用局部 +Z 方向。
 
-可选的 `subsets` 表为连续的三角形指定材质槽。例如 `MeshSubset { offset: 6, count: 9, name: "trim" }` 将从第 6 个索引开始的三个三角形交给 `trim`。无索引表时，范围直接按顶点计算。`offset` 和 `count` 都须为 3 的倍数，范围不得重叠或越界，每张表最多 256 段。未分配部分使用 `surface`。同名分段共用材质，连续的同名分段合并绘制。按名称或 `#N` 从 `material-slots` 选择材质，数字按槽位第一次出现的三角顺序编号。VS Code 可以从同一记录里的分段字面量补全槽名。
+| `topology` | 元素如何组成图元 |
+| --- | --- |
+| `"triangles"` 或空字符串 | 每三个元素组成一个三角形。省略字段时采用此模式。 |
+| `"triangle-strip"` | 每三个相邻元素组成一个三角形，绕序交替调整。 |
+| `"triangle-fan"` | 每个三角形共享第一个元素。 |
+| `"points"` | 每个元素绘制一个点。 |
+| `"lines"` | 每两个元素绘制一条独立线段。 |
+| `"line-strip"` | 依次连接相邻元素。 |
+| `"line-loop"` | 依次连接相邻元素，再连接末尾和开头。 |
 
-修改分段会更新绘制范围和逐槽透明裁切的拾取行为，并继续复用 GPU 顶点缓冲。非法范围会跳过该网格，修复后自动恢复。 [多材质分段示例](../examples/puzzle3d/mesh_subsets.xr)
+`topology` 可绑定到属性并在运行中切换。VS Code 会补全可用的字符串值。 [动态拓扑示例](../examples/puzzle3d/authored_topology.xr)
 
-每个网格最多 60,000 个顶点和 180,000 个索引。位置和 UV 值的绝对值上限为 10,000。越界索引、不完整或退化的三角形会让这一行暂时跳过绘制和查询，修复数据后会恢复。用 `Model.set` 修改顶点表或索引表可直接更新绘制、阴影、拾取和球体扫掠。外层物体列表可保持原有行身份，相同顶点和索引数据共享准备好的网格。 [可编辑三角网格示例](../examples/puzzle3d/authored_mesh.xr)
+可选的 `subsets` 表为连续图元指定材质槽。例如 `MeshSubset { offset: 6, count: 9, name: "trim" }` 将从第 6 个索引开始的三个三角形交给 `trim`。无索引表时，范围直接按顶点计算。范围不得重叠或越界，每张表最多 256 段。未分配部分使用 `surface`。每段都须包含完整的图元。例如独立三角形要求每段长度为 3 的倍数，独立线段要求每段长度为偶数。条带和扇面从每段开头重新组装，闭合折线在本段内闭合。相邻同名分段可合并绘制，保留各段的连接方式。按名称或 `#N` 从 `material-slots` 选择材质，数字按槽位第一次出现的顺序编号。VS Code 可以从同一记录里的分段字面量补全槽名。
+
+修改材质槽名称会复用 GPU 顶点缓冲。更新条带、闭合折线或扇面的分段边界会重新组装图元。非法范围会跳过该网格，修复后自动恢复。 [多材质分段示例](../examples/puzzle3d/mesh_subsets.xr)
+
+每个网格最多 60,000 个源顶点和 180,000 个索引，展开后的顶点引用上限也是 180,000。位置和 UV 值的绝对值上限为 10,000。未知拓扑、越界索引、不完整的分段或退化三角形会让这一行暂时跳过绘制和查询，修复数据后会恢复。用 `Model.set` 修改顶点表或索引表可直接更新绘制、阴影、拾取和球体扫掠。外层物体列表可保持原有行身份，相同顶点和索引数据共享准备好的网格。 [可编辑三角网格示例](../examples/puzzle3d/authored_mesh.xr)
 
 记录可以添加 `parent: string`、`visible: bool` 和 `pivot-x`、`pivot-y`、`pivot-z` 三个 `float` 字段。父节点用同一列表里的唯一 `id` 引用，空父引用表示根节点。写 `mesh: ""` 可以创建只提供变换的节点，例如先定义 `id: "hinge"` 的门轴，再在门的记录里设置 `parent: "hinge"`。父节点可以在子节点之后声明。子节点的位置、旋转和缩放都相对父节点，局部枢轴会映射到该行的 `x`、`y`、`z`。省略这些可选字段时，父引用为空、可见、枢轴为原点。
 
 父节点隐藏、父引用缺失或有歧义、或者链路形成循环时，对应子树会从绘制、投影和拾取中跳过。多级旋转和非均匀缩放按仿射变换合成，拾取与光照使用同一世界坐标。相机绕视和灯光更新会复用场景几何未变的实例缓冲区。
 
-`@mesh-url` 以声明所在的 `.xr` 文件为基准，接收 glTF 2.0 的 `.glb` 或 `.gltf`。导入器读取默认场景的节点变换、三角网格和每个图元的底色材质。底色由 glTF 的 `baseColorFactor`、顶点色、PNG/JPEG 底色纹理和记录的 `color` 相乘。保留模型原底色时可将 `color` 设为白色。纹理支持内嵌数据和相对文件、重复与镜像寻址，以及最邻近和线性采样。当前使用纹理的基础层。
+`@mesh-url` 以声明所在的 `.xr` 文件为基准，接收 glTF 2.0 的 `.glb` 或 `.gltf`。导入器读取默认场景的节点变换、网格和每个图元的底色材质。底色由 glTF 的 `baseColorFactor`、顶点色、底色纹理和记录的 `color` 相乘。保留模型原底色时可将 `color` 设为白色。纹理支持内嵌数据和相对文件、重复与镜像寻址，以及最邻近、线性和 mip 采样。
+
+glTF 材质贴图支持 PNG、JPEG 和 `EXT_texture_webp`。纹理可读取外部 WebP、内联数据 URI 或 GLB 的缓冲视图。指定 WebP 时可省去 PNG/JPEG 回退文件的读取和构建依赖。静态 WebP 保留透明度，沿用材质槽的 sRGB 或线性采样规则和 mip 生成。VS Code 悬停 `@mesh-url` 可查看资产是否声明此扩展。 [贴图对照示例](../examples/puzzle3d/webp_textures.xr) · [EXT_texture_webp 规范](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Vendor/EXT_texture_webp)
+
+`KHR_texture_basisu` 支持外部、内联及 GLB 内嵌的 Basis KTX2 贴图。可以使用 ETC1S/BasisLZ，或原始和 Zstandard 封装的 UASTC LDR。材质槽会检查 sRGB 颜色和线性数据的编码，透明度和文件自带的 mip 层随资源保留。多个备选编码并存时优先选择 Basis，构建只依赖实际读取的文件。VS Code 悬停 `@mesh-url` 会显示扩展。 [Basis 对照示例](../examples/puzzle3d/basis_textures.xr) · [KHR_texture_basisu 规范](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_texture_basisu)
+
+声明 `KHR_mesh_quantization` 的 glTF 可用 8 位或 16 位整数存储位置、法线、切线、UV 和相关形变通道，支持规范允许的归一化、非归一化和稀疏访问器。解码沿用节点变换、蒙皮逆绑定矩阵和 `KHR_texture_transform`。AOT 嵌入准备后的网格，解释器从原始资产准备同样的几何。VS Code 悬停 `@mesh-url` 会显示资产的量化扩展。 [量化与浮点对照示例](../examples/puzzle3d/quantized_mesh.xr) · [Khronos 规范](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_mesh_quantization)
+
+
+glTF 缓冲视图也可用 `EXT_meshopt_compression` 或 `KHR_meshopt_compression` 候选规范编码。导入器支持属性、三角索引和通用索引序列，以及八面体、四元数、指数和 KHR 颜色过滤器。压缩的动画流与顶点流使用同一解码入口。资源依赖只包含实际读取的缓冲，带压缩数据的缓冲视图可跳过未压缩副本。 [压缩与原始资产对照](../examples/puzzle3d/meshopt_assets.xr) · [EXT 规范](https://raw.githubusercontent.com/KhronosGroup/glTF/main/extensions/2.0/Vendor/EXT_meshopt_compression/README.md) · [KHR 候选规范](https://raw.githubusercontent.com/KhronosGroup/glTF/main/extensions/2.0/Khronos/KHR_meshopt_compression/README.md)
+
+`KHR_draco_mesh_compression` 可导入 GLB 或外部缓冲中的三角网格。三角带按解码后的三角面顺序展开，压缩属性与未压缩的权重、形变或动画数据可以共存。独立存放的回退缓冲只在其他访问器仍引用它时读取。AOT 嵌入准备后的网格，解释器和运行时网格加载器使用同一份解码逻辑。VS Code 悬停 `@mesh-url` 可查看资产声明的 Draco 扩展。 [蒙皮与形变对照](../examples/puzzle3d/draco_assets.xr) · [Khronos 规范](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_draco_mesh_compression)
 
 用 `@mesh-url("models/ridge.png")` 可以从 8 位或 16 位灰度 PNG 生成高度图地形。每个像素提供一个线性高度样本，黑色对应局部 Y = 0，白色对应 Y = 1。图片从左到右映射到局部 X，从上到下映射到局部 Z。地形在 XZ 平面内居中，基础宽深各为 1，用模型的 `scale-x`、`scale-y`、`scale-z` 设置实际范围。
 
@@ -978,7 +1013,7 @@ glTF 材质使用金属度与粗糙度模型。导入器读取 `metallicFactor`�
 
 `mesh: @mesh-url("models/concave-panel.obj")` 可导入静态 Wavefront 网格。顶点位置、UV 和法线可用不同索引，也可使用相对当前列表末尾的负索引。平面多边形可包含凹角，每面最多 64 个顶点。导入器保持面绕序，并三角化后交给绘制、阴影和拾取。缺失法线时沿用 `s` 平滑组，关闭平滑的面使用面法线。UV 的 V 轴转换成纹理的从上到下坐标。
 
-`mtllib` 相对于 OBJ 文件，`map_Kd` 相对于定义它的 MTL 文件。支持 `Kd`、`Ke`、`Ns`、`d`、`Tr`、`illum 0` 和 PNG/JPEG 底色贴图。贴图的 `-clamp`、`-s` 和 `-o` 分别设置边缘寻址、缩放和偏移。相同贴图共享已准备的像素和 mip 链。 `usemtl Trim` 可用 `material-slots` 的 `slot: "Trim"` 覆盖，编号按首次使用顺序分配，未指定材质的面使用 `#default`。
+`mtllib` 相对于 OBJ 文件，`map_Kd` 相对于定义它的 MTL 文件。支持 `Kd`、`Ke`、`Ns`、`d`、`Tr`、`illum 0` 和 PNG、JPEG、WebP 底色贴图。贴图的 `-clamp`、`-s` 和 `-o` 分别设置边缘寻址、缩放和偏移。相同贴图共享已准备的像素和 mip 链。 `usemtl Trim` 可用 `material-slots` 的 `slot: "Trim"` 覆盖，编号按首次使用顺序分配，未指定材质的面使用 `#default`。
 
 Bazel 的 `xr_ui_library(assets = [...])` 要声明 OBJ、MTL 和实际使用的贴图。AOT 嵌入准备好的网格，解释器加载同一资产，预览会追踪这些文件的变化。OBJ 也支持 `lightmap-uv` 和 `auto-lod`。VS Code 可以补全文件与材质槽，并显示源顶点和面数。打开示例预览或运行 `bazel run //examples/puzzle3d:play_wavefront`，比较穿过凹口与命中前板的距离，以及材质覆盖。 [OBJ 示例](../examples/puzzle3d/wavefront.xr)
 
@@ -1231,6 +1266,22 @@ WGSL 用 `material_texture(index, uv)` 取得直通 alpha 和线性 RGB。索引
 
 glTF 的 `KHR_materials_anisotropy` 会保留强度、旋转和方向贴图。glTF 文件里的旋转单位为弧度。直射光使用各向异性 GGX，环境探针和屏幕空间反射用偏转法线近似反射方向，保留原有的粗糙度预过滤。调节参数时复用网格、贴图和环境探针。 [拉丝金属示例](../examples/puzzle3d/material_anisotropy.xr)
 
+#### 薄膜虹彩
+
+金属度与粗糙度材质可用 `iridescence-factor` 控制薄膜干涉强度，范围 0 到 1，默认 0。用 `iridescence-index-of-refraction` 设置薄膜折射率，默认 1.3，最小 1。用 `iridescence-thickness-minimum` 和 `iridescence-thickness-maximum` 设置厚度两端，单位为纳米，默认 100 和 400。
+
+`iridescence-map` 默认读取线性 R 通道并乘以强度。`iridescence-thickness-map` 默认读取线性 G 通道，在两端之间插值。可以用 `iridescence-channel` 和 `iridescence-thickness-channel` 改选通道。省略厚度贴图时使用最大值，厚度为 0 时沿用底层材质的菲涅耳反射。两张贴图支持独立的坐标和采样设置。
+
+glTF 导入保留 `KHR_materials_iridescence`，也支持把该扩展声明为必需。直射光按半角计算薄膜反射，环境光使用视角相关的菲涅耳近似，并沿用探针的粗糙度预过滤。`f0` 诊断视图可查看正视时的反射颜色。 [材质调试示例](../examples/puzzle3d/material_debug.xr)
+
+#### 织物光泽
+
+用 `sheen-color: color` 和 `sheen-roughness: float` 为金属度与粗糙度材质加入织物光泽。颜色默认为黑色，光泽粗糙度范围为 0 到 1，默认值为 0。它独立于基材粗糙度，控制天鹅绒等材质在斜视时亮边的宽度。
+
+`sheen-color-map` 读取 sRGB 的 RGB 通道并乘以光泽颜色。`sheen-roughness-map` 默认读取线性 A 通道并乘以光泽粗糙度，可用 `sheen-roughness-channel` 选用 R、G 或 B。两张贴图可以使用不同的 UV、变换和采样设置。
+
+glTF 导入会保留 `KHR_materials_sheen`。直射光使用 Charlie 分布，环境光复用现有预过滤探针来近似织物光泽。着色会按光泽层的方向反照率调整基材反射。与虹彩或清漆合用时，光泽层在带虹彩的基材上方，清漆位于最外层。 [织物示例](../examples/puzzle3d/material_sheen.xr)
+
 #### 菲涅耳反射
 
 菲涅耳曲线决定正视表面和斜看表面时的反射比例。底层材质使用下表字段，清漆层使用对应的 `clearcoat-fresnel-*` 字段，可以分别调节两层。
@@ -1406,6 +1457,10 @@ struct Palette {
 
 `alpha-mode` 独立决定覆盖率。可用 `"blend"` 保留材质和贴图的半透明，`"mask"` 保留通过阈值的片元，二者的拾取规则与绘制一致。使用滤色或叠底的网格参与透明排序和深度测试。当它们在视锥内时，同一视口的透明网格按深度合成，模型粒子仍可使用加权透明。编译器将修改混合方式标记为绘制更新，GPU 网格与实例数据可继续复用。 [材质混合示例](../examples/puzzle3d/material_blend.xr)
 
+金属度与粗糙度工作流中的 `specular-tint: float` 范围为 0 到 1，默认 0。它用材质的线性底色给介电镜面反射着色，并与显式的 `specular-color` 相乘。金属部分继续使用自己的反射颜色。
+
+`emissive-factor: vector3d` 直接提供线性 RGB 发光值，可以表达高于 1 的通道强度。它与 `emissive-strength` 和发光贴图相乘，并供实时着色和光照烘焙采用。同一个记录内，线性向量优先于 `emissive-color`。后续材质槽可以用任一字段替换发光颜色。 [材质调试示例](../examples/puzzle3d/material_debug.xr)
+
 #### 材质面剔除
 
 材质记录可以声明 `cull-mode: string`。`"back"` 剔除背面，`"front"` 剔除正面，`"none"` 保留双面。颜色、深度、阴影、运动向量、射线拾取和框选使用同一规则。背面命中返回朝向射线的法线。
@@ -1427,7 +1482,13 @@ struct Palette {
 
 #### 材质贴图
 
-`@texture-url("models/tile.png")` 生成 3D 贴图资源键。支持 PNG 和 JPEG，路径相对声明所在的 `.xr` 文件。Bazel 用 `xr_ui_library(assets = [...])` 声明资源。AOT 会嵌入预处理的像素和 mip 层，解释器也在加载场景资源时完成同样的处理。底色、发光和高光颜色作为 sRGB 采样，其余贴图作为线性数据采样。
+`@texture-url("models/tile.png")` 生成 3D 贴图资源键。支持 PNG、JPEG 和静态 WebP，路径相对声明所在的 `.xr` 文件。Bazel 用 `xr_ui_library(assets = [...])` 声明资源。AOT 会嵌入预处理的像素和 mip 层，解释器也在加载场景资源时完成同样的处理。底色、发光和高光颜色作为 sRGB 采样，其余贴图作为线性数据采样。
+
+`@texture-url("models/tile.ktx2")` 也接受带原生 GPU 压缩块的二维贴图。支持 BC1、BC2、BC3、BC4、BC5、BC7 的非有符号 LDR 格式，以及 ETC2 RGB/RGB-A1/RGBA8 和 ASTC LDR。容器使用原始块或 ZLIB，二维坐标沿右、下方向，Alpha 保持直通。作者提供的 mip 层会原样保留，设置 `mip-filter: "nearest"` 或 `"linear"` 后可用于缩小采样。
+
+AOT 嵌入校验后的压缩块。设备支持对应格式和块对齐条件时直接上传压缩数据，其他设备按需解码成 RGBA。需要访问像素的功能（例如 CPU 射线拾取的透明度采样）也可按需读取解码结果。常规材质贴图与着色器输入共用上传缓存。 [压缩贴图示例](../examples/puzzle3d/block_textures.xr) · [KTX2 规范](https://registry.khronos.org/KTX/specs/2.0/ktxspec.v2.html)
+
+`@texture-url` 也可以直接引用 Basis KTX2。AOT 嵌入原始资源，解释器直接读取同一格式。首次绘制时按设备能力转码成 ASTC、BC7 或 ETC2，后续绘制复用 GPU 贴图。UASTC 数据贴图在缺少 ASTC 和 BC7 时用 RGBA 保留精度。CPU 侧只有在需要透明度采样、烘焙或 GPU 回退时才解码像素。 [Basis 贴图示例](../examples/puzzle3d/basis_textures.xr)
 
 在材质记录中可以声明下面任意一种贴图字段。每个字段可以直接接收 `string` 资源键，也可以使用具备 `source: string` 的自定义记录。省略字段时继承 glTF 上的贴图。空资源键清除该贴图。
 
@@ -1619,6 +1680,33 @@ glTF 材质默认剔除背面。`doubleSided` 使背面参与绘制和拾取，�
 透视相机的 `camera-fov` 以度为单位，默认 45°。`camera-fov-axis: "vertical"` 固定垂直视角，按视口宽高比调整横向范围。这也是省略该字段或传入空字符串时的行为。设为 `"horizontal"` 时固定水平视角，按视口宽高比调整纵向范围。其他字符串使该透视相机无效。绘制、投影、拾取、裁剪和 LOD 使用同一个取景范围。在 [示例](../examples/puzzle3d/off_axis_camera.xr) 的 `FieldOfViewDemo` 中可切换视角轴和画幅，原生窗口用 `bazel run //examples/puzzle3d:play_off_axis_camera -- --fov-axis` 启动。
 
 正交相机通过 `camera-height` 设定垂直覆盖的世界单位，默认 10。可选的 `camera-near` 和 `camera-far` 裁剪距离默认分别为 0.1 和 100。空相机名使用 `camera-yaw`、`camera-pitch` 和 `camera-distance` 控制的绕视镜头。显式相机找不到、被隐藏或投影参数无效时，视口显示背景且拾取返回空字符串。
+
+#### 绕视与飞行控制器
+
+相机模块导出 `OrbitCameraController` 和 `FlyCameraController`。把控制器放在对应视口上方，尺寸与视口相同。控制器提供 `camera-model: scenemodel3d`、`camera-id: string` 和当前相机位置与朝向。合并相机模型和原场景后，投影、绘制和拾取使用同一个镜头。控制器的 `tapped(point: point2d)` 可以直接传给视口的 `pick` 或 `hit`。
+
+```xr
+import { OrbitCameraController } from "camera3d.xr";
+
+// 这两个元素放在同一个组件内。
+view := SceneView3D {
+    width: 380px; height: 240px;
+    model <- Scene3D.combine(root.world, orbit.camera-model);
+    camera <- orbit.camera-id;
+}
+orbit := OrbitCameraController {
+    width <- view.layout-width; height <- view.layout-height;
+    pivot: Point3D.new(0, 1, 0);
+    distance: 6;
+    tapped(point) => { root.selected = view.pick(point); }
+}
+```
+
+`OrbitCameraController` 的主键与单指拖动围绕 `pivot` 旋转，滚轮和双指捏合缩放。中键、右键、Ctrl/Command 加主键拖动及双指中心移动用于平移。可绑定最小和最大距离、旋转灵敏度、方向反转、缩放速度与自动裁剪。
+
+`FlyCameraController` 点击后接收键盘。用 WASD 或方向键前后移动和横移，R/F 或 PageUp/PageDown 控制升降，Shift 加速，主键拖动调整朝向。移动按帧间隔计算，静止时不请求持续绘制。松开按键或失焦即停止。两个控制器均可用 `active: false` 停用输入，当前相机姿态仍可读取。
+
+模块源码随 `xrack` crate 提供，也可用 `xrackc crates/xrack/ui/camera3d.xr --emit package --output dist/camera3d` 生成模块目录。仓库里的 Bazel 源文件标签是 `//crates/xrack:ui/camera3d.xr`。在 VS Code 打开示例即可预览，原生窗口用 `bazel run //examples/puzzle3d:play_camera_controls`。 [模块源码](../crates/xrack/ui/camera3d.xr) · [双视口示例](../examples/puzzle3d/camera_controls.xr)
 
 相机可用 `camera-look-at: string` 跟随同一模型内的可见节点。目标 ID 为空、缺失或隐藏时，使用可选的 `camera-look-at-point: point3d` 作为世界坐标目标。目标缺失、无效或与相机重合时沿用声明的旋转。`camera-up: vector3d` 指定世界向上方向，可以控制俯视地图和镜头滚转。省略时使用相机声明姿态的 +Y。在俯视或仰视的极点，优先用声明姿态的右向保持取景方向。场景准备阶段解析相机朝向，渲染、裁剪、投影和拾取复用该姿态。 [相机跟踪示例](../examples/puzzle3d/camera_aim.xr)
 
@@ -1963,7 +2051,7 @@ WGSL 通过 `scene_buffer_color(index, uv)` 读取颜色，通过 `scene_buffer_
 
 **文件贴图和实时二维输入**
 
-`buffers` 的记录可以通过 `texture: string` 绑定 `@texture-url` 读入的 PNG 或 JPEG，也可以通过 `item: string` 引用当前窗口里声明了 `texture-source` 的二维矩形。文件贴图用 `color-space: "srgb"`（默认）解释颜色，也可用 `"linear"` 按线性数据读取。在 Bazel 中将文件加入 `xr_ui_library` 的资源清单。
+`buffers` 的记录可以通过 `texture: string` 绑定 `@texture-url` 读入的 PNG、JPEG 或静态 WebP，也可以通过 `item: string` 引用当前窗口里声明了 `texture-source` 的二维矩形。文件贴图用 `color-space: "srgb"`（默认）解释颜色，也可用 `"linear"` 按线性数据读取。在 Bazel 中将文件加入 `xr_ui_library` 的资源清单。
 
 ```xr
 struct TextureInput { texture: string, item: string, color-space: string, enabled: bool }
@@ -2456,6 +2544,34 @@ struct SceneLight3D {
 
 开启 `environment-skybox` 后，可用 `skybox-source: @environment-url("models/cube.hdr")` 指定独立 HDR 背景，或用 `skybox-sky` 绑定同类型的程序化天空记录。启用的程序化背景优先，其次是 HDR 背景，最后沿用受光环境。背景输入独立于全局环境光和光照烘焙。采集场景背景的实时局部探针会看到当前天空盒。
 
+#### WGSL 天空
+
+天空记录可以设置 `shader: @sky-shader-url("effects/sky.wgsl")` 和 `shader-parameters: vector3d`。WGSL 文件定义 `scene_sky(direction: vec3<f32>, parameters: vec3<f32>) -> vec3<f32>`，输入为归一化方向和记录参数，返回场景线性 HDR RGB。路径相对于声明它的 `.xr` 文件，并在 Bazel 的 `assets` 中声明。
+
+绑定 `environment-sky` 可用天空照亮漫反射表面和金属反射。开启 `environment-skybox` 可显示同一张立方体，也可以用 `skybox-sky` 单独指定背景。只显示无模糊背景时，GPU 只生成基础立方体。IBL 的粗糙度 mip 按 `ibl-samples` 过滤，默认 32，上限 1024。天空记录的 `resolution` 使用 32 到 256 的 2 次幂。相机移动可复用已有立方体。CPU 离线光照烘焙使用 HDR 图像或内置解析天空。 [WGSL 天空示例](../examples/puzzle3d/program_sky.xr)
+
+`ibl-render-frames: int` 默认为 0，表示在同一帧完成 IBL。正数将样本分摊到指定数量的帧，最多为样本数。随后还需一帧做归一化和漫反射计算。构建期间使用上一次完成的环境光，无模糊的天空背景可以即时更新。连续编辑时，当前任务完成后再采用最新参数。 [可编程天空示例](../examples/puzzle3d/program_sky.xr)
+
+用 `skybox-mode: string` 选择可见背景的求值方式。默认 `"cubemap"` 采样天空立方体，并支持 `skybox-blur`。`"screen-space-full"`、`"screen-space-half"` 和 `"screen-space-quarter"` 按视口光栅分辨率的全尺寸、每轴一半或每轴四分之一求值。低分辨率背景由 GPU 线性放大。屏幕空间背景沿用天空方向、亮度和雾的设置，IBL 继续使用独立的立方体。只显示屏幕空间背景时，天空着色器直接生成 2D HDR 图像。 [天空模式示例](../examples/puzzle3d/program_sky.xr)
+
+天空记录的 `shader-textures` 接受前四条采样记录。用 `texture: @texture-url(...)` 绑定 PNG、JPEG、静态 WebP 或 KTX/KTX2 立方体，也可用 `data` 绑定 `texturedata2d` 或 `texturedata3d`。采样记录沿用 `color-space`、`enabled`、`filter`、`min-filter`、`mag-filter`、`mip-filter`、`wrap-u` 和 `wrap-v`。二维贴图和体数据的颜色默认按 sRGB 解码。三维纹理的 W 轴使用边缘钳位。
+
+WGSL 可以用 `sky_texture(index, uv)`、`sky_cubemap(index, direction)` 和 `sky_volume(index, uvw)` 读取三种资源。索引从 0 开始，`_lod` 版本在最后接收 mip 级别。用 `sky_has_texture`、`sky_has_cubemap` 或 `sky_has_volume` 查询对应类型的槽位。关闭一个输入会保留其索引，读取空槽或维度不同的槽返回零向量。屏幕空间背景和 IBL 共用纹理上传。 [纹理天空示例](../examples/puzzle3d/program_sky.xr)
+
+`shader-uniforms` 可以绑定一个命名记录。WGSL 声明 `struct SkyUniforms` 后，用 `sky_uniforms()` 读取这些字段。字段按名称匹配，`.xr` 名称中的连字符对应 WGSL 的下划线。编译器生成 GPU uniform 布局，修改值时复用着色器管线。记录缺少某个字段或字段值与 WGSL 类型不匹配时，该字段采用零值。
+
+| `.xr` 字段类型 | WGSL 字段类型 |
+| --- | --- |
+| `bool` | `bool` |
+| `int` | `i32`、`u32` 或 `f32` |
+| `float`、`length`、`percent` | `f32` |
+| `point2d`、`vector2d` | `vec2<f32>` |
+| `point3d`、`vector3d` | `vec3<f32>` |
+| `color`、`quaternion3d` | `vec4<f32>` |
+| `transform2d` | `mat3x3<f32>` |
+
+颜色以线性 RGB 与原始 alpha 传入，四元数按 XYZW 排列，二维变换按齐次矩阵列顺序传入。 [天空参数示例](/Users/sunjiahe/coding/xrack/examples/puzzle3d/program_sky.xr)
+
 `skybox-yaw`、`skybox-pitch`、`skybox-roll` 是角度制的三轴控制，按偏航、俯仰、滚转的顺序把世界方向变换到天空盒局部空间。`skybox-intensity` 为线性强度，范围 0–100。`skybox-blur` 在 0–1 间选择预过滤 mip，默认 0。独立来源的角度默认 0、强度默认 1，沿用受光环境时从该环境继承角度和强度。纯程序化背景在清晰模式下直接求值，开启模糊时会准备反射立方体。 [独立天空盒示例](../examples/puzzle3d/skybox.xr)
 
 `@environment-url` 接受 2:1 等距柱状全景、6:1 的六面横条和 4:3 的横向十字图，文件使用 Radiance RGBE `.hdr`。横条从左到右依次为 `+X -X +Y -Y +Z -Z`。十字图的布局如下。
@@ -2524,7 +2640,7 @@ KTX 与 HDR 走相同的环境资源入口，可绑定到 `environment`、`skybo
 
 `Scene3D.pick-in-rect(objects, yaw, pitch, distance, viewport, start, end, layer-mask?)` 使用绕视相机，`Scene3D.pick-in-rect-camera(objects, camera, viewport, start, end, layer-mask?)` 使用指定相机。`viewport` 是视口的逻辑尺寸，`start` 和 `end` 是本地逻辑像素中的两个角，任意拖动方向均可。矩形会裁到相机有效画面之内，近远裁剪面和层掩码仍然生效。
 
-返回的 `[int]` 是当前场景模型中从 0 开始的行索引，按行顺序排列。一行中的多个 glTF 子网格只计一次，匿名模型也可框选。只要可拾取模型的三角面与框相交就会入选，包括被其他模型遮挡的表面。查询使用当前相机选择的 LOD 和动画姿态，直接计算几何相交。零宽、零高或完全落在画面外的矩形返回空列表。 [框选示例](../examples/puzzle3d/marquee.xr)
+返回的 `[int]` 是当前场景模型中从 0 开始的行索引，按行顺序排列。一行中的多个 glTF 子网格只计一次，匿名模型也可框选。可拾取模型的三角面、点或线与框相交时即入选，包括被其他模型遮挡的几何。查询使用当前相机选择的 LOD 和动画姿态，直接计算几何相交。零宽、零高或完全落在画面外的矩形返回空列表。 [框选示例](../examples/puzzle3d/marquee.xr)
 
 #### 最近表面点
 

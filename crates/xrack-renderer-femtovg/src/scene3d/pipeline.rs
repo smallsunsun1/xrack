@@ -23,7 +23,7 @@ use xrack_runtime::{
         CapturePipelineState, CaptureRenderables, CaptureStencilOp, MATERIAL_DATA_ATTACHMENTS,
         ShaderTextureKinds, write_volume_interface,
     },
-    scene3d::{MeshBlendMode, MeshCullMode, MeshDepthDraw, MeshVertex},
+    scene3d::{MeshBlendMode, MeshCullMode, MeshDepthDraw, MeshTopology, MeshVertex},
 };
 
 use super::deform::{Deformation, DeformationLayouts, SKIN_LAYOUT, shader_source};
@@ -51,6 +51,10 @@ pub(super) enum BinormalSource {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Surface {
+    pub wide_points: bool,
+    pub wide_lines: bool,
+    pub unlit_primitive: bool,
+    pub topology: MeshTopology,
     pub blend: bool,
     pub blend_mode: MeshBlendMode,
     pub depth_draw: MeshDepthDraw,
@@ -58,6 +62,9 @@ pub(super) struct Surface {
     pub separate_surface_maps: bool,
     pub reflection_map: bool,
     pub height_mapped: bool,
+    pub tinted_dielectric: bool,
+    pub iridescent: bool,
+    pub sheen: bool,
     pub vertex_colors: bool,
     pub vertex_masks: bool,
     pub custom_base_fresnel: bool,
@@ -72,10 +79,42 @@ pub(super) struct Surface {
 }
 
 impl Surface {
+    pub(super) fn expanded(self) -> bool {
+        self.wide_points || self.wide_lines
+    }
+
     const fn index(self) -> usize {
         4 * self.vertex_tangents as usize
             + 2 * self.blend as usize
             + matches!(self.cull, MeshCullMode::None) as usize
+    }
+}
+
+pub(super) fn mesh_primitive(
+    topology: MeshTopology,
+    expanded: bool,
+    raster: RasterMode,
+    reverse_winding: bool,
+    cull: MeshCullMode,
+) -> wgpu::PrimitiveState {
+    wgpu::PrimitiveState {
+        topology: match (topology, expanded) {
+            (MeshTopology::Triangles, _) | (_, true) => wgpu::PrimitiveTopology::TriangleList,
+            (MeshTopology::Lines, false) => wgpu::PrimitiveTopology::LineList,
+            (MeshTopology::Points, false) => wgpu::PrimitiveTopology::PointList,
+        },
+        front_face: if reverse_winding && !expanded {
+            wgpu::FrontFace::Cw
+        } else {
+            wgpu::FrontFace::Ccw
+        },
+        cull_mode: if topology == MeshTopology::Triangles {
+            culled_face(cull)
+        } else {
+            None
+        },
+        polygon_mode: raster.polygon_mode(),
+        ..Default::default()
     }
 }
 
@@ -461,16 +500,17 @@ pub(super) struct Pipelines {
     pub panorama: wgpu::BindGroupLayout,
     pub shader_materials: [[Option<wgpu::BindGroupLayout>; 2]; 2],
     pub deformations: DeformationLayouts,
-    layouts: [[wgpu::PipelineLayout; 4]; 2],
+    layouts: [[wgpu::PipelineLayout; 8]; 2],
     shader: wgpu::ShaderModule,
     wire_shader: Option<wgpu::ShaderModule>,
+    line_shaders: HashMap<(Deformation, usize, bool, bool), wgpu::ShaderModule>,
     linked_shaders: [Option<wgpu::ShaderModule>; 4],
     binormal_shaders: [Option<wgpu::ShaderModule>; 6],
     panorama_shaders: [Option<wgpu::ShaderModule>; 12],
     variants: [[Option<wgpu::RenderPipeline>; 64]; 24],
     weighted: [[Option<wgpu::RenderPipeline>; 32]; 24],
     skybox: [Option<wgpu::RenderPipeline>; 48 * FogMode::COUNT],
-    skybox_formats: HashMap<(usize, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    skybox_formats: HashMap<(usize, wgpu::TextureFormat, bool), wgpu::RenderPipeline>,
     specialized: HashMap<VariantKey, wgpu::RenderPipeline>,
     custom: CustomMaterials,
 }
@@ -488,7 +528,7 @@ type VariantKey = (
     MeshDepthDraw,
     MeshCullMode,
     (
-        (bool, bool, bool, bool),
+        (bool, bool, bool, bool, bool, bool, bool),
         bool,
         bool,
         bool,
@@ -499,7 +539,18 @@ type VariantKey = (
         bool,
         RasterMode,
         Option<wgpu::TextureFormat>,
-        (bool, bool, bool, bool, bool, BinormalSource),
+        (
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            BinormalSource,
+            MeshTopology,
+            bool,
+            bool,
+            bool,
+        ),
     ),
 );
 
@@ -518,6 +569,7 @@ struct CustomProgram {
     linked: Option<LinkedSamples>,
     binormals: bool,
     panorama: bool,
+    line_mode: Option<Deformation>,
     module: Option<wgpu::ShaderModule>,
     pipelines: HashMap<VariantKey, wgpu::RenderPipeline>,
 }
@@ -528,7 +580,13 @@ impl CustomMaterials {
         device: &wgpu::Device,
         (source, augment): (Option<&Arc<str>>, Option<&Arc<str>>),
         (slots, augment_slots): ((usize, ShaderTextureKinds), usize),
-        (wireframe, linked, binormals, panorama): (bool, Option<LinkedSamples>, bool, bool),
+        (wireframe, linked, binormals, panorama, line_mode): (
+            bool,
+            Option<LinkedSamples>,
+            bool,
+            bool,
+            Option<Deformation>,
+        ),
         key: VariantKey,
         create: impl Fn(Option<&wgpu::ShaderModule>, bool) -> wgpu::RenderPipeline,
     ) -> Option<&wgpu::RenderPipeline> {
@@ -547,7 +605,7 @@ impl CustomMaterials {
                     device,
                     wgsl,
                     slots,
-                    (wireframe, linked, binormals, panorama),
+                    (wireframe, linked, binormals, panorama, line_mode),
                     (augment, bindings),
                 )
             })
@@ -559,6 +617,7 @@ impl CustomMaterials {
                 && program.linked == linked
                 && program.binormals == binormals
                 && program.panorama == panorama
+                && program.line_mode == line_mode
                 && program.source.as_ref() == source
                 && program.augment.as_ref() == augment
         });
@@ -574,6 +633,7 @@ impl CustomMaterials {
                     linked,
                     binormals,
                     panorama,
+                    line_mode,
                     module: load(augment.and_then(|source| capture_augment_parts(source))),
                     pipelines: HashMap::new(),
                 });
@@ -789,7 +849,13 @@ fn mesh_shader(
     device: &wgpu::Device,
     custom: &str,
     (slots, kinds): (usize, ShaderTextureKinds),
-    (wireframe, linked, binormals, panorama): (bool, Option<LinkedSamples>, bool, bool),
+    (wireframe, linked, binormals, panorama, line_mode): (
+        bool,
+        Option<LinkedSamples>,
+        bool,
+        bool,
+        Option<Deformation>,
+    ),
     (augment, augment_slots): (Option<(&str, &str)>, usize),
 ) -> wgpu::ShaderModule {
     let standard = concat!(
@@ -798,6 +864,7 @@ fn mesh_shader(
         include_str!("scene.wgsl")
     );
     let sky_radiance = include_str!("sky_radiance.wgsl");
+    let sky_ray = xrack_runtime::scene3d::SKY_RAY_WGSL;
     let scene = if wireframe {
         std::borrow::Cow::Owned(wireframe::mesh(standard))
     } else {
@@ -853,6 +920,11 @@ fn mesh_shader(
     } else {
         scene
     };
+    let scene = if let Some(mode) = line_mode {
+        std::borrow::Cow::Owned(super::primitive_raster::line_shader(&scene, mode))
+    } else {
+        scene
+    };
     let textures = if slots == 0 {
         VALIDATION_TEXTURES.to_owned()
     } else {
@@ -893,7 +965,7 @@ fn mesh_shader(
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("XRack 3D mesh shader"),
         source: shader_source(&format!(
-            "{directives}\n{custom}\n{augment}\n{INTERFACE}\n{CAPTURE_POSITION}\n{CAPTURE_DEPTH_READ}\n{texture_sampling}\n{textures}\n{augment_textures}\n{VERTEX_APPLICATION}\n{sky_radiance}\n{}\n{}\n{}\n{}\n{}",
+            "{directives}\n{custom}\n{augment}\n{INTERFACE}\n{CAPTURE_POSITION}\n{CAPTURE_DEPTH_READ}\n{texture_sampling}\n{textures}\n{augment_textures}\n{VERTEX_APPLICATION}\n{sky_radiance}\n{sky_ray}\n{}\n{}\n{}\n{}\n{}",
             include_str!("screen_packing.wgsl"),
             include_str!("volumetric_fog.wgsl"),
             include_str!("volumetric_fog_profile.wgsl"),
@@ -1175,7 +1247,8 @@ impl Pipelines {
         let deformations = DeformationLayouts::new(device);
         let layouts = std::array::from_fn(|coat| {
             std::array::from_fn(|index| {
-                let extra = deformations.get(Deformation::ALL[index]);
+                let (mode, wide) = Deformation::at_pipeline(index);
+                let extra = deformations.get_for_line(mode, wide);
                 let bind_groups = [
                     Some(&globals),
                     Some(&materials[coat]),
@@ -1193,7 +1266,7 @@ impl Pipelines {
             device,
             &MaterialHooks::default().prepare(""),
             (0, ShaderTextureKinds::PLANAR),
-            (false, None, false, false),
+            (false, None, false, false, None),
             (None, 0),
         );
         Self {
@@ -1206,6 +1279,7 @@ impl Pipelines {
             layouts,
             shader,
             wire_shader: None,
+            line_shaders: HashMap::new(),
             linked_shaders: Default::default(),
             binormal_shaders: Default::default(),
             panorama_shaders: Default::default(),
@@ -1255,10 +1329,11 @@ impl Pipelines {
         &mut self,
         device: &wgpu::Device,
         surface: Surface,
-        output: ColorOutput,
+        mut output: ColorOutput,
         deformation: Deformation,
         custom: Option<MaterialProgram<'_>>,
     ) -> &wgpu::RenderPipeline {
+        output.raster = output.raster.for_topology(surface.topology);
         let coated = usize::from(surface.clearcoat);
         let mode = usize::from(output.multisampling)
             + 2 * coated
@@ -1314,7 +1389,28 @@ impl Pipelines {
         let wireframe = output.raster == RasterMode::ShaderLine;
         let linked_samples =
             linked.then(|| LinkedSamples::from_multisampling(output.multisampling));
-        let shader = if surface.reflection_map {
+        let line_mode = surface.wide_lines.then_some(deformation);
+        let shader = if let Some(line_mode) = line_mode {
+            let binormals = surface.binormals != BinormalSource::Derived;
+            let linked_slot = linked_samples.map_or(0, |samples| 1 + samples.slot());
+            self.line_shaders
+                .entry((line_mode, linked_slot, binormals, surface.reflection_map))
+                .or_insert_with(|| {
+                    mesh_shader(
+                        device,
+                        &MaterialHooks::default().prepare(""),
+                        (0, ShaderTextureKinds::PLANAR),
+                        (
+                            false,
+                            linked_samples,
+                            binormals,
+                            surface.reflection_map,
+                            Some(line_mode),
+                        ),
+                        (None, 0),
+                    )
+                })
+        } else if surface.reflection_map {
             let binormals = surface.binormals != BinormalSource::Derived;
             let index = 6 * usize::from(binormals)
                 + usize::from(wireframe)
@@ -1324,7 +1420,7 @@ impl Pipelines {
                     device,
                     &MaterialHooks::default().prepare(""),
                     (0, ShaderTextureKinds::PLANAR),
-                    (wireframe, linked_samples, binormals, true),
+                    (wireframe, linked_samples, binormals, true, None),
                     (None, 0),
                 )
             })
@@ -1336,7 +1432,7 @@ impl Pipelines {
                     device,
                     &MaterialHooks::default().prepare(""),
                     (0, ShaderTextureKinds::PLANAR),
-                    (wireframe, linked_samples, true, false),
+                    (wireframe, linked_samples, true, false, None),
                     (None, 0),
                 )
             })
@@ -1347,7 +1443,7 @@ impl Pipelines {
                         device,
                         &MaterialHooks::default().prepare(""),
                         (0, ShaderTextureKinds::PLANAR),
-                        (wireframe, Some(samples), false, false),
+                        (wireframe, Some(samples), false, false, None),
                         (None, 0),
                     )
                 },
@@ -1358,7 +1454,7 @@ impl Pipelines {
                     device,
                     &MaterialHooks::default().prepare(""),
                     (0, ShaderTextureKinds::PLANAR),
-                    (true, None, false, false),
+                    (true, None, false, false, None),
                     (None, 0),
                 )
             })
@@ -1374,7 +1470,9 @@ impl Pipelines {
                 || material_layout.is_some()
                 || augment_slots != 0)
                 .then(|| {
-                    let extra = self.deformations.get(deformation);
+                    let extra = self
+                        .deformations
+                        .get_for_line(deformation, surface.wide_lines);
                     let groups = [
                         Some(globals),
                         Some(material_layout.unwrap_or(&self.materials[coated])),
@@ -1482,7 +1580,15 @@ impl Pipelines {
                     "ANISOTROPIC_MATERIAL",
                     f64::from(u8::from(surface.anisotropy)),
                 ),
+                ("UNLIT_PRIMITIVE", f64::from(surface.unlit_primitive)),
+                (
+                    "NON_TRIANGLE_PRIMITIVE",
+                    f64::from(surface.topology != MeshTopology::Triangles),
+                ),
                 ("HEIGHT_MAPPED", f64::from(surface.height_mapped)),
+                ("TINTED_DIELECTRIC", f64::from(surface.tinted_dielectric)),
+                ("IRIDESCENT_MATERIAL", f64::from(surface.iridescent)),
+                ("SHEEN_MATERIAL", f64::from(surface.sheen)),
                 (
                     "SEPARATE_SURFACE_MAPS",
                     f64::from(surface.separate_surface_maps),
@@ -1576,11 +1682,9 @@ impl Pipelines {
                 } else {
                     "XRack 3D depth-writing meshes"
                 }),
-                layout: Some(
-                    layout
-                        .as_ref()
-                        .unwrap_or(&self.layouts[coated][deformation as usize]),
-                ),
+                layout: Some(layout.as_ref().unwrap_or(
+                    &self.layouts[coated][deformation.pipeline_index(surface.wide_lines)],
+                )),
                 vertex: wgpu::VertexState {
                     module: custom.filter(|_| hooks.vertex).unwrap_or(shader),
                     entry_point: Some(
@@ -1604,6 +1708,7 @@ impl Pipelines {
                     ),
                     compilation_options: wgpu::PipelineCompilationOptions {
                         constants: &[
+                            ("WIDE_POINTS", f64::from(surface.wide_points)),
                             ("VOLUME_MATERIAL", volume),
                             (
                                 "ANISOTROPIC_MATERIAL",
@@ -1673,16 +1778,13 @@ impl Pipelines {
                         &ordinary
                     },
                 }),
-                primitive: wgpu::PrimitiveState {
-                    front_face: if output.reverse_winding {
-                        wgpu::FrontFace::Cw
-                    } else {
-                        wgpu::FrontFace::Ccw
-                    },
-                    cull_mode: culled_face(state.cull.unwrap_or(surface.cull)),
-                    polygon_mode: output.raster.polygon_mode(),
-                    ..Default::default()
-                },
+                primitive: mesh_primitive(
+                    surface.topology,
+                    surface.expanded(),
+                    output.raster,
+                    output.reverse_winding,
+                    state.cull.unwrap_or(surface.cull),
+                ),
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: output.depth_format(),
                     depth_write_enabled: Some(state.depth_write.unwrap_or_else(|| {
@@ -1738,6 +1840,9 @@ impl Pipelines {
                     surface.separate_surface_maps,
                     surface.reflection_map,
                     surface.height_mapped,
+                    surface.tinted_dielectric,
+                    surface.iridescent,
+                    surface.sheen,
                 ),
                 surface.vertex_colors,
                 surface.vertex_masks,
@@ -1756,6 +1861,10 @@ impl Pipelines {
                     output.debug_material,
                     linked,
                     surface.binormals,
+                    surface.topology,
+                    surface.unlit_primitive,
+                    surface.wide_points,
+                    surface.wide_lines,
                 ),
             ),
         );
@@ -1769,6 +1878,7 @@ impl Pipelines {
                     linked_samples,
                     surface.binormals != BinormalSource::Derived,
                     surface.reflection_map,
+                    line_mode,
                 ),
                 key,
                 create,
@@ -1777,6 +1887,8 @@ impl Pipelines {
             return pipeline;
         }
         if linked
+            || surface.unlit_primitive
+            || surface.topology != MeshTopology::Triangles
             || surface.binormals != BinormalSource::Derived
             || output.stenciled
             || output.reverse_depth
@@ -1796,6 +1908,9 @@ impl Pipelines {
             || surface.separate_surface_maps
             || surface.reflection_map
             || surface.height_mapped
+            || surface.tinted_dielectric
+            || surface.iridescent
+            || surface.sheen
             || !surface.vertex_colors
             || surface.vertex_masks
             || surface.custom_base_fresnel
@@ -1822,6 +1937,7 @@ impl Pipelines {
         device: &wgpu::Device,
         output: ColorOutput,
         ignore_depth: bool,
+        screen_sky: bool,
     ) -> &wgpu::RenderPipeline {
         let stage = if output.screen_indirect_light {
             2
@@ -1870,6 +1986,7 @@ impl Pipelines {
                     }),
                     compilation_options: wgpu::PipelineCompilationOptions {
                         constants: &[
+                            ("SCREEN_SPACE_SKY", f64::from(screen_sky)),
                             (
                                 "VOLUMETRIC_FOG",
                                 f64::from(u8::from(output.fog != FogMode::Off)),
@@ -1908,10 +2025,10 @@ impl Pipelines {
         };
         if let Some(format) = output
             .format_override
-            .or_else(|| output.reverse_depth.then(|| output.format()))
+            .or_else(|| (output.reverse_depth || screen_sky).then(|| output.format()))
         {
             self.skybox_formats
-                .entry((index, format))
+                .entry((index, format, screen_sky))
                 .or_insert_with(create)
         } else {
             self.skybox[index].get_or_insert_with(create)

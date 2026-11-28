@@ -20,7 +20,10 @@ pub(crate) mod pick;
 pub(crate) mod projection;
 pub(crate) mod random_instances;
 pub(crate) mod rotation;
+mod screen_pick;
 pub(crate) mod sky;
+mod sky_textures;
+mod sky_uniforms;
 pub(crate) mod surface;
 pub(crate) mod visibility;
 
@@ -65,13 +68,16 @@ pub use crate::scene3d::mesh::animation::{
     MeshInstances, MeshInterpolation, MeshLight, MeshLods, MeshNodeTransform, MeshPlayback,
     MorphAnimationTrack, prepare_animation_layers, prepare_animation_node_overrides,
 };
+pub use crate::scene3d::mesh::basis::MeshBasisTexture;
+pub use crate::scene3d::mesh::blocks::{MeshBlockFormat, MeshTextureBlocks};
 pub use crate::scene3d::mesh::cubemap::{CubeTexture3D, TextureAsset3D};
 pub use crate::scene3d::mesh::indices::{MeshDrawIndices, MeshIndexElements};
 pub use crate::scene3d::mesh::material::{
     MAX_MESH_TEXTURE_DIMENSION, MaterialChannel, MaterialChannels, MeshAlphaMode, MeshAnisotropy,
     MeshBlendMode, MeshClearcoat, MeshCullMode, MeshDepthCoverage, MeshDepthDraw, MeshDielectric,
-    MeshFresnel, MeshHeightMap, MeshImage, MeshMaterial, MeshMaterialSlot, MeshNormalMap, MeshPart,
-    MeshPbr, MeshShader, MeshSpecularReflection, MeshSurfaceMaps, MeshTexture, MeshTransmission,
+    MeshFresnel, MeshHeightMap, MeshImage, MeshIridescence, MeshLighting, MeshMaterial,
+    MeshMaterialSlot, MeshNormalMap, MeshPart, MeshPbr, MeshShader, MeshSheen,
+    MeshSpecularReflection, MeshSurfaceMaps, MeshTexture, MeshTopology, MeshTransmission,
     MeshVolume, MeshWorkflow, RefractionChannels, SceneItemTexture, SceneMaterial,
     SceneMaterialBinding, SceneMaterialMaps, SceneTexture, TextureChannel, TextureColorSpace,
     TextureFilter, TextureSampling, TextureTransform, TextureWrap, VertexColorMasks,
@@ -108,7 +114,14 @@ pub use crate::scene3d::particles::{
 use crate::scene3d::pick::BoundsSegment;
 pub use crate::scene3d::projection::SceneProjectionCache;
 pub use crate::scene3d::random_instances::{InstanceColorModel, SceneRandomInstances};
-pub use crate::scene3d::sky::SkySettings;
+pub use crate::scene3d::sky::{
+    SKY_PROGRAM_ENTRY, SKY_RAY_WGSL, SKY_SCREEN_ENTRY, SkyProgram, SkyProgramSettings, SkySettings,
+    SkyboxMode, prepare_sky_record,
+};
+pub use crate::scene3d::sky_textures::{SkyTextureKind, sky_texture_interface};
+pub use crate::scene3d::sky_uniforms::{
+    MAX_SKY_UNIFORM_SLOTS, SkyShader, SkyUniformField, SkyUniformType,
+};
 pub use crate::scene3d::surface::{SurfaceSample, corresponding_vertices};
 pub use crate::scene3d::visibility::{SceneVisibility, VisibilityIndex};
 
@@ -451,7 +464,7 @@ pub(crate) fn world_query(
     direction: Vector3D,
     max_distance: f64,
     layers: Option<i64>,
-) -> Option<SceneRay> {
+) -> Option<SceneRay<'static>> {
     let (ray, max) = world_ray(origin, direction, max_distance)?;
     Some(SceneRay::new(
         ray,
@@ -529,6 +542,7 @@ pub(crate) fn nearest_point_in(
             .describe_surface(
                 hit.position,
                 SurfaceHit {
+                    topology: MeshTopology::Triangles,
                     distance: hit.distance_squared.sqrt() as f32,
                     vertex: hit.vertex,
                     weights: hit.weights.map(|weight| weight as f32),
@@ -612,6 +626,7 @@ pub struct RayHit<'a> {
 
 #[derive(Clone, Copy)]
 struct SurfaceHit {
+    topology: MeshTopology,
     distance: f32,
     vertex: usize,
     weights: [f32; 3],
@@ -664,12 +679,13 @@ pub fn raycast_all(objects: &[SceneObject], ray: Ray3D, max_distance: f32) -> Ve
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct SceneRay {
+pub(crate) struct SceneRay<'a> {
     ray: Ray3D,
     min: f32,
     max: f32,
     layers: u64,
     eye: Option<[f32; 3]>,
+    raster: Option<(screen_pick::RasterView<'a>, crate::Point2D)>,
 }
 
 pub(crate) enum RayRows {
@@ -770,7 +786,7 @@ struct ItemSurfaceHit<'a> {
     tile: [i64; 2],
 }
 
-impl SceneRay {
+impl<'a> SceneRay<'a> {
     pub(crate) fn new(ray: Ray3D, min: f32, max: f32, layers: u64) -> Self {
         Self {
             ray,
@@ -778,6 +794,7 @@ impl SceneRay {
             max,
             layers,
             eye: None,
+            raster: None,
         }
     }
 
@@ -786,7 +803,41 @@ impl SceneRay {
         self
     }
 
-    fn includes(self, object: &SceneObject) -> bool {
+    pub(crate) fn with_viewport(
+        mut self,
+        camera: &'a SceneCamera,
+        cursor: crate::Point2D,
+        scale: [f64; 2],
+    ) -> Self {
+        self.eye = Some(camera.eye_position());
+        self.raster = Some((screen_pick::RasterView::new(camera, scale), cursor));
+        self
+    }
+
+    fn raster_hit(&self, object: &SceneObject) -> Option<SurfaceHit> {
+        let size = object.mesh.raster_size();
+        if size == 0.0 {
+            return None;
+        }
+        let (view, cursor) = self.raster?;
+        let region = view.point_region(cursor, size)?;
+        object.raster_hit(view, cursor, &region, self.ray, [self.min, self.max])
+    }
+
+    fn hit_object(&self, object: &SceneObject, max: f32) -> Option<SurfaceHit> {
+        let triangle = object.hit(self.ray, self.min, max);
+        if object.is_pickable()
+            && let Some(raster) = self.raster_hit(object)
+            && raster.distance <= max
+            && raster.precedes_triangle(triangle)
+        {
+            Some(raster)
+        } else {
+            triangle
+        }
+    }
+
+    fn includes(&self, object: &SceneObject) -> bool {
         object.layers & self.layers != 0
             && self.eye.is_none_or(|eye| object.visible_at_distance(eye))
     }
@@ -795,6 +846,7 @@ impl SceneRay {
         self,
         geometry: &SceneGeometry,
         rows: &RayRows,
+        allow_unpickable: bool,
         intersect: impl Fn(&SceneObject, f32) -> Option<SurfaceHit>,
         mut visit: impl FnMut((usize, SurfaceHit), f64) -> f64,
     ) {
@@ -819,6 +871,21 @@ impl SceneRay {
                 limit
             }
         });
+        if geometry.raster_size() > 0.0
+            && let Some((view, cursor)) = self.raster
+            && let Some(region) = view.point_region(cursor, geometry.raster_size())
+        {
+            geometry.visit_selection(&region, |index, _| {
+                let object = &geometry[index];
+                if (allow_unpickable || object.is_pickable())
+                    && self.includes(object)
+                    && rows.contains(object)
+                    && let Some(hit) = self.raster_hit(object)
+                {
+                    visit((index, hit), f64::from(self.max));
+                }
+            });
+        }
     }
 
     fn nearest(self, geometry: &SceneGeometry, rows: &RayRows) -> Option<(usize, SurfaceHit)> {
@@ -830,11 +897,11 @@ impl SceneRay {
             let object = &geometry[index];
             return self
                 .includes(object)
-                .then(|| object.hit(self.ray, self.min, self.max))
+                .then(|| self.hit_object(object, self.max))
                 .flatten()
                 .map(|hit| (index, hit));
         }
-        self.nearest_matching(geometry, rows, |object, max| {
+        self.nearest_matching(geometry, rows, false, |object, max| {
             object.hit(self.ray, self.min, max)
         })
     }
@@ -843,10 +910,11 @@ impl SceneRay {
         self,
         geometry: &SceneGeometry,
         rows: &RayRows,
+        allow_unpickable: bool,
         intersect: impl Fn(&SceneObject, f32) -> Option<SurfaceHit>,
     ) -> Option<(usize, SurfaceHit)> {
         let mut nearest = None;
-        self.visit(geometry, rows, intersect, |hit, limit| {
+        self.visit(geometry, rows, allow_unpickable, intersect, |hit, limit| {
             if nearest.is_none_or(|prior| surface_order(&hit, &prior).is_lt()) {
                 nearest = Some(hit);
                 f64::from(hit.1.distance)
@@ -888,9 +956,10 @@ impl SceneRay {
     }
 
     fn item_surface(self, geometry: &SceneGeometry) -> Option<Option<ItemSurfaceHit<'_>>> {
-        let (index, hit) = self.nearest_matching(geometry, &RayRows::All, |object, max| {
-            object.surface_hit(self.ray, self.min, max, false)
-        })?;
+        let (index, hit) =
+            self.nearest_matching(geometry, &RayRows::All, true, |object, max| {
+                object.surface_hit(self.ray, self.min, max, false)
+            })?;
         let object = &geometry[index];
         let parts = object.mesh.parts();
         let index = parts.partition_point(|part| part.vertices.end <= hit.vertex);
@@ -902,12 +971,16 @@ impl SceneRay {
                 .base_item
                 .as_ref()
                 .filter(|_| object.is_pickable())?;
-            let tri = &object.mesh.vertices()[hit.vertex..hit.vertex + 3];
-            let uv = std::array::from_fn(|axis| {
-                tri[0].uv[axis] * hit.weights[0]
-                    + tri[1].uv[axis] * hit.weights[1]
-                    + tri[2].uv[axis] * hit.weights[2]
-            });
+            let uv = if hit.topology != MeshTopology::Triangles {
+                object.raster_uv(hit)
+            } else {
+                let tri = &object.mesh.vertices()[hit.vertex..hit.vertex + 3];
+                std::array::from_fn(|axis| {
+                    tri[0].uv[axis] * hit.weights[0]
+                        + tri[1].uv[axis] * hit.weights[1]
+                        + tri[2].uv[axis] * hit.weights[2]
+                })
+            };
             let (uv, tile) = item.project(uv)?;
             Some(ItemSurfaceHit {
                 object,
@@ -936,6 +1009,7 @@ impl SceneRay {
         self.visit(
             geometry,
             rows,
+            false,
             |object, max| object.hit(self.ray, self.min, max),
             |hit, limit| {
                 hits.push(hit);
@@ -951,14 +1025,11 @@ impl SceneRay {
             .into_iter()
             .filter_map(|(index, hit)| {
                 let object = &geometry[index];
-                object
-                    .scene_row()
-                    .is_none_or(|row| {
-                        let placement = object
-                            .imported_placement()
-                            .and_then(|(node, instance)| instance.map(|index| (node, index)));
-                        seen.insert((row, placement))
-                    })
+                let row = object.scene_row();
+                let placement = object
+                    .imported_placement()
+                    .and_then(|(node, instance)| instance.map(|index| (node, index)));
+                seen.insert((row, placement, row.is_none().then_some(index)))
                     .then(|| Hit3D::from(object.describe_hit(self.ray, hit)))
             })
             .collect();
@@ -974,9 +1045,9 @@ fn surface_order(a: &(usize, SurfaceHit), b: &(usize, SurfaceHit)) -> std::cmp::
     } else {
         a.blended.cmp(&b.blended).then_with(|| {
             if a.blended {
-                b_index.cmp(a_index)
+                b_index.cmp(a_index).then_with(|| b.vertex.cmp(&a.vertex))
             } else {
-                a_index.cmp(b_index)
+                a_index.cmp(b_index).then_with(|| a.vertex.cmp(&b.vertex))
             }
         })
     }
@@ -998,21 +1069,31 @@ fn sorted_surfaces(objects: &[SceneObject], ray: Ray3D, max: f32) -> Vec<(usize,
     hits
 }
 
-pub(crate) fn trace_surfaces(objects: &[SceneObject], query: SceneRay) -> Option<RayHit<'_>> {
+pub(crate) fn trace_surfaces<'a>(
+    objects: &'a [SceneObject],
+    query: SceneRay<'_>,
+) -> Option<RayHit<'a>> {
     let (object, surface) = nearest_surface(objects, query)?;
     Some(object.describe_hit(query.ray, surface))
 }
 
-pub(crate) fn trace_id(objects: &[SceneObject], query: SceneRay) -> Option<&str> {
+pub(crate) fn trace_id<'a>(objects: &'a [SceneObject], query: SceneRay<'_>) -> Option<&'a str> {
     nearest_surface(objects, query).map(|(object, _)| object.id.as_str())
 }
 
-fn nearest_surface(objects: &[SceneObject], query: SceneRay) -> Option<(&SceneObject, SurfaceHit)> {
+fn nearest_surface<'a>(
+    objects: &'a [SceneObject],
+    query: SceneRay<'_>,
+) -> Option<(&'a SceneObject, SurfaceHit)> {
     let mut best: Option<(&SceneObject, SurfaceHit)> = None;
     let mut closest = query.max;
     for item in objects {
         if query.includes(item)
-            && let Some(hit) = item.hit(query.ray, query.min, closest)
+            && let Some(hit) = if query.raster.is_some() {
+                query.hit_object(item, closest)
+            } else {
+                item.hit(query.ray, query.min, closest)
+            }
             && hit.precedes(best.map(|(_, surface)| surface))
         {
             closest = hit.distance;

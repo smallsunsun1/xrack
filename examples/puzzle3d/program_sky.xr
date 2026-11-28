@@ -1,0 +1,151 @@
+struct SkyProgram {
+    enabled: bool, resolution: int, ibl-samples: int, ibl-render-frames: int,
+    shader: string, shader-uniforms: SkyControls, skybox-mode: string, shader-textures: [SkyInput],
+}
+
+struct SkyControls {
+    palette: float, sun-angle: float, flat: bool, gain: float, tint: color,
+    texture-transform: transform2d, lobe-exponent: int,
+}
+
+struct SkyInput {
+    texture: string, data: texturedata3d, enabled: bool,
+    filter: string, mip-filter: string, color-space: string,
+}
+
+struct Finish {
+    base-color: color, roughness: float, metalness: float, specular-amount: float,
+}
+
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, visible: bool,
+    camera-kind: string, camera-height: float, color: color, material: Finish,
+}
+
+export component ProgramSkyDemo inherits Window {
+    title <- "XRack · 可编程天空"; width <- 480px; height <- 328px;
+    background <- #18263d; resizable <- false;
+
+    in-out property <bool> light-sky: true;
+    in-out property <bool> show-sky: true;
+    in-out property <bool> cool: false;
+    in-out property <bool> flat: false;
+    in-out property <float> sun-angle: 0.35;
+    in-out property <float> view-yaw: 0;
+    in-out property <float> horizon: 0;
+    in-out property <float> sky-blur: 0;
+    in-out property <int> ibl-frames: 0;
+    in-out property <int> samples: 32;
+    in-out property <int> sky-mode: 0;
+    in-out property <int> texture-set: 0;
+    in-out property <bool> alternate-map: false;
+    in-out property <float> sky-gain: 1;
+    in-out property <color> sky-tint: #fff;
+    in-out property <transform2d> sky-texture-transform: Transform2D.identity();
+    property <[string]> sky-modes: ["cubemap", "screen-space-full", "screen-space-half", "screen-space-quarter"];
+    property <texturedata3d> cloud-color <- TextureData3D.rgba8(2, 1, 1, [183, 205, 244, 255, 135, 71, 206, 255]);
+    property <texturedata3d> empty-volume;
+    property <SkyInput> sky-sampler <- SkyInput {
+        texture: "", data: root.empty-volume, enabled: true,
+        filter: "linear", mip-filter: "none", color-space: "srgb",
+    };
+    property <[SkyInput]> sky-inputs <- [
+        SkyInput {
+            texture: root.alternate-map ? @texture-url("models/anisotropic-map.png")
+                : @texture-url("models/channel-swatch.png"),
+            enabled: root.texture-set == 1 || root.texture-set == 4, ..root.sky-sampler
+        },
+        SkyInput {
+            texture: @texture-url("models/shader-cube.ktx2"), mip-filter: "nearest",
+            enabled: root.texture-set == 2 || root.texture-set == 4, ..root.sky-sampler
+        },
+        SkyInput {
+            data: root.cloud-color,
+            enabled: root.texture-set == 3 || root.texture-set == 4, ..root.sky-sampler
+        },
+    ];
+
+    property <SkyProgram> sky <- SkyProgram {
+        enabled: true, resolution: 64, ibl-samples: root.samples, ibl-render-frames: root.ibl-frames,
+        shader: @sky-shader-url("effects/program_sky.wgsl"),
+        shader-uniforms: SkyControls {
+            palette: root.cool ? 1 : 0, sun-angle: root.sun-angle, flat: root.flat,
+            gain: root.sky-gain, tint: root.sky-tint,
+            texture-transform: root.sky-texture-transform, lobe-exponent: 384,
+        },
+        skybox-mode: Model.at(root.sky-modes, root.sky-mode, "cubemap"),
+        shader-textures: root.sky-inputs,
+    };
+
+    property <Actor> stand <- Actor {
+        id: "", mesh: "primitive:sphere", x: 0, y: 0, z: 0,
+        scale-x: 0.8, scale-y: 0.8, scale-z: 0.8,
+        yaw: 0, pitch: 0, roll: 0, visible: true, color: #fff,
+        camera-kind: "", camera-height: 3.6,
+        material: Finish { base-color: #f0f0f0, roughness: 0.8, metalness: 0, specular-amount: 0 },
+    };
+
+    sky-view := SceneView3D {
+        width <- 480px; height <- 232px; camera <- "eye";
+        scene-background <- #17253a; ambient-intensity <- 0;
+        scene-tone-map <- reinhard; cache-rendering <- true;
+        environment-sky <- SkyProgram { enabled: root.light-sky, ..root.sky };
+        environment-horizon <- root.horizon;
+        environment-skybox <- root.show-sky;
+        skybox-sky <- SkyProgram { enabled: !root.light-sky || root.horizon > 0, ..root.sky };
+        skybox-blur <- root.sky-blur;
+        model <- [
+            Actor {
+                id: "eye", mesh: "", z: root.flat ? 7 : 5.1, yaw: root.view-yaw,
+                camera-kind: root.flat ? "orthographic" : "perspective", ..root.stand
+            },
+            Actor { id: "chalk", x: -1.35, ..root.stand },
+            Actor {
+                id: "chrome", x: 1.35,
+                material: Finish { base-color: #fff, roughness: 0.1, metalness: 1, specular-amount: 1 },
+                ..root.stand
+            },
+        ];
+    }
+
+    sky-toggle := CheckBox {
+        x <- 12px; y <- 239px; width <- 100px; height <- 28px;
+        text <- "天空背景"; checked <-> root.show-sky;
+    }
+    lighting-toggle := CheckBox {
+        x <- 121px; y <- 239px; width <- 100px; height <- 28px;
+        text <- "环境光"; checked <-> root.light-sky;
+    }
+    palette-toggle := CheckBox {
+        x <- 230px; y <- 239px; width <- 110px; height <- 28px;
+        text <- "冷色天空"; checked <-> root.cool;
+    }
+    split-lighting := CheckBox {
+        x <- 351px; y <- 239px; width <- 117px; height <- 28px;
+        text <- "分帧构建";
+        checked <- root.ibl-frames > 0;
+        toggled => { root.ibl-frames = root.ibl-frames > 0 ? 0 : 4; }
+    }
+    Label { x <- 12px; y <- 273px; width <- 76px; height <- 28px; text <- "太阳方位"; }
+    sun-slider := Slider {
+        x <- 90px; y <- 273px; width <- 151px; height <- 28px;
+        minimum <- -3.14; maximum <- 3.14; step <- 0.05; value <-> root.sun-angle;
+    }
+    Label { x <- 258px; y <- 273px; width <- 68px; height <- 28px; text <- "相机偏航"; }
+    camera-slider := Slider {
+        x <- 331px; y <- 273px; width <- 137px; height <- 28px;
+        minimum <- -20; maximum <- 20; step <- 1; value <-> root.view-yaw;
+    }
+    Label { x <- 12px; y <- 302px; width <- 80px; height <- 25px; text <- "背景模式"; }
+    ComboBox {
+        x <- 92px; y <- 302px; width <- 222px; height <- 25px;
+        model <- root.sky-modes; current-index <-> root.sky-mode;
+    }
+    sky-texture-toggle := CheckBox {
+        x <- 330px; y <- 301px; width <- 138px; height <- 28px; text <- "纹理天空";
+        checked <- root.texture-set > 0;
+        toggled => { root.texture-set = root.texture-set > 0 ? 0 : 4; }
+    }
+}

@@ -449,6 +449,9 @@ def XR_InstanceTableUrlOp : XR_ExpressionOp<"instance_table_url", (ins), XR_Inst
 def XR_MaterialShaderUrlOp : XR_ExpressionOp<"material_shader_url", (ins), XR_String, [Pure]> {
   let hasVerifier = 1;
 }
+def XR_SkyShaderUrlOp : XR_ExpressionOp<"sky_shader_url", (ins), XR_String, [Pure]> {
+  let hasVerifier = 1;
+}
 def XR_EnvironmentUrlOp : XR_ExpressionOp<"environment_url", (ins), XR_String, [Pure]> {
   let hasVerifier = 1;
 }

@@ -3926,6 +3926,27 @@ impl Instance {
                 });
                 node.properties
                     .insert(name, Value::SceneReflections(probes));
+            } else if node.kind == "SceneView3D" && matches!(name, "environment-sky" | "skybox-sky")
+            {
+                let Value::Record(record) = value else {
+                    return Err(evaluation("expected a sky record"));
+                };
+                let assets = &self.program().scene_assets;
+                let sky = xrack_runtime::scene3d::prepare_sky_record(
+                    record,
+                    |key| assets.sky_shaders.get(key).cloned(),
+                    |record| match record.field("shader-textures") {
+                        Some(Value::RecordList(inputs)) => {
+                            xrack_runtime::scene_effect::record_buffer_inputs(
+                                inputs,
+                                xrack_runtime::material_shader::MAX_TEXTURES,
+                                &|key| assets.textures.get(key).cloned(),
+                            )
+                        }
+                        _ => Vec::new(),
+                    },
+                );
+                node.properties.insert(name, sky);
             } else if node.kind == "SceneView3D" && matches!(name, "environment" | "skybox-source")
             {
                 let Value::String(key) = value else {

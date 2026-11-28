@@ -41,6 +41,7 @@ pub struct SceneAssets {
     pub environments: BTreeMap<String, Arc<EnvironmentProbe>>,
     pub textures: BTreeMap<String, TextureAsset3D>,
     pub material_shaders: BTreeMap<String, Arc<str>>,
+    pub sky_shaders: BTreeMap<String, Arc<xrack_runtime::scene3d::SkyShader>>,
     pub effects: BTreeMap<String, Arc<str>>,
 }
 
@@ -235,9 +236,16 @@ pub fn resolve_assets(
                         let asset = if extension.is_some_and(|ext| {
                             ext.eq_ignore_ascii_case("ktx") || ext.eq_ignore_ascii_case("ktx2")
                         }) {
-                            let cube = crate::environment::decode_cubemap(&path, &bytes)
-                                .map_err(error_at_texture)?;
-                            TextureAsset3D::Cubemap(cube)
+                            match crate::environment::decode_ktx2_image(&bytes)
+                                .map_err(error_at_texture)?
+                            {
+                                Some(image) => TextureAsset3D::Image(Arc::new(image)),
+                                None => {
+                                    let cube = crate::environment::decode_cubemap(&path, &bytes)
+                                        .map_err(error_at_texture)?;
+                                    TextureAsset3D::Cubemap(cube)
+                                }
+                            }
                         } else {
                             let image = prepare_scene_texture(&bytes).map_err(error_at_texture)?;
                             TextureAsset3D::Image(Arc::new(image))
@@ -248,39 +256,50 @@ pub fn resolve_assets(
                 assets.inputs.insert(path);
                 entry.insert(texture);
             }
-        } else if matches!(op.name(), "xr.shader_url" | "xr.material_shader_url") {
+        } else if matches!(
+            op.name(),
+            "xr.shader_url" | "xr.material_shader_url" | "xr.sky_shader_url"
+        ) {
             let url = op.attr("value")?;
-            let material = op.name() == "xr.material_shader_url";
-            let load: fn(&Path) -> Result<Arc<str>, String> = if material {
-                crate::material_shader::load
-            } else {
-                crate::scene_effect::load
-            };
-            let (key, shaders) = if material {
-                (
-                    xrack_runtime::material_shader::resource_key(url),
-                    &mut assets.scene.material_shaders,
+            let path = || asset_path(base, local_path(url)?, declared.as_ref(), "WGSL shader");
+            let report = |error| {
+                let span = op.span();
+                let source = op.source_file().unwrap_or(&filename);
+                format!(
+                    "{source}:{}:{}: shader {url:?}: {error}",
+                    span.line, span.column
                 )
-            } else {
-                (url.to_owned(), &mut assets.scene.effects)
             };
-            if let std::collections::btree_map::Entry::Vacant(entry) = shaders.entry(key) {
-                let resolve = || {
-                    let path =
-                        asset_path(base, local_path(url)?, declared.as_ref(), "WGSL shader")?;
-                    let source = load(&path)?;
-                    Ok::<_, String>((path, source))
-                };
-                let (path, shader) = resolve().map_err(|error| {
-                    let span = op.span();
-                    let source = op.source_file().unwrap_or(&filename);
-                    format!(
-                        "{source}:{}:{}: shader {url:?}: {error}",
-                        span.line, span.column
-                    )
-                })?;
-                assets.inputs.insert(path);
-                entry.insert(shader);
+            if op.name() == "xr.sky_shader_url" {
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    assets.scene.sky_shaders.entry(url.to_owned())
+                {
+                    let path = path().map_err(report)?;
+                    let shader = load_sky_shader(&path).map_err(report)?;
+                    entry.insert(shader);
+                    assets.inputs.insert(path);
+                }
+            } else {
+                let (load, key, shaders): (fn(&Path) -> Result<Arc<str>, String>, _, _) =
+                    if op.name() == "xr.material_shader_url" {
+                        (
+                            crate::material_shader::load,
+                            xrack_runtime::material_shader::resource_key(url),
+                            &mut assets.scene.material_shaders,
+                        )
+                    } else {
+                        (
+                            crate::scene_effect::load,
+                            url.to_owned(),
+                            &mut assets.scene.effects,
+                        )
+                    };
+                if let std::collections::btree_map::Entry::Vacant(entry) = shaders.entry(key) {
+                    let path = path().map_err(report)?;
+                    let shader = load(&path).map_err(report)?;
+                    entry.insert(shader);
+                    assets.inputs.insert(path);
+                }
             }
         } else if op.name() == "xr.environment_url" {
             let url = op.attr("value")?;
@@ -394,6 +413,139 @@ fn static_lut_check<'m>(
     Ok(Some((url.into(), size, location())))
 }
 
+fn load_sky_shader(path: &Path) -> Result<Arc<xrack_runtime::scene3d::SkyShader>, String> {
+    use xrack_runtime::{
+        material_shader::MAX_TEXTURES,
+        scene3d::{SkyShader, SkyTextureKind, sky_texture_interface},
+    };
+    let source = crate::scene_effect::load_source(path, "sky")?;
+    let inspection = format!("{source}\n{}", sky_texture_interface([None; MAX_TEXTURES]));
+    let module = naga::front::wgsl::parse_str(&inspection).or_else(|error| {
+        let stub =
+            format!("{inspection}\nfn sky_uniforms() -> SkyUniforms {{ return SkyUniforms(); }}");
+        naga::front::wgsl::parse_str(&stub).map_err(|_| error.emit_to_string(&inspection))
+    })?;
+    if !module.entry_points.is_empty()
+        || module
+            .global_variables
+            .iter()
+            .any(|(_, global)| global.binding.is_some())
+    {
+        return Err(
+            "sky shaders use scene_sky and cannot declare entry points or resource bindings".into(),
+        );
+    }
+    if module
+        .overrides
+        .iter()
+        .any(|(_, value)| value.init.is_none())
+    {
+        return Err("sky shader overrides require defaults".into());
+    }
+    // Validate both GPU wrappers with an input of each supported dimension.
+    // The absent-input interface above resolves the public helpers without
+    // allowing arbitrary resources in the application snippet.
+    let mut kinds = [Some(SkyTextureKind::Image); MAX_TEXTURES];
+    kinds[1] = Some(SkyTextureKind::Cubemap);
+    kinds[2] = Some(SkyTextureKind::Volume);
+    let textures = sky_texture_interface(kinds);
+    let fields = sky_uniform_fields(&module)?;
+    let shader = SkyShader::new(Arc::from(source), fields);
+    let source = &shader.source;
+    let uniforms = &shader.uniform_interface;
+    let wgsl = format!(
+        "{source}\nfn xr_cube_direction(face: u32, u: f32, v: f32) -> vec3<f32> {{ return vec3(u, v, 1.0); }}\n{}\n{textures}\n{uniforms}",
+        xrack_runtime::scene3d::SKY_PROGRAM_ENTRY,
+    );
+    let screen = format!(
+        "{source}\n{}\n{}\n{textures}\n{uniforms}",
+        xrack_runtime::scene3d::SKY_RAY_WGSL,
+        xrack_runtime::scene3d::SKY_SCREEN_ENTRY,
+    );
+    for wrapper in [wgsl, screen] {
+        let validated = naga::front::wgsl::parse_str(&wrapper).map_err(|error| {
+            format!(
+                "expected scene_sky(direction: vec3<f32>, parameters: vec3<f32>) -> vec3<f32>\n{}",
+                error.emit_to_string(&wrapper)
+            )
+        })?;
+        crate::scene_effect::validate(&validated, &wrapper)?;
+    }
+    Ok(Arc::new(shader))
+}
+
+fn sky_uniform_fields(
+    module: &naga::Module,
+) -> Result<Vec<xrack_runtime::scene3d::SkyUniformField>, String> {
+    use naga::{Scalar, ScalarKind, TypeInner, VectorSize};
+    use xrack_runtime::scene3d::{MAX_SKY_UNIFORM_SLOTS, SkyUniformField, SkyUniformType};
+
+    let Some((_, layout)) = module
+        .types
+        .iter()
+        .find(|(_, ty)| ty.name.as_deref() == Some("SkyUniforms"))
+    else {
+        return Ok(Vec::new());
+    };
+    let TypeInner::Struct { members, .. } = &layout.inner else {
+        return Err("SkyUniforms must be a WGSL struct".into());
+    };
+    const F32: Scalar = Scalar {
+        kind: ScalarKind::Float,
+        width: 4,
+    };
+    let mut fields = Vec::with_capacity(members.len());
+    for member in members {
+        let name = member
+            .name
+            .clone()
+            .ok_or("SkyUniforms members require names")?;
+        let kind = match module.types[member.ty].inner {
+            TypeInner::Scalar(Scalar {
+                kind: ScalarKind::Bool,
+                ..
+            }) => SkyUniformType::Bool,
+            TypeInner::Scalar(Scalar {
+                kind: ScalarKind::Sint,
+                width: 4,
+            }) => SkyUniformType::Int,
+            TypeInner::Scalar(Scalar {
+                kind: ScalarKind::Uint,
+                width: 4,
+            }) => SkyUniformType::Uint,
+            TypeInner::Scalar(F32) => SkyUniformType::Float,
+            TypeInner::Vector {
+                size: VectorSize::Bi,
+                scalar: F32,
+            } => SkyUniformType::Vec2,
+            TypeInner::Vector {
+                size: VectorSize::Tri,
+                scalar: F32,
+            } => SkyUniformType::Vec3,
+            TypeInner::Vector {
+                size: VectorSize::Quad,
+                scalar: F32,
+            } => SkyUniformType::Vec4,
+            TypeInner::Matrix {
+                columns: VectorSize::Tri,
+                rows: VectorSize::Tri,
+                scalar: F32,
+            } => SkyUniformType::Mat3,
+            _ => {
+                return Err(format!(
+                    "SkyUniforms field {name:?} requires bool, i32, u32, f32, an f32 vector, or mat3x3<f32>"
+                ));
+            }
+        };
+        fields.push(SkyUniformField { name, kind });
+    }
+    let slots: usize = fields.iter().map(|field| field.kind.slots()).sum();
+    if slots > MAX_SKY_UNIFORM_SLOTS {
+        return Err("SkyUniforms exceeds the 16 KiB portable uniform buffer size".into());
+    }
+    Ok(fields)
+}
+
 /// Check that the caller resolved all 3D assets referenced by the module.
 pub fn require_scene_assets(module: &Module, scene: &SceneAssets) -> Result<(), String> {
     for op in module.operations() {
@@ -425,6 +577,11 @@ pub fn require_scene_assets(module: &Module, scene: &SceneAssets) -> Result<(), 
                     .contains_key(&xrack_runtime::material_shader::resource_key(url))
                 {
                     return Err(format!("unresolved material shader {url:?}"));
+                }
+            } else if op.name() == "xr.sky_shader_url" {
+                let url = op.attr("value")?;
+                if !scene.sky_shaders.contains_key(url) {
+                    return Err(format!("unresolved sky shader {url:?}"));
                 }
             } else if op.name() == "xr.shader_url" {
                 let url = op.attr("value")?;

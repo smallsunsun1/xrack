@@ -41,17 +41,20 @@ mod physics_debug;
 mod pipeline;
 mod postprocess;
 mod preload;
+mod primitive_raster;
 mod probe_debug;
 mod progressive;
 pub(super) mod reflection_capture;
 pub(super) mod retained_view;
 mod screen_depth;
 mod screen_lighting;
+mod screen_sky;
 mod shadow;
 mod shadow_compact;
 mod shadow_debug;
 mod shadow_tiles;
 mod sky_cube;
+mod sky_shader;
 mod supersampling;
 mod temporal;
 #[cfg(test)]
@@ -121,8 +124,8 @@ use xrack_runtime::{
     },
     scene3d::{
         CaptureMaterial, Mesh3D, MeshCullMode, MeshData, MeshDepthCoverage, MeshDepthDraw,
-        MeshVertex, MeshVertexStreams, ReflectionSource, SceneCamera, SceneGeometry, SceneObject,
-        SceneVisibility,
+        MeshLighting, MeshTopology, MeshVertex, MeshVertexStreams, ReflectionSource, SceneCamera,
+        SceneGeometry, SceneObject, SceneVisibility,
     },
 };
 
@@ -293,6 +296,8 @@ pub struct SceneDrawStats {
     pub screen_indirect_pixels: u64,
     /// Lower-resolution levels uploaded for material textures.
     pub material_mip_levels_uploaded: u64,
+    /// Authored material texture bytes uploaded in the device's block format.
+    pub material_block_bytes_uploaded: u64,
     /// Native anisotropic sampler variants created for material maps.
     pub material_anisotropic_samplers: u64,
     /// GPU variants compiled for authored material shaders.
@@ -301,6 +306,11 @@ pub struct SceneDrawStats {
     pub scene_image_uploads: u64,
     /// Procedural environment cubes generated on the GPU, including their roughness mips.
     pub procedural_sky_generations: u64,
+    pub procedural_sky_filter_slices: u64,
+    pub screen_sky_dispatches: u64,
+    pub screen_sky_texels: u64,
+    pub sky_shader_pipeline_builds: u64,
+    pub sky_uniform_uploads: u64,
     /// File probe cubemaps prefiltered after attenuation of their lower hemisphere.
     pub environment_horizon_prefilters: u64,
     /// Viewports that retained opaque color for transmission.
@@ -667,11 +677,16 @@ struct MeshBuffers {
     skin_weights: Option<wgpu::Buffer>,
     morph: Option<MorphBuffer>,
     lightmap_uv: std::sync::OnceLock<wgpu::Buffer>,
+    point_rows: Option<Vec<u32>>,
+    point_ranges: Vec<(usize, Range<u32>)>,
+    line_ranges: Vec<(usize, Range<u32>)>,
+    line_vertices: Option<primitive_raster::LineVertices>,
 }
 
 struct MorphBuffer {
     entries: wgpu::Buffer,
-    table_layout: [u32; 2],
+    table_layout: [u32; 3],
+    remap: Option<wgpu::Buffer>,
     binormals: bool,
 }
 
@@ -687,6 +702,9 @@ struct MeshTransfers {
 impl MeshTransfers {
     fn upload(&mut self, mesh: &MeshBuffers) {
         self.vertex_bytes += mesh.vertices.size();
+        if let Some(lines) = &mesh.line_vertices {
+            self.vertex_bytes += lines.endpoints.size();
+        }
         if let Some(tangents) = &mesh.tangents {
             self.vertex_bytes += tangents.size();
         }
@@ -698,6 +716,9 @@ impl MeshTransfers {
         }
         if let Some(morph) = &mesh.morph {
             self.deformation_bytes += morph.entries.size();
+            if let Some(remap) = &morph.remap {
+                self.deformation_bytes += remap.size();
+            }
         }
         if let Some((index, _)) = &mesh.index {
             self.index_bytes += index.size();
@@ -746,7 +767,11 @@ impl MeshBuffer {
     ) {
         let uv = self.lightmap_uv.get_or_init(|| {
             let compact = self.index.as_ref().and_then(|_| mesh.draw_indices());
-            let bytes: Vec<_> = mesh_rows(mesh.lightmap_uvs(), compact)
+            let rows = self
+                .point_rows
+                .as_deref()
+                .or_else(|| compact.map(|data| data.rows.as_ref()));
+            let bytes: Vec<_> = mesh_rows(mesh.lightmap_uvs(), rows)
                 .flatten()
                 .copied()
                 .flat_map(f32::to_ne_bytes)
@@ -761,6 +786,23 @@ impl MeshBuffer {
         pass.set_vertex_buffer(3, uv.slice(..));
     }
 
+    fn bind_deformation(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        binding: Option<&DeformationBinding>,
+        wide_lines: bool,
+    ) {
+        let group = match (binding, wide_lines) {
+            (Some(binding), true) => binding.wide.as_ref(),
+            (Some(binding), false) => Some(&binding.group),
+            (None, true) => self.line_vertices.as_ref().map(|line| &line.rigid),
+            (None, false) => None,
+        };
+        if let Some(group) = group {
+            pass.set_bind_group(3, group, &[]);
+        }
+    }
+
     fn bind_skin(&self, pass: &mut wgpu::RenderPass<'_>) {
         if let Some(weights) = &self.skin_weights {
             pass.set_vertex_buffer(3, weights.slice(..));
@@ -770,6 +812,7 @@ impl MeshBuffer {
 
 struct MeshCache {
     model_blends: model_blend::ModelBlendBuffers,
+    line_layout: wgpu::BindGroupLayout,
     box_mesh: MeshBuffer,
     sphere_mesh: MeshBuffer,
     wire_sphere: Option<MeshBuffer>,
@@ -779,7 +822,15 @@ struct MeshCache {
     captured: HashMap<((usize, bool), Vec<(u64, u64)>), ImportedMesh>,
     frame: u64,
     capture_binding_builds: u64,
-    geometry: HashMap<(usize, bool), (Weak<MeshVertexStreams>, Arc<MeshBuffers>)>,
+    geometry: HashMap<
+        (
+            usize,
+            bool,
+            primitive_raster::PrimitiveRanges,
+            primitive_raster::PrimitiveRanges,
+        ),
+        (Weak<MeshVertexStreams>, Arc<MeshBuffers>),
+    >,
     transfers: MeshTransfers,
     uploads: u64,
 }
@@ -799,6 +850,7 @@ struct SceneGpu {
     environment: EnvironmentGpu,
     background: wgpu::TextureView,
     background_sampler: wgpu::Sampler,
+    screen_sky: screen_sky::ScreenSky,
     background_depth: wgpu::Buffer,
     instances: InstanceBuffers,
     deformations: DeformationBuffers,
@@ -814,6 +866,12 @@ impl SceneGpu {
         textures: (material::SharedImages, SharedProjectionBuffers, bool),
     ) -> Self {
         let pipelines = Pipelines::new(device);
+        let environment = EnvironmentGpu::new(
+            device,
+            pipelines.environment.clone(),
+            textures.0.clone(),
+            textures.2,
+        );
         let mut materials = Materials::new(
             device,
             queue,
@@ -824,7 +882,7 @@ impl SceneGpu {
         materials.items.clone_from(item_textures);
         let default = materials.bind(device, queue, None, None);
         let builtin = |mesh: &Mesh3D| MeshBuffer {
-            geometry: Arc::new(mesh_buffer(device, mesh, false)),
+            geometry: Arc::new(mesh_buffer(device, mesh, false, None)),
             parts: vec![GpuPart {
                 vertices: 0..mesh.vertices().len() as u32,
                 material: default.clone(),
@@ -832,6 +890,10 @@ impl SceneGpu {
                 mask: false,
                 depth_coverage: Some(MeshDepthCoverage::Opaque),
                 surface: Surface {
+                    unlit_primitive: false,
+                    wide_points: false,
+                    wide_lines: false,
+                    topology: MeshTopology::Triangles,
                     blend: false,
                     blend_mode: Default::default(),
                     depth_draw: Default::default(),
@@ -839,6 +901,9 @@ impl SceneGpu {
                     separate_surface_maps: false,
                     reflection_map: false,
                     height_mapped: false,
+                    tinted_dielectric: false,
+                    iridescent: false,
+                    sheen: false,
                     vertex_colors: true,
                     vertex_masks: false,
                     custom_base_fresnel: false,
@@ -858,6 +923,7 @@ impl SceneGpu {
         let mut transfers = MeshTransfers::default();
         transfers.upload(&box_mesh);
         transfers.upload(&sphere_mesh);
+        let line_layout = pipelines.deformations.wide(Deformation::Rigid).clone();
         Self {
             shadows: Shadows::new(
                 device,
@@ -885,7 +951,8 @@ impl SceneGpu {
                 mipmap_filter: wgpu::MipmapFilterMode::Linear,
                 ..Default::default()
             }),
-            environment: EnvironmentGpu::new(device, pipelines.environment.clone()),
+            environment,
+            screen_sky: screen_sky::ScreenSky::default(),
             instances: InstanceBuffers::new(device),
             deformations: DeformationBuffers::new(pipelines.deformations.clone()),
             occlusion: AmbientOcclusion::new(device),
@@ -894,6 +961,7 @@ impl SceneGpu {
             lights: LightBuffers::default(),
             lightmaps: LightmapTextures::default(),
             meshes: MeshCache {
+                line_layout,
                 model_blends: Default::default(),
                 box_mesh,
                 sphere_mesh,
@@ -941,7 +1009,7 @@ impl MeshCache {
             Mesh3D::Box => &self.box_mesh,
             Mesh3D::Sphere if expand_triangles && self.sphere_mesh.index.is_some() => {
                 self.wire_sphere.get_or_insert_with(|| {
-                    let mesh = mesh_buffer(device, kind, true);
+                    let mesh = mesh_buffer(device, kind, true, None);
                     self.transfers.upload(&mesh);
                     self.transfers.wireframe_meshes += 1;
                     MeshBuffer {
@@ -1002,7 +1070,14 @@ impl MeshCache {
                 let create = || {
                     *builds += u64::from(capture_bound);
                     let source = data.vertex_streams();
-                    let key = (Arc::as_ptr(source) as usize, expanded);
+                    let point_ranges = data.wide_points();
+                    let line_ranges = data.wide_lines();
+                    let key = (
+                        Arc::as_ptr(source) as usize,
+                        expanded,
+                        point_ranges.cloned(),
+                        line_ranges.cloned(),
+                    );
                     let builtin = data.instance_blend_primitive().and_then(|kind| match kind {
                         Mesh3D::Box if !expanded => Some(box_geometry.clone()),
                         Mesh3D::Sphere if !expanded => Some(sphere_geometry.clone()),
@@ -1013,7 +1088,13 @@ impl MeshCache {
                             .entry(key)
                             .or_insert_with(|| {
                                 *uploads = uploads.saturating_add(1);
-                                let mesh = mesh_buffer(device, kind, expanded);
+                                let quads = (point_ranges.is_some() || line_ranges.is_some())
+                                    .then_some(primitive_raster::QuadRanges {
+                                        points: point_ranges.map_or(&[], |ranges| ranges.as_ref()),
+                                        lines: line_ranges.map_or(&[], |ranges| ranges.as_ref()),
+                                        line_layout: &self.line_layout,
+                                    });
+                                let mesh = mesh_buffer(device, kind, expanded, quads);
                                 transfers.upload(&mesh);
                                 transfers.wireframe_meshes += u64::from(expanded);
                                 (Arc::downgrade(source), Arc::new(mesh))
@@ -1057,17 +1138,27 @@ impl MeshCache {
                                     let clearcoat = binding.coated;
                                     let reflection_map = binding.reflection_map.is_some();
                                     let height_mapped = binding.height_mapped;
+                                    let tinted_dielectric = binding.tinted_dielectric;
+                                    let iridescent = binding.iridescent;
+                                    let sheen = binding.sheen;
                                     let transmission = material.transmission_blur().is_some();
                                     (
                                         binding,
                                         material.alpha_mode.cutoff().is_some(),
                                         Surface {
+                                            unlit_primitive: false,
+                                            wide_points: false,
+                                            wide_lines: false,
+                                            topology: MeshTopology::Triangles,
                                             blend: material.is_blended(),
                                             blend_mode: material.blend_mode,
                                             depth_draw: material.depth_draw_mode,
                                             channel_remapping: material.channels.has_remapping(),
                                             reflection_map,
                                             height_mapped,
+                                            tinted_dielectric,
+                                            iridescent,
+                                            sheen,
                                             separate_surface_maps: pbr.is_some_and(|pbr| {
                                                 pbr.separate_surface_maps.is_some()
                                             }),
@@ -1111,10 +1202,39 @@ impl MeshCache {
                                         },
                                     )
                                 });
+                            let unlit_primitive = part.lighting == MeshLighting::BaseAndEmission;
+                            let points = geometry
+                                .point_ranges
+                                .binary_search_by_key(&part.vertices.start, |(start, _)| *start)
+                                .ok()
+                                .map(|index| geometry.point_ranges[index].1.clone());
+                            let lines = geometry
+                                .line_ranges
+                                .binary_search_by_key(&part.vertices.start, |(start, _)| *start)
+                                .ok()
+                                .map(|index| geometry.line_ranges[index].1.clone());
+                            let wide_points = points.is_some();
+                            let wide_lines = lines.is_some();
                             GpuPart {
-                                vertices: part.vertices.start as u32..part.vertices.end as u32,
+                                vertices: points.or(lines).unwrap_or(
+                                    part.vertices.start as u32..part.vertices.end as u32,
+                                ),
                                 material: material.clone(),
-                                surface: *surface,
+                                surface: Surface {
+                                    topology: part.topology,
+                                    wide_points,
+                                    wide_lines,
+                                    unlit_primitive,
+                                    vertex_tangents: surface.vertex_tangents
+                                        && part.lighting == MeshLighting::Material,
+                                    transmission: surface.transmission && !unlit_primitive,
+                                    volume: if unlit_primitive {
+                                        VolumeMode::Off
+                                    } else {
+                                        surface.volume
+                                    },
+                                    ..*surface
+                                },
                                 visible: kind.materials()[part.material].is_visible(),
                                 mask: *mask,
                                 depth_coverage: kind.materials()[part.material].depth_coverage(),
@@ -1216,6 +1336,7 @@ impl SceneRenderer {
         self.postprocess.effects.history.begin_frame();
         self.postprocess.effects.images.borrow_mut().prune();
         if let Some(scene) = &mut self.scene {
+            scene.environment.begin_frame();
             scene.instances.begin_frame();
             scene.meshes.begin_frame();
         }
@@ -1231,13 +1352,20 @@ impl SceneRenderer {
         self.postprocess.effects.history.finish_frame(submitted);
         let images = self.postprocess.effects.images.borrow();
         self.stats.material_mip_levels_uploaded = images.mip_levels_uploaded;
+        self.stats.material_block_bytes_uploaded = images.block_bytes_uploaded;
         self.stats.scene_image_uploads = images.uploads;
         self.stats.scene_capture_projection_uploads =
             self.postprocess.effects.projections.borrow().uploads;
         if let Some(scene) = &mut self.scene {
             self.stats.material_anisotropic_samplers = scene.meshes.materials.anisotropic_samplers;
             scene.environment.finish_frame(submitted);
+            scene.screen_sky.finish_frame(submitted);
             self.stats.procedural_sky_generations = scene.environment.sky_generations;
+            self.stats.procedural_sky_filter_slices = scene.environment.sky_filter_slices;
+            self.stats.screen_sky_dispatches = scene.screen_sky.dispatches;
+            self.stats.screen_sky_texels = scene.screen_sky.texels;
+            self.stats.sky_shader_pipeline_builds = scene.environment.sky_programs.pipeline_builds;
+            self.stats.sky_uniform_uploads = scene.environment.sky_programs.uniform_uploads;
             self.stats.environment_horizon_prefilters = scene.environment.masked_generations;
             self.stats.custom_material_pipeline_builds = scene.pipelines.material_shader_builds();
             self.stats.scene_capture_material_bindings = scene.meshes.capture_binding_builds;
@@ -1257,6 +1385,7 @@ impl SceneRenderer {
             scene.shadows.discard_recorded_layers();
             scene.occlusion.discard_recorded_maps();
             scene.environment.finish_frame(false);
+            scene.screen_sky.finish_frame(false);
         }
     }
 
@@ -1301,6 +1430,29 @@ impl SceneRenderer {
         self.postprocess.effects.history.visit(owner, feedback);
         self.shadow_cameras
             .visit(owner, node.boolean("shadow-freeze-camera", false));
+    }
+
+    pub(super) fn prepare_program_sky(
+        &mut self,
+        node: &Node,
+        (device, queue, encoder): (&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder),
+        owner: effect_history::Owner<'_>,
+    ) -> (Option<Node>, bool) {
+        let scene = self.scene.get_or_insert_with(|| {
+            SceneGpu::new(
+                device,
+                queue,
+                &self.item_textures,
+                (
+                    self.postprocess.effects.images.clone(),
+                    self.postprocess.effects.projections.clone(),
+                    self.native_anisotropy,
+                ),
+            )
+        });
+        scene
+            .environment
+            .prepare_program((device, queue, encoder), node, owner)
     }
 
     pub(super) fn draw(
@@ -2256,6 +2408,13 @@ impl SceneRenderer {
         if !offscreen {
             self.stats.last_texture_size = ctx.size;
             self.stats.last_raster_size = raster_size;
+            if geometry
+                .as_ref()
+                .is_some_and(|geometry| geometry.raster_size() > 0.0)
+                && let Some(handle) = &node.geometry_handle
+            {
+                handle.publish_scene_raster(raster_size);
+            }
             self.stats.last_sample_count = 1;
             self.stats.raster_pixels = self
                 .stats
@@ -2883,6 +3042,7 @@ impl SceneRenderer {
         } else {
             None
         };
+        let inverse_start = uniforms.len();
         append_floats(
             &mut uniforms,
             inverse.unwrap_or([[0.0; 4]; 4]).into_iter().flatten(),
@@ -2900,29 +3060,38 @@ impl SceneRenderer {
             &uniforms,
             wgpu::BufferUsages::UNIFORM,
         );
-        let sky_uniform =
-            (region.maps_viewport() && named_geometry.is_none() && (skybox || fog_background))
-                .then(|| {
-                    let write = |bytes: &mut [u8], values: &[f32]| {
-                        for (bytes, value) in bytes.chunks_exact_mut(size_of::<f32>()).zip(values) {
-                            bytes.copy_from_slice(&value.to_ne_bytes());
-                        }
-                    };
+        let sky_uniform = (region.maps_viewport()
+            && named_geometry.is_none()
+            && (skybox || fog_background))
+            .then(|| {
+                let write = |bytes: &mut [u8], values: &[f32]| {
+                    for (bytes, value) in bytes.chunks_exact_mut(size_of::<f32>()).zip(values) {
+                        bytes.copy_from_slice(&value.to_ne_bytes());
+                    }
+                };
+                write(
+                    &mut uniforms[..size_of::<[[f32; 4]; 4]>()],
+                    culling_camera.clip_rows().as_flattened(),
+                );
+                write(
+                    &mut uniforms[lens_start..lens_start + size_of::<[f32; 4]>()],
+                    &culling_camera.clip_lens(),
+                );
+                if culling_camera.has_custom_projection()
+                    && let Some(inverse) = culling_camera.inverse_clip_rows()
+                {
                     write(
-                        &mut uniforms[..size_of::<[[f32; 4]; 4]>()],
-                        culling_camera.clip_rows().as_flattened(),
+                        &mut uniforms[inverse_start..inverse_start + size_of::<[[f32; 4]; 4]>()],
+                        inverse.as_flattened(),
                     );
-                    write(
-                        &mut uniforms[lens_start..lens_start + size_of::<[f32; 4]>()],
-                        &culling_camera.clip_lens(),
-                    );
-                    buffer(
-                        ctx.device,
-                        "XRack 3D background camera",
-                        &uniforms,
-                        wgpu::BufferUsages::UNIFORM,
-                    )
-                });
+                }
+                buffer(
+                    ctx.device,
+                    "XRack 3D background camera",
+                    &uniforms,
+                    wgpu::BufferUsages::UNIFORM,
+                )
+            });
         let cascade_camera = owner.map_or(camera, |owner| {
             self.shadow_cameras.reference(
                 owner,
@@ -3038,6 +3207,7 @@ impl SceneRenderer {
                 plan: color_plan.as_deref(),
                 region,
                 inline_rect: inline_origin.map(|origin| (origin, ctx.size)),
+                point_extent: raster_size,
             });
         let sampler = scene.shadows.sampler.clone();
         let shadow = scene
@@ -3192,10 +3362,27 @@ impl SceneRenderer {
             &scene.background_depth,
             false,
         );
-        let sky_bind_group = sky_uniform.as_ref().map(|uniform| {
+        let screen_sky = sky
+            .as_ref()
+            .filter(|_| named_geometry.is_none())
+            .and_then(SkyboxInput::screen)
+            .map(|input| {
+                scene.screen_sky.prepare(
+                    &mut scene.environment.sky_programs,
+                    (ctx.device, queue, ctx.encoder),
+                    raster_size,
+                    if sky_uniform.is_some() {
+                        culling_camera
+                    } else {
+                        raster_camera
+                    },
+                    input,
+                )
+            });
+        let sky_bind_group = (sky_uniform.is_some() || screen_sky.is_some()).then(|| {
             bind_background(
-                uniform,
-                &scene.background,
+                sky_uniform.as_ref().unwrap_or(&uniform_buffer),
+                screen_sky.as_ref().unwrap_or(&scene.background),
                 &scene.background_sampler,
                 &scene.background_depth,
                 false,
@@ -3271,7 +3458,7 @@ impl SceneRenderer {
                 .bind(ctx.device, queue, ctx.encoder, environment.as_ref());
         let local_bindings = probe_slots.as_ref().zip(probes).map(|(slots, probes)| {
             scene.environment.local_bindings(
-                (ctx.device, queue),
+                (ctx.device, queue, ctx.encoder),
                 environment.as_ref(),
                 probes,
                 slots,
@@ -3514,11 +3701,12 @@ impl SceneRenderer {
             if let Some(group) = &skybox_bindings {
                 pass.set_bind_group(2, group, &[]);
             }
-            pass.set_pipeline(
-                scene
-                    .pipelines
-                    .skybox(ctx.device, opaque_output, custom_clear),
-            );
+            pass.set_pipeline(scene.pipelines.skybox(
+                ctx.device,
+                opaque_output,
+                custom_clear,
+                screen_sky.is_some(),
+            ));
             pass.draw(0..3, 0..1);
             if sky_bind_group.is_some() {
                 pass.set_bind_group(0, &bind_group, &[]);
@@ -3562,18 +3750,22 @@ impl SceneRenderer {
             );
         }
         if fog_background && !background_first {
-            pass.set_pipeline(
-                scene
-                    .pipelines
-                    .skybox(ctx.device, opaque_output, custom_clear),
-            );
-            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_pipeline(scene.pipelines.skybox(
+                ctx.device,
+                opaque_output,
+                custom_clear,
+                screen_sky.is_some(),
+            ));
+            pass.set_bind_group(0, sky_bind_group.as_ref().unwrap_or(&bind_group), &[]);
             pass.set_bind_group(
                 2,
                 skybox_bindings.as_ref().unwrap_or(&environment_bindings),
                 &[],
             );
             pass.draw(0..3, 0..1);
+            if sky_bind_group.is_some() {
+                pass.set_bind_group(0, &bind_group, &[]);
+            }
             if skybox_bindings.is_some() {
                 pass.set_bind_group(2, &environment_bindings, &[]);
             }
@@ -4056,6 +4248,7 @@ struct MeshColorDraws<'a> {
     plan: Option<&'a ColorPlan>,
     region: CaptureRegion,
     inline_rect: Option<([u32; 2], [u32; 2])>,
+    point_extent: [u32; 2],
 }
 
 impl MeshColorDraws<'_> {
@@ -4098,7 +4291,7 @@ impl MeshColorDraws<'_> {
         camera: &wgpu::Buffer,
         (stage, load): (DepthPass, wgpu::LoadOp<f32>),
     ) -> u64 {
-        let globals = pipelines.camera_group(device, camera);
+        let globals = pipelines.camera_group(device, camera, self.point_extent);
         let mut pass = crate::viewport_gpu_timing::render_pass(
             encoder,
             &wgpu::RenderPassDescriptor {
@@ -4604,9 +4797,7 @@ fn draw_part(
         pass.set_pipeline(pipelines.get(device, surface, output, selection.deformation, shader));
         *active = Some(selection);
     }
-    if let Some(binding) = deformation {
-        pass.set_bind_group(3, &binding.group, &[]);
-    }
+    mesh.bind_deformation(pass, deformation, surface.wide_lines);
     pass.set_bind_group(
         1,
         part.material
@@ -4635,18 +4826,20 @@ fn buffer(
     })
 }
 
-fn mesh_rows<'a, T>(
-    rows: &'a [T],
-    compact: Option<&'a xrack_runtime::scene3d::MeshDrawIndices>,
-) -> impl Iterator<Item = &'a T> {
-    let len = compact.map_or(rows.len(), |data| data.rows.len());
+fn mesh_rows<'a, T>(rows: &'a [T], source_rows: Option<&'a [u32]>) -> impl Iterator<Item = &'a T> {
+    let len = source_rows.map_or(rows.len(), <[u32]>::len);
     (0..len).map(move |index| {
-        let source = compact.map_or(index, |data| data.rows[index] as usize);
+        let source = source_rows.map_or(index, |source| source[index] as usize);
         &rows[source]
     })
 }
 
-fn mesh_buffer(device: &wgpu::Device, mesh: &Mesh3D, expanded: bool) -> MeshBuffers {
+fn mesh_buffer(
+    device: &wgpu::Device,
+    mesh: &Mesh3D,
+    expanded: bool,
+    quad_ranges: Option<primitive_raster::QuadRanges<'_>>,
+) -> MeshBuffers {
     use xrack_runtime::scene3d::MeshIndexElements;
 
     let compact = if expanded { None } else { mesh.draw_indices() };
@@ -4656,9 +4849,35 @@ fn mesh_buffer(device: &wgpu::Device, mesh: &Mesh3D, expanded: bool) -> MeshBuff
         wgpu::BufferUsages::VERTEX
     };
     let vertices = mesh.vertices();
-    let count = compact.map_or(vertices.len(), |data| data.rows.len());
+    let mut quads = quad_ranges.as_ref().map(|ranges| {
+        primitive_raster::PrimitiveQuads::prepare(
+            vertices.len(),
+            compact,
+            ranges.points,
+            ranges.lines,
+        )
+    });
+    let elements = quads.as_mut().map(|quads| {
+        if quads.rows.len() <= u16::MAX as usize + 1 {
+            MeshIndexElements::U16(
+                quads
+                    .indices
+                    .iter()
+                    .copied()
+                    .map(|index| index as u16)
+                    .collect(),
+            )
+        } else {
+            MeshIndexElements::U32(std::mem::take(&mut quads.indices).into_boxed_slice())
+        }
+    });
+    let source_rows = quads
+        .as_ref()
+        .map(|quads| quads.rows.as_slice())
+        .or_else(|| compact.map(|data| data.rows.as_ref()));
+    let count = source_rows.map_or(vertices.len(), <[u32]>::len);
     let mut bytes = Vec::with_capacity(count * MeshVertex::STRIDE);
-    for vertex in mesh_rows(vertices, compact) {
+    for vertex in mesh_rows(vertices, source_rows) {
         append_floats(
             &mut bytes,
             vertex
@@ -4670,41 +4889,44 @@ fn mesh_buffer(device: &wgpu::Device, mesh: &Mesh3D, expanded: bool) -> MeshBuff
                 .chain(vertex.uv1),
         );
     }
-    let index = compact.map(|data| {
-        let (bytes, format) = match &data.elements {
-            MeshIndexElements::U16(elements) => (
-                elements
-                    .iter()
-                    .copied()
-                    .flat_map(u16::to_ne_bytes)
-                    .collect::<Vec<_>>(),
-                wgpu::IndexFormat::Uint16,
-            ),
-            MeshIndexElements::U32(elements) => (
-                elements
-                    .iter()
-                    .copied()
-                    .flat_map(u32::to_ne_bytes)
-                    .collect(),
-                wgpu::IndexFormat::Uint32,
-            ),
-        };
-        (
-            buffer(
-                device,
-                "XRack 3D mesh indices",
-                &bytes,
-                wgpu::BufferUsages::INDEX,
-            ),
-            format,
-        )
-    });
+    let index = elements
+        .as_ref()
+        .or_else(|| compact.map(|data| &data.elements))
+        .map(|elements| {
+            let (bytes, format) = match elements {
+                MeshIndexElements::U16(elements) => (
+                    elements
+                        .iter()
+                        .copied()
+                        .flat_map(u16::to_ne_bytes)
+                        .collect::<Vec<_>>(),
+                    wgpu::IndexFormat::Uint16,
+                ),
+                MeshIndexElements::U32(elements) => (
+                    elements
+                        .iter()
+                        .copied()
+                        .flat_map(u32::to_ne_bytes)
+                        .collect(),
+                    wgpu::IndexFormat::Uint32,
+                ),
+            };
+            (
+                buffer(
+                    device,
+                    "XRack 3D mesh indices",
+                    &bytes,
+                    wgpu::BufferUsages::INDEX,
+                ),
+                format,
+            )
+        });
     MeshBuffers {
         lightmap_uv: std::sync::OnceLock::new(),
         index,
         vertices: buffer(device, "XRack 3D unit mesh", &bytes, vertex_usage),
         skin_weights: mesh.influences().map(|weights| {
-            let packed: Vec<_> = mesh_rows(weights, compact)
+            let packed: Vec<_> = mesh_rows(weights, source_rows)
                 .copied()
                 .flat_map(|weight| weight.packed())
                 .collect();
@@ -4716,12 +4938,34 @@ fn mesh_buffer(device: &wgpu::Device, mesh: &Mesh3D, expanded: bool) -> MeshBuff
             )
         }),
         morph: mesh.morph_geometry().map(|geometry| {
-            let bytes: Vec<_> = match compact {
-                Some(data) => geometry
-                    .packed_draw_rows(&data.rows)
+            // Expanded quads reference the original sparse records. The row map
+            // has its own storage binding to keep the size of the morph table stable.
+            let remap = quads.as_ref().map(|quads| {
+                let bytes: Vec<_> = quads
+                    .rows
+                    .iter()
+                    .copied()
                     .flat_map(u32::to_ne_bytes)
-                    .collect(),
-                None => geometry.packed_words().flat_map(u32::to_ne_bytes).collect(),
+                    .collect();
+                buffer(
+                    device,
+                    "XRack morph vertex addresses",
+                    &bytes,
+                    wgpu::BufferUsages::STORAGE,
+                )
+            });
+            let (bytes, table_rows) = match compact.filter(|_| remap.is_none()) {
+                Some(data) => (
+                    geometry
+                        .packed_draw_rows(&data.rows)
+                        .flat_map(u32::to_ne_bytes)
+                        .collect::<Vec<_>>(),
+                    data.rows.len(),
+                ),
+                None => (
+                    geometry.packed_words().flat_map(u32::to_ne_bytes).collect(),
+                    vertices.len(),
+                ),
             };
             MorphBuffer {
                 entries: buffer(
@@ -4730,12 +4974,17 @@ fn mesh_buffer(device: &wgpu::Device, mesh: &Mesh3D, expanded: bool) -> MeshBuff
                     &bytes,
                     wgpu::BufferUsages::STORAGE,
                 ),
-                table_layout: [count as u32 + 1, geometry.record_words() as u32],
+                table_layout: [
+                    table_rows as u32 + 1,
+                    geometry.record_words() as u32,
+                    u32::from(remap.is_some()),
+                ],
+                remap,
                 binormals: geometry.has_binormals(),
             }
         }),
         tangents: (!mesh.tangents().is_empty()).then(|| {
-            let bytes: Vec<_> = mesh_rows(mesh.tangents(), compact)
+            let bytes: Vec<_> = mesh_rows(mesh.tangents(), source_rows)
                 .flatten()
                 .copied()
                 .flat_map(i16::to_ne_bytes)
@@ -4743,13 +4992,26 @@ fn mesh_buffer(device: &wgpu::Device, mesh: &Mesh3D, expanded: bool) -> MeshBuff
             buffer(device, "XRack 3D mesh tangents", &bytes, vertex_usage)
         }),
         binormals: (!mesh.binormals().is_empty()).then(|| {
-            let bytes: Vec<_> = mesh_rows(mesh.binormals(), compact)
+            let bytes: Vec<_> = mesh_rows(mesh.binormals(), source_rows)
                 .flatten()
                 .copied()
                 .flat_map(i16::to_ne_bytes)
                 .collect();
             buffer(device, "XRack 3D mesh bitangents", &bytes, vertex_usage)
         }),
+        line_vertices: quads
+            .as_ref()
+            .zip(quad_ranges)
+            .and_then(|(quads, ranges)| quads.line_vertices(device, mesh, ranges.line_layout)),
+        line_ranges: quads
+            .as_mut()
+            .map(|quads| std::mem::take(&mut quads.lines))
+            .unwrap_or_default(),
+        point_ranges: quads
+            .as_mut()
+            .map(|quads| std::mem::take(&mut quads.points))
+            .unwrap_or_default(),
+        point_rows: quads.map(|quads| quads.rows),
     }
 }
 

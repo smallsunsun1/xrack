@@ -1,6 +1,10 @@
 use crate::{
-    mesh_animation, mesh_instances, mesh_lights,
-    mesh_materials::{MaterialImages, Materials, NormalCoordinates},
+    mesh_animation,
+    mesh_attributes::{Attribute, AttributeSource},
+    mesh_compression::BufferDecode,
+    mesh_draco::DracoDecode,
+    mesh_instances, mesh_lights,
+    mesh_materials::{MaterialImages, Materials, NormalCoordinates, prepare_texture_sources},
     mesh_morph::{self, MorphData},
     mesh_skin, mesh_tangents,
 };
@@ -24,13 +28,15 @@ use xrack_assets::{
 use xrack_runtime::scene3d::{
     AnimatedMesh, MAX_ANIMATION_NODES, MAX_IMPORTED_VERTICES, MAX_MORPH_DELTAS, MAX_MORPH_TARGETS,
     Mesh3D, MeshAnimationNode, MeshAsset, MeshCamera, MeshCameraProjection, MeshInfluence,
-    MeshInstances, MeshLight, MeshNodeCatalog, MeshNodeTransform, MeshPart, MeshTangent,
-    MeshVertex, TextureTransform,
+    MeshInstances, MeshLight, MeshLighting, MeshNodeCatalog, MeshNodeTransform, MeshPart,
+    MeshTangent, MeshTopology, MeshVertex, TextureTransform,
 };
 use xrack_runtime::{MeshNode3D, Point3D, Vector3D};
 use xrack_syntax::gltf_metadata::{
-    EXTENDED_MATERIALS, GltfMetadata, LIGHTS_PUNCTUAL, MATERIALS_VARIANTS, MESH_GPU_INSTANCING,
-    MaterialVariantMappings, TEXTURE_TRANSFORM, json_chunk,
+    DRACO_COMPRESSION, EXT_MESHOPT_COMPRESSION, EXTENDED_MATERIALS, GltfMetadata,
+    KHR_MESHOPT_COMPRESSION, LIGHTS_PUNCTUAL, MATERIALS_VARIANTS, MESH_GPU_INSTANCING,
+    MESH_QUANTIZATION, MaterialVariantMappings, TEXTURE_BASIS, TEXTURE_TRANSFORM, TEXTURE_WEBP,
+    json_chunk,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -108,17 +114,31 @@ pub(super) fn load_mesh(
     let parsed =
         gltf::Gltf::from_slice_without_validation(&bytes).map_err(|error| error.to_string())?;
     let mut root = parsed.document.into_json();
+    let mut blob = parsed.blob;
+    let meshopt = BufferDecode::prepare(&mut root, blob.is_some())?;
+    prepare_texture_sources(&mut root)?;
+    let draco = DracoDecode::prepare(&root, &metadata)?;
     // These extensions are checked by the resource loader itself. Run all
     // glTF validation, including rejection of other unsupported requirements.
     root.extensions_required.retain(|name| {
         name != TEXTURE_TRANSFORM
+            && name != DRACO_COMPRESSION
+            && name != TEXTURE_BASIS
+            && name != TEXTURE_WEBP
+            && name != MESH_QUANTIZATION
+            && name != EXT_MESHOPT_COMPRESSION
+            && name != KHR_MESHOPT_COMPRESSION
             && name != LIGHTS_PUNCTUAL
             && name != MATERIALS_VARIANTS
             && name != MESH_GPU_INSTANCING
             && !EXTENDED_MATERIALS.contains(&name.as_str())
     });
-    let document = gltf::Document::from_json(root).map_err(|error| error.to_string())?;
-    let mut blob = parsed.blob;
+    let document = if draco.is_some() {
+        // Required Draco accessors lack buffer views until decompression.
+        gltf::Document::from_json_without_validation(root)
+    } else {
+        gltf::Document::from_json(root).map_err(|error| error.to_string())?
+    };
     let base = path
         .parent()
         .ok_or("mesh has no parent directory")?
@@ -126,9 +146,28 @@ pub(super) fn load_mesh(
     let mut inputs = BTreeSet::from([path.to_owned()]);
     let mut buffers = Vec::new();
     let mut total_bytes = 0;
+    let skipped_draco_fallback = |index| {
+        draco
+            .as_ref()
+            .is_some_and(|decode| decode.fallback_only(index))
+            && meshopt
+                .as_ref()
+                .is_none_or(|decode| !decode.reads_compressed_source(index))
+    };
     for buffer in document.buffers() {
+        if skipped_draco_fallback(buffer.index())
+            || meshopt
+                .as_ref()
+                .is_some_and(|decode| !decode.reads_buffer(buffer.index()))
+        {
+            buffers.push(Vec::new());
+            continue;
+        }
         let data = match buffer.source() {
-            Source::Bin => blob.take().ok_or("missing GLB BIN chunk")?,
+            Source::Bin if meshopt.is_none() || buffer.index() == 0 => {
+                blob.take().ok_or("missing GLB BIN chunk")?
+            }
+            Source::Bin => return Err("glTF meshopt source buffer has no URI or BIN data".into()),
             Source::Uri(uri) if uri.starts_with("data:") => inline_data(uri)?,
             Source::Uri(uri) => {
                 let relative = decode_uri(uri)?;
@@ -147,13 +186,33 @@ pub(super) fn load_mesh(
         }
         buffers.push(data);
     }
-    for view in document.views() {
-        if view.offset().checked_add(view.length()).is_none_or(|end| {
-            end > view.buffer().length() || end > buffers[view.buffer().index()].len()
+    if let Some(decode) = &meshopt {
+        decode.decode(&mut buffers)?;
+    }
+    for view in &document.as_json().buffer_views {
+        let index = view.buffer.value();
+        let buffer = document
+            .as_json()
+            .buffers
+            .get(index)
+            .ok_or("invalid glTF view buffer")?;
+        let end = view
+            .byte_offset
+            .map_or(0, |value| value.0)
+            .checked_add(view.byte_length.0);
+        if end.is_none_or(|end| {
+            end > buffer.byte_length.0
+                || (!skipped_draco_fallback(index) && end > buffers[index].len() as u64)
         }) {
             return Err("glTF buffer view is out of bounds".into());
         }
     }
+    let document = if let Some(decode) = draco {
+        let root = decode.decode(document.into_json(), &mut buffers)?;
+        gltf::Document::from_json(root).map_err(|error| error.to_string())?
+    } else {
+        document
+    };
     let addresses = metadata.scene_node_addresses()?;
     let source_nodes: Vec<_> = document.nodes().collect();
     let mut transforms: Vec<Matrix4<f32>> = Vec::with_capacity(addresses.len());
@@ -214,6 +273,14 @@ pub(super) fn load_mesh(
         lights: mesh_lights::attachments(&document)?,
         instances: mesh_instances::read(&document, &metadata, &buffers)?,
     };
+    let source = ImportData {
+        document: &document,
+        metadata: &metadata,
+        attributes: AttributeSource {
+            buffers: &buffers,
+            quantized: metadata.requires_mesh_quantization(),
+        },
+    };
     let mut images = MaterialImages::default();
     let mut prepare = |variant, primary| {
         let mut materials = Materials::new(
@@ -225,15 +292,7 @@ pub(super) fn load_mesh(
             &mut inputs,
             &mut images,
         );
-        prepare_mesh(
-            &document,
-            &metadata,
-            &buffers,
-            &mut materials,
-            &hierarchy,
-            variant,
-            primary,
-        )
+        prepare_mesh(source, &mut materials, &hierarchy, variant, primary)
     };
     let primary = prepare(None, None)?;
     let primary = if nodes.is_empty() {
@@ -284,15 +343,21 @@ struct ImportHierarchy<'a> {
     instances: BTreeMap<usize, MeshInstances>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct ImportData<'a> {
+    pub document: &'a gltf::Document,
+    pub metadata: &'a GltfMetadata,
+    pub attributes: AttributeSource<'a>,
+}
+
 fn prepare_mesh(
-    document: &gltf::Document,
-    metadata: &GltfMetadata,
-    buffers: &[Vec<u8>],
+    source: ImportData<'_>,
     materials: &mut Materials<'_>,
     hierarchy: &ImportHierarchy<'_>,
     variant: Option<&MaterialVariantMappings>,
     primary: Option<&MeshAsset>,
 ) -> Result<MeshAsset, String> {
+    let document = source.document;
     if !hierarchy.instances.is_empty()
         || !hierarchy.lights.is_empty()
         || document.nodes().any(|node| node.camera().is_some())
@@ -307,9 +372,7 @@ fn prepare_mesh(
             Some(MeshAsset::Animated(rig)) => Some(rig.as_ref()),
             _ => None,
         };
-        let mesh = animated_mesh(
-            document, metadata, buffers, materials, hierarchy, variant, rig,
-        )?;
+        let mesh = animated_mesh(source, materials, hierarchy, variant, rig)?;
         return Ok(MeshAsset::Animated(Arc::new(mesh)));
     }
     let mut geometry = MeshGeometry::default();
@@ -317,9 +380,8 @@ fn prepare_mesh(
         for authored in &hierarchy.nodes {
             if let Some(mesh) = authored.node.mesh() {
                 append_mesh(
-                    document,
+                    source,
                     mesh,
-                    buffers,
                     &authored.transform,
                     &mut geometry,
                     materials,
@@ -331,9 +393,8 @@ fn prepare_mesh(
         // Mesh-only assets can be exported without a scene or nodes.
         for mesh in document.meshes() {
             append_mesh(
-                document,
+                source,
                 mesh,
-                buffers,
                 &Matrix4::identity(),
                 &mut geometry,
                 materials,
@@ -356,15 +417,19 @@ fn prepare_mesh(
 }
 
 fn animated_mesh(
-    document: &gltf::Document,
-    metadata: &GltfMetadata,
-    buffers: &[Vec<u8>],
+    source: ImportData<'_>,
     materials: &mut Materials<'_>,
     hierarchy: &ImportHierarchy<'_>,
     variant: Option<&MaterialVariantMappings>,
     primary: Option<&AnimatedMesh>,
 ) -> Result<AnimatedMesh, String> {
     use gltf::scene::Transform;
+    let ImportData {
+        document,
+        metadata,
+        attributes,
+    } = source;
+    let buffers = attributes.buffers;
     let names: BTreeMap<_, _> = metadata
         .camera_nodes()
         .into_iter()
@@ -418,9 +483,8 @@ fn animated_mesh(
                         ..MeshGeometry::default()
                     };
                     append_mesh(
-                        document,
+                        source,
                         mesh,
-                        buffers,
                         &Matrix4::identity(),
                         &mut prepared,
                         materials,
@@ -523,7 +587,13 @@ fn animated_mesh(
             };
             if let Some(morph) = mesh.morph {
                 prepared
-                    .with_morph(morph.count, names.into(), morph.offsets, morph.deltas)
+                    .with_morph_uvs(
+                        morph.count,
+                        names.into(),
+                        morph.offsets,
+                        morph.deltas,
+                        morph.uvs,
+                    )
                     .ok_or("invalid prepared glTF morph vertices")
             } else {
                 Ok(prepared)
@@ -663,9 +733,8 @@ struct MeshGeometry {
 }
 
 fn append_mesh(
-    document: &gltf::Document,
+    source: ImportData<'_>,
     mesh: gltf::Mesh<'_>,
-    buffers: &[Vec<u8>],
     transform: &Matrix4<f32>,
     geometry: &mut MeshGeometry,
     materials: &mut Materials<'_>,
@@ -674,7 +743,8 @@ fn append_mesh(
     for primitive in mesh.primitives() {
         let index = variant.and_then(|mapping| mapping.get(&(mesh.index(), primitive.index())));
         let material = match index {
-            Some(&index) => document
+            Some(&index) => source
+                .document
                 .materials()
                 .nth(index)
                 .ok_or("invalid glTF variant material")?,
@@ -682,14 +752,25 @@ fn append_mesh(
         };
         let material = materials.get(material)?;
         let start = geometry.vertices.len();
+        let topology = match primitive.mode() {
+            Mode::Points => MeshTopology::Points,
+            Mode::Lines | Mode::LineLoop | Mode::LineStrip => MeshTopology::Lines,
+            Mode::Triangles | Mode::TriangleStrip | Mode::TriangleFan => MeshTopology::Triangles,
+        };
+        let has_normals = primitive.get(&Semantic::Normals).is_some();
         let tangents = append_primitive(
+            source,
+            mesh.index(),
             primitive,
-            buffers,
             transform,
-            material.uv_sets,
-            material.normal_coordinates,
+            (material.uv_sets, material.normal_coordinates),
             geometry,
         )?;
+        let lighting = match (topology, has_normals, tangents.is_some()) {
+            (MeshTopology::Triangles, _, _) | (_, true, true) => MeshLighting::Material,
+            (_, true, false) => MeshLighting::VertexNormal,
+            (_, false, _) => MeshLighting::BaseAndEmission,
+        };
         let end = geometry.vertices.len();
         if end > start {
             if let Some(tangents) = tangents {
@@ -698,7 +779,9 @@ fn append_mesh(
             } else if !geometry.tangents.is_empty() {
                 geometry.tangents.resize(end, [0; 4]);
             }
-            let volume_inverse = if materials.has_volume(material.index) {
+            let volume_inverse = if lighting != MeshLighting::BaseAndEmission
+                && materials.has_volume(material.index)
+            {
                 let model = transform.fixed_view::<3, 3>(0, 0);
                 if model.is_identity(0.0) {
                     None
@@ -714,6 +797,8 @@ fn append_mesh(
                 None
             };
             if let Some(last) = geometry.parts.last_mut()
+                && last.topology == topology
+                && last.lighting == lighting
                 && last.material == material.index
                 && last.volume_inverse == volume_inverse
                 && !materials.is_blended(material.index)
@@ -721,6 +806,8 @@ fn append_mesh(
                 last.vertices.end = end;
             } else {
                 geometry.parts.push(MeshPart {
+                    lighting,
+                    topology,
                     vertices: start..end,
                     material: material.index,
                     volume_inverse,
@@ -732,22 +819,16 @@ fn append_mesh(
 }
 
 fn append_primitive(
+    source: ImportData<'_>,
+    mesh: usize,
     primitive: Primitive<'_>,
-    buffers: &[Vec<u8>],
     transform: &Matrix4<f32>,
-    uv_sets: [Option<u32>; 2],
-    normal_coordinates: Option<NormalCoordinates>,
+    (uv_sets, normal_coordinates): ([Option<u32>; 2], Option<NormalCoordinates>),
     geometry: &mut MeshGeometry,
 ) -> Result<Option<Vec<MeshTangent>>, String> {
     let mode = primitive.mode();
-    if !matches!(
-        mode,
-        Mode::Triangles | Mode::TriangleStrip | Mode::TriangleFan
-    ) {
-        return Err(
-            "glTF mesh primitives must use triangles, triangle strips or triangle fans".into(),
-        );
-    }
+    let attributes = source.attributes;
+    let buffers = attributes.buffers;
     let vertices = &mut geometry.vertices;
     let lightmap_uv = &mut geometry.lightmap_uv;
     let weights = &mut geometry.weights;
@@ -760,10 +841,6 @@ fn append_primitive(
         .ok_or("glTF mesh is missing POSITION")?;
     if position.count() > MAX_IMPORTED_VERTICES {
         return Err("glTF mesh exceeds the vertex limit".into());
-    }
-    validate_vector(&position)?;
-    if let Some(normals) = primitive.get(&Semantic::Normals) {
-        validate_vector(&normals)?;
     }
     let indices = primitive.indices();
     if let Some(indices) = &indices {
@@ -782,25 +859,21 @@ fn append_primitive(
         }
     }
 
-    let source_morph = morph
-        .as_ref()
-        .map(|morph| mesh_morph::read_morph(&primitive, buffers, morph.count, position.count()))
-        .transpose()?;
+    let vertex_count = position.count();
     let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(Vec::as_slice));
-    let positions: Vec<_> = reader
-        .read_positions()
-        .ok_or("unable to read glTF positions")?
+    let positions: Vec<_> = attributes
+        .read::<3>(position, vertex_count, Attribute::Position)?
         .map(|point| transform.transform_point(&Point3::from(point)).coords)
         .collect();
     let read_uv = |set| {
         let accessor = primitive
             .get(&Semantic::TexCoords(set))
             .ok_or_else(|| format!("glTF texture requires TEXCOORD_{set}"))?;
-        validate_vertex_attribute(&accessor, &[Dimensions::Vec2], positions.len())?;
-        let coordinates = reader
-            .read_tex_coords(set)
-            .ok_or_else(|| "unable to read glTF texture coordinates".to_owned())?;
-        Ok::<_, String>(coordinates.into_f32().collect::<Vec<_>>())
+        Ok::<_, String>(
+            attributes
+                .read::<2>(accessor, vertex_count, Attribute::Texcoord)?
+                .collect::<Vec<_>>(),
+        )
     };
     // Retain authored coordinates so a later material override can use them.
     let mut uv_sets = uv_sets;
@@ -814,6 +887,12 @@ fn append_primitive(
     }
     let [uv, uv1] = uv_sets.map(|slot| slot.map(read_uv).transpose());
     let (uv, uv1) = (uv?, uv1?);
+    let source_morph = morph
+        .as_ref()
+        .map(|morph| {
+            mesh_morph::read_morph(source, mesh, &primitive, morph.count, vertex_count, uv_sets)
+        })
+        .transpose()?;
     let dedicated =
         if uv_sets.contains(&Some(1)) || primitive.get(&Semantic::TexCoords(1)).is_none() {
             None
@@ -843,9 +922,10 @@ fn append_primitive(
             Ok::<_, String>(colors.into_rgba_f32().collect::<Vec<_>>())
         })
         .transpose()?;
-    let normals = reader
-        .read_normals()
-        .map(|normals| {
+    let normals = primitive
+        .get(&Semantic::Normals)
+        .map(|accessor| {
+            let normals = attributes.read::<3>(accessor, vertex_count, Attribute::Direction)?;
             let inverse = transform
                 .fixed_view::<3, 3>(0, 0)
                 .try_inverse()
@@ -855,9 +935,9 @@ fn append_primitive(
                 .map(|normal| (inverse * Vector3::from(normal)).try_normalize(1e-8))
                 .collect();
             if normals.len() != positions.len() {
-                return Err("glTF normal and position counts differ");
+                return Err("glTF normal and position counts differ".into());
             }
-            Ok(normals)
+            Ok::<_, String>(normals)
         })
         .transpose()?;
     let influences = weights
@@ -869,6 +949,69 @@ fn append_primitive(
         None if indices.is_some() => return Err("unable to read glTF indices".into()),
         None => (0..positions.len()).collect(),
     };
+    let start = vertices.len();
+    let mut append_vertex = |index: usize, point: Vector3<f32>, flat_normal| {
+        if let Some((weights, influences)) = weights.as_mut().zip(influences.as_ref()) {
+            weights.push(influences[index]);
+        }
+        let normal = normals
+            .as_ref()
+            .and_then(|normals| normals[index])
+            .unwrap_or(flat_normal);
+        if chart.is_some() || !lightmap_uv.is_empty() {
+            lightmap_uv.push(chart.map_or([-1.0; 2], |coords| coords[index]));
+        }
+        vertices.push(MeshVertex {
+            position: point.into(),
+            normal: normal.into(),
+            uv: uv.as_ref().map_or([0.0; 2], |coords| coords[index]),
+            uv1: uv1.as_ref().map_or([0.0; 2], |coords| coords[index]),
+            color: colors.as_ref().map_or([1.0; 4], |colors| colors[index]),
+        });
+    };
+    let expanded = match mode {
+        Mode::Points => Some(indices.len()),
+        Mode::Lines if indices.len().is_multiple_of(2) => Some(indices.len()),
+        Mode::LineStrip if indices.len() >= 2 => Some((indices.len() - 1) * 2),
+        Mode::LineLoop if indices.len() >= 2 => Some(indices.len() * 2),
+        Mode::Lines | Mode::LineStrip | Mode::LineLoop => {
+            return Err("glTF primitive contains incomplete lines".into());
+        }
+        Mode::Triangles | Mode::TriangleFan | Mode::TriangleStrip => None,
+    };
+    if let Some(count) = expanded {
+        if count == 0 || start + count > MAX_IMPORTED_VERTICES {
+            return Err("glTF point or line primitive has an invalid expanded vertex count".into());
+        }
+        let source_index = |vertex: usize| {
+            let offset = match mode {
+                Mode::LineStrip | Mode::LineLoop => vertex.div_ceil(2) % indices.len(),
+                _ => vertex,
+            };
+            indices[offset]
+        };
+        for index in (0..count).map(source_index) {
+            let point = *positions
+                .get(index)
+                .ok_or("glTF mesh index is out of bounds")?;
+            if !point.iter().all(|value| value.is_finite()) {
+                return Err("glTF mesh contains an invalid position".into());
+            }
+            if let Some((morph, source)) = morph.as_mut().zip(source_morph.as_ref()) {
+                morph.append_source_vertex(source, index)?;
+            }
+            append_vertex(index, point, Vector3::z());
+        }
+        return mesh_tangents::preserve_authored(
+            &primitive,
+            attributes,
+            transform,
+            normal_coordinates,
+            positions.len(),
+            (0..count).map(source_index),
+            &vertices[start..],
+        );
+    }
     if indices.len() < 3 || mode == Mode::Triangles && !indices.len().is_multiple_of(3) {
         return Err("glTF primitive contains incomplete triangles".into());
     }
@@ -877,11 +1020,10 @@ fn append_primitive(
     } else {
         indices.len() - 2
     };
-    if vertices.len() + count * 3 > MAX_IMPORTED_VERTICES {
+    if start + count * 3 > MAX_IMPORTED_VERTICES {
         return Err("glTF mesh exceeds the triangle limit".into());
     }
     let orientation = transform.fixed_view::<3, 3>(0, 0).determinant().signum();
-    let start = vertices.len();
     let normal_coordinates = normal_coordinates.or_else(|| {
         (primitive.get(&Semantic::Normals).is_some()
             && primitive.get(&Semantic::Tangents).is_some())
@@ -929,30 +1071,14 @@ fn append_primitive(
             )?;
         }
         for (&index, &point) in indices.iter().zip([a, b, c]) {
-            if let Some((weights, influences)) = weights.as_mut().zip(influences.as_ref()) {
-                weights.push(influences[index]);
-            }
-            let normal = normals
-                .as_ref()
-                .and_then(|normals| normals[index])
-                .unwrap_or(flat_normal);
-            if chart.is_some() || !lightmap_uv.is_empty() {
-                lightmap_uv.push(chart.map_or([-1.0; 2], |coords| coords[index]));
-            }
-            vertices.push(MeshVertex {
-                position: point.into(),
-                normal: normal.into(),
-                uv: uv.as_ref().map_or([0.0; 2], |coords| coords[index]),
-                uv1: uv1.as_ref().map_or([0.0; 2], |coords| coords[index]),
-                color: colors.as_ref().map_or([1.0; 4], |colors| colors[index]),
-            });
+            append_vertex(index, point, flat_normal);
         }
     }
     tangent_faces
         .map(|(slot, faces)| {
             mesh_tangents::prepare(
                 &primitive,
-                buffers,
+                attributes,
                 transform,
                 slot,
                 &faces,
@@ -978,16 +1104,6 @@ fn validate_vertex_attribute(
         || accessor.count() != vertices
     {
         return Err("invalid glTF UV or vertex color accessor type or count".into());
-    }
-    validate_accessor(accessor)
-}
-
-fn validate_vector(accessor: &Accessor<'_>) -> Result<(), String> {
-    if accessor.dimensions() != Dimensions::Vec3
-        || accessor.data_type() != DataType::F32
-        || accessor.normalized()
-    {
-        return Err("glTF positions and normals require unnormalized VEC3 floats".into());
     }
     validate_accessor(accessor)
 }

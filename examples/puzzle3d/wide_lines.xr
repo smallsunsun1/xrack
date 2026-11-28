@@ -1,0 +1,79 @@
+struct StrokeVertex { position: point3d }
+struct StrokeDelta { target: string, vertex: int, position: vector3d }
+struct StrokeWeight { vertex: int, joint: int, weight: float }
+struct StrokeJoint { node: string }
+struct StrokeGeometry {
+    vertices: [StrokeVertex], topology: string, morph-deltas: [StrokeDelta], skin-weights: [StrokeWeight],
+}
+struct StrokeWeights { move: float }
+struct StrokeMaterial { unlit: bool, base-color: color, point-size: float, line-width: float }
+struct StrokeActor {
+    id: string, mesh: string, geometry: StrokeGeometry, morph-weights: StrokeWeights, skin-joints: [StrokeJoint],
+    material: StrokeMaterial,
+    x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color,
+    camera-kind: string, camera-height: float,
+}
+struct StrokeLight {
+    kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+    color: color, intensity: float, range: float, inner-angle: float, outer-angle: float,
+}
+
+export component WideLinesDemo inherits Window {
+    title <- "XRack · Line width";
+    width <- 160px;
+    height <- 120px;
+
+    in-out property <float> size: 1;
+    in-out property <float> blend: 0;
+    in-out property <float> end-depth: 0;
+    in-out property <bool> effects: false;
+    property <StrokeActor> defaults <- StrokeActor {
+        id: "", mesh: "", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, color: #fff, camera-kind: "", camera-height: 3,
+        geometry: StrokeGeometry { vertices: [], topology: "", morph-deltas: [], skin-weights: [] },
+        morph-weights: StrokeWeights { move: root.blend }, skin-joints: [],
+        material: StrokeMaterial { unlit: true, base-color: #ff7842, point-size: 5, line-width: root.size },
+    };
+
+    SceneView3D {
+        width <- 160px;
+        height <- 120px;
+        camera <- "eye";
+        scene-background <- #111722;
+        scene-tone-map <- none;
+        temporal-aa <- root.effects;
+        temporal-aa-mode <- "motion-vectors";
+        depth-prepass <- root.effects;
+        shadows <- root.effects;
+        shadow-map-size <- 128;
+        model <- [
+            StrokeActor { id: "eye", z: 4, camera-kind: "orthographic", ..root.defaults },
+            StrokeActor { id: "asset", mesh: @mesh-url("models/point-line-lighting.gltf"), ..root.defaults },
+            StrokeActor { id: "left-joint", y: root.blend * 0.3, ..root.defaults },
+            StrokeActor { id: "right-joint", ..root.defaults },
+            StrokeActor {
+                id: "animated-line",
+                geometry: StrokeGeometry {
+                    vertices: [
+                        StrokeVertex { position: Point3D.new(-0.75, -1.15, 0) },
+                        StrokeVertex { position: Point3D.new(0.75, -1.15, root.end-depth) },
+                    ],
+                    topology: "lines",
+                    morph-deltas: [StrokeDelta { target: "move", vertex: 1, position: Vector3D.new(0, 0.65, 0) }],
+                    skin-weights: [
+                        StrokeWeight { vertex: 0, joint: 0, weight: 1 },
+                        StrokeWeight { vertex: 1, joint: 1, weight: 1 },
+                    ],
+                },
+                skin-joints: [StrokeJoint { node: "left-joint" }, StrokeJoint { node: "right-joint" }],
+                material: StrokeMaterial { unlit: true, base-color: #28f870, point-size: 1, line-width: root.size },
+                ..root.defaults
+            },
+        ];
+        lights <- [StrokeLight {
+            kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0,
+            color: #fff, intensity: 1, range: 0, inner-angle: 18, outer-angle: 40,
+        }];
+    }
+}

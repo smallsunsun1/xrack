@@ -4,14 +4,20 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use xrack_runtime::Node;
 pub(super) use xrack_runtime::scene3d::ViewportEnvironment as EnvironmentInput;
 use xrack_runtime::scene3d::{
     EnvironmentOrientation, EnvironmentProbe, EnvironmentSource, ReflectionProbe, ReflectionSource,
-    SceneObject, SceneVisibility, SkySettings,
+    SceneObject, SceneVisibility, SkyProgram, SkyProgramSettings, SkySettings, SkyShader,
 };
+use xrack_runtime::{Node, RowKey, Value, scene_effect::BufferInput};
 
-use super::{append_floats, buffer, reflection_capture::CapturedCube, sky_cube::SkyGenerator};
+use super::{
+    append_floats, buffer,
+    effect_history::Owner,
+    reflection_capture::CapturedCube,
+    screen_sky::ScreenSkyInput,
+    sky_cube::{SkyGenerator, SkyPrefilter},
+};
 
 pub(super) const SKYBOX_PROPERTIES: [&str; 7] = [
     "skybox-source",
@@ -66,16 +72,37 @@ impl<'a> SkyboxInput<'a> {
             .filter(|value| !value.is_nan())
             .unwrap_or(0.0)
             .clamp(0.0, 1.0);
-        let shares_lighting = inherited.is_some_and(|input| {
-            input.orientation == orientation
-                && input.intensity == intensity
-                && input.horizon == 0.0
-                && blur == 0.0
-        });
+        let screen = matches!(source, EnvironmentSource::Program(program) if program.skybox_mode.screen_divisor().is_some());
+        let shares_lighting = !screen
+            && inherited.is_some_and(|input| {
+                input.orientation == orientation
+                    && input.intensity == intensity
+                    && input.horizon == 0.0
+                    && blur == 0.0
+            });
         Some(Self {
             source,
-            rows: skybox_rows(orientation, intensity, blur * source.last_mip() as f32),
+            rows: skybox_rows(
+                orientation,
+                intensity,
+                if screen {
+                    0.0
+                } else {
+                    blur * source.last_mip() as f32
+                },
+            ),
             shares_lighting,
+        })
+    }
+
+    pub fn screen(&self) -> Option<ScreenSkyInput<'a>> {
+        let EnvironmentSource::Program(program) = self.source else {
+            return None;
+        };
+        Some(ScreenSkyInput {
+            program,
+            basis: self.rows,
+            divisor: program.skybox_mode.screen_divisor()?,
         })
     }
 }
@@ -125,6 +152,12 @@ struct LocalBinding {
 enum EnvironmentIdentity {
     Panorama(Arc<EnvironmentProbe>),
     Sky(SkySettings),
+    Program(
+        Arc<SkyShader>,
+        SkyProgramSettings,
+        Arc<[BufferInput]>,
+        Arc<[[u32; 4]]>,
+    ),
 }
 
 struct ResidentSky {
@@ -134,6 +167,71 @@ struct ResidentSky {
     binding: Option<(LightingSettings, wgpu::BindGroup)>,
     skybox: Option<(SkyboxRows, wgpu::BindGroup)>,
     committed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProgramWork {
+    Background,
+    BlurredBackground,
+    Lighting,
+}
+
+struct SkyFilterJob {
+    gpu: SkyPrefilter,
+    slices: u32,
+    frames: u32,
+    last_frame: Option<u64>,
+}
+
+#[derive(Clone)]
+struct SkyRequest {
+    program: Arc<SkyProgram>,
+    horizon: f32,
+}
+
+#[derive(Clone)]
+struct PublishedSky {
+    settings: SkyRequest,
+    filtered: wgpu::TextureView,
+}
+
+struct SkyViewport {
+    path: Vec<usize>,
+    generation: u64,
+    scope: [Option<RowKey>; 2],
+    frame: u64,
+    request: Option<SkyRequest>,
+    published: Option<PublishedSky>,
+    recorded: Option<PublishedSky>,
+}
+
+impl SkyViewport {
+    fn owns(&self, owner: Owner<'_>) -> bool {
+        self.generation == owner.generation && self.scope == owner.scope && self.path == owner.path
+    }
+
+    fn latest(&self) -> Option<&PublishedSky> {
+        self.recorded.as_ref().or(self.published.as_ref())
+    }
+}
+
+struct ResidentProgram {
+    program: Arc<SkyProgram>,
+    horizon: f32,
+    view: wgpu::TextureView,
+    diffuse: Option<wgpu::Buffer>,
+    filter: Option<SkyFilterJob>,
+    filter_frame: Option<u64>,
+    last_used: u64,
+    binding: Option<(LightingSettings, wgpu::BindGroup)>,
+    skybox: Option<(SkyboxRows, wgpu::BindGroup)>,
+    committed: bool,
+}
+
+impl ResidentProgram {
+    fn matches(&self, program: &SkyProgram, horizon: f32) -> bool {
+        self.horizon == horizon && self.program.same_radiance(program)
+    }
 }
 
 struct MaskedProbe {
@@ -258,21 +356,44 @@ pub(super) struct EnvironmentGpu {
     fallback: wgpu::BindGroup,
     empty_cube: wgpu::TextureView,
     analytic_skybox: Option<(SkySettings, SkyboxRows, wgpu::BindGroup)>,
+    screen_skybox: Option<(SkyboxRows, wgpu::BindGroup)>,
     probes: VecDeque<ResidentProbe>,
     skies: VecDeque<ResidentSky>,
+    programs: VecDeque<ResidentProgram>,
     masked_probes: VecDeque<MaskedProbe>,
     sky_generator: Option<SkyGenerator>,
+    pub sky_programs: super::sky_shader::SkyShaders,
+    sky_viewports: Vec<SkyViewport>,
+    frame: u64,
     local_bindings: VecDeque<LocalBinding>,
     assignments: VecDeque<ProbeAssignment>,
     pub uploads: u64,
     pub sky_generations: u64,
     pub masked_generations: u64,
+    pub sky_filter_slices: u64,
 }
 
 impl EnvironmentGpu {
+    pub fn begin_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        let frame = self.frame;
+        self.sky_viewports
+            .retain(|view| frame.wrapping_sub(view.frame) <= 120);
+        self.programs
+            .retain(|sky| sky.filter.is_none() || frame.wrapping_sub(sky.last_used) <= 1);
+    }
+
     pub fn finish_frame(&mut self, submitted: bool) {
+        for view in &mut self.sky_viewports {
+            if let Some(recorded) = view.recorded.take().filter(|_| submitted) {
+                view.published = Some(recorded);
+            }
+        }
         if submitted {
             for sky in &mut self.skies {
+                sky.committed = true;
+            }
+            for sky in &mut self.programs {
                 sky.committed = true;
             }
             for probe in &mut self.masked_probes {
@@ -280,6 +401,12 @@ impl EnvironmentGpu {
             }
         } else {
             self.skies.retain(|sky| sky.committed);
+            self.programs
+                .retain(|sky| sky.committed && sky.filter_frame != Some(self.frame));
+            // A copy from the GPU's diffuse coefficients may have been discarded.
+            self.local_bindings.retain(|binding| {
+                !matches!(binding.ambient, Some((EnvironmentIdentity::Program(..), _)))
+            });
             self.masked_probes.retain(|probe| probe.committed);
         }
     }
@@ -289,7 +416,12 @@ impl EnvironmentGpu {
             .retain(|entry| entry.captured.as_ref().is_none_or(&live));
     }
 
-    pub fn new(device: &wgpu::Device, layout: wgpu::BindGroupLayout) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        layout: wgpu::BindGroupLayout,
+        images: super::material::SharedImages,
+        native_anisotropy: bool,
+    ) -> Self {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("XRack environment sampler"),
             min_filter: wgpu::FilterMode::Linear,
@@ -299,22 +431,136 @@ impl EnvironmentGpu {
         });
         let empty_cube = cube_texture(device, 1, 1).create_view(&cube_view());
         let bytes = environment_uniforms(None, None);
-        let fallback = bind_probe(device, &layout, &empty_cube, &sampler, &bytes);
+        let fallback = bind_probe(device, &layout, &empty_cube, &sampler, &bytes, None);
         Self {
             layout,
             sampler,
             fallback,
             empty_cube,
             analytic_skybox: None,
+            screen_skybox: None,
             probes: VecDeque::new(),
             skies: VecDeque::new(),
+            programs: VecDeque::new(),
             masked_probes: VecDeque::new(),
             sky_generator: None,
+            sky_programs: super::sky_shader::SkyShaders::new(images, native_anisotropy),
+            sky_viewports: Vec::new(),
+            frame: 0,
             local_bindings: VecDeque::new(),
             assignments: VecDeque::new(),
             uploads: 0,
             sky_generations: 0,
             masked_generations: 0,
+            sky_filter_slices: 0,
+        }
+    }
+
+    pub fn prepare_program(
+        &mut self,
+        (device, queue, encoder): (&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder),
+        node: &Node,
+        owner: Owner<'_>,
+    ) -> (Option<Node>, bool) {
+        let Some(input) = EnvironmentInput::from_node(node) else {
+            return (None, false);
+        };
+        let EnvironmentSource::Program(desired) = input.source else {
+            return (None, false);
+        };
+        let index = self.sky_viewports.iter().position(|view| view.owns(owner));
+        let mut view = index
+            .map(|index| self.sky_viewports.swap_remove(index))
+            .unwrap_or_else(|| SkyViewport {
+                path: owner.path.to_vec(),
+                generation: owner.generation,
+                scope: owner.scope,
+                frame: self.frame,
+                request: None,
+                published: None,
+                recorded: None,
+            });
+        view.frame = self.frame;
+        let latest = SkyRequest {
+            program: Arc::clone(desired),
+            horizon: input.horizon,
+        };
+        // Finish the captured request even while authored values change. The
+        // next job reads the newest request rather than queuing stale edits.
+        if desired.render_frames == 0
+            || self
+                .programs
+                .iter()
+                .any(|entry| entry.matches(desired, latest.horizon) && entry.diffuse.is_some())
+        {
+            view.request = None;
+        }
+        let request = view.request.get_or_insert_with(|| latest.clone()).clone();
+        let program = &request.program;
+        let work = if program.render_frames == 0 {
+            ProgramWork::Lighting
+        } else {
+            ProgramWork::Background
+        };
+        let mut resident =
+            self.resident_program((device, queue, encoder), program, request.horizon, work);
+        if resident.diffuse.is_none() {
+            self.advance_program(device, encoder, &mut resident, program.render_frames);
+        }
+        if resident.diffuse.is_some() {
+            view.recorded = Some(PublishedSky {
+                settings: request.clone(),
+                filtered: resident.view.clone(),
+            });
+            view.request = None;
+        }
+        let ready = view.latest();
+        let current = ready.is_some_and(|ready| {
+            ready.settings.horizon == latest.horizon
+                && ready.settings.program.same_radiance(desired)
+        });
+        let needs_redraw = view.request.is_some() || !current;
+        let staged = (!current).then(|| stage_program_node(node, &input, &latest, ready));
+        self.sky_viewports.push(view);
+        self.retain_program(resident);
+        (staged, needs_redraw)
+    }
+
+    fn advance_program(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        resident: &mut ResidentProgram,
+        frames: u32,
+    ) {
+        let samples = resident.program.settings.samples;
+        let job = resident.filter.get_or_insert_with(|| SkyFilterJob {
+            gpu: SkyPrefilter::new(device, resident.view.clone(), resident.horizon, samples),
+            slices: 0,
+            frames: frames.max(1),
+            last_frame: None,
+        });
+        if job.last_frame == Some(self.frame) {
+            return;
+        }
+        resident.filter_frame = Some(self.frame);
+        job.last_frame = Some(self.frame);
+        let generator = self
+            .sky_generator
+            .get_or_insert_with(|| SkyGenerator::new(device));
+        if job.slices == job.frames {
+            let (filtered, diffuse) = generator.publish(device, encoder, &self.sampler, &job.gpu);
+            resident.view = filtered;
+            resident.diffuse = Some(diffuse);
+            resident.filter = None;
+            resident.binding = None;
+            resident.skybox = None;
+        } else {
+            let first = samples * job.slices / job.frames;
+            job.slices += 1;
+            let end = samples * job.slices / job.frames;
+            generator.accumulate(device, encoder, &self.sampler, &job.gpu, first..end);
+            self.sky_filter_slices += 1;
         }
     }
 
@@ -331,21 +577,40 @@ impl EnvironmentGpu {
         match input.source {
             EnvironmentSource::Panorama(probe) if input.horizon > 0.0 => {
                 let mut entry = self.resident_masked(device, queue, encoder, probe, input.horizon);
-                let binding = self.global_binding(device, input, &entry.view, &mut entry.binding);
+                let binding =
+                    self.global_binding(device, input, &entry.view, &mut entry.binding, None);
                 self.masked_probes.truncate(3);
                 self.masked_probes.push_front(entry);
                 binding
             }
             EnvironmentSource::Panorama(probe) => {
                 let mut entry = self.resident(device, queue, probe);
-                let binding = self.global_binding(device, input, &entry.view, &mut entry.binding);
+                let binding =
+                    self.global_binding(device, input, &entry.view, &mut entry.binding, None);
                 self.retain(entry);
                 binding
             }
             EnvironmentSource::Sky(sky) => {
                 let mut entry = self.resident_sky(device, encoder, sky, input.horizon);
-                let binding = self.global_binding(device, input, &entry.view, &mut entry.binding);
+                let binding =
+                    self.global_binding(device, input, &entry.view, &mut entry.binding, None);
                 self.retain_sky(entry);
+                binding
+            }
+            EnvironmentSource::Program(program) => {
+                let mut entry = self.resident_program(
+                    (device, queue, encoder),
+                    program,
+                    input.horizon,
+                    ProgramWork::Lighting,
+                );
+                let diffuse = entry
+                    .diffuse
+                    .as_ref()
+                    .map(|diffuse| (&mut *encoder, diffuse));
+                let binding =
+                    self.global_binding(device, input, &entry.view, &mut entry.binding, diffuse);
+                self.retain_program(entry);
                 binding
             }
         }
@@ -359,6 +624,12 @@ impl EnvironmentGpu {
         input: Option<&SkyboxInput<'_>>,
     ) -> Option<wgpu::BindGroup> {
         let input = input.filter(|input| !input.shares_lighting)?;
+        if input.screen().is_some() {
+            let mut cached = self.screen_skybox.take();
+            let group = self.skybox_binding(device, input, &self.empty_cube, &mut cached);
+            self.screen_skybox = cached;
+            return Some(group);
+        }
         Some(match input.source {
             EnvironmentSource::Panorama(probe) => {
                 let mut entry = self.resident(device, queue, probe);
@@ -383,6 +654,17 @@ impl EnvironmentGpu {
                 self.retain_sky(entry);
                 group
             }
+            EnvironmentSource::Program(program) => {
+                let work = if input.rows[1][3] > 0.0 {
+                    ProgramWork::BlurredBackground
+                } else {
+                    ProgramWork::Background
+                };
+                let mut entry = self.resident_program((device, queue, encoder), program, 0.0, work);
+                let group = self.skybox_binding(device, input, &entry.view, &mut entry.skybox);
+                self.retain_program(entry);
+                group
+            }
         })
     }
 
@@ -402,7 +684,7 @@ impl EnvironmentGpu {
         bytes.resize(LIGHTING_BYTES, 0); // Lighting is bound separately for draws of geometry.
         append_skybox_uniforms(&mut bytes, Some(input.source), input.rows);
         bytes.resize(UNIFORM_BYTES, 0);
-        let group = bind_probe(device, &self.layout, view, &self.sampler, &bytes);
+        let group = bind_probe(device, &self.layout, view, &self.sampler, &bytes, None);
         *cached = Some((input.rows, group.clone()));
         group
     }
@@ -436,6 +718,92 @@ impl EnvironmentGpu {
             })
     }
 
+    fn resident_program(
+        &mut self,
+        (device, queue, encoder): (&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder),
+        program: &Arc<SkyProgram>,
+        horizon: f32,
+        work: ProgramWork,
+    ) -> ResidentProgram {
+        let index = self
+            .programs
+            .iter()
+            .position(|entry| entry.matches(program, horizon));
+        let old = index.and_then(|index| self.programs.remove(index));
+        let old = match old {
+            Some(entry)
+                if work == ProgramWork::Background
+                    || work == ProgramWork::BlurredBackground
+                        && entry.view.texture().mip_level_count() > 1
+                    || work == ProgramWork::Lighting && entry.diffuse.is_some() =>
+            {
+                return entry;
+            }
+            old => old,
+        };
+        self.sky_generations += 1;
+        let generator = self
+            .sky_generator
+            .get_or_insert_with(|| SkyGenerator::new(device));
+        let radiance = old
+            .as_ref()
+            .filter(|entry| entry.view.texture().mip_level_count() == 1)
+            .map(|entry| entry.view.clone())
+            .unwrap_or_else(|| {
+                super::sky_cube::program_cube(
+                    &mut self.sky_programs,
+                    (device, queue, encoder),
+                    program,
+                )
+            });
+        let diffuse = (work == ProgramWork::Lighting)
+            .then(|| generator.diffuse(device, encoder, &radiance, &self.sampler, horizon));
+        let view = if work == ProgramWork::Background {
+            radiance
+        } else {
+            generator.attenuate(
+                device,
+                encoder,
+                &radiance,
+                &self.sampler,
+                (horizon, program.settings.samples),
+            )
+        };
+        ResidentProgram {
+            program: Arc::clone(program),
+            horizon,
+            view,
+            diffuse,
+            filter: None,
+            filter_frame: None,
+            last_used: self.frame,
+            binding: None,
+            skybox: None,
+            committed: false,
+        }
+    }
+
+    fn retain_program(&mut self, mut entry: ResidentProgram) {
+        entry.last_used = self.frame;
+        self.programs.push_front(entry);
+        // Keep working jobs and the probe currently lighting each view alive.
+        // Only the spare cubes compete for the original four-entry budget.
+        let mut spares = 0;
+        self.programs.retain(|entry| {
+            if entry.filter.is_some()
+                || self
+                    .sky_viewports
+                    .iter()
+                    .any(|view| view.latest().is_some_and(|sky| sky.filtered == entry.view))
+            {
+                true
+            } else {
+                spares += 1;
+                spares <= 4
+            }
+        });
+    }
+
     fn resident_masked(
         &mut self,
         device: &wgpu::Device,
@@ -457,7 +825,7 @@ impl EnvironmentGpu {
                     .sky_generator
                     .get_or_insert_with(|| SkyGenerator::new(device));
                 let view =
-                    generator.attenuate(device, encoder, &source.view, &self.sampler, horizon);
+                    generator.attenuate(device, encoder, &source.view, &self.sampler, (horizon, 0));
                 self.retain(source);
                 self.masked_generations += 1;
                 MaskedProbe {
@@ -482,6 +850,7 @@ impl EnvironmentGpu {
         input: &EnvironmentInput<'_>,
         view: &wgpu::TextureView,
         binding: &mut Option<(LightingSettings, wgpu::BindGroup)>,
+        diffuse: Option<(&mut wgpu::CommandEncoder, &wgpu::Buffer)>,
     ) -> wgpu::BindGroup {
         let settings = LightingSettings::from(input);
         if let Some((cached, group)) = binding
@@ -490,7 +859,7 @@ impl EnvironmentGpu {
             return group.clone();
         }
         let bytes = environment_uniforms(Some(input), None);
-        let group = bind_probe(device, &self.layout, view, &self.sampler, &bytes);
+        let group = bind_probe(device, &self.layout, view, &self.sampler, &bytes, diffuse);
         *binding = Some((settings, group.clone()));
         group
     }
@@ -550,7 +919,7 @@ impl EnvironmentGpu {
 
     pub fn local_bindings(
         &mut self,
-        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        (device, queue, encoder): (&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder),
         ambient: Option<&EnvironmentInput<'_>>,
         probes: &[ReflectionProbe],
         slots: &[u8],
@@ -562,14 +931,28 @@ impl EnvironmentGpu {
             .enumerate()
             .filter(|&(index, slot)| *slot != 0 && visibility.contains(index as u32))
             .fold(0u16, |mask, (_, slot)| mask | (1 << slot));
-        let ambient_key = ambient.map(|input| {
+        let mut coefficients = None;
+        let ambient_key = ambient.and_then(|input| {
             let source = match input.source {
                 EnvironmentSource::Panorama(probe) => {
                     EnvironmentIdentity::Panorama(Arc::clone(probe))
                 }
                 EnvironmentSource::Sky(sky) => EnvironmentIdentity::Sky(sky),
+                EnvironmentSource::Program(program) => {
+                    let resident = self
+                        .programs
+                        .iter()
+                        .find(|entry| entry.matches(program, input.horizon))?;
+                    coefficients = resident.diffuse.clone();
+                    EnvironmentIdentity::Program(
+                        Arc::clone(&program.shader),
+                        program.settings,
+                        Arc::clone(&program.textures),
+                        Arc::clone(&program.uniforms),
+                    )
+                }
             };
-            (source, LightingSettings::from(input))
+            Some((source, LightingSettings::from(input)))
         });
         probes
             .iter()
@@ -606,6 +989,7 @@ impl EnvironmentGpu {
                                     &texture.view,
                                     &self.sampler,
                                     &bytes,
+                                    coefficients.as_ref().map(|buffer| (&mut *encoder, buffer)),
                                 );
                                 self.retain(texture);
                                 group
@@ -616,7 +1000,14 @@ impl EnvironmentGpu {
                                     ambient,
                                     Some((probe, cube.last_mip, sample_origin)),
                                 );
-                                bind_probe(device, &self.layout, &cube.view, &self.sampler, &bytes)
+                                bind_probe(
+                                    device,
+                                    &self.layout,
+                                    &cube.view,
+                                    &self.sampler,
+                                    &bytes,
+                                    coefficients.as_ref().map(|buffer| (&mut *encoder, buffer)),
+                                )
                             }
                         };
                         Some(LocalBinding {
@@ -666,6 +1057,61 @@ impl EnvironmentGpu {
     }
 }
 
+fn stage_program_node(
+    node: &Node,
+    desired: &EnvironmentInput<'_>,
+    latest: &SkyRequest,
+    published: Option<&PublishedSky>,
+) -> Node {
+    let mut staged = node.clone();
+    if node.boolean("environment-skybox", false)
+        && EnvironmentSource::from_node(node, "skybox-sky", "skybox-source").is_none()
+    {
+        // An unblurred backdrop can display the latest radiance without
+        // waiting for the lighting job. Blurred backdrops need complete mips.
+        let screen = matches!(desired.source, EnvironmentSource::Program(program) if program.skybox_mode.screen_divisor().is_some());
+        let blurred = !screen && node.number("skybox-blur").is_some_and(|blur| blur > 0.0);
+        let previous = published.filter(|sky| {
+            blurred
+                && sky.settings.horizon == 0.0
+                && sky.settings.program.skybox_mode.screen_divisor().is_none()
+        });
+        let program = previous.map_or(&latest.program, |sky| &sky.settings.program);
+        staged
+            .properties
+            .insert("skybox-sky", Value::SceneSky(Arc::clone(program)));
+        if previous.is_none() {
+            staged.properties.insert("skybox-blur", Value::Float(0.0));
+        }
+        for (name, value) in ["skybox-yaw", "skybox-pitch", "skybox-roll"]
+            .into_iter()
+            .zip(desired.orientation.radians())
+        {
+            staged
+                .properties
+                .entry(name)
+                .or_insert_with(|| Value::Float(f64::from(value).to_degrees()));
+        }
+        staged
+            .properties
+            .entry("skybox-intensity")
+            .or_insert(Value::Float(f64::from(desired.intensity)));
+    }
+    if let Some(published) = published {
+        staged.properties.insert(
+            "environment-sky",
+            Value::SceneSky(Arc::clone(&published.settings.program)),
+        );
+        staged.properties.insert(
+            "environment-horizon",
+            Value::Float(f64::from(published.settings.horizon)),
+        );
+    } else {
+        staged.properties.remove("environment-sky");
+    }
+    staged
+}
+
 fn environment_uniforms(
     global: Option<&EnvironmentInput<'_>>,
     local: Option<(&ReflectionProbe, u32, [f32; 3])>,
@@ -687,6 +1133,7 @@ fn environment_uniforms(
             })
         }
         EnvironmentSource::Sky(sky) => sky.diffuse(input.horizon),
+        EnvironmentSource::Program(_) => [[0.0; 3]; 9], // Copied from the GPU projection.
     });
     for [r, g, b] in coefficients {
         append_floats(&mut bytes, [r, g, b, 0.0]);
@@ -731,7 +1178,7 @@ fn append_skybox_uniforms(
     rows: SkyboxRows,
 ) {
     let synthetic = source.map_or([[0.0; 4]; 7], |source| match source {
-        EnvironmentSource::Panorama(_) => [[0.0; 4]; 7],
+        EnvironmentSource::Panorama(_) | EnvironmentSource::Program(_) => [[0.0; 4]; 7],
         EnvironmentSource::Sky(sky) => {
             let mut parameters = sky.uniforms();
             parameters[6][1] = 1.0; // Draw the visible sky analytically.
@@ -807,13 +1254,17 @@ fn bind_probe(
     texture: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
     bytes: &[u8],
+    diffuse: Option<(&mut wgpu::CommandEncoder, &wgpu::Buffer)>,
 ) -> wgpu::BindGroup {
-    let settings = buffer(
-        device,
-        "XRack IBL uniforms",
-        bytes,
-        wgpu::BufferUsages::UNIFORM,
-    );
+    let mut usage = wgpu::BufferUsages::UNIFORM;
+    if diffuse.is_some() {
+        usage |= wgpu::BufferUsages::COPY_DST;
+    }
+    let settings = buffer(device, "XRack IBL uniforms", bytes, usage);
+    if let Some((encoder, coefficients)) = diffuse {
+        // The first vec4 holds probe settings. The next nine hold SH coefficients.
+        encoder.copy_buffer_to_buffer(coefficients, 0, &settings, 16, 9 * 16);
+    }
     bind_environment(device, layout, texture, sampler, &settings)
 }
 

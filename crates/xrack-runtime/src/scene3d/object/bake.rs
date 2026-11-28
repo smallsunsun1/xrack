@@ -37,7 +37,7 @@ impl SceneObject {
         material: Option<&MeshMaterial>,
         back_face: bool,
     ) -> Option<BakedSurface> {
-        let triangle = *self.mesh.vertices().as_chunks::<3>().0.get(vertex / 3)?;
+        let triangle = *self.mesh.vertices().get(vertex..)?.first_chunk::<3>()?;
         let vertices = self.pick_pose().deform::<true>(vertex, triangle);
         let interpolate = |value: fn(&MeshVertex) -> [f32; 3]| {
             vertices

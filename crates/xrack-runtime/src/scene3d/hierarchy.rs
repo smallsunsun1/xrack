@@ -202,7 +202,7 @@ pub(crate) fn euler_rotation(angles: [f32; 3]) -> Rotation3<f32> {
 #[doc(hidden)]
 pub enum SceneGeometryInput<'a> {
     Parametric(SceneParametricGeometry<'a>),
-    Triangles(Option<Mesh3D>),
+    Authored(Option<Mesh3D>),
     Text(PreparedText),
 }
 
@@ -472,7 +472,7 @@ impl SceneNodeDefinition<'_> {
     ) -> Option<SceneNode> {
         let weighted = matches!(
             &self.geometry,
-            Some(SceneGeometryInput::Triangles(Some(mesh))) if mesh.influences().is_some()
+            Some(SceneGeometryInput::Authored(Some(mesh))) if mesh.influences().is_some()
         );
         if self.instance_of.is_empty() && weighted != self.skin_joints.is_some() {
             return None;
@@ -509,7 +509,7 @@ impl SceneNodeDefinition<'_> {
         let mut geometry_status = GeometryStatus::Empty;
         let mesh = if self.instance_of.is_empty() {
             match self.geometry {
-                Some(SceneGeometryInput::Triangles(mesh)) => {
+                Some(SceneGeometryInput::Authored(mesh)) => {
                     let mesh = mesh?;
                     renderables.then_some(MeshAsset::Static(mesh))
                 }
@@ -1277,6 +1277,7 @@ pub struct SceneGeometry {
     bounds: Mutex<VecDeque<(u64, crate::Bounds3D)>>,
     instance_addresses: OnceLock<HashMap<[i64; 3], usize>>,
     shared_layers: u64,
+    raster_size: f32,
     trigger_layers: OnceLock<u64>,
     distance_lods: Vec<usize>,
     distance_selections: Mutex<DistanceSelections>,
@@ -1300,11 +1301,13 @@ type DistanceSelections = VecDeque<([f32; 3], Arc<SceneVisibility>)>;
 impl SceneGeometry {
     fn new(objects: Vec<SceneObject>, lod_objects: usize) -> Arc<Self> {
         let mut shared_layers = u64::MAX;
+        let mut raster_size = 0.0_f32;
         let mut distance_lods = Vec::new();
         let mut model_blends = Vec::new();
         let mut lod_fade = false;
         for (index, object) in objects.iter().enumerate() {
             shared_layers &= object.layers;
+            raster_size = raster_size.max(object.mesh.raster_size());
             lod_fade |= object.lod_coverage != 0;
             if object.has_instancing_lod_range() {
                 distance_lods.push(index);
@@ -1320,6 +1323,7 @@ impl SceneGeometry {
             bounds: Mutex::default(),
             instance_addresses: OnceLock::new(),
             shared_layers,
+            raster_size,
             trigger_layers: OnceLock::new(),
             distance_lods,
             distance_selections: Mutex::default(),
@@ -1329,6 +1333,11 @@ impl SceneGeometry {
             lod_objects,
             lod_fade,
         })
+    }
+
+    #[doc(hidden)]
+    pub fn raster_size(&self) -> f32 {
+        self.raster_size
     }
 
     pub fn model_blends(&self) -> &[u32] {
@@ -3882,6 +3891,11 @@ pub(crate) fn prepare_record_scene(
                             }
                             _ => Some(Vec::new()),
                         };
+                        let topology = match geometry.field("topology") {
+                            Some(Value::String(name)) => name.as_str(),
+                            None => "",
+                            _ => return Some(SceneGeometryInput::Authored(None)),
+                        };
                         let model = |name| match geometry.field(name) {
                             Some(Value::RecordList(rows)) => Some(rows.model()),
                             _ => None,
@@ -3892,7 +3906,7 @@ pub(crate) fn prepare_record_scene(
                             mesh_inputs.deformed_geometry(
                                 vertices.model(),
                                 indices,
-                                subsets,
+                                (topology, subsets),
                                 SceneMeshVertex::from_record,
                                 (weights, SceneSkinWeight::from_record),
                                 (deltas, record_morph_delta),
@@ -3901,7 +3915,7 @@ pub(crate) fn prepare_record_scene(
                             mesh_inputs.geometry(
                                 vertices.model(),
                                 indices,
-                                subsets,
+                                (topology, subsets),
                                 SceneMeshVertex::from_record,
                             )
                         }

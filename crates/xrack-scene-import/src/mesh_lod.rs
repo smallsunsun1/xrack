@@ -1,7 +1,9 @@
 //! Offline mesh simplification shared by AOT assets and preview resource loading.
 use std::collections::HashMap;
 
-use xrack_runtime::scene3d::{JointPalette, Mesh3D, MeshAsset, MeshPart, MeshTangent, MeshVertex};
+use xrack_runtime::scene3d::{
+    JointPalette, Mesh3D, MeshAsset, MeshPart, MeshTangent, MeshTopology, MeshVertex,
+};
 
 use crate::mesh_lod_motion::Motion;
 
@@ -94,7 +96,8 @@ impl<'a> PreparedMesh<'a> {
             .parts()
             .iter()
             .map(|part| {
-                (part.vertices.len() >= MIN_TRIANGLES * 3)
+                (part.topology == MeshTopology::Triangles
+                    && part.vertices.len() >= MIN_TRIANGLES * 3)
                     .then(|| PreparedPart::new(mesh, part, min, scale, &motion))
             })
             .collect();
@@ -117,6 +120,8 @@ impl<'a> PreparedMesh<'a> {
                 vertices.extend(original.vertices.clone());
             }
             parts.push(MeshPart {
+                lighting: original.lighting,
+                topology: original.topology,
                 vertices: start..vertices.len(),
                 material: original.material,
                 volume_inverse: original.volume_inverse,
@@ -125,7 +130,7 @@ impl<'a> PreparedMesh<'a> {
         if vertices.len() == mesh.vertices().len() {
             return None;
         }
-        mesh.triangle_subset(&vertices, parts)
+        mesh.primitive_subset(&vertices, parts)
             .map(|mesh| (mesh, result_error))
     }
 }

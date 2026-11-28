@@ -43,7 +43,7 @@ void XrackDialect::initialize() {
 bool isExpression(Operation &op) {
   return isa<LiteralOp, ReadOp, DynamicActionOp, DynamicReadOp, LoaderMountedOp, LoaderExternalStatusOp, ControlReadOp, GeometryReadOp, SceneViewQueryOp, StackReadOp, TreeQueryOp, TreeSelectionKeysOp, ListSelectionKeysOp, ViewIndexOp, ViewCountOp, ListSelectionReadOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, MediaReadOp, TextAcceptsOp, TextValidityOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, MeshLoaderReadOp, FocusReadOp, TextSelectionReadOp, TextCommandAvailableOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ButtonPressedOp, ButtonCheckedOp, RadioCheckedOp, NavigationActiveOp, NavigationIndexOp, NavigationCountOp, ToggleStateReadOp, NumericValueReadOp, ComboStateReadOp, ComboPopupReadOp, RangePositionReadOp, ParamOp, UnaryOp, CastOp,
              ListRowSelectedOp, StringifyOp, BinaryOp, ConcatOp, SelectOp, SolidBrushOp, GradientStopOp,
-             LinearGradientOp, RadialGradientOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, TextureUrlOp, ShaderUrlOp, MaterialShaderUrlOp, InstanceTableUrlOp, ParticleShapeUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, Hit3DArrayOp, PointerButtonsOp, CallOp,
+             LinearGradientOp, RadialGradientOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, TextureUrlOp, ShaderUrlOp, MaterialShaderUrlOp, SkyShaderUrlOp, InstanceTableUrlOp, ParticleShapeUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, Hit3DArrayOp, PointerButtonsOp, CallOp,
              RoundOp, MathFunctionOp, GeometryFunctionOp, PhysicsFunctionOp, Point2DFieldOp, Point3DFieldOp,
              ProjectedPoint3DFieldOp, RenderStats3DFieldOp, Bounds3DFieldOp, MeshAsset3DFieldOp, MeshNode3DFieldOp, WalkResult3DOp, WalkResult3DFieldOp, Hit3DFieldOp, Instance3DFieldOp, InstanceTable3DFieldOp, TextureData2DFieldOp, TextureData3DFieldOp,
              PhysicsContact3DFieldOp, PhysicsContact3DArrayOp, PhysicsHit3DFieldOp, PhysicsHit3DArrayOp,
@@ -105,6 +105,12 @@ LogicalResult InstanceTableUrlOp::verify() {
 LogicalResult MaterialShaderUrlOp::verify() {
   if (getValue().empty())
     return emitOpError("requires a nonempty material shader path");
+  return success();
+}
+
+LogicalResult SkyShaderUrlOp::verify() {
+  if (getValue().empty())
+    return emitOpError("requires a nonempty sky shader path");
   return success();
 }
 
@@ -7268,7 +7274,9 @@ static LogicalResult verifySceneSky(BindOp binding, const Records &records,
     return binding.emitOpError("3D sky input requires a sky record");
   for (const auto &[name, expected] :
        std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
-           {"enabled", "bool"}, {"resolution", "int"},
+           {"enabled", "bool"}, {"resolution", "int"}, {"shader", "string"},
+           {"shader-parameters", "vector3d"}, {"ibl-samples", "int"}, {"ibl-render-frames", "int"},
+           {"skybox-mode", "string"},
            {"sky-horizon-color", "color"}, {"sky-top-color", "color"},
            {"ground-horizon-color", "color"}, {"ground-bottom-color", "color"},
            {"sky-curve", "float"}, {"ground-curve", "float"},
@@ -7278,6 +7286,39 @@ static LogicalResult verifySceneSky(BindOp binding, const Records &records,
            {"sun-angle-min", "float"}, {"sun-angle-max", "float"}}) {
     if (auto type = recordFieldType(records, enums, record.getName(), name); type && *type != expected)
       return binding.emitOpError("invalid 3D sky field ") << name << ", expected " << expected;
+  }
+  if (auto uniforms = recordFieldType(records, enums, record.getName(), "shader-uniforms")) {
+    auto layout = records.find(*uniforms);
+    if (layout == records.end() || enums.contains(*uniforms))
+      return binding.emitOpError("3D sky shader-uniforms requires a record");
+    for (const auto &[name, type] : layout->second)
+      if (!llvm::is_contained(
+              std::initializer_list<llvm::StringRef>{
+                  "bool", "int", "float", "length", "percent", "point2d", "vector2d",
+                  "point3d", "vector3d", "color", "quaternion3d", "transform2d"},
+              llvm::StringRef(type)))
+        return binding.emitOpError("invalid 3D sky uniform ") << name << " of type " << type;
+  }
+  if (auto inputs = recordFieldType(records, enums, record.getName(), "shader-textures")) {
+    auto element = recordListElement(*inputs);
+    if (!element)
+      return binding.emitOpError("3D sky shader-textures requires a record list");
+    auto data = recordFieldType(records, enums, *element, "data");
+    auto texture = recordFieldType(records, enums, *element, "texture");
+    if (data && *data != "texturedata2d" && *data != "texturedata3d")
+      return binding.emitOpError("3D sky shader texture requires a texturedata2d or texturedata3d field named data");
+    if (!data && texture != "string")
+      return binding.emitOpError("3D sky shader texture requires a string texture or texture data");
+    if (recordFieldType(records, enums, *element, "item") || recordFieldType(records, enums, *element, "capture"))
+      return binding.emitOpError("3D sky shader textures use texture assets or direct texture data");
+    for (llvm::StringRef name : {"texture", "color-space", "filter", "min-filter", "mag-filter",
+                                 "mip-filter", "wrap-u", "wrap-v"})
+      if (auto field = recordFieldType(records, enums, *element, name); field && *field != "string")
+        return binding.emitOpError("3D sky shader texture requires a string field named ") << name;
+    if (auto enabled = recordFieldType(records, enums, *element, "enabled"); enabled && *enabled != "bool")
+      return binding.emitOpError("3D sky shader texture requires a bool field named enabled");
+    if (auto anisotropy = recordFieldType(records, enums, *element, "max-anisotropy"); anisotropy && *anisotropy != "int")
+      return binding.emitOpError("3D sky shader texture requires an int field named max-anisotropy");
   }
   return success();
 }
@@ -7292,12 +7333,15 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
           {"enabled", "bool"}, {"vertex-colors", "bool"}, {"base-color", "color"}, {"metalness", "float"},
           {"material-shader", "string"}, {"shader-parameters", "vector3d"}, {"shader-displacement", "float"},
           {"roughness", "float"}, {"glossiness", "float"}, {"material-workflow", "string"},
-          {"emissive-color", "color"}, {"emissive-strength", "float"},
+          {"emissive-color", "color"}, {"emissive-factor", "vector3d"}, {"emissive-strength", "float"},
           {"alpha-mode", "string"}, {"blend-mode", "string"}, {"depth-draw-mode", "string"}, {"cull-mode", "string"}, {"alpha-cutoff", "float"}, {"opacity", "float"},
+          {"sheen-color", "color"}, {"sheen-roughness", "float"},
+          {"iridescence-factor", "float"}, {"iridescence-index-of-refraction", "float"},
+          {"iridescence-thickness-minimum", "float"}, {"iridescence-thickness-maximum", "float"},
           {"height-amount", "float"}, {"min-height-map-samples", "int"}, {"max-height-map-samples", "int"},
           {"invert-opacity-map-value", "bool"}, {"unlit", "bool"}, {"clearcoat", "float"}, {"clearcoat-roughness", "float"},
           {"transmission", "float"}, {"index-of-refraction", "float"},
-          {"occlusion-amount", "float"}, {"specular-amount", "float"},
+          {"occlusion-amount", "float"}, {"specular-amount", "float"}, {"specular-tint", "float"},
           {"specular-color", "color"}, {"thickness", "float"},
           {"attenuation-color", "color"}, {"attenuation-distance", "float"},
           {"dispersion", "float"}, {"anisotropy-strength", "float"},
@@ -7306,7 +7350,7 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
           {"fresnel-bias", "float"}, {"fresnel-scale-bias-enabled", "bool"},
           {"clearcoat-fresnel-power", "float"}, {"clearcoat-fresnel-scale", "float"},
           {"clearcoat-fresnel-bias", "float"}, {"clearcoat-fresnel-scale-bias-enabled", "bool"},
-          {"normal-strength", "float"}, {"clearcoat-normal-strength", "float"}}) {
+          {"point-size", "float"}, {"line-width", "float"}, {"normal-strength", "float"}, {"clearcoat-normal-strength", "float"}}) {
       auto field = recordFieldType(records, enums, material, name);
       if (field && *field != expected)
         return op->emitOpError("invalid 3D material field ") << name << ", expected " << expected;
@@ -7328,7 +7372,7 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
       if (auto enabled = recordFieldType(records, enums, *element, "enabled"); enabled && *enabled != "bool")
         return op->emitOpError("3D material shader texture requires a bool field named enabled");
     }
-    for (llvm::StringRef name : {"base-color-channel", "emissive-channel", "metalness-channel", "roughness-channel", "glossiness-channel", "opacity-channel", "height-channel", "occlusion-channel", "specular-channel", "specular-color-channel", "transmission-channel", "thickness-channel", "clearcoat-channel", "clearcoat-roughness-channel"}) {
+    for (llvm::StringRef name : {"base-color-channel", "emissive-channel", "metalness-channel", "roughness-channel", "glossiness-channel", "opacity-channel", "height-channel", "iridescence-channel", "iridescence-thickness-channel", "sheen-roughness-channel", "occlusion-channel", "specular-channel", "specular-color-channel", "transmission-channel", "thickness-channel", "clearcoat-channel", "clearcoat-roughness-channel"}) {
       if (auto field = recordFieldType(records, enums, material, name);
           field && *field != "string")
         return op->emitOpError("invalid 3D material channel ") << name << ", expected string";
@@ -7343,7 +7387,8 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
           field && *field != "string")
         return op->emitOpError("invalid 3D vertex mask channel ") << name << ", expected string";
     }
-    for (llvm::StringRef name : {"base-item", "specular-reflection-item", "base-color-map", "opacity-map", "height-map", "metallic-roughness-map", "metalness-map",
+    for (llvm::StringRef name : {"base-item", "specular-reflection-item", "base-color-map", "opacity-map", "height-map", "iridescence-map", "iridescence-thickness-map",
+                               "sheen-color-map", "sheen-roughness-map", "metallic-roughness-map", "metalness-map",
                                "roughness-map", "glossiness-map",
                                "emissive-map", "occlusion-map", "normal-map",
                                "clearcoat-map", "clearcoat-roughness-map",
@@ -7604,6 +7649,12 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
           return failure();
         tangentMorph = recordFieldType(records, enums, *delta, "tangent").has_value();
         binormalMorph = recordFieldType(records, enums, *delta, "binormal").has_value();
+      }
+      if (auto topology = recordFieldType(records, enums, *geometry, "topology")) {
+        if (*topology != "string")
+          return op->emitOpError("3D geometry topology requires string");
+        if (!recordFieldType(records, enums, *geometry, "vertices"))
+          return op->emitOpError("3D geometry topology requires vertices");
       }
       if (auto vertices = recordFieldType(records, enums, *geometry, "vertices")) {
         if (recordFieldType(records, enums, *geometry, "shape"))

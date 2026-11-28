@@ -557,7 +557,7 @@ bool staticValue(Value value, llvm::DenseMap<Value, bool> &known) {
     return found->second;
   auto *definition = value.getDefiningOp();
   bool result =
-      isa_and_nonnull<LiteralOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, TextureUrlOp, ShaderUrlOp, MaterialShaderUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp,
+      isa_and_nonnull<LiteralOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, TextureUrlOp, ShaderUrlOp, MaterialShaderUrlOp, SkyShaderUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp,
                       MarkdownOp, SolidBrushOp, GradientStopOp, LinearGradientOp,
                       RadialGradientOp, MakeFontOp, MakeDateOp, MakeTimeOp,
                       MakeRecordOp>(definition) &&

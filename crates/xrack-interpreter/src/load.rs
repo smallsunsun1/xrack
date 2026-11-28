@@ -1970,6 +1970,7 @@ impl<'m> Loader<'m> {
             "xr.material_shader_url" => Expression::Literal(Value::String(
                 runtime::material_shader::resource_key(spelling()?),
             )),
+            "xr.sky_shader_url" => Expression::Literal(Value::String(spelling()?.to_owned())),
             "xr.shader_url" => Expression::Literal(Value::String(
                 self.assets
                     .effects

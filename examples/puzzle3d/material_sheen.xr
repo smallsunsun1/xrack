@@ -1,0 +1,120 @@
+struct SheenMap {
+    data: texturedata2d, mag-filter: string, min-filter: string, mip-filter: string,
+}
+
+struct Fabric {
+    enabled: bool, base-color: color, metalness: float, roughness: float,
+    sheen-color: color, sheen-roughness: float,
+    sheen-color-map: SheenMap, sheen-roughness-map: SheenMap, sheen-roughness-channel: string,
+    clearcoat: float, clearcoat-roughness: float, iridescence-factor: float,
+}
+
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    visible: bool,
+    camera-kind: string, camera-height: float, color: color, material: Fabric,
+}
+
+struct Lamp {
+    kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+    intensity: float, color: color, range: float, inner-angle: float, outer-angle: float,
+}
+
+struct StudioSky {
+    enabled: bool, sky-top-color: color, sky-horizon-color: color, sun-energy: float,
+}
+
+export component MaterialSheenDemo inherits Window {
+    title <- "XRack · 织物光泽"; width <- 480px; height <- 338px;
+    background <- #162337; resizable <- false;
+
+    in-out property <bool> sheen-enabled: true;
+    in-out property <bool> use-maps: false;
+    in-out property <bool> use-gltf: false;
+    in-out property <bool> use-probe: false;
+    in-out property <bool> use-light: true;
+    in-out property <float> sheen-roughness: 1;
+    in-out property <float> angle: 65;
+    in-out property <float> clearcoat: 0;
+    in-out property <float> film-strength: 0;
+    in-out property <string> roughness-channel: "a";
+    in-out property <string> debug-mode: "none";
+
+    property <texturedata2d> empty-map;
+    property <texturedata2d> strips <- TextureData2D.rgba8(4, 1, [
+        224, 48, 32, 255, 102, 102, 102, 0, 64, 208, 32, 224, 40, 60, 230, 128,
+    ]);
+    property <SheenMap> stripes <- SheenMap {
+        data: root.use-maps ? root.strips : root.empty-map,
+        mag-filter: "nearest", min-filter: "nearest", mip-filter: "none",
+    };
+    property <Fabric> fabric <- Fabric {
+        enabled: true, base-color: #262331, metalness: 0, roughness: 0.55,
+        sheen-color: root.sheen-enabled ? #fff : #000, sheen-roughness: root.sheen-roughness,
+        sheen-color-map: root.stripes, sheen-roughness-map: root.stripes,
+        sheen-roughness-channel: root.roughness-channel,
+        clearcoat: root.clearcoat, clearcoat-roughness: 0.4, iridescence-factor: root.film-strength,
+    };
+    property <Actor> card <- Actor {
+        id: "", x: 0, y: 0, z: 0, mesh: "primitive:rectangle",
+        scale-x: 2.4, scale-y: 2.2, scale-z: 1, yaw: root.angle, pitch: 0, roll: 0, visible: true,
+        camera-kind: "", camera-height: 3.6, color: #fff, material: root.fabric,
+    };
+
+    view := SceneView3D {
+        width <- 480px; height <- 230px; camera <- "eye"; scene-background <- #293b52;
+        scene-tone-map <- none; cache-rendering <- true; ambient-intensity <- 0;
+        material-debug <- root.debug-mode;
+        lights <- [
+            Lamp {
+                kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0,
+                intensity: root.use-light ? 2 : 0, color: #fff, range: 0, inner-angle: 18, outer-angle: 40,
+            },
+        ];
+        environment-sky <- StudioSky {
+            enabled: root.use-probe, sky-top-color: #a8c1e6, sky-horizon-color: #b0b5c4, sun-energy: 0,
+        };
+        model <- [
+            Actor { id: "eye", mesh: "", z: 7, yaw: 0, camera-kind: "orthographic", ..root.card },
+            Actor {
+                id: "fabric", x: -1.0,
+                mesh: root.use-gltf ? @mesh-url("models/sheen-panel.gltf") : "primitive:rectangle",
+                material: Fabric { enabled: !root.use-gltf, ..root.fabric },
+                ..root.card
+            },
+            Actor { id: "base", x: 1.0, material: Fabric { sheen-color: #000, ..root.fabric }, ..root.card },
+        ];
+    }
+
+    fabric-toggle := CheckBox {
+        x <- 12px; y <- 237px; width <- 99px; height <- 28px;
+        text <- "织物光泽"; checked <-> root.sheen-enabled;
+    }
+    fabric-maps := CheckBox {
+        x <- 116px; y <- 237px; width <- 80px; height <- 28px;
+        text <- "贴图"; checked <-> root.use-maps;
+    }
+    fabric-import := CheckBox {
+        x <- 200px; y <- 237px; width <- 84px; height <- 28px;
+        text <- "glTF"; checked <-> root.use-gltf;
+    }
+    fabric-light := CheckBox {
+        x <- 287px; y <- 237px; width <- 90px; height <- 28px;
+        text <- "直射光"; checked <-> root.use-light;
+    }
+    fabric-probe := CheckBox {
+        x <- 378px; y <- 237px; width <- 90px; height <- 28px;
+        text <- "环境光"; checked <-> root.use-probe;
+    }
+    Label { x <- 12px; y <- 268px; width <- 76px; height <- 28px; text <- "粗糙度"; }
+    Slider {
+        x <- 91px; y <- 268px; width <- 371px; height <- 28px;
+        minimum <- 0; maximum <- 1; step <- 0.01; value <-> root.sheen-roughness;
+    }
+    Label { x <- 12px; y <- 300px; width <- 76px; height <- 28px; text <- "板面角度"; }
+    Slider {
+        x <- 91px; y <- 300px; width <- 371px; height <- 28px;
+        minimum <- 0; maximum <- 80; step <- 1; value <-> root.angle;
+    }
+}

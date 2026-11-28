@@ -95,7 +95,7 @@ pub(crate) const FUNCTIONS: &[BuiltinFunction] = &[
         name: "@texture-url",
         parameters: &["path: string literal"],
         result: Some("string"),
-        documentation: "Prepares a PNG or JPEG for a 3D material or post-effect input, or a KTX/KTX2 cubemap for a shader input. The path is relative to the source file. Materials and effects can share the uploaded texture.",
+        documentation: "Prepares a PNG, JPEG, still WebP, or 2D KTX2 with GPU blocks or Basis Universal for a 3D material or post-effect input. KTX/KTX2 cubemaps can be used in shader inputs. The path is relative to the source file. Materials and effects can share the uploaded texture.",
     },
     BuiltinFunction {
         name: "@shader-url",
@@ -108,6 +108,12 @@ pub(crate) const FUNCTIONS: &[BuiltinFunction] = &[
         parameters: &["path: string literal"],
         result: Some("string"),
         documentation: "Validates a WGSL material shader relative to the source file. Use the returned key in a model material or a scene-captures override-material. For scene-captures augment-shader, define scene_capture_augment(input: XrMaterialInput, surface: XrMaterialSurface, index: u32) -> vec4<f32> in a separate WGSL file. capture_augment_parameters() reads the capture record's augment-parameters vector. capture_augment_texture(index, uv), capture_augment_texture_lod(index, uv, lod) and capture_augment_texture_world_position(index, uv) read its augment-textures. Material inputs can use material_texture_lod(index, uv, lod) for 2D textures and material_cubemap_lod(index, direction, lod) for KTX cubemaps. Use material_volume(index, uvw) for TextureData3D. The material_texture_grad and capture_augment_texture_grad helpers accept explicit UV gradients and respect max-anisotropy. UV gradients are available as input.uv0_dx, input.uv0_dy, input.uv1_dx and input.uv1_dy. Optional hooks are scene_material(input: XrMaterialInput, surface: XrMaterialSurface) -> XrMaterialSurface, scene_vertex(input: XrVertexInput) -> vec3<f32>, scene_light(input: XrLightInput, response: XrLightResponse) -> XrLightResponse and scene_ambient(input: XrAmbientInput, diffuse: vec3<f32>) -> vec3<f32>. Lighting hooks apply to lit materials. A vertex program uses a positive shader-displacement bound. Both inputs expose instance_data, instance_index and instance_color. XrVertexInput.instance_transform is the instance world matrix. In a fragment hook, material_texture_world_position(index, uv) reconstructs position from a named depth attachment.",
+    },
+    BuiltinFunction {
+        name: "@sky-shader-url",
+        parameters: &["path: string literal"],
+        result: Some("string"),
+        documentation: "Validates a WGSL sky shader relative to the source. Set the sky record's shader field to this key, and implement scene_sky(direction: vec3<f32>, parameters: vec3<f32>) -> vec3<f32>. The direction is normalized and the result is scene-linear HDR radiance. shader-parameters supplies the second argument. Declare struct SkyUniforms and call sky_uniforms() to read the shader-uniforms record by name. shader-textures supplies image, cubemap and volume slots for sky_texture, sky_cubemap and sky_volume. Each helper has a _lod form for explicit mip level sampling.",
     },
     BuiltinFunction {
         name: "@instance-table-url",

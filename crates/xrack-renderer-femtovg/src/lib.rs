@@ -78,8 +78,20 @@ struct PaintFrame<'a> {
     theme: Palette,
     cleared_background: Option<&'a ClearBackground<'a>>,
     /// Complete paint groups to replay, bounded in physical pixels.
-    damage: Option<DamageRegions>,
+    damage: Option<PaintDamage<'a>>,
     prepared_layout: Option<&'a Rc<LayoutNode>>,
+}
+
+#[derive(Clone, Copy)]
+struct PaintDamage<'a> {
+    regions: DamageRegions,
+    replay: Option<&'a window_damage::PaintReplay<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct PaintChild {
+    index: usize,
+    flush_before: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -443,6 +455,10 @@ impl RenderDevice {
         };
         required_features |=
             features & (wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::FLOAT32_BLENDABLE);
+        required_features |= features
+            & (wgpu::Features::TEXTURE_COMPRESSION_BC
+                | wgpu::Features::TEXTURE_COMPRESSION_ETC2
+                | wgpu::Features::TEXTURE_COMPRESSION_ASTC);
         // Timestamp queries are only recorded when viewport statistics are enabled.
         required_features |= features & wgpu::Features::TIMESTAMP_QUERY;
         let normalized_targets = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
@@ -1258,13 +1274,13 @@ impl Renderer {
                     .as_ref()
                     .map_or(theme.window, |background| background.color),
             );
-            if let Some(regions) = frame.damage {
+            if let Some(damage) = frame.damage {
                 for &DamageRect {
                     x,
                     y,
                     width,
                     height,
-                } in regions.rectangles()
+                } in damage.regions.rectangles()
                 {
                     self.canvas.clear_rect(x, y, width, height, clear);
                 }
@@ -1809,7 +1825,7 @@ impl Renderer {
         {
             // Large opaque surfaces no longer expand the damage plan.
             // Keep each fill's original geometry and restrict its writes.
-            for rect in damage.rectangles() {
+            for rect in damage.regions.rectangles() {
                 let clip = rect.as_rect().scaled(1.0 / frame.scale).intersect(content);
                 if clip.width <= 0.0 || clip.height <= 0.0 {
                     continue;
@@ -2961,12 +2977,33 @@ impl Renderer {
                         && child.opacity() == 1.0
                         && !child.boolean("cache-rendering-hint", false))
         };
+        let selected = frame
+            .damage
+            .and_then(|damage| damage.replay)
+            .filter(|_| !self.using_capture_canvas())
+            .map(|replay| {
+                replay
+                    .get(path.as_slice())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+            });
         let children = layout
             .children_in_paint_order_trimming_edges(node, cull_clipped_children, |child, item| {
                 !item.visible || clipped(child, item)
             })
             .filter(|(index, _, _)| Some(*index) != thumb_index)
-            .chain(thumb);
+            .chain(thumb)
+            .take(if selected.is_some() { 0 } else { usize::MAX })
+            .map(|(index, node, layout)| (index, node, layout, false))
+            .chain(selected.into_iter().flatten().filter_map(|child| {
+                let index = child.index;
+                Some((
+                    index,
+                    node.child_at(index)?,
+                    layout.child_at(index)?,
+                    child.flush_before,
+                ))
+            }));
         // The color-atlas shader does not inherit the canvas's global alpha.
         let transform = canvas_transform(&self.canvas);
         let axis_aligned = offset.is_none()
@@ -3039,7 +3076,10 @@ impl Renderer {
                     self.canvas.width() as f32,
                     self.canvas.height() as f32,
                 );
-        for (i, node, layout) in children {
+        for (i, node, layout, flush_before) in children {
+            if flush_before {
+                display.submit(self)?;
+            }
             // Hidden branches emit no commands and cannot break a batch.
             if !layout.visible
                 || node.scene_texture_only()
@@ -3246,16 +3286,17 @@ impl Renderer {
         };
         let area = xrack_layout::text_editor_viewport(node, layout.bounds);
         let clip = area.intersect(layout.clip);
-        if !pixel_aligned(area, frame.scale) {
-            return false;
-        }
         if clip.width <= 0.0 || clip.height <= 0.0 {
             // A viewport can expose cell padding without exposing any text.
             // An empty pixel-aligned scissor emits nothing and leaves the
             // neighboring rows in the same glyph batch.
-            return pixel_aligned(layout.clip, frame.scale);
+            return pixel_aligned(area, frame.scale) && pixel_aligned(layout.clip, frame.scale);
         }
-        if !pixel_aligned(clip, frame.scale) {
+        // The desktop text batch checks fractional scissor coverage and
+        // retains per-run clipping for glyphs near the edges.
+        if cfg!(any(target_os = "android", target_os = "ios"))
+            && !(pixel_aligned(area, frame.scale) && pixel_aligned(clip, frame.scale))
+        {
             return false;
         }
         let text::CellPaint { paint, fonts } = row_paint.get_or_init(|| {

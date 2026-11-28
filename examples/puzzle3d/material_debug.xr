@@ -6,12 +6,20 @@ struct ScalarMap {
     data: texturedata2d, uv-set: int, uv-offset-u: float, wrap-u: string,
     mag-filter: string, min-filter: string, mip-filter: string,
 }
+struct FilmMap {
+    data: texturedata2d, mag-filter: string, min-filter: string, mip-filter: string,
+}
 struct Style {
+    enabled: bool,
     base-color: color, roughness: float, metalness: float,
     metallic-roughness-map: texturedata2d, metalness-map: ScalarMap, roughness-map: texturedata2d,
     metalness-channel: string, roughness-channel: string,
     specular-reflection-map: ReflectionMap, specular-reflection-item: string,
-    emissive-color: color, emissive-strength: float, occlusion-strength: float,
+    specular-tint: float,
+    iridescence-factor: float, iridescence-index-of-refraction: float,
+    iridescence-thickness-minimum: float, iridescence-thickness-maximum: float,
+    iridescence-map: FilmMap, iridescence-thickness-map: FilmMap, iridescence-thickness-channel: string,
+    emissive-color: color, emissive-factor: vector3d, emissive-strength: float, occlusion-strength: float,
     clearcoat: float, clearcoat-roughness: float, alpha-mode: string,
     material-shader: string, shader-parameters: vector3d,
 }
@@ -31,7 +39,7 @@ struct Lamp {
 struct Feed { name: string, camera: string }
 
 export component MaterialDebugDemo inherits Window {
-    title <- "XRack · 材质调试"; width <- 480px; height <- 416px;
+    title <- "XRack · 材质调试"; width <- 480px; height <- 500px;
     background <- #172437; resizable <- false;
     in-out property <int> mode: 0;
     in-out property <bool> effects: false;
@@ -43,6 +51,16 @@ export component MaterialDebugDemo inherits Window {
     in-out property <bool> warm-reflection: true;
     in-out property <float> reflection-offset: 0.125;
     in-out property <bool> reflection-sky: false;
+    in-out property <float> base-metalness: 0;
+    in-out property <float> specular-tint: 0;
+    in-out property <vector3d> emissive-factor: Vector3D.new(0, 0, 0);
+    in-out property <float> emission-strength: 1;
+    in-out property <float> film-strength: 0;
+    in-out property <float> film-ior: 1.3;
+    in-out property <float> film-thickness: 400;
+    in-out property <bool> film-maps: false;
+    in-out property <bool> film-imported: false;
+    in-out property <string> film-thickness-channel: "g";
     in-out property <bool> use-packed-map: false;
     in-out property <bool> use-metalness-map: false;
     in-out property <bool> use-roughness-map: false;
@@ -58,15 +76,21 @@ export component MaterialDebugDemo inherits Window {
     property <texturedata2d> packed-map <- TextureData2D.rgba8(1, 1, [0, 160, 80, 255]);
     property <texturedata2d> metal-map <- TextureData2D.rgba8(2, 1, [64, 0, 96, 255, 64, 0, 224, 255]);
     property <texturedata2d> matte-map <- TextureData2D.rgba8(1, 1, [32, 224, 0, 255]);
+    property <texturedata2d> film-data <- TextureData2D.rgba8(2, 1, [0, 0, 0, 255, 255, 255, 0, 255]);
+    property <FilmMap> film-map <- FilmMap {
+        data: root.film-maps ? root.film-data : root.empty-map,
+        mag-filter: "nearest", min-filter: "nearest", mip-filter: "none",
+    };
     property <[string]> modes: [
         "none", "base-color", "roughness", "metalness", "emission", "ambient-occlusion",
         "normals", "tangents", "binormals", "f0", "diffuse", "specular", "shadow-occlusion"
     ];
 
     property <Style> stock <- Style {
+        enabled: true,
         base-color: #c08040,
         roughness: root.use-packed-map || root.use-roughness-map ? 0.5 : 0.25,
-        metalness: root.use-packed-map || root.use-metalness-map ? 0.8 : 0,
+        metalness: root.use-packed-map || root.use-metalness-map ? 0.8 : root.base-metalness,
         metallic-roughness-map: root.use-packed-map ? root.packed-map : root.empty-map,
         metalness-map: ScalarMap {
             data: root.use-metalness-map ? root.metal-map : root.empty-map,
@@ -75,7 +99,13 @@ export component MaterialDebugDemo inherits Window {
         },
         roughness-map: root.use-roughness-map ? root.matte-map : root.empty-map,
         metalness-channel: root.metalness-channel, roughness-channel: root.roughness-channel,
-        emissive-color: #000, emissive-strength: 1, occlusion-strength: 1,
+        specular-tint: root.specular-tint,
+        iridescence-factor: root.film-strength, iridescence-index-of-refraction: root.film-ior,
+        iridescence-thickness-minimum: 100, iridescence-thickness-maximum: root.film-thickness,
+        iridescence-map: root.film-map, iridescence-thickness-map: root.film-map,
+        iridescence-thickness-channel: root.film-thickness-channel,
+        emissive-color: #000, emissive-factor: root.emissive-factor,
+        emissive-strength: root.emission-strength, occlusion-strength: 1,
         clearcoat: 0, clearcoat-roughness: 0.25, alpha-mode: "opaque",
         specular-reflection-map: ReflectionMap {
             data: root.empty-map, uv-offset-u: 0, mag-filter: "nearest", mip-filter: "none",
@@ -114,7 +144,9 @@ export component MaterialDebugDemo inherits Window {
             Actor { id: "eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.card },
             Actor {
                 id: "stock", x: -1.4,
+                mesh: root.film-imported ? @mesh-url("models/iridescence-panel.gltf") : "primitive:rectangle",
                 material: Style {
+                    enabled: !root.film-imported,
                     specular-reflection-map: ReflectionMap {
                         data: root.material-reflection ? root.reflection-colors : root.empty-map,
                         uv-offset-u: root.reflection-offset,
@@ -209,4 +241,32 @@ export component MaterialDebugDemo inherits Window {
         clicked => { root.reflection-offset = root.reflection-offset == 0.125 ? 0.375 : 0.125; }
     }
 
+    Label { x <- 12px; y <- 422px; width <- 101px; height <- 28px; text <- "高光底色比例"; }
+    specular-tint-control := Slider {
+        x <- 115px; y <- 422px; width <- 168px; height <- 28px;
+        minimum <- 0; maximum <- 1; step <- 0.05; value <-> root.specular-tint;
+    }
+    emission-toggle := Button {
+        x <- 311px; y <- 422px; width <- 153px; height <- 28px; text <- "切换发光向量";
+        clicked => {
+            root.emissive-factor = root.emissive-factor.x > 0
+                ? Vector3D.new(0, 0, 0) : Vector3D.new(0.75, 0.0, 0.25);
+        }
+    }
+    iridescence-toggle := Button {
+        x <- 12px; y <- 464px; width <- 110px; height <- 28px; text <- "薄膜虹彩";
+        clicked => { root.film-strength = root.film-strength > 0 ? 0 : 1; }
+    }
+    iridescence-thickness := Slider {
+        x <- 132px; y <- 464px; width <- 132px; height <- 28px;
+        minimum <- 0; maximum <- 800; step <- 10; value <-> root.film-thickness;
+    }
+    iridescence-map-toggle := CheckBox {
+        x <- 270px; y <- 464px; width <- 96px; height <- 28px;
+        text <- "虹彩贴图"; checked <-> root.film-maps;
+    }
+    iridescence-import-toggle := CheckBox {
+        x <- 375px; y <- 464px; width <- 90px; height <- 28px;
+        text <- "glTF"; checked <-> root.film-imported;
+    }
 }

@@ -1705,6 +1705,8 @@ pub enum Value {
     #[doc(hidden)]
     SceneLights(Arc<scene3d::SceneLightModel>),
     SceneEnvironment(Option<Arc<scene3d::EnvironmentProbe>>),
+    #[doc(hidden)]
+    SceneSky(Arc<scene3d::SkyProgram>),
     SceneReflections(Arc<[scene3d::ReflectionProbe]>),
     #[doc(hidden)]
     PhysicsDebugLines(PhysicsDebugLines),
@@ -3164,6 +3166,12 @@ impl Node {
     #[doc(hidden)]
     pub fn same_own_paint_except_background(&self, other: &Self) -> bool {
         self.same_own_paint_where(other, |name| name != "background")
+    }
+
+    /// Compare paint inputs for a rectangle whose position or background changed.
+    #[doc(hidden)]
+    pub fn same_own_paint_except_position_and_background(&self, other: &Self) -> bool {
+        self.same_own_paint_where(other, |name| !matches!(name, "x" | "y" | "background"))
     }
 
     fn same_own_paint_where(&self, other: &Self, keep: impl Fn(&str) -> bool) -> bool {

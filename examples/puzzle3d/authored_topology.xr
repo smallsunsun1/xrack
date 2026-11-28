@@ -1,0 +1,66 @@
+struct DrawVertex { position: point3d }
+struct DrawSubset { offset: int, count: int, name: string }
+struct DrawMesh { vertices: [DrawVertex], indices: [int], topology: string, subsets: [DrawSubset] }
+struct DrawMaterial { unlit: bool, base-color: color }
+struct DrawActor {
+    id: string, geometry: DrawMesh, material: DrawMaterial,
+    x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color,
+    camera-kind: string, camera-height: float,
+}
+
+export component AuthoredTopologyDemo inherits Window {
+    title <- "XRack · Authored mesh topology";
+    width <- 180px;
+    height <- 132px;
+    in-out property <string> topology: "line-loop";
+    in-out property <bool> split: true;
+    in-out property <string> left-slot: "left";
+    in-out property <[DrawVertex]> vertices: [
+        DrawVertex { position: Point3D.new(-1.6, -0.63, 0) },
+        DrawVertex { position: Point3D.new(-0.3, -0.63, 0) },
+        DrawVertex { position: Point3D.new(-1.0, 0.7, 0) },
+        DrawVertex { position: Point3D.new(0.35, -0.53, 0) },
+        DrawVertex { position: Point3D.new(1.62, -0.63, 0) },
+        DrawVertex { position: Point3D.new(1.0, 0.72, 0) },
+    ];
+    in-out property <[int]> indices: [0, 1, 2, 3, 4, 5];
+    callback change-index(int);
+    change-index(index) => { Model.set(root.indices, 2, index); }
+
+    property <[DrawSubset]> no-subsets: [];
+    property <DrawMesh> mesh <- DrawMesh {
+        vertices: root.vertices,
+        indices: root.indices,
+        topology: root.topology,
+        subsets: root.split ? [
+            DrawSubset { offset: 0, count: 3, name: root.left-slot },
+            DrawSubset { offset: 3, count: 3, name: "right" },
+        ] : root.no-subsets,
+    };
+    property <DrawActor> defaults <- DrawActor {
+        id: "", geometry: root.mesh, material: DrawMaterial { unlit: true, base-color: #4df79a },
+        x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
+        camera-kind: "", camera-height: 3,
+    };
+    property <[DrawActor]> world <- [
+        DrawActor {
+            id: "eye", z: 4, camera-kind: "orthographic",
+            geometry: DrawMesh { vertices: [], indices: [], topology: "", subsets: [] },
+            ..root.defaults
+        },
+        DrawActor { id: "drawing", ..root.defaults },
+    ];
+    out property <hit3d> picked <- Scene3D.ray-hit(root.world,
+        Point3D.new(-1, 0, 3), Vector3D.new(0, 0, -1), 6);
+
+    SceneView3D {
+        width <- 180px;
+        height <- 132px;
+        model <- root.world;
+        camera <- "eye";
+        scene-background <- #121720;
+        scene-tone-map <- none;
+    }
+}

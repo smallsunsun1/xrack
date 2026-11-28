@@ -884,7 +884,7 @@ impl Shadows {
                 &bytes,
                 wgpu::BufferUsages::UNIFORM,
             );
-            let globals = pipelines.camera_group(ctx.device, &camera);
+            let globals = pipelines.camera_group(ctx.device, &camera, [tile.size; 2]);
             let mut pass = crate::viewport_gpu_timing::render_pass(
                 ctx.encoder,
                 &wgpu::RenderPassDescriptor {

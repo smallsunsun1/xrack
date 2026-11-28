@@ -35,10 +35,21 @@ impl Deformation {
     pub fn morph(self) -> bool {
         matches!(self, Self::Morph | Self::SkinMorph)
     }
+
+    pub fn pipeline_index(self, wide_lines: bool) -> usize {
+        self as usize + 4 * usize::from(wide_lines)
+    }
+
+    pub fn at_pipeline(index: usize) -> (Self, bool) {
+        (Self::ALL[index % 4], index >= 4)
+    }
 }
 
 #[derive(Clone)]
-pub(super) struct DeformationLayouts([wgpu::BindGroupLayout; 3]);
+pub(super) struct DeformationLayouts {
+    ordinary: [wgpu::BindGroupLayout; 3],
+    wide: [wgpu::BindGroupLayout; 4],
+}
 
 impl DeformationLayouts {
     pub fn new(device: &wgpu::Device) -> Self {
@@ -52,16 +63,23 @@ impl DeformationLayouts {
             },
             count: None,
         };
-        Self(std::array::from_fn(|index| {
-            let mode = Deformation::ALL[index + 1];
+        let layout = |mode: Deformation, wide: bool| {
             let mut entries = Vec::new();
             if mode.skin() {
                 entries.push(entry(0, wgpu::BufferBindingType::Uniform));
             }
             if mode.morph() {
                 entries.push(entry(1, wgpu::BufferBindingType::Uniform));
+                for binding in [2, 3] {
+                    entries.push(entry(
+                        binding,
+                        wgpu::BufferBindingType::Storage { read_only: true },
+                    ));
+                }
+            }
+            if wide {
                 entries.push(entry(
-                    2,
+                    4,
                     wgpu::BufferBindingType::Storage { read_only: true },
                 ));
             }
@@ -69,23 +87,42 @@ impl DeformationLayouts {
                 label: Some("XRack glTF deformation layout"),
                 entries: &entries,
             })
-        }))
+        };
+        Self {
+            ordinary: std::array::from_fn(|index| layout(Deformation::ALL[index + 1], false)),
+            wide: Deformation::ALL.map(|mode| layout(mode, true)),
+        }
     }
 
     pub fn get(&self, mode: Deformation) -> Option<&wgpu::BindGroupLayout> {
-        (mode as usize).checked_sub(1).map(|index| &self.0[index])
+        (mode as usize)
+            .checked_sub(1)
+            .map(|index| &self.ordinary[index])
+    }
+
+    pub fn wide(&self, mode: Deformation) -> &wgpu::BindGroupLayout {
+        &self.wide[mode as usize]
+    }
+
+    pub fn get_for_line(&self, mode: Deformation, wide: bool) -> Option<&wgpu::BindGroupLayout> {
+        if wide {
+            Some(self.wide(mode))
+        } else {
+            self.get(mode)
+        }
     }
 }
 
 pub(super) fn shader_source(source: &str) -> wgpu::ShaderSource<'static> {
     wgpu::ShaderSource::Wgsl(
         format!(
-            "{}\n{}\n{}\n{}\n{}\n{source}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{source}",
             include_str!("skin.wgsl"),
             include_str!("morph.wgsl"),
             xrack_runtime::material_shader::TEXTURE_FOOTPRINT,
             include_str!("uv.wgsl"),
             include_str!("lod_coverage.wgsl"),
+            include_str!("point_raster.wgsl"),
         )
         .into(),
     )
@@ -197,19 +234,21 @@ pub(super) fn bind_instance_streams(
 pub(super) struct DeformationBinding {
     pub mode: Deformation,
     pub group: wgpu::BindGroup,
-    morph_source: Option<Weak<MeshGeometry>>,
+    pub wide: Option<wgpu::BindGroup>,
+    geometry_source: Option<Weak<MeshGeometry>>,
 }
 
 #[derive(PartialEq)]
 struct BindingKey {
     palette: Option<wgpu::Buffer>,
-    morph: Option<(wgpu::Buffer, wgpu::Buffer)>,
+    morph: Option<(wgpu::Buffer, wgpu::Buffer, Option<wgpu::Buffer>)>,
+    lines: Option<wgpu::Buffer>,
 }
 
 pub(super) struct DeformationBuffers {
     layouts: DeformationLayouts,
     palettes: VecDeque<(JointPalette, wgpu::Buffer)>,
-    morphs: VecDeque<(([u32; 2], MorphWeights), wgpu::Buffer)>,
+    morphs: VecDeque<(([u32; 3], MorphWeights), wgpu::Buffer)>,
     bindings: VecDeque<(BindingKey, DeformationBinding)>,
     pub skin_uploads: u64,
     pub morph_uploads: u64,
@@ -237,7 +276,7 @@ impl DeformationBuffers {
     ) -> Vec<Option<DeformationBinding>> {
         self.bindings.retain(|(_, binding)| {
             binding
-                .morph_source
+                .geometry_source
                 .as_ref()
                 .is_none_or(|source| source.strong_count() != 0)
         });
@@ -257,17 +296,18 @@ impl DeformationBuffers {
                 let palette = object
                     .skin_palette()
                     .map(|pose| self.palette_buffer(device, pose));
-                let mut morph_source = None;
+                let mut geometry_source = None;
                 let morph = if let Some(weights) = object.morph_weights() {
                     let Mesh3D::Imported(source) = &object.mesh else {
                         return None;
                     };
-                    morph_source = Some(Arc::downgrade(source.geometry()));
+                    geometry_source = Some(Arc::downgrade(source.geometry()));
                     let mesh = meshes.get_for_raster(device, queue, &object.mesh, raster);
                     let morph = mesh.morph.as_ref()?;
                     Some((
                         self.morph_buffer(device, morph.table_layout, weights),
                         morph.entries.clone(),
+                        morph.remap.clone(),
                     ))
                 } else {
                     None
@@ -279,9 +319,25 @@ impl DeformationBuffers {
                     (false, false) => return None,
                 };
                 let layout = self.layouts.get(mode)?;
+                let lines = if let Mesh3D::Imported(data) = &object.mesh
+                    && data.wide_lines().is_some()
+                {
+                    let mesh = meshes.get_for_raster(device, queue, &object.mesh, raster);
+                    geometry_source = Some(Arc::downgrade(data.geometry()));
+                    mesh.line_vertices
+                        .as_ref()
+                        .map(|line| line.endpoints.clone())
+                } else {
+                    None
+                };
+                let wide_layout = self.layouts.wide(mode);
                 Some(cached(
                     &mut self.bindings,
-                    BindingKey { palette, morph },
+                    BindingKey {
+                        palette,
+                        morph,
+                        lines,
+                    },
                     |key| {
                         let mut entries = Vec::new();
                         if let Some(palette) = &key.palette {
@@ -290,7 +346,7 @@ impl DeformationBuffers {
                                 resource: palette.as_entire_binding(),
                             });
                         }
-                        if let Some((weights, data)) = &key.morph {
+                        if let Some((weights, data, remap)) = &key.morph {
                             entries.extend([
                                 wgpu::BindGroupEntry {
                                     binding: 1,
@@ -300,6 +356,10 @@ impl DeformationBuffers {
                                     binding: 2,
                                     resource: data.as_entire_binding(),
                                 },
+                                wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: remap.as_ref().unwrap_or(data).as_entire_binding(),
+                                },
                             ]);
                         }
                         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -307,10 +367,22 @@ impl DeformationBuffers {
                             layout,
                             entries: &entries,
                         });
+                        let wide = key.lines.as_ref().map(|lines| {
+                            entries.push(wgpu::BindGroupEntry {
+                                binding: 4,
+                                resource: lines.as_entire_binding(),
+                            });
+                            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("XRack deformed wide-line bindings"),
+                                layout: wide_layout,
+                                entries: &entries,
+                            })
+                        });
                         DeformationBinding {
                             mode,
                             group,
-                            morph_source,
+                            wide,
+                            geometry_source,
                         }
                     },
                 ))
@@ -336,7 +408,7 @@ impl DeformationBuffers {
     fn morph_buffer(
         &mut self,
         device: &wgpu::Device,
-        layout: [u32; 2],
+        layout: [u32; 3],
         weights: &MorphWeights,
     ) -> wgpu::Buffer {
         cached(
@@ -345,7 +417,7 @@ impl DeformationBuffers {
             |(layout, weights)| {
                 let mut bytes = Vec::with_capacity(16 + MAX_MORPH_TARGETS * 4);
                 bytes.extend(
-                    [layout[0], layout[1], 0, 0]
+                    [layout[0], layout[1], layout[2], 0]
                         .into_iter()
                         .flat_map(u32::to_ne_bytes),
                 );

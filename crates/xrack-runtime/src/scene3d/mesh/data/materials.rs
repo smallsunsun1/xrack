@@ -11,8 +11,9 @@ use super::{Mesh3D, MeshData, MeshGeometry, Primitive};
 use crate::scene3d::{
     effect::CaptureRenderables,
     mesh::material::{
-        MeshAlphaMode, MeshCullMode, MeshDepthDraw, MeshMaterial, MeshMaterialSlot, MeshPart,
-        MeshPbr, MeshShader, SceneAppearance, SceneItemTexture, SceneMaterial,
+        MeshAlphaMode, MeshCullMode, MeshDepthDraw, MeshLighting, MeshMaterial, MeshMaterialSlot,
+        MeshPart, MeshPbr, MeshShader, MeshTopology, SceneAppearance, SceneItemTexture,
+        SceneMaterial,
     },
 };
 
@@ -70,6 +71,16 @@ impl MeshData {
         self.capture_positions
     }
 
+    #[doc(hidden)]
+    pub fn wide_points(&self) -> Option<&Arc<[Range<usize>]>> {
+        self.wide_points.as_ref()
+    }
+
+    #[doc(hidden)]
+    pub fn wide_lines(&self) -> Option<&Arc<[Range<usize>]>> {
+        self.wide_lines.as_ref()
+    }
+
     pub(super) fn with_materials(
         geometry: Arc<MeshGeometry>,
         materials: Arc<[MeshMaterial]>,
@@ -78,6 +89,9 @@ impl MeshData {
         let mut blended_parts = Vec::new();
         let mut transmission_blur = None::<f32>;
         let mut has_opaque_parts = geometry.parts.is_empty();
+        let mut raster_size = 0.0_f32;
+        let mut wide_points = Vec::new();
+        let mut wide_lines = Vec::new();
         let mut has_auxiliary_depth = geometry.parts.is_empty();
         let mut has_opaque_depth_prepass = geometry.parts.is_empty();
         let mut has_face_culling = false;
@@ -90,12 +104,28 @@ impl MeshData {
             if !material.is_visible() {
                 continue;
             }
+            raster_size = raster_size.max(match part.topology {
+                MeshTopology::Triangles => 0.0,
+                MeshTopology::Points => material.point_size,
+                MeshTopology::Lines => material.line_width,
+            });
+            match part.topology {
+                MeshTopology::Points if material.point_size > 1.0 => {
+                    wide_points.push(part.vertices.clone())
+                }
+                MeshTopology::Lines if material.line_width > 1.0 => {
+                    wide_lines.push(part.vertices.clone())
+                }
+                _ => {}
+            }
             let blended = material.is_blended();
             let writes_depth = material.depth_coverage().is_some();
             has_face_culling |= material.cull_mode != MeshCullMode::None;
             has_auxiliary_depth |= writes_depth;
             blended_depth |= writes_depth && blended;
-            let transmission = material.transmission_blur();
+            let transmission = (part.lighting != MeshLighting::BaseAndEmission)
+                .then(|| material.transmission_blur())
+                .flatten();
             has_opaque_depth_prepass |= material
                 .depth_draw_mode
                 .admits_opaque_prepass(blended, transmission.is_some());
@@ -182,6 +212,9 @@ impl MeshData {
             blended_parts,
             transmission_blur,
             has_opaque_parts,
+            raster_size,
+            wide_points: (!wide_points.is_empty()).then(|| wide_points.into()),
+            wide_lines: (!wide_lines.is_empty()).then(|| wide_lines.into()),
             has_auxiliary_depth,
             has_opaque_depth_prepass,
             has_face_culling,
@@ -197,6 +230,8 @@ impl MeshData {
 
 fn default_mesh_material() -> MeshMaterial {
     MeshMaterial {
+        point_size: 1.0,
+        line_width: 1.0,
         opacity: 1.0,
         opacity_texture: None,
         invert_opacity_map_value: false,
@@ -290,6 +325,7 @@ impl CaptureMaterial {
             geometry.parts = parts;
             geometry.part_centers = centers;
             geometry.pick_tree = OnceLock::new();
+            geometry.raster_tree = OnceLock::new();
             let mut data =
                 MeshData::with_materials(Arc::new(geometry), self.replacement.clone(), None);
             data.model_blend.clone_from(&source.model_blend);
@@ -312,6 +348,8 @@ impl Mesh3D {
         let builtin = |mesh: &Mesh3D| {
             let vertices = mesh.vertices().to_vec();
             let parts = vec![MeshPart {
+                lighting: Default::default(),
+                topology: crate::scene3d::MeshTopology::Triangles,
                 vertices: 0..vertices.len(),
                 material: 0,
                 volume_inverse: None,
@@ -584,9 +622,17 @@ impl Mesh3D {
                         && a.model_blend == b.model_blend
                         && a.parts.len() == b.parts.len()
                         && a.parts.iter().zip(&b.parts).all(|(left, right)| {
+                            let before = &a.materials[left.material];
+                            let after = &b.materials[right.material];
+                            let same_size = match left.topology {
+                                MeshTopology::Triangles => true,
+                                MeshTopology::Points => before.point_size == after.point_size,
+                                MeshTopology::Lines => before.line_width == after.line_width,
+                            };
                             left.vertices == right.vertices
-                                && a.materials[left.material]
-                                    .same_shadow_surface(&b.materials[right.material])
+                                && left.topology == right.topology
+                                && same_size
+                                && before.same_shadow_surface(after)
                         })
                 }
                 _ => false,
@@ -633,12 +679,29 @@ impl Mesh3D {
     }
 
     pub fn sections(&self) -> impl Iterator<Item = (Range<usize>, Option<&MeshMaterial>)> {
+        self.sections_with_topology()
+            .map(|(_, vertices, material)| (vertices, material))
+    }
+
+    /// Sections with surface area, used by CPU geometry queries and lightmapping.
+    #[doc(hidden)]
+    pub fn triangle_sections(&self) -> impl Iterator<Item = (Range<usize>, Option<&MeshMaterial>)> {
+        self.sections_with_topology()
+            .filter_map(|(topology, vertices, material)| {
+                (topology == MeshTopology::Triangles).then_some((vertices, material))
+            })
+    }
+
+    fn sections_with_topology(
+        &self,
+    ) -> impl Iterator<Item = (MeshTopology, Range<usize>, Option<&MeshMaterial>)> {
         let builtin = self
             .parts()
             .is_empty()
-            .then(|| (0..self.vertices().len(), None));
+            .then(|| (MeshTopology::Triangles, 0..self.vertices().len(), None));
         builtin.into_iter().chain(self.parts().iter().map(|part| {
             (
+                part.topology,
                 part.vertices.clone(),
                 Some(&self.materials()[part.material]),
             )

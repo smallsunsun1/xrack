@@ -287,6 +287,10 @@ struct Source<'a> {
 }
 
 impl ItemTextures {
+    pub(crate) fn is_idle(&self) -> bool {
+        self.current.is_empty() && self.viewports.is_empty() && !self.reset
+    }
+
     pub(crate) fn clear(&mut self) {
         self.reset |= !self.current.is_empty() || !self.viewports.is_empty();
         self.current.clear();

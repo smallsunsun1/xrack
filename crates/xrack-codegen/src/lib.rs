@@ -332,6 +332,11 @@ fn project_scene_geometry(
         } else {
             quote!(::xrack_runtime::scene3d::SceneMeshIndices::Sequential)
         };
+        let topology = if schema.iter().any(|field| field.name == "topology") {
+            quote!(object.geometry.topology.as_str())
+        } else {
+            quote!("")
+        };
         let subsets = if schema.iter().any(|field| field.name == "subsets") {
             quote!(mesh_inputs.subsets(&object.geometry.subsets, |subset| {
                 ::core::option::Option::Some(::xrack_runtime::scene3d::SceneMeshSubset {
@@ -399,10 +404,10 @@ fn project_scene_geometry(
             let weights = weights.unwrap_or_else(absent);
             let deltas = deltas.unwrap_or_else(absent);
             return quote!(mesh_inputs.deformed_geometry(
-                &object.geometry.vertices, #indices, #subsets, #vertex, #weights, #deltas,
+                &object.geometry.vertices, #indices, (#topology, #subsets), #vertex, #weights, #deltas,
             ));
         }
-        return quote!(mesh_inputs.geometry(&object.geometry.vertices, #indices, #subsets, #vertex));
+        return quote!(mesh_inputs.geometry(&object.geometry.vertices, #indices, (#topology, #subsets), #vertex));
     }
     let fields = xrack_syntax::builtins::SCENE_PARAMETRIC_FIELDS
         .iter()
@@ -4067,6 +4072,7 @@ impl<'a> Generator<'a> {
                 quote!(::std::string::String::from(#key))
             }
             "xr.shader_url" => quote!(::std::string::String::from(__xr_scene_effect(#value))),
+            "xr.sky_shader_url" => quote!(::std::string::String::from(#value)),
             "xr.particle_shape_url" => quote!(::std::string::String::from(#value)),
             "xr.texture_url" => {
                 let key = xrack_runtime::scene3d::texture_resource_key(value);
@@ -10821,7 +10827,7 @@ impl<'a> Generator<'a> {
                         .records
                         .get(record.as_ref())
                         .ok_or_else(|| format!("unknown SceneView3D {key} record type"))?;
-                    let fields = if key == "scissor-rect" {
+                    let mut fields: Vec<_> = if key == "scissor-rect" {
                         xrack_syntax::builtins::SCENE_SCISSOR_FIELDS
                     } else {
                         xrack_syntax::builtins::SCENE_SKY_FIELDS
@@ -10831,13 +10837,60 @@ impl<'a> Generator<'a> {
                         .map(|(name, _)| {
                             let member = ident(name);
                             quote!((::std::string::String::from(#name), ::xrack_runtime::Value::from(__settings.#member)))
+                        }).collect();
+                    if key != "scissor-rect"
+                        && let Some(uniforms) =
+                            schema.iter().find(|field| field.name == "shader-uniforms")
+                        && let Type::Record(uniform) = &uniforms.ty
+                    {
+                        let members = self
+                            .records
+                            .get(uniform.as_ref())
+                            .ok_or("unknown sky uniform record")?;
+                        let uniforms = members.iter().map(|field| {
+                            let name = &field.name;
+                            let member = ident(name);
+                            quote!((::std::string::String::from(#name), ::xrack_runtime::Value::from(__settings.shader_uniforms.#member)))
                         });
+                        let uniform = uniform.as_ref();
+                        fields.push(quote!((
+                            ::std::string::String::from("shader-uniforms"),
+                            ::xrack_runtime::Value::Record(::xrack_runtime::RecordValue::new(
+                                #uniform, ::std::collections::BTreeMap::from([#(#uniforms),*])
+                            ))
+                        )));
+                    }
                     let record = record.as_ref();
+                    let prepare = if key == "scissor-rect" {
+                        quote!(::xrack_runtime::Value::Record(__record))
+                    } else {
+                        let textures = schema
+                            .iter()
+                            .find(|field| field.name == "shader-textures")
+                            .and_then(|field| match &field.ty {
+                                Type::RecordList(texture) => self.records.get(texture.as_ref()),
+                                _ => None,
+                            })
+                            .map_or_else(
+                                || quote!(::std::vec::Vec::new()),
+                                |fields| {
+                                    project_buffer_inputs(
+                                        &quote!(&__settings.shader_textures),
+                                        fields,
+                                        false,
+                                    )
+                                },
+                            );
+                        quote!(::xrack_runtime::scene3d::prepare_sky_record(
+                            __record, __xr_sky_shader, |_| #textures
+                        ))
+                    };
                     quote!({
                         let __settings = #value;
-                        ::xrack_runtime::Value::Record(::xrack_runtime::RecordValue::new(
+                        let __record = ::xrack_runtime::RecordValue::new(
                             #record, ::std::collections::BTreeMap::from([#(#fields),*]),
-                        ))
+                        );
+                        #prepare
                     })
                 }
                 (Ok("SceneView3D"), "lights") => {
@@ -17972,7 +18025,19 @@ fn embed_mesh_geometry(
         } else {
             quote!(::core::option::Option::None)
         };
+        let topology = match part.topology {
+            xrack_runtime::scene3d::MeshTopology::Triangles => quote!(Triangles),
+            xrack_runtime::scene3d::MeshTopology::Lines => quote!(Lines),
+            xrack_runtime::scene3d::MeshTopology::Points => quote!(Points),
+        };
+        let lighting = match part.lighting {
+            xrack_runtime::scene3d::MeshLighting::Material => quote!(Material),
+            xrack_runtime::scene3d::MeshLighting::VertexNormal => quote!(VertexNormal),
+            xrack_runtime::scene3d::MeshLighting::BaseAndEmission => quote!(BaseAndEmission),
+        };
         quote!(::xrack_runtime::scene3d::MeshPart {
+            lighting: ::xrack_runtime::scene3d::MeshLighting::#lighting,
+            topology: ::xrack_runtime::scene3d::MeshTopology::#topology,
             vertices: #start..#end,
             material: #material,
             volume_inverse: #volume_inverse,
@@ -18025,6 +18090,35 @@ fn embed_mesh_geometry(
                         ::xrack_runtime::scene3d::MeshSurfaceMaps {
                             metalness: #metalness,
                             roughness: #roughness,
+                        }
+                    )))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
+                let sheen = if let Some(sheen) = pbr.sheen.as_deref() {
+                    let [r, g, b] = sheen.color;
+                    let roughness = sheen.roughness;
+                    let color_texture = embed_optional_mesh_texture(&sheen.color_texture, images, declarations)?;
+                    let roughness_texture = embed_optional_mesh_texture(&sheen.roughness_texture, images, declarations)?;
+                    quote!(::core::option::Option::Some(::std::boxed::Box::new(
+                        ::xrack_runtime::scene3d::MeshSheen {
+                            color: [#r, #g, #b], roughness: #roughness,
+                            color_texture: #color_texture, roughness_texture: #roughness_texture,
+                        }
+                    )))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
+                let iridescence = if let Some(film) = pbr.iridescence.as_deref() {
+                    let strength = film.factor;
+                    let ior = film.ior;
+                    let [min, max] = film.thickness_nm;
+                    let strength_map = embed_optional_mesh_texture(&film.factor_texture, images, declarations)?;
+                    let thickness_map = embed_optional_mesh_texture(&film.thickness_texture, images, declarations)?;
+                    quote!(::core::option::Option::Some(::std::boxed::Box::new(
+                        ::xrack_runtime::scene3d::MeshIridescence {
+                            factor: #strength, ior: #ior, thickness_nm: [#min, #max],
+                            factor_texture: #strength_map, thickness_texture: #thickness_map,
                         }
                     )))
                 } else {
@@ -18095,6 +18189,7 @@ fn embed_mesh_geometry(
                 let dielectric = if let Some(material) = pbr.dielectric.as_deref() {
                     let ior = material.ior;
                     let specular = material.specular;
+                    let tint = material.tint;
                     let [sr, sg, sb] = material.color;
                     let specular_texture = embed_optional_mesh_texture(
                         &material.specular_texture,
@@ -18105,7 +18200,7 @@ fn embed_mesh_geometry(
                         embed_optional_mesh_texture(&material.color_texture, images, declarations)?;
                     quote!(::core::option::Option::Some(::std::boxed::Box::new(
                         ::xrack_runtime::scene3d::MeshDielectric {
-                            ior: #ior, specular: #specular, color: [#sr, #sg, #sb],
+                            ior: #ior, specular: #specular, tint: #tint, color: [#sr, #sg, #sb],
                             specular_texture: #specular_texture,
                             color_texture: #color_texture,
                         }
@@ -18154,6 +18249,8 @@ fn embed_mesh_geometry(
                     surface_texture: #mr,
                     separate_surface_maps: #separate_surface_maps,
                     height_map: #height_map,
+                    iridescence: #iridescence,
+                    sheen: #sheen,
                     specular_reflection: #specular_reflection,
                     emissive_texture: #emissive_texture,
                     occlusion_texture: #occlusion,
@@ -18186,7 +18283,11 @@ fn embed_mesh_geometry(
             let vertex_masks = material.vertex_masks.authored_fields().map(|(name, value)| quote!((#name, #value)));
             let opacity = material.opacity;
             let invert_opacity_map_value = material.invert_opacity_map_value;
+            let point_size = material.point_size;
+            let line_width = material.line_width;
             Ok(quote!(::xrack_runtime::scene3d::MeshMaterial {
+                point_size: #point_size,
+                line_width: #line_width,
                 opacity: #opacity,
                 opacity_texture: #opacity_texture,
                 invert_opacity_map_value: #invert_opacity_map_value,
@@ -18695,6 +18796,43 @@ fn generate_with_resources(
     }
     if !scene_assets.environments.is_empty() || module.operations().any(binds_scene_environment) {
         out.extend(embed_environments(scene_assets)?);
+    }
+    if !scene_assets.sky_shaders.is_empty() || uses_scene {
+        let sources = scene_assets.sky_shaders.iter().map(|(url, shader)| {
+            use xrack_runtime::scene3d::SkyUniformType;
+            let source = shader.source.as_ref();
+            let fields = shader.fields.iter().map(|field| {
+                let name = &field.name;
+                let kind = ident(match field.kind {
+                    SkyUniformType::Bool => "Bool",
+                    SkyUniformType::Int => "Int",
+                    SkyUniformType::Uint => "Uint",
+                    SkyUniformType::Float => "Float",
+                    SkyUniformType::Vec2 => "Vec2",
+                    SkyUniformType::Vec3 => "Vec3",
+                    SkyUniformType::Vec4 => "Vec4",
+                    SkyUniformType::Mat3 => "Mat3",
+                });
+                quote!(::xrack_runtime::scene3d::SkyUniformField {
+                    name: ::std::string::String::from(#name),
+                    kind: ::xrack_runtime::scene3d::SkyUniformType::#kind,
+                })
+            });
+            quote!(#url => {
+                static SOURCE: ::std::sync::LazyLock<::std::sync::Arc<::xrack_runtime::scene3d::SkyShader>> =
+                    ::std::sync::LazyLock::new(|| ::std::sync::Arc::new(
+                        ::xrack_runtime::scene3d::SkyShader::new(
+                            ::std::sync::Arc::from(#source), ::std::vec![#(#fields),*]
+                        )
+                    ));
+                ::core::option::Option::Some((*SOURCE).clone())
+            },)
+        });
+        out.extend(quote! {
+            fn __xr_sky_shader(url: &::core::primitive::str) -> ::core::option::Option<::std::sync::Arc<::xrack_runtime::scene3d::SkyShader>> {
+                match url { #(#sources)* _ => ::core::option::Option::None }
+            }
+        });
     }
     if !scene_assets.effects.is_empty() {
         let shaders = scene_assets.effects.iter().map(|(url, source)| {

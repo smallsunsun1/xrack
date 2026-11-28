@@ -1,4 +1,7 @@
-use crate::{Interaction, LayoutNode, OverscrollFrame, Rect, Size};
+use crate::{
+    Interaction, LayoutNode, OverscrollFrame, Rect, Size,
+    frame_projection::{absolute_rectangle_changes, reproject},
+};
 use std::{
     collections::BTreeMap,
     rc::{Rc, Weak},
@@ -20,6 +23,56 @@ struct FrameInput {
     overscroll: OverscrollFrame,
     floating_keyboard: Option<Rect>,
     keyboard_avoidance: Option<(Vec<usize>, f32)>,
+}
+
+#[derive(Debug)]
+pub(crate) struct WindowChildChanges {
+    before: Weak<LayoutNode>,
+    current: Weak<LayoutNode>,
+    before_scene: Node,
+    current_scene: Node,
+    children: Vec<(Vec<usize>, Rect)>,
+}
+
+impl WindowChildChanges {
+    pub(crate) fn between(
+        &self,
+        before: &LayoutNode,
+        current: &LayoutNode,
+        before_scene: &Node,
+        current_scene: &Node,
+    ) -> Option<&[(Vec<usize>, Rect)]> {
+        // A clone, a mutable Rc, or a skipped frame can have unrelated geometry
+        // even when it carries the same metadata.
+        (std::ptr::eq(self.before.as_ptr(), before)
+            && std::ptr::eq(self.current.as_ptr(), current)
+            && self.before_scene.shares_storage_with(before_scene)
+            && self.current_scene.shares_storage_with(current_scene))
+        .then_some(&self.children)
+    }
+}
+
+struct RetiredPositions {
+    layout: Rc<LayoutNode>,
+    changes: Rc<WindowChildChanges>,
+}
+
+impl RetiredPositions {
+    fn into_current(self) -> Option<LayoutNode> {
+        let mut layout = Rc::into_inner(self.layout)?;
+        apply_positions(&mut layout, &self.changes.children);
+        Some(layout)
+    }
+}
+
+fn apply_positions(layout: &mut LayoutNode, changes: &[(Vec<usize>, Rect)]) {
+    for (path, bounds) in changes {
+        let mut child = &mut *layout;
+        for &index in path {
+            child = &mut child.children[index];
+        }
+        child.bounds = *bounds;
+    }
 }
 
 /// Work performed by the layout cache to prepare a frame.
@@ -93,6 +146,7 @@ pub struct FrameCache {
     generation: u64,
     layout: Weak<LayoutNode>,
     recyclable: Option<Rc<LayoutNode>>,
+    retired_positions: Option<RetiredPositions>,
 }
 
 impl FrameCache {
@@ -204,6 +258,7 @@ impl FrameCache {
                     == drawer_preview
         });
         let mut projection = None;
+        let mut projected_positions = false;
         if same_geometry_inputs && let Some(last) = &mut self.input {
             if !Rc::ptr_eq(&last.scene, &scene) {
                 // Prepared scenes with materialized rows must be rebuilt from
@@ -213,8 +268,35 @@ impl FrameCache {
                         && !self.prepared.is_dirty()
                         && let Some(layout) = self.layout.upgrade()
                     {
-                        projection =
-                            crate::frame_projection::reproject(&last.scene, &scene, &layout);
+                        if let Some(changed_children) =
+                            absolute_rectangle_changes(&last.scene, &scene, &layout)
+                        {
+                            let mut next = self
+                                .retired_positions
+                                .take()
+                                .filter(|_| recycle)
+                                .and_then(RetiredPositions::into_current)
+                                .unwrap_or_else(|| (*layout).clone());
+                            apply_positions(&mut next, &changed_children);
+                            projection = Some(Rc::new_cyclic(|current| {
+                                let changes = Rc::new(WindowChildChanges {
+                                    before: Rc::downgrade(&layout),
+                                    current: current.clone(),
+                                    before_scene: (*last.scene).clone(),
+                                    current_scene: (*scene).clone(),
+                                    children: changed_children,
+                                });
+                                self.retired_positions = recycle.then(|| RetiredPositions {
+                                    layout,
+                                    changes: changes.clone(),
+                                });
+                                next.details_mut().window_child_changes = Some(changes);
+                                next
+                            }));
+                            projected_positions = true;
+                        } else {
+                            projection = reproject(&last.scene, &scene, &layout).map(Rc::new);
+                        }
                     }
                     self.input_changed.notify();
                 }
@@ -247,6 +329,9 @@ impl FrameCache {
             });
             self.input_changed.notify();
         }
+        if !recycle || self.prepared.is_dirty() && !projected_positions {
+            self.retired_positions = None;
+        }
         let recyclable = if recycle && self.prepared.is_dirty() && projection.is_none() {
             // The host can still hold the current layout for reconciliation.
             // Give it a frame to release that snapshot before taking ownership.
@@ -263,7 +348,7 @@ impl FrameCache {
             reused = false;
             self.input_changed.track();
             if let Some(layout) = projection {
-                return (None, Rc::new(layout));
+                return (None, layout);
             }
             let (prepared, layout) = resolve(scene.clone(), recyclable);
             self.uses_base_scene = Rc::ptr_eq(&scene, &prepared);
@@ -307,6 +392,100 @@ mod tests {
         fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
             Size::default()
         }
+    }
+
+    #[test]
+    fn position_projection_recycles_unobserved_layouts_and_preserves_shared_snapshots() {
+        let viewport = Size::new(128.0, 96.0);
+        let input = Interaction::default();
+        let mut cache = FrameCache::default();
+        let mut window = Node::new("Window", None);
+        for _ in 0..2 {
+            let mut tile = Node::new("Rectangle", None);
+            tile.properties.insert("width", Length(16.0).into());
+            tile.properties.insert("height", Length(16.0).into());
+            tile.mark_paint_only_background();
+            window.children.push(tile);
+        }
+        let mut scene = Rc::new(window);
+        let prepare = |scene: Rc<Node>, _: Option<LayoutNode>| {
+            let layout = layout_with_input(&scene, viewport, &mut Metrics, &input);
+            (scene, layout)
+        };
+        let no_measure = |_, _| panic!("position and paint changes should reuse measurement");
+        let (first_scene, first) = cache
+            .prepare_reusing(scene.clone(), viewport, &input, prepare)
+            .into_parts();
+        let first_children = first.children.as_ptr();
+
+        Rc::make_mut(&mut scene).children[0]
+            .properties
+            .insert("x", Length(24.0).into());
+        let (second_scene, second) = cache
+            .prepare_reusing(scene.clone(), viewport, &input, no_measure)
+            .into_parts();
+        assert_eq!(
+            second.window_child_changes_from(&first, &first_scene, &second_scene),
+            Some(&[(vec![0], second.children[0].bounds)][..]),
+        );
+        assert_eq!(first.children[0].bounds.x, 0.0);
+        drop(first);
+
+        Rc::make_mut(&mut scene).children[0]
+            .properties
+            .insert("background", xrack_runtime::Color(0x123456ff).into());
+        let (recolored_scene, unchanged) = cache
+            .prepare_reusing(scene.clone(), viewport, &input, no_measure)
+            .into_parts();
+        assert!(Rc::ptr_eq(&second, &unchanged));
+
+        Rc::make_mut(&mut scene).children[1]
+            .properties
+            .insert("y", Length(13.0).into());
+        Rc::make_mut(&mut scene).children[0]
+            .properties
+            .insert("background", xrack_runtime::Color(0x654321ff).into());
+        let (third_scene, third) = cache
+            .prepare_reusing(scene.clone(), viewport, &input, no_measure)
+            .into_parts();
+        assert_eq!(third.children.as_ptr(), first_children);
+        assert_eq!(*third, prepare(scene.clone(), None).1);
+        assert_eq!(second.children[1].bounds.y, 0.0);
+        assert_eq!(
+            third.window_child_changes_from(&second, &recolored_scene, &third_scene),
+            Some(
+                &[
+                    (vec![0], third.children[0].bounds),
+                    (vec![1], third.children[1].bounds)
+                ][..]
+            ),
+        );
+        assert!(
+            third
+                .window_child_changes_from(&second, &second_scene, &third_scene)
+                .is_none()
+        );
+        let detached = third.as_ref().clone();
+        assert!(
+            detached
+                .window_child_changes_from(&second, &recolored_scene, &third_scene)
+                .is_none()
+        );
+
+        Rc::make_mut(&mut scene).children[0]
+            .properties
+            .insert("x", Length(26.0).into());
+        let (fourth_scene, fourth) = cache
+            .prepare_reusing(scene.clone(), viewport, &input, no_measure)
+            .into_parts();
+        assert_eq!(*fourth, prepare(scene, None).1);
+        assert!(
+            fourth
+                .window_child_changes_from(&second, &recolored_scene, &fourth_scene)
+                .is_none()
+        );
+        assert_eq!(third.children[0].bounds.x, 24.0);
+        assert_eq!(second.children[0].bounds.x, 24.0);
     }
 
     #[test]

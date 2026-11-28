@@ -40,12 +40,17 @@ impl Chart {
 }
 
 fn project_charts(mesh: &Mesh3D) -> Result<(Vec<[f32; 2]>, u32), String> {
-    let faces: Vec<Face> = mesh
-        .vertices()
-        .as_chunks::<3>()
-        .0
+    let starts: Vec<_> = mesh
+        .triangle_sections()
+        .flat_map(|(range, _)| range.step_by(3))
+        .collect();
+    let faces: Vec<Face> = starts
         .iter()
-        .map(|triangle| triangle.map(|vertex| Vector3::from(vertex.position.map(f64::from))))
+        .map(|&start| {
+            std::array::from_fn(|corner| {
+                Vector3::from(mesh.vertices()[start + corner].position.map(f64::from))
+            })
+        })
         .collect();
     let normals: Vec<_> = faces
         .iter()
@@ -140,7 +145,7 @@ fn project_charts(mesh: &Mesh3D) -> Result<(Vec<[f32; 2]>, u32), String> {
             for (corner, point) in uv.into_iter().enumerate() {
                 let local = (point - chart.min).component_div(&scale);
                 let packed = (inset + local.component_mul(&interior)) / f64::from(resolution);
-                coordinates[face * 3 + corner] = [packed.x as f32, packed.y as f32];
+                coordinates[starts[face] + corner] = [packed.x as f32, packed.y as f32];
             }
         }
     }
@@ -364,11 +369,15 @@ mod tests {
             vertices,
             Vec::new(),
             vec![MeshPart {
+                lighting: Default::default(),
+                topology: xrack_runtime::scene3d::MeshTopology::Triangles,
                 vertices: 0..positions.len(),
                 material: 0,
                 volume_inverse: None,
             }],
             vec![MeshMaterial {
+                point_size: 1.0,
+                line_width: 1.0,
                 opacity: 1.0,
                 opacity_texture: None,
                 invert_opacity_map_value: false,

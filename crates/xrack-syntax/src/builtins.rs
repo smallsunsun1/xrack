@@ -314,7 +314,7 @@ pub const SCENE_VIEW_METHODS: &[SceneViewMethod] = &[
         &[Type::Point2D],
         "hit3d",
         Type::Hit3D,
-        "Returns the closest geometric hit using this view's camera.",
+        "Returns the closest geometric hit using this view's camera. Points and lines use their rendered size.",
     ),
     scene_view_method(
         "hit-item",
@@ -467,7 +467,7 @@ pub const SCENE_VIEW_METHODS: &[SceneViewMethod] = &[
         &[Type::Point2D, Type::Point2D],
         "[int]",
         Type::IntList,
-        "Returns scene record rows intersecting a rectangle in local logical pixels.",
+        "Returns rows whose triangles, points or lines intersect a rectangle in local logical pixels.",
     ),
 ];
 
@@ -1729,6 +1729,9 @@ pub const SCENE_MATERIAL_CHANNEL_FIELDS: &[(&str, bool)] = &[
     ("glossiness-channel", false),
     ("opacity-channel", false),
     ("height-channel", false),
+    ("iridescence-channel", false),
+    ("iridescence-thickness-channel", false),
+    ("sheen-roughness-channel", false),
     ("occlusion-channel", false),
     ("specular-channel", false),
     ("specular-color-channel", true),
@@ -1778,6 +1781,12 @@ pub const SCENE_MATERIAL_FIELDS: &[(&str, Type)] = &[
     ("opacity", Type::Float),
     ("invert-opacity-map-value", Type::Bool),
     ("height-amount", Type::Float),
+    ("sheen-color", Type::Color),
+    ("sheen-roughness", Type::Float),
+    ("iridescence-factor", Type::Float),
+    ("iridescence-index-of-refraction", Type::Float),
+    ("iridescence-thickness-minimum", Type::Float),
+    ("iridescence-thickness-maximum", Type::Float),
     ("min-height-map-samples", Type::Int),
     ("max-height-map-samples", Type::Int),
     ("material-shader", Type::String),
@@ -1785,6 +1794,8 @@ pub const SCENE_MATERIAL_FIELDS: &[(&str, Type)] = &[
     ("shader-displacement", Type::Float),
     ("material-workflow", Type::String),
     ("glossiness", Type::Float),
+    ("point-size", Type::Float),
+    ("line-width", Type::Float),
     ("normal-strength", Type::Float),
     ("clearcoat-normal-strength", Type::Float),
     ("enabled", Type::Bool),
@@ -1795,6 +1806,7 @@ pub const SCENE_MATERIAL_FIELDS: &[(&str, Type)] = &[
     ("anisotropy-rotation", Type::Float),
     ("roughness", Type::Float),
     ("emissive-color", Type::Color),
+    ("emissive-factor", Type::Vector3D),
     ("emissive-strength", Type::Float),
     ("alpha-mode", Type::String),
     ("blend-mode", Type::String),
@@ -1808,6 +1820,7 @@ pub const SCENE_MATERIAL_FIELDS: &[(&str, Type)] = &[
     ("index-of-refraction", Type::Float),
     ("occlusion-amount", Type::Float),
     ("specular-amount", Type::Float),
+    ("specular-tint", Type::Float),
     ("specular-color", Type::Color),
     ("thickness", Type::Float),
     ("attenuation-color", Type::Color),
@@ -1827,6 +1840,10 @@ pub const SCENE_MATERIAL_MAP_FIELDS: &[&str] = &[
     "base-color-map",
     "opacity-map",
     "height-map",
+    "iridescence-map",
+    "iridescence-thickness-map",
+    "sheen-color-map",
+    "sheen-roughness-map",
     "metallic-roughness-map",
     "metalness-map",
     "roughness-map",
@@ -1868,6 +1885,11 @@ pub const SCENE_TEXTURE_FIELDS: &[(&str, Type)] = &[
 
 pub const SCENE_SKY_FIELDS: &[(&str, Type)] = &[
     ("enabled", Type::Bool),
+    ("shader", Type::String),
+    ("shader-parameters", Type::Vector3D),
+    ("ibl-samples", Type::Int),
+    ("ibl-render-frames", Type::Int),
+    ("skybox-mode", Type::String),
     ("sky-horizon-color", Type::Color),
     ("sky-top-color", Type::Color),
     ("sky-curve", Type::Float),
@@ -1884,6 +1906,37 @@ pub const SCENE_SKY_FIELDS: &[(&str, Type)] = &[
     ("sun-angle-min", Type::Float),
     ("sun-angle-max", Type::Float),
     ("resolution", Type::Int),
+];
+
+pub const SCENE_SKY_UNIFORM_TYPES: &[Type] = &[
+    Type::Bool,
+    Type::Int,
+    Type::Float,
+    Type::Length,
+    Type::Percent,
+    Type::Point2D,
+    Type::Vector2D,
+    Type::Point3D,
+    Type::Vector3D,
+    Type::Color,
+    Type::Quaternion3D,
+    Type::Transform2D,
+];
+
+pub const SCENE_SKYBOX_MODES: &[(&str, &str)] = &[
+    ("cubemap", "Sample the sky cubemap"),
+    (
+        "screen-space-full",
+        "Evaluate the sky shader at the viewport raster resolution",
+    ),
+    (
+        "screen-space-half",
+        "Evaluate the sky shader at half resolution per axis",
+    ),
+    (
+        "screen-space-quarter",
+        "Evaluate the sky shader at quarter resolution per axis",
+    ),
 ];
 
 pub const SCENE_TEXTURE_WRAP: &[(&str, &str)] = &[
@@ -3083,6 +3136,25 @@ pub const SCENE_MORPH_DELTA_CHANNELS: &[(&str, Type)] = &[
     ("color-g", Type::Float),
     ("color-b", Type::Float),
     ("color-a", Type::Float),
+];
+
+pub const SCENE_MESH_TOPOLOGIES: &[(&str, &str)] = &[
+    (
+        "triangles",
+        "Independent groups of three vertices (default)",
+    ),
+    (
+        "triangle-strip",
+        "Connected triangles with alternating winding",
+    ),
+    ("triangle-fan", "Triangles sharing the first vertex"),
+    ("points", "Draw each vertex as one point"),
+    ("lines", "Independent pairs of vertices"),
+    ("line-strip", "Connect neighboring vertices"),
+    (
+        "line-loop",
+        "Connect neighboring vertices and close the contour",
+    ),
 ];
 
 pub const SCENE_MESH_SUBSET_FIELDS: &[(&str, Type)] = &[
@@ -4803,7 +4875,7 @@ pub const FUNCTIONS: &[Function] = &[
     geometry(
         GeometryFunction::HitCamera3D,
         CAMERA_HIT,
-        "Returns the nearest visible surface under a local logical-pixel point using the named camera and its clip planes.",
+        "Returns the nearest triangle, point or line under a logical-pixel position using the named camera and its clip planes.",
     ),
     geometry(
         GeometryFunction::RayHit3D,
@@ -4818,7 +4890,7 @@ pub const FUNCTIONS: &[Function] = &[
     geometry(
         GeometryFunction::HitAllCamera3D,
         CAMERA_HIT,
-        "Returns front-to-back hits under a pointer using a named camera. Instances keep their distinct addresses and respect camera clipping.",
+        "Returns front-to-back hits under a pointer using a named camera. This includes points and lines at their rendered size, distinct instances and camera clipping.",
     ),
     geometry(
         GeometryFunction::RayHitAll3D,

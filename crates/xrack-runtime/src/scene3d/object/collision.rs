@@ -103,7 +103,7 @@ impl SceneObject {
         let pose = self.pick_pose();
         let mut best: Option<(usize, TriangleContact, [MeshVertex; 3], bool)> = None;
         let mut inspect = |vertex: usize, closest: f64| {
-            let triangle = pose.deform::<false>(vertex, triangles[vertex / 3]);
+            let triangle = pose.deform::<false>(vertex, *self.mesh.triangle_at(vertex));
             let world =
                 triangle.map(|p| linear * Vector3::from(p.position.map(f64::from)) + origin);
             if let Some((contact, intersected)) = cast_shape_triangle(sweep, world, inside, closest)
@@ -147,7 +147,11 @@ impl SceneObject {
             });
         } else {
             let mut closest = max;
-            for vertex in (0..triangles.len() * 3).step_by(3) {
+            for vertex in self
+                .mesh
+                .triangle_sections()
+                .flat_map(|(range, _)| range.step_by(3))
+            {
                 closest = inspect(vertex, closest);
             }
         }

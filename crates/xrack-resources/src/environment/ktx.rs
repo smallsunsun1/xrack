@@ -1,8 +1,9 @@
-//! Decode KTX color cubemaps into linear, top-to-bottom face order.
+//! Decode KTX cubemaps and retain authored KTX2 material texture blocks.
 
 use std::{borrow::Cow, io::Read, ops::Range, sync::OnceLock};
 
 use flate2::read::ZlibDecoder;
+use xrack_runtime::scene3d::{MeshBlockFormat, MeshImage};
 
 const KTX1: &[u8; 12] = b"\xABKTX 11\xBB\r\n\x1A\n";
 const KTX2: &[u8; 12] = b"\xABKTX 20\xBB\r\n\x1A\n";
@@ -147,7 +148,7 @@ fn metadata(mut bytes: &[u8], endian: Endian, version2: bool) -> Result<Metadata
             b"KTXorientation" => {
                 let orientation = if version2 {
                     if value != b"rd" {
-                        return Err("KTX2 cubemaps require rd orientation".into());
+                        return Err("KTX2 textures require rd orientation".into());
                     }
                     [b'r', b'd']
                 } else {
@@ -365,7 +366,7 @@ fn vulkan_format(format: u32) -> Option<ColorFormat> {
     })
 }
 
-fn dfd_premultiplied(bytes: &[u8], format: ColorFormat) -> Result<bool, String> {
+fn validate_dfd(bytes: &[u8]) -> Result<(), String> {
     let size = Endian::Little
         .word(bytes, 0)
         .ok_or("missing KTX2 data format descriptor")? as usize;
@@ -373,16 +374,18 @@ fn dfd_premultiplied(bytes: &[u8], format: ColorFormat) -> Result<bool, String> 
         return Err("invalid KTX2 data format descriptor".into());
     }
     let block = u16::from_le_bytes([bytes[10], bytes[11]]) as usize;
-    if block < 24
-        || block > size - 4
-        || bytes[12] != 1
-        || bytes[16..20] != [0; 4]
-        || bytes[20] != format.pixel_size() as u8
-    {
-        return Err("KTX2 descriptor does not match its uncompressed pixel format".into());
+    if !(24..=size - 4).contains(&block) {
+        return Err("invalid KTX2 descriptor block length".into());
     }
     if !matches!(bytes[13], 0 | 1) {
-        return Err("KTX2 environment color primaries must be sRGB/BT.709".into());
+        return Err("KTX2 texture color primaries must be sRGB/BT.709".into());
+    }
+    Ok(())
+}
+
+fn dfd_premultiplied(bytes: &[u8], format: ColorFormat) -> Result<bool, String> {
+    if bytes[12] != 1 || bytes[16..20] != [0; 4] || bytes[20] != format.pixel_size() as u8 {
+        return Err("KTX2 descriptor does not match its uncompressed pixel format".into());
     }
     if format.srgb && bytes[14] != 2 || !format.srgb && !matches!(bytes[14], 0 | 1) {
         return Err("KTX2 transfer function does not match its pixel format".into());
@@ -390,20 +393,130 @@ fn dfd_premultiplied(bytes: &[u8], format: ColorFormat) -> Result<bool, String> 
     Ok(bytes[15] & 1 != 0)
 }
 
+struct Ktx2<'a> {
+    bytes: &'a [u8],
+    descriptor: &'a [u8],
+    meta: Metadata,
+    data_start: usize,
+    scheme: u32,
+}
+
+impl<'a> Ktx2<'a> {
+    fn field(bytes: &[u8], offset: usize) -> Result<u32, String> {
+        Endian::Little
+            .word(bytes, offset)
+            .ok_or_else(|| "truncated KTX2 header".into())
+    }
+
+    fn quad(bytes: &[u8], offset: usize) -> Result<usize, String> {
+        range(bytes, offset, 8)
+            .and_then(|v| v.try_into().ok())
+            .map(u64::from_le_bytes)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| "invalid KTX2 byte range".into())
+    }
+
+    fn open(bytes: &'a [u8], levels: usize) -> Result<Self, String> {
+        let field = |offset| Self::field(bytes, offset);
+        let scheme = field(44)?;
+        if !matches!(scheme, 0 | 3) {
+            return Err("KTX2 textures require uncompressed or ZLIB level data".into());
+        }
+        if Self::quad(bytes, 64)? != 0 || Self::quad(bytes, 72)? != 0 {
+            return Err("unexpected KTX2 supercompression global data".into());
+        }
+        let index_end = 80 + levels * 24;
+        let (dfd_offset, dfd_size) = (field(48)? as usize, field(52)? as usize);
+        if dfd_offset < index_end {
+            return Err("KTX2 descriptor overlaps the level index".into());
+        }
+        let descriptor =
+            range(bytes, dfd_offset, dfd_size).ok_or("truncated KTX2 data format descriptor")?;
+        validate_dfd(descriptor)?;
+        let (kv_offset, kv_size) = (field(56)? as usize, field(60)? as usize);
+        let mut data_start = dfd_offset + dfd_size;
+        let kv = if kv_size == 0 {
+            &[][..]
+        } else {
+            if kv_offset < data_start {
+                return Err("KTX2 key/value data overlaps the descriptor".into());
+            }
+            let value = range(bytes, kv_offset, kv_size).ok_or("truncated KTX2 key/value data")?;
+            data_start = kv_offset + kv_size;
+            value
+        };
+        let meta = metadata(kv, Endian::Little, true)?;
+        Ok(Self {
+            bytes,
+            descriptor,
+            meta,
+            data_start,
+            scheme,
+        })
+    }
+
+    fn levels(
+        &self,
+        count: usize,
+        alignment: usize,
+        length: impl Fn(usize) -> usize,
+    ) -> Result<Vec<(Range<usize>, usize)>, String> {
+        let mut levels: Vec<(Range<usize>, usize)> = Vec::with_capacity(count);
+        for level in 0..count {
+            let index = 80 + level * 24;
+            let offset = Self::quad(self.bytes, index)?;
+            let stored = Self::quad(self.bytes, index + 8)?;
+            let decoded = Self::quad(self.bytes, index + 16)?;
+            let expected = length(level);
+            if offset < self.data_start
+                || stored == 0
+                || decoded != expected
+                || self.scheme == 0 && (stored != expected || !offset.is_multiple_of(alignment))
+            {
+                return Err("invalid KTX2 level layout".into());
+            }
+            let end = offset
+                .checked_add(stored)
+                .filter(|end| *end <= self.bytes.len())
+                .ok_or("truncated KTX2 level")?;
+            if levels
+                .iter()
+                .any(|(range, _)| offset < range.end && range.start < end)
+            {
+                return Err("overlapping KTX2 levels".into());
+            }
+            levels.push((offset..end, expected));
+        }
+        Ok(levels)
+    }
+
+    fn level(
+        &self,
+        index: usize,
+        (range, expected): (Range<usize>, usize),
+    ) -> Result<Cow<'a, [u8]>, String> {
+        let bytes = &self.bytes[range];
+        if self.scheme == 0 {
+            return Ok(Cow::Borrowed(bytes));
+        }
+        let mut expanded = Vec::with_capacity(expected);
+        ZlibDecoder::new(bytes)
+            .take(expected as u64 + 1)
+            .read_to_end(&mut expanded)
+            .map_err(|error| format!("cannot inflate KTX2 level {index}: {error}"))?;
+        if expanded.len() != expected {
+            return Err("inflated KTX2 level has the wrong size".into());
+        }
+        Ok(Cow::Owned(expanded))
+    }
+}
+
 fn version2(
     bytes: &[u8],
     all_levels: bool,
     output: &mut impl FnMut([f32; 4]),
 ) -> Result<(usize, usize), String> {
-    let le = Endian::Little;
-    let field = |offset| le.word(bytes, offset).ok_or("truncated KTX2 header");
-    let quad = |offset| {
-        range(bytes, offset, 8)
-            .and_then(|v| v.try_into().ok())
-            .map(u64::from_le_bytes)
-            .and_then(|value| usize::try_from(value).ok())
-            .ok_or("invalid KTX2 byte range")
-    };
+    let field = |offset| Ktx2::field(bytes, offset);
     let format = vulkan_format(field(12)?).ok_or("unsupported KTX2 cubemap pixel format")?;
     if field(16)? as usize != format.scalar_size() {
         return Err("invalid KTX2 component size".into());
@@ -416,34 +529,9 @@ fn version2(
         field(36)?,
         field(40)?,
     )?;
-    let scheme = field(44)?;
-    if !matches!(scheme, 0 | 3) {
-        return Err("KTX2 cubemaps require uncompressed or ZLIB level data".into());
-    }
-    if quad(64)? != 0 || quad(72)? != 0 {
-        return Err("unexpected KTX2 supercompression global data".into());
-    }
-    let index_end = 80 + levels * 24;
-    let (dfd_offset, dfd_size) = (field(48)? as usize, field(52)? as usize);
-    if dfd_offset < index_end {
-        return Err("KTX2 descriptor overlaps the level index".into());
-    }
-    let dfd = range(bytes, dfd_offset, dfd_size).ok_or("truncated KTX2 data format descriptor")?;
-    let (kv_offset, kv_size) = (field(56)? as usize, field(60)? as usize);
-    let mut data_start = dfd_offset + dfd_size;
-    let kv = if kv_size == 0 {
-        &[][..]
-    } else {
-        if kv_offset < data_start {
-            return Err("KTX2 key/value data overlaps the descriptor".into());
-        }
-        let value = range(bytes, kv_offset, kv_size).ok_or("truncated KTX2 key/value data")?;
-        data_start = kv_offset + kv_size;
-        value
-    };
-    let mut meta = metadata(kv, le, true)?;
-    meta.premultiplied = dfd_premultiplied(dfd, format)?;
-    let mut ranges = Vec::<Range<usize>>::with_capacity(levels);
+    let data = Ktx2::open(bytes, levels)?;
+    let mut meta = data.meta;
+    meta.premultiplied = dfd_premultiplied(data.descriptor, format)?;
     let pixel_size = format.pixel_size();
     // LCM(pixel size, 4) for the supported tightly packed color formats.
     let alignment = if pixel_size.is_multiple_of(4) {
@@ -453,54 +541,76 @@ fn version2(
     } else {
         pixel_size * 4
     };
-    for level in 0..levels {
-        let index = 80 + level * 24;
-        let (offset, length, decoded) = (quad(index)?, quad(index + 8)?, quad(index + 16)?);
+    let ranges = data.levels(levels, alignment, |level| {
         let width = (side >> level).max(1);
-        let expected = width * width * 6 * pixel_size;
-        if offset < data_start
-            || length == 0
-            || decoded != expected
-            || scheme == 0 && (length != expected || !offset.is_multiple_of(alignment))
-        {
-            return Err("invalid KTX2 cube level layout".into());
-        }
-        let end = offset
-            .checked_add(length)
-            .filter(|end| *end <= bytes.len())
-            .ok_or("truncated KTX2 cube level")?;
-        if ranges
-            .iter()
-            .any(|range| offset < range.end && range.start < end)
-        {
-            return Err("overlapping KTX2 cube levels".into());
-        }
-        ranges.push(offset..end);
-    }
+        width * width * 6 * pixel_size
+    })?;
     for (index, level) in ranges
         .into_iter()
         .take(if all_levels { levels } else { 1 })
         .enumerate()
     {
         let side = side >> index;
-        let expected = side * side * 6 * pixel_size;
-        let data = &bytes[level];
-        let data = if scheme == 0 {
-            Cow::Borrowed(data)
-        } else {
-            let mut expanded = Vec::with_capacity(expected);
-            ZlibDecoder::new(data)
-                .take(expected as u64 + 1)
-                .read_to_end(&mut expanded)
-                .map_err(|error| format!("cannot inflate KTX2 level {index}: {error}"))?;
-            if expanded.len() != expected {
-                return Err("inflated KTX2 level has the wrong size".into());
-            }
-            Cow::Owned(expanded)
-        };
-        decode_faces(&data, side, side * pixel_size, format, le, meta, output)?;
+        let bytes = data.level(index, level)?;
+        decode_faces(
+            &bytes,
+            side,
+            side * pixel_size,
+            format,
+            Endian::Little,
+            meta,
+            output,
+        )?;
     }
     Ok((side, levels))
+}
+
+pub(crate) fn decode_ktx2_image(bytes: &[u8]) -> Result<Option<MeshImage>, String> {
+    if !bytes.starts_with(KTX2) {
+        return Ok(None);
+    }
+    let field = |offset| Ktx2::field(bytes, offset);
+    let faces = field(36)?;
+    if faces == 6 {
+        return Ok(None);
+    }
+    let vk_format = field(12)?;
+    if vk_format == 0 {
+        return MeshImage::from_basis_ktx2(bytes).map(Some);
+    }
+    let format =
+        MeshBlockFormat::from_vulkan(vk_format).ok_or("unsupported KTX2 2D block format")?;
+    if field(16)? != 1 || field(28)? != 0 || field(32)? != 0 || faces != 1 {
+        return Err("expected a non-array KTX2 2D block texture".into());
+    }
+    let size = xrack_assets::validate_image_size([field(20)?, field(24)?])?;
+    let count = field(40)?;
+    if !(1..=size[0].max(size[1]).ilog2() + 1).contains(&count) {
+        return Err("invalid number of KTX2 block texture mip levels".into());
+    }
+    let data = Ktx2::open(bytes, count as usize)?;
+    let descriptor = data.descriptor;
+    let [width, height] = format.block_size();
+    if descriptor[16..20] != [width as u8 - 1, height as u8 - 1, 0, 0]
+        || descriptor[20] != format.block_bytes() as u8
+        || (vk_format.is_multiple_of(2) && descriptor[14] != 2)
+        || (!vk_format.is_multiple_of(2) && !matches!(descriptor[14], 0 | 1))
+    {
+        return Err("KTX2 descriptor does not match its compressed pixel format".into());
+    }
+    if descriptor[15] & 1 != 0 || data.meta.swizzle.is_some_and(|swizzle| swizzle != *b"rgba") {
+        return Err("KTX2 2D block textures require straight alpha and RGBA channel order".into());
+    }
+    let ranges = data.levels(count as usize, format.block_bytes(), |level| {
+        format.level_bytes(size.map(|side| (side >> level).max(1)))
+    })?;
+    let mut bytes = Vec::with_capacity(ranges.iter().map(|(_, size)| size).sum());
+    for (index, level) in ranges.into_iter().enumerate() {
+        bytes.extend_from_slice(&data.level(index, level)?);
+    }
+    MeshImage::from_blocks(size, vk_format, count, bytes)
+        .map(Some)
+        .ok_or_else(|| "invalid KTX2 2D block texture".into())
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<(usize, Vec<[f32; 3]>), String> {

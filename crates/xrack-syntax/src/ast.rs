@@ -1047,6 +1047,7 @@ pub enum ExprKind {
     TextureUrl(String),
     ShaderUrl(String),
     MaterialShaderUrl(String),
+    SkyShaderUrl(String),
     InstanceTableUrl(String),
     ParticleShapeUrl(String),
     SlicedImageUrl {

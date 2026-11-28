@@ -1,0 +1,65 @@
+struct SizedPointVertex { position: point3d }
+struct SizedPointDelta { target: string, vertex: int, position: vector3d }
+struct SizedPointGeometry { vertices: [SizedPointVertex], topology: string, morph-deltas: [SizedPointDelta] }
+struct SizedPointWeights { move: float }
+struct SizedPointMaterial { unlit: bool, base-color: color, point-size: float }
+struct SizedPointActor {
+    id: string, mesh: string, geometry: SizedPointGeometry, morph-weights: SizedPointWeights,
+    material: SizedPointMaterial,
+    x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color,
+    camera-kind: string, camera-height: float,
+}
+struct SizedPointLight {
+    kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+    color: color, intensity: float, range: float, inner-angle: float, outer-angle: float,
+}
+
+export component WidePointsDemo inherits Window {
+    title <- "XRack · Point size";
+    width <- 160px;
+    height <- 120px;
+
+    in-out property <float> size: 1;
+    in-out property <float> blend: 0;
+    in-out property <bool> effects: false;
+    property <SizedPointActor> defaults <- SizedPointActor {
+        id: "", mesh: "", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, color: #fff, camera-kind: "", camera-height: 3,
+        geometry: SizedPointGeometry { vertices: [], topology: "", morph-deltas: [] },
+        morph-weights: SizedPointWeights { move: root.blend },
+        material: SizedPointMaterial { unlit: true, base-color: #ff7842, point-size: root.size },
+    };
+
+    SceneView3D {
+        width <- 160px;
+        height <- 120px;
+        camera <- "eye";
+        scene-background <- #111722;
+        scene-tone-map <- none;
+        temporal-aa <- root.effects;
+        temporal-aa-mode <- "motion-vectors";
+        ambient-occlusion <- root.effects;
+        depth-prepass <- root.effects;
+        shadows <- root.effects;
+        shadow-map-size <- 128;
+        model <- [
+            SizedPointActor { id: "eye", z: 4, camera-kind: "orthographic", ..root.defaults },
+            SizedPointActor { id: "asset", mesh: @mesh-url("models/point-line-lighting.gltf"), ..root.defaults },
+            SizedPointActor {
+                id: "morphed-point",
+                geometry: SizedPointGeometry {
+                    vertices: [SizedPointVertex { position: Point3D.new(-0.75, -1.2, 0) }],
+                    topology: "points",
+                    morph-deltas: [SizedPointDelta { target: "move", vertex: 0, position: Vector3D.new(1.5, 0, 0) }],
+                },
+                material: SizedPointMaterial { unlit: true, base-color: #28f870, point-size: root.size },
+                ..root.defaults
+            },
+        ];
+        lights <- [SizedPointLight {
+            kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0,
+            color: #fff, intensity: 1, range: 0, inner-angle: 18, outer-angle: 40,
+        }];
+    }
+}

@@ -1,0 +1,91 @@
+import { FlyCameraController, OrbitCameraController } from "../../crates/xrack/ui/camera3d.xr";
+
+struct GuideObject {
+    id: string, mesh: string, color: color,
+    x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float,
+}
+
+export component CameraControlsDemo inherits Window {
+    title <- "XRack · 3D camera controls";
+    width <- 576px;
+    height <- 249px;
+    background <- #15202b;
+    in-out property <bool> navigation-enabled: true;
+    out property <point3d> orbit-eye <- orbit.camera-position;
+    out property <point3d> orbit-pivot <- orbit.pivot;
+    out property <float> orbit-distance <- orbit.distance;
+    out property <float> orbit-yaw <- orbit.yaw;
+    out property <point3d> fly-eye <- fly.camera-position;
+    out property <float> fly-yaw <- fly.yaw;
+    out property <bool> fly-moving <- fly.moving;
+    out property <int> taps: 0;
+    out property <string> selected: "";
+
+    property <GuideObject> unit: GuideObject {
+        id: "", mesh: "primitive:box", color: #667f9b,
+        x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1,
+    };
+    property <scenemodel3d> world <- Scene3D.prepare([
+        GuideObject { id: "center", color: #45c8a6, ..root.unit },
+        GuideObject { id: "left", x: -1.35, z: 0.2, color: #ebad5c, ..root.unit },
+        GuideObject { id: "right", x: 1.35, z: -0.55, color: #78a8e0, ..root.unit },
+    ]);
+
+    orbit-view := SceneView3D {
+        width <- 282px; height <- 208px;
+        model <- Scene3D.combine(root.world, orbit.camera-model);
+        camera <- orbit.camera-id;
+        scene-background <- #26384a;
+        scene-grid <- true;
+        scene-grid-height <- -0.5;
+        selected-object <- root.selected;
+    }
+    orbit := OrbitCameraController {
+        width <- 282px; height <- 208px;
+        active <- root.navigation-enabled;
+        yaw: 0;
+        pitch: 0;
+        distance: 5;
+        tapped(point) => {
+            root.taps += 1;
+            root.selected = orbit-view.pick(point);
+        }
+    }
+
+    fly-view := SceneView3D {
+        x <- 294px; width <- 282px; height <- 208px;
+        model <- Scene3D.combine(root.world, fly.camera-model);
+        camera <- fly.camera-id;
+        scene-background <- #26384a;
+        scene-grid <- true;
+        scene-grid-height <- -0.5;
+        selected-object <- root.selected;
+    }
+    fly := FlyCameraController {
+        x <- 294px; width <- 282px; height <- 208px;
+        active <- root.navigation-enabled;
+        position: Point3D.new(0, 0, 5);
+        tapped(point) => {
+            root.taps += 1;
+            root.selected = fly-view.pick(point);
+        }
+    }
+
+    Text {
+        x <- 12px; y <- 218px;
+        text <- "绕视 / 平移 / 缩放";
+        color <- #cdd9e5;
+    }
+    toggle-navigation := Button {
+        x <- 304px; y <- 215px; width <- 126px; height <- 28px;
+        text <- root.navigation-enabled ? "停用相机操作" : "启用相机操作";
+        clicked => { root.navigation-enabled = !root.navigation-enabled; }
+    }
+    Text {
+        x <- 440px; y <- 218px;
+        text <- "WASD / R、F";
+        color <- #cdd9e5;
+    }
+}
