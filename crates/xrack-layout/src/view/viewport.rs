@@ -231,6 +231,7 @@ struct ScrollActivity {
 
 #[derive(Default)]
 pub struct LayoutObservers {
+    custom_items: crate::item::custom_item::CustomItemObservers,
     present: Vec<ViewportHandle>,
     geometry: BTreeMap<usize, GeometryHandle>,
     scroll_controls: Vec<(Vec<usize>, GeometryHandle)>,
@@ -336,6 +337,7 @@ impl LayoutObservers {
                             }
                         },
                     );
+                    handle.publish_baseline(item.baseline_offset());
                     handle.publish_with_content(
                         [
                             rect.x - parent.x,
@@ -398,6 +400,7 @@ impl LayoutObservers {
             }
         }
         self.geometry = geometry;
+        self.custom_items.sync(scene, layout);
     }
 
     /// Samples input against the same mounted bars used for hit testing.

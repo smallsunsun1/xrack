@@ -736,6 +736,7 @@ pub(crate) fn measure_axis(
     let default_cross = cross_alignment(node, "cross-axis-alignment");
     let legacy = legacy_box(node.kind);
     let mut line_infos = Vec::new();
+    let mut baseline_extents = [0.0_f32; 2];
     for child in children.clone() {
         let metrics = measure(child, inner, text);
         let child_main = metrics.along(axis);
@@ -753,6 +754,15 @@ pub(crate) fn measure_axis(
             CrossAxisAlignment::Auto => default_cross,
             value => value,
         };
+        if axis == Axis::Horizontal && child_alignment == CrossAxisAlignment::Baseline {
+            let offset = crate::item::baseline(
+                child,
+                Size::new(child_main.preferred, child_cross.preferred),
+                text,
+            );
+            baseline_extents[0] = baseline_extents[0].max(offset);
+            baseline_extents[1] = baseline_extents[1].max(child_cross.preferred - offset);
+        }
         if matches!(
             child_alignment,
             CrossAxisAlignment::Auto | CrossAxisAlignment::Stretch
@@ -762,6 +772,7 @@ pub(crate) fn measure_axis(
         cross.stretch = cross.stretch.min(child_cross.stretch);
         count += 1;
     }
+    cross.preferred = cross.preferred.max(baseline_extents.into_iter().sum());
     let gaps = f64::from(spacing(node)) * count.saturating_sub(1) as f64;
     let mut padding = padding.size();
     padding.height += title_height;
@@ -902,7 +913,7 @@ pub(crate) fn cross_geometry(
 ) -> (f32, f32) {
     match alignment {
         CrossAxisAlignment::Auto | CrossAxisAlignment::Stretch => (0.0, info.clamp(available)),
-        CrossAxisAlignment::Start => (0.0, info.preferred),
+        CrossAxisAlignment::Start | CrossAxisAlignment::Baseline => (0.0, info.preferred),
         CrossAxisAlignment::Center => ((available - info.preferred) * 0.5, info.preferred),
         CrossAxisAlignment::End => (available - info.preferred, info.preferred),
     }
@@ -1118,6 +1129,7 @@ pub(crate) fn children(
         alignment,
     );
     let mut cursor = f64::from(cursor);
+    let mut baselines = Vec::new();
     for (item, size) in items.into_iter().zip(sizes) {
         let child = &node.children[item.index];
         let cross = if matches!(axis, Axis::Horizontal)
@@ -1140,8 +1152,21 @@ pub(crate) fn children(
             rect.x += child.length("x").unwrap_or(0.0);
             rect.y += child.length("y").unwrap_or(0.0);
         }
+        if axis == Axis::Horizontal && item.cross_alignment == CrossAxisAlignment::Baseline {
+            baselines.push((
+                item.index,
+                crate::item::baseline(child, Size::new(rect.width, rect.height), text),
+            ));
+        }
         result[item.index] = rect;
         cursor += f64::from(size) + f64::from(spacing);
+    }
+    let baseline = baselines
+        .iter()
+        .map(|(_, offset)| *offset)
+        .fold(0.0, f32::max);
+    for (index, offset) in baselines {
+        result[index].y += baseline - offset;
     }
     result
 }

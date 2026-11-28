@@ -21,7 +21,7 @@ pub(crate) fn child_position_methods(kind: &str) -> &'static [BuiltinFunction] {
 }
 
 // Enumerate candidate spellings. The compiler decides whether each is available in context.
-pub(crate) const ELEMENTS: &str = "DynamicContainer Action ActionGroup AnimatedImage ApplicationWindow MediaPlayer BusyIndicator Button ButtonGroup Calendar CheckBox CheckDelegate ColorPickerPopup CustomRender SceneView3D MeshLoader3D ComboBox ComboContent ComboIndicator ComboOption ComboPopup ContextMenuArea DatePickerPopup DelayButton Dial Dialog ControlFrame Pane EmptyState
+pub(crate) const ELEMENTS: &str = "DynamicContainer Action ActionGroup AnimatedImage ApplicationWindow MediaPlayer BusyIndicator Button ButtonGroup Calendar CheckBox CheckDelegate ColorPickerPopup CustomRender CustomItem SceneView3D MeshLoader3D ComboBox ComboContent ComboIndicator ComboOption ComboPopup ContextMenuArea DatePickerPopup DelayButton Dial Dialog ControlFrame Pane EmptyState
     ButtonContent SliderHandle RangeLowerHandle RangeUpperHandle ToggleIndicator SwitchThumb SpinUpIndicator SpinDownIndicator DayCell DayOfWeekRow DialogButton DialogButtonBox DoubleSpinBox DragArea Drawer DropArea Expander FileDialog FontPickerPopup Flickable FlexboxLayout FlowLayout FocusScope GridLayout GridView GroupBox HorizontalBox HorizontalLayout Image Label LineEdit
     HoverHandler ItemDelegate ListView Loader Menu MenuBar MenuItem MenuSeparator MessageDialog MonthGrid Page PageFooter PageHeader PageIndicator Path PathView PathViewOption PopupWindow ProgressFill ProgressIndicator ProgressTrack RadioButton RadioDelegate
     RadioGroup RangeSlider Rectangle RoundButton Row ScaleRotateGestureHandler ScrollBar ScrollIndicator ScrollTrack ScrollThumb ScrollView SearchField SecondaryWindow SectionHeader SelectionStartHandle SelectionEndHandle Shortcut Slider SpinBox Spinner SplitView StackItem StackLayout StackPage StackView
@@ -30,13 +30,13 @@ pub(crate) const ELEMENTS: &str = "DynamicContainer Action ActionGroup AnimatedI
     Tumbler TumblerOption VerticalLayout WeekNumberColumn WheelHandler Window WindowMoveArea";
 
 pub(crate) const PROPERTIES: &str = "auto-lod lightmap-uv asynchronous autoplay duration volume ready ended error muted playback-rate network-bandwidth audio-track subtitle-track subtitle-tracks subtitle-file status seekable seek-start seek-end at-live-edge has-audio has-video audio-tracks media-title subtitle audio-error subtitle-error buffer-progress bitrate accent-color accept-files accept-text acceptable-input accepted-buttons accessible-description accessible-heading-level accessible-live accessible-name action alignment anchor-gap animated allow-copy allow-link allow-move auto-complete auto-repeat auto-repeat-delay auto-repeat-interval auto-sort cancel-text blocking cursor-shape section-field section-height sticky-section-headers
-    anchor-fill anchor-center-in anchor-left anchor-right anchor-top anchor-bottom anchor-horizontal-center anchor-vertical-center anchor-margin
+    anchor-fill anchor-center-in anchor-left anchor-right anchor-top anchor-bottom anchor-horizontal-center anchor-vertical-center anchor-baseline anchor-margin baseline-offset
     handle-swipe-left handle-swipe-right handle-swipe-up handle-swipe-down bake-denoise-passes bake-indirect-factor
     background bounds-behavior bounds-movement border-bottom-left-radius border-bottom-right-radius border-color border-radius buttons cache-rendering-hint
     border-top-left-radius border-top-right-radius border-width can-go-back cell-height cell-width check-state colorize-icon checkable checked clip
     close-on-escape close-on-outside col color color-scheme colorize colspan commands content-height content-padding content-width content-x content-y copyable count
     cross-axis-alignment cross-axis-line-alignment cross-axis-self-alignment current-color current-index current-key
-    preload-model preload-ready lod-fade-width render-mode render-format render-overrides
+    implementation preload-model preload-ready lod-fade-width render-mode render-format render-overrides
     environment-sky
     environment-pitch environment-roll environment-horizon
     skybox-source skybox-sky skybox-yaw skybox-pitch skybox-roll skybox-intensity skybox-blur

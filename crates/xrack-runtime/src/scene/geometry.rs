@@ -5,7 +5,7 @@ use crate::{
 use std::{
     cell::{Cell, OnceCell, RefCell},
     fmt,
-    rc::Rc,
+    rc::{Rc, Weak as RcWeak},
     sync::{Arc, Weak},
 };
 
@@ -26,6 +26,7 @@ pub enum GeometryMetric {
     WindowHeight,
     AvailableWidth,
     AvailableHeight,
+    BaselineOffset,
 }
 
 impl GeometryMetric {
@@ -42,6 +43,7 @@ impl GeometryMetric {
             "window-bounds-height" => Self::WindowHeight,
             "available-width" => Self::AvailableWidth,
             "available-height" => Self::AvailableHeight,
+            "baseline-offset" => Self::BaselineOffset,
             _ => return None,
         })
     }
@@ -68,9 +70,33 @@ struct ScenePreloadObservation {
 }
 
 #[derive(Default)]
+struct CustomItemRevisions {
+    paint: Property<i64>,
+    layout: Property<i64>,
+    queued: Cell<bool>,
+}
+
+/// A weak reference to a native control's update queue.
+#[derive(Clone)]
+pub struct CustomItemUpdater(RcWeak<Geometry>);
+
+impl CustomItemUpdater {
+    /// Schedule an update on the owning UI thread. Returns false after release.
+    pub fn request(&self, update: crate::CustomItemUpdate) -> bool {
+        let Some(handle) = self.0.upgrade() else {
+            return false;
+        };
+        GeometryHandle(handle).request_custom_item_update(update)
+    }
+}
+
+#[derive(Default)]
 struct Geometry {
-    values: [Property<Length>; 10],
+    values: [Property<Length>; 11],
     ready: Property<bool>,
+    custom_item_placement: Cell<crate::CustomItemPlacement>,
+    custom_item_mounted: Cell<bool>,
+    custom_item_revisions: OnceCell<CustomItemRevisions>,
     scene_view: Option<Box<SceneViewObservation>>,
     scene_texture_size: OnceCell<Box<[Property<u32>; 2]>>,
     scene_preload: OnceCell<ScenePreloadObservation>,
@@ -352,6 +378,53 @@ impl GeometryHandle {
         self.0.ready.set_if_changed(ready);
     }
 
+    pub(crate) fn custom_item_updater(&self) -> CustomItemUpdater {
+        CustomItemUpdater(Rc::downgrade(&self.0))
+    }
+
+    pub(crate) fn request_custom_item_update(&self, update: crate::CustomItemUpdate) -> bool {
+        if !self.0.custom_item_mounted.get() {
+            return false;
+        }
+        let revisions = self.0.custom_item_revisions.get_or_init(Default::default);
+        let property = match update {
+            crate::CustomItemUpdate::Layout => &revisions.layout,
+            crate::CustomItemUpdate::Paint => &revisions.paint,
+        };
+        property.set(property.cached_value().unwrap_or(0).wrapping_add(1));
+        if !revisions.queued.replace(true) && crate::invoke_from_event_loop(|| {}).is_err() {
+            revisions.queued.set(false);
+        }
+        true
+    }
+
+    pub(crate) fn custom_item_revisions(&self) -> [i64; 2] {
+        let revisions = self.0.custom_item_revisions.get_or_init(Default::default);
+        revisions.queued.set(false);
+        [revisions.paint.get(|| 0), revisions.layout.get(|| 0)]
+    }
+
+    #[doc(hidden)]
+    pub fn publish_custom_item_placement(&self, placement: crate::CustomItemPlacement) {
+        self.0.custom_item_placement.set(placement);
+        self.0.custom_item_mounted.set(true);
+    }
+
+    #[doc(hidden)]
+    pub fn release_custom_item(&self) {
+        self.0.custom_item_mounted.set(false);
+        self.0.custom_item_placement.set(Default::default());
+    }
+
+    pub(crate) fn custom_item_placement(&self) -> crate::CustomItemPlacement {
+        self.0.custom_item_placement.get()
+    }
+
+    pub fn publish_baseline(&self, offset: f32) {
+        self.0.values[GeometryMetric::BaselineOffset as usize]
+            .set_if_changed(Length(f64::from(offset)));
+    }
+
     pub fn publish_scroll_thumb(&self, position: f64, size: f64) {
         self.0.scroll_thumb[0].set_if_changed(position);
         self.0.scroll_thumb[1].set_if_changed(size);
@@ -409,6 +482,7 @@ impl GeometryHandle {
             }
         }
         self.publish_preload_request(None);
+        self.publish_baseline(0.0);
         self.publish_scene_texture_size([0; 2]);
         self.publish_render_stats(RenderStats3D::default());
         self.publish_scroll_interaction(false, false, false);

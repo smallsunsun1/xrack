@@ -154,7 +154,7 @@ pub use font_picker::Font;
 #[doc(hidden)]
 pub use font_picker::{FontPopupState, is_font_family_choice, set_font_family_choices};
 #[doc(hidden)]
-pub use geometry::{GeometryHandle, GeometryMetric, SceneTouchRequest};
+pub use geometry::{CustomItemUpdater, GeometryHandle, GeometryMetric, SceneTouchRequest};
 pub use hover::{CursorShape, HoverHandle};
 pub use image_animation::{ImageAnimation, ImageAnimationFrame};
 #[doc(hidden)]
@@ -244,6 +244,11 @@ pub use repeat::{Repeater, repeat_scene, static_repeat_scene};
 #[doc(hidden)]
 pub use row_heights::{RowHeightOverrides, RowHeightProjection, RowHeights};
 pub use scale_rotate::{ScaleRotateHandle, ScaleRotateSample};
+pub use scene::custom_item::{
+    CustomItem, CustomItemChange, CustomItemContext, CustomItemData, CustomItemDrawing,
+    CustomItemEvent, CustomItemId, CustomItemPlacement, CustomItemRect, CustomItemRegistration,
+    CustomItemRole, CustomItemUpdate, register_custom_item,
+};
 #[doc(hidden)]
 pub use scene_plan::{
     GridCellPosition, GridCellSlot, GridPlanner, GridTrackInput, LoadedVectorPath, ScenePlanSlice,
@@ -1024,7 +1029,20 @@ impl RoutedEvent<'_> {
                 node = child;
                 path = tail;
             }
-            ui.route_input(scene, original_path, input)
+            let native = match self {
+                Self::Pointer(event) => Some(CustomItemEvent::Pointer(event)),
+                Self::Key(phase, event) => Some(CustomItemEvent::Key(*phase, event)),
+                Self::Wheel(event) => Some(CustomItemEvent::Wheel(event)),
+                Self::Focus(event) => Some(CustomItemEvent::Focus(*event)),
+                Self::Dispatch("clicked") => Some(CustomItemEvent::Activate),
+                _ => None,
+            };
+            let native_handled =
+                native.is_some_and(|event| node.custom_item_event(event) == EventResult::Accept);
+            if native_handled && matches!(self, Self::Key(..) | Self::Wheel(_)) {
+                return true;
+            }
+            ui.route_input(scene, original_path, input) || native_handled
         })
         .unwrap_or(false)
     }
@@ -1426,6 +1444,7 @@ pub enum CrossAxisAlignment {
     Start,
     End,
     Center,
+    Baseline,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1990,6 +2009,7 @@ pub enum SceneFeature {
     WindowEffects = 2048,
     GeometryObservation = 4096,
     PageTransition = 8192,
+    CustomItem = 16384,
     ScaleRotateGesture = 1024,
 }
 
@@ -2224,6 +2244,12 @@ pub fn is_toggle(kind: &str) -> bool {
 /// Whether a handler can be invoked through dispatch without an event payload.
 #[doc(hidden)]
 pub fn supports_untyped_dispatch(kind: &str, event: &str) -> bool {
+    if kind == "CustomItem" {
+        return matches!(
+            event,
+            "clicked" | "moved" | "double-clicked" | "press-and-hold"
+        );
+    }
     if matches!(event, "scrolled" | "flicked" | "refresh-requested")
         || (kind == "SwipeDelegate" && event == "clicked")
     {
@@ -2528,6 +2554,9 @@ impl Node {
         if self.kind == "SceneView3D" {
             features |= SceneViewport as u16;
         }
+        if self.kind == "CustomItem" {
+            features |= CustomItem as u16;
+        }
         if self.properties.contains_key("preload-model") {
             features |= ScenePreload as u16;
         }
@@ -2677,6 +2706,17 @@ impl Node {
     pub fn set_row_key(&mut self, key: Option<RowKey>) {
         if self.row_key != key {
             self.data_mut().row_key = key;
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn observe_custom_item_updates(&mut self) {
+        if let Some(handle) = &self.geometry_handle {
+            let [paint, layout] = handle.custom_item_revisions();
+            self.properties
+                .insert("__custom-paint-revision", Value::Int(paint));
+            self.properties
+                .insert("__custom-layout-revision", Value::Int(layout));
         }
     }
 
@@ -2996,7 +3036,19 @@ impl Node {
                     && fixed_plain_text(self)
                     && fixed_plain_text(other))
         };
+        let custom_paint_only = self.kind == "CustomItem"
+            && other.kind == self.kind
+            && self.text("implementation") == other.text("implementation")
+            && ["data", "revision"]
+                .into_iter()
+                .any(|name| self.properties.get(name) != other.properties.get(name))
+            && self.custom_item().is_some_and(|item| {
+                item.update_effects(self.custom_item_data(), other.custom_item_data())
+                    == CustomItemUpdate::Paint
+            });
         let relevant = |name: &str| match name {
+            "data" | "revision" if custom_paint_only => false,
+            "__custom-paint-revision" if self.kind == "CustomItem" => false,
             "x" | "y" if local => false,
             name if ignore_transform && (name == "transform" || name.starts_with("transform-")) => {
                 false
@@ -3524,7 +3576,8 @@ impl Node {
 
     #[doc(hidden)]
     pub fn handles_wheel(&self) -> bool {
-        self.kind == "WheelHandler" || self.kind == "TouchArea" && self.scroll_event_handler
+        self.kind == "WheelHandler"
+            || matches!(self.kind, "TouchArea" | "CustomItem") && self.scroll_event_handler
     }
 
     #[doc(hidden)]
@@ -3851,7 +3904,7 @@ impl Node {
             self.interactive_at_path(path)
         };
         node.filter(|node| {
-            node.kind == "FocusScope"
+            matches!(node.kind, "FocusScope" | "CustomItem")
                 || matches!(event, FocusEvent::Lost(_))
                     && (is_text_input(node.kind) || node.kind == "ComboBox")
                     && node
@@ -3862,9 +3915,14 @@ impl Node {
     }
 
     #[doc(hidden)]
+    pub fn handles_key_phase(&self, phase: KeyPhase) -> bool {
+        matches!(self.kind, "FocusScope" | "CustomItem") && self.key_handlers & phase.mask() != 0
+    }
+
+    #[doc(hidden)]
     pub fn key_event_target(&self, path: &[usize], phase: KeyPhase) -> Option<&Self> {
         self.interactive_at_path(path)
-            .filter(|node| node.kind == "FocusScope" && node.key_handlers & phase.mask() != 0)
+            .filter(|node| node.handles_key_phase(phase))
     }
 
     pub fn group_checkable(&self) -> bool {

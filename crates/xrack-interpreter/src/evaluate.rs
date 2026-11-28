@@ -3706,9 +3706,15 @@ impl Instance {
         }
         self.populate_layout_handles(element, &mut node)?;
         match element.visual {
-            Visual::Builtin("TouchArea") => {
+            Visual::Builtin("TouchArea" | "CustomItem") => {
                 node.pointer_handle = Some(self.pointer_handle(element));
-                node.scroll_event_handler = element.handlers.contains_key("scroll-event");
+                node.scroll_event_handler =
+                    node.kind == "CustomItem" || element.handlers.contains_key("scroll-event");
+                if node.kind == "CustomItem" {
+                    node.key_handlers = xrack_runtime::KeyPhase::Pressed.mask()
+                        | xrack_runtime::KeyPhase::Released.mask();
+                    node.observe_custom_item_updates();
+                }
             }
             Visual::Builtin("HoverHandler") => node.hover_handle = Some(self.hover_handle(element)),
             Visual::Builtin("SwipeGestureHandler") => {
@@ -3739,8 +3745,8 @@ impl Instance {
         if let Some(target) = &element.initial_focus {
             node.initial_focus = Some(self.focus_handle(target)?);
         }
-        if matches!(element.visual, Visual::Builtin("FocusScope")) {
-            node.key_handlers = xrack_runtime::KeyPhase::ALL
+        if matches!(element.visual, Visual::Builtin("FocusScope" | "CustomItem")) {
+            node.key_handlers |= xrack_runtime::KeyPhase::ALL
                 .iter()
                 .filter(|phase| element.handlers.contains_key(phase.handler()))
                 .fold(0, |mask, phase| mask | phase.mask());
@@ -4669,7 +4675,8 @@ impl Instance {
                 Value::KeyEvent((*event).clone()),
             ),
             RoutedEvent::Wheel(event) => {
-                let name = if matches!(element.visual, Visual::Builtin("TouchArea")) {
+                let name = if matches!(element.visual, Visual::Builtin("TouchArea" | "CustomItem"))
+                {
                     "scroll-event"
                 } else {
                     "wheel"

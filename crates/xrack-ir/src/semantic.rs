@@ -1026,12 +1026,15 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "handle-color" if kind == "SplitView" => Type::Color,
         "delay" if matches!(kind, "Tooltip" | "DelayButton") => Type::Int,
         "press-and-hold-interval"
-            if matches!(kind, "TouchArea" | "Button" | "ToolButton" | "RoundButton") =>
+            if matches!(
+                kind,
+                "TouchArea" | "CustomItem" | "Button" | "ToolButton" | "RoundButton"
+            ) =>
         {
             Type::Int
         }
-        "accepted-buttons" if kind == "TouchArea" => Type::PointerButtons,
-        "multi-touch" if kind == "TouchArea" => Type::Bool,
+        "accepted-buttons" if matches!(kind, "TouchArea" | "CustomItem") => Type::PointerButtons,
+        "multi-touch" if matches!(kind, "TouchArea" | "CustomItem") => Type::Bool,
         "timeout" if kind == "Tooltip" => Type::Int,
         "progress-color" if kind == "DelayButton" => Type::Color,
         "value" | "minimum" | "maximum" | "step-size" if kind == "SpinBox" => Type::Int,
@@ -1419,8 +1422,11 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::Brush
         }
-        "renderer" | "data" if kind == "CustomRender" => Type::String,
-        "revision" if kind == "CustomRender" => Type::Int,
+        "renderer" if kind == "CustomRender" => Type::String,
+        "implementation" if kind == "CustomItem" => Type::String,
+        "data" if matches!(kind, "CustomRender" | "CustomItem") => Type::String,
+        "revision" if matches!(kind, "CustomRender" | "CustomItem") => Type::Int,
+        "focusable" if kind == "CustomItem" => Type::Bool,
         "texture-source" if matches!(kind, "Rectangle" | "SceneView3D") => Type::String,
         "texture-only" | "texture-mipmaps" if matches!(kind, "Rectangle" | "SceneView3D") => {
             Type::Bool
@@ -1660,7 +1666,8 @@ pub fn geometry_property(name: &str) -> Option<Type> {
         | "window-bounds-width"
         | "window-bounds-height"
         | "available-width"
-        | "available-height" => Type::Length,
+        | "available-height"
+        | "baseline-offset" => Type::Length,
         "layout-ready" | "preload-ready" => Type::Bool,
         _ => return None,
     })
@@ -1700,8 +1707,8 @@ pub fn anchor_target_lines(name: &str) -> Option<&'static str> {
         "anchor-left" | "anchor-right" | "anchor-horizontal-center" => {
             Some("left right horizontal-center")
         }
-        "anchor-top" | "anchor-bottom" | "anchor-vertical-center" => {
-            Some("top bottom vertical-center")
+        "anchor-top" | "anchor-bottom" | "anchor-vertical-center" | "anchor-baseline" => {
+            Some("top bottom vertical-center baseline")
         }
         _ => None,
     }
@@ -2198,9 +2205,10 @@ fn control_event(kind: &str, event: &str) -> bool {
         || matches!(kind, "MenuItem" | "Action" | "ActionGroup" | "DelayButton")
             && event == "activated"
         || kind == "Shortcut" && matches!(event, "activated" | "activated-ambiguously")
-        || kind == "FocusScope" && (key_handler(event) || focus_handler(event))
+        || matches!(kind, "FocusScope" | "CustomItem")
+            && (key_handler(event) || focus_handler(event))
         || kind == "WheelHandler" && event == "wheel"
-        || kind == "TouchArea"
+        || matches!(kind, "TouchArea" | "CustomItem")
             && matches!(
                 event,
                 "pointer-event" | "scroll-event" | "moved" | "double-clicked" | "press-and-hold"
@@ -2222,7 +2230,7 @@ fn control_event(kind: &str, event: &str) -> bool {
 /// Whether an element kind declares an event, independently of instance constraints.
 pub fn builtin_event(kind: &str, event: &str) -> bool {
     let kind = delegate_base(kind).unwrap_or(kind);
-    (matches!(kind, "StandardButton" | "TouchArea") && event == "clicked")
+    (matches!(kind, "StandardButton" | "TouchArea" | "CustomItem") && event == "clicked")
         || control_event(kind, event)
 }
 
@@ -2234,7 +2242,7 @@ pub fn event_parameters<'a>(
 ) -> Result<&'a [Type]> {
     let kind = delegate_base(kind).unwrap_or(kind);
     let scrolled = matches!(event, "scrolled" | "flicked" | "refresh-requested");
-    let key_handler = kind == "FocusScope" && key_handler(event);
+    let key_handler = matches!(kind, "FocusScope" | "CustomItem") && key_handler(event);
     Ok(match kind {
         _ if scrolled => &[],
         _ if event == "editing-finished" => &[Type::String, Type::Bool],
@@ -2244,12 +2252,14 @@ pub fn event_parameters<'a>(
             &[Type::Int, Type::Int]
         }
         _ if event == "row-moved" => &[Type::Int, Type::Int, Type::Int],
-        "FocusScope" if key_handler => &[Type::KeyEvent],
+        "FocusScope" | "CustomItem" if key_handler => &[Type::KeyEvent],
         "WheelHandler" if event == "wheel" => &[Type::WheelEvent],
-        "TouchArea" if event == "scroll-event" => &[Type::WheelEvent],
-        "TouchArea" if event == "pointer-event" => &[Type::PointerEvent],
-        "FocusScope" if event == "focus-within-changed" => &[Type::Bool, Type::FocusReason],
-        "FocusScope" if focus_handler(&event) => &[Type::FocusReason],
+        "TouchArea" | "CustomItem" if event == "scroll-event" => &[Type::WheelEvent],
+        "TouchArea" | "CustomItem" if event == "pointer-event" => &[Type::PointerEvent],
+        "FocusScope" | "CustomItem" if event == "focus-within-changed" => {
+            &[Type::Bool, Type::FocusReason]
+        }
+        "FocusScope" | "CustomItem" if focus_handler(&event) => &[Type::FocusReason],
         "Slider" | "Dial" | "DoubleSpinBox" | "ScrollBar" => &[Type::Float],
         "RangeSlider" => &[Type::Float, Type::Float],
         "Calendar" | "MonthGrid" => &[Type::Date],
@@ -2301,10 +2311,10 @@ pub fn event_return_type(kind: &str, event: &str) -> Option<Type> {
         ("Window" | "ApplicationWindow", "close-requested") | ("StackPage", "leave-requested")
     ) {
         Some(Type::Bool)
-    } else if kind == "FocusScope" && key_handler(event)
+    } else if matches!(kind, "FocusScope" | "CustomItem") && key_handler(event)
         || matches!(
             (kind, event),
-            ("WheelHandler", "wheel") | ("TouchArea", "scroll-event")
+            ("WheelHandler", "wheel") | ("TouchArea" | "CustomItem", "scroll-event")
         )
     {
         Some(Type::EventResult)
@@ -7878,7 +7888,7 @@ fn element<'a>(
     let kind = delegate_base(kind).unwrap_or(kind);
     if matches!(
         kind,
-        "ComboOption" | "TumblerOption" | "PathViewOption" | "Expander"
+        "ComboOption" | "TumblerOption" | "PathViewOption" | "Expander" | "CustomItem"
     ) && scope.containing_repeat(owner).is_some()
     {
         return fail(
@@ -9936,7 +9946,13 @@ fn anchor_reference(
             if !whole
                 && matches!(
                     edge,
-                    "left" | "right" | "horizontal-center" | "top" | "bottom" | "vertical-center"
+                    "left"
+                        | "right"
+                        | "horizontal-center"
+                        | "top"
+                        | "bottom"
+                        | "vertical-center"
+                        | "baseline"
                 ) =>
         {
             if !lines.split_ascii_whitespace().any(|line| line == edge) {

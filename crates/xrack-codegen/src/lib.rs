@@ -3016,8 +3016,12 @@ impl<'a> Generator<'a> {
                 {
                     self.navigation_read_groups.insert(key);
                 }
-                if repeat.is_none() && op.attr("kind") == Ok("TouchArea") {
+                if repeat.is_none() && matches!(op.attr("kind"), Ok("TouchArea" | "CustomItem")) {
                     self.pointer_targets.insert(key);
+                }
+                if op.attr("kind") == Ok("CustomItem") {
+                    self.geometry_targets.insert(key);
+                    self.focus_targets.insert(key);
                 }
                 if matches!(op.attr("kind"), Ok("TableView" | "StandardTableView"))
                     && table_option_configured(op, "edit-on-tab")
@@ -10590,7 +10594,7 @@ impl<'a> Generator<'a> {
             "xr.bind"
         };
         self.render_state_selection(element, scope, out)?;
-        if element.attribute("kind") == Some("FocusScope") {
+        if matches!(element.attribute("kind"), Some("FocusScope" | "CustomItem")) {
             for handler in children(element, "xr.handler") {
                 if let Some(phase) = key_phase(handler.attr("name")?) {
                     out.extend(
@@ -10667,6 +10671,13 @@ impl<'a> Generator<'a> {
             let handle = hover_handle(key);
             out.extend(quote!(#name.hover_handle = Some(self.__state.#handle.clone());));
         }
+        if element.attr("kind") == Ok("CustomItem") {
+            out.extend(
+                quote!(#name.key_handlers |= ::xrack_runtime::KeyPhase::Pressed.mask()
+                | ::xrack_runtime::KeyPhase::Released.mask();),
+            );
+            out.extend(quote!(#name.scroll_event_handler = true;));
+        }
         if self.pointer_targets.contains(key) {
             let handle = pointer_handle(key);
             out.extend(quote!(#name.pointer_handle = Some(self.__state.#handle.clone());));
@@ -10698,6 +10709,9 @@ impl<'a> Generator<'a> {
             } else {
                 out.extend(quote!(#name.geometry_handle = Some(self.__state.#handle.clone());));
             }
+        }
+        if element.attr("kind") == Ok("CustomItem") {
+            out.extend(quote!(#name.observe_custom_item_updates();));
         }
         if let Some(target) = children(element, "xr.focus_target").next() {
             let handle = focus_handle(target.attr("target")?);
@@ -12541,7 +12555,7 @@ impl<'a> Generator<'a> {
             );
             return Ok(());
         }
-        if element.attr("kind")? == "FocusScope"
+        if matches!(element.attr("kind")?, "FocusScope" | "CustomItem")
             && children(element, "xr.handler").any(|handler| {
                 handler
                     .attribute("name")
@@ -12628,7 +12642,7 @@ impl<'a> Generator<'a> {
             out.extend(quote!([#(#path,)* rest @ ..] => self.__state.#instance.__key_path(rest, phase, event),));
             return Ok(());
         }
-        if element.attr("kind")? == "FocusScope" {
+        if matches!(element.attr("kind")?, "FocusScope" | "CustomItem") {
             let mut phases = TokenStream::new();
             for handler in children(element, "xr.handler") {
                 let Some(phase) = key_phase(handler.attr("name")?) else {
@@ -12778,8 +12792,8 @@ impl<'a> Generator<'a> {
         });
         for handler in children(element, "xr.handler") {
             let returns_result = match (kind, handler.attr("name")?) {
-                ("WheelHandler", "wheel") | ("TouchArea", "scroll-event") => true,
-                ("TouchArea", "pointer-event") => false,
+                ("WheelHandler", "wheel") | ("TouchArea" | "CustomItem", "scroll-event") => true,
+                ("TouchArea" | "CustomItem", "pointer-event") => false,
                 _ => continue,
             };
             let params = handler.parameters()?;

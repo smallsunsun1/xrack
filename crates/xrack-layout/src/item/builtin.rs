@@ -102,6 +102,31 @@ impl Item for ScrollBar {
 struct Text(ItemPaint);
 
 impl Item for Text {
+    fn baseline(&self, node: &Node, size: Size, text: &mut dyn super::LayoutServices) -> f32 {
+        let font_size = text.font_size(node);
+        let ascent = text.font_ascent(node, font_size);
+        if let Some(layout) = text.shared_styled_text_layout(node, size) {
+            return layout
+                .fragments
+                .iter_range(0..layout.fragments.len())
+                .next()
+                .map_or(0.0, |fragment| fragment.bounds.y + ascent);
+        }
+        if !crate::uses_label_layout(node) {
+            return ascent;
+        }
+        crate::LabelLayout::with_font_size(node, size, font_size, |line| {
+            text.measure_node(node, line, f32::MAX).width
+        })
+        .lines
+        .first()
+        .map_or(0.0, |line| line.origin.y + ascent)
+    }
+
+    fn reuses_placement(&self) -> bool {
+        matches!(self.0, ItemPaint::Text | ItemPaint::Label)
+    }
+
     fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
         super::SizePolicy {
             preferred_minimum: true,
@@ -140,6 +165,23 @@ impl Item for Text {
 pub(super) struct TextInput;
 
 impl Item for TextInput {
+    fn baseline(&self, node: &Node, size: Size, text: &mut dyn super::LayoutServices) -> f32 {
+        let font_size = text.font_size(node);
+        let area = Padding::for_editor(node).inner_rect(crate::Rect::new(
+            0.0,
+            0.0,
+            size.width,
+            size.height,
+        ));
+        let line = font_size * 1.4;
+        let top = if is_multiline_text_input(node.kind) {
+            area.y
+        } else {
+            area.y + (area.height - line).max(0.0) * 0.5
+        };
+        top + text.font_ascent(node, font_size)
+    }
+
     fn size_policy(&self, node: &xrack_runtime::Node) -> super::SizePolicy {
         if is_multiline_text_input(node.kind) {
             super::SizePolicy::FILL
@@ -258,6 +300,10 @@ struct Image {
 }
 
 impl Item for Image {
+    fn reuses_placement(&self) -> bool {
+        !self.animated
+    }
+
     fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
         super::SizePolicy::INTRINSIC
     }
@@ -396,6 +442,10 @@ impl Item for DefaultItem {}
 struct Draw(ItemPaint);
 
 impl Item for Draw {
+    fn reuses_placement(&self) -> bool {
+        matches!(self.0, ItemPaint::Rectangle)
+    }
+
     fn hit_behavior(&self, _node: &Node) -> HitBehavior {
         if matches!(self.0, ItemPaint::SceneView3D) {
             HitBehavior::SceneTexture
@@ -415,6 +465,7 @@ pub(crate) fn item(kind: &str) -> &'static dyn Item {
         "SearchField" => &super::search::SearchField,
         "SceneView3D" => &Draw(ItemPaint::SceneView3D),
         "CustomRender" => &Draw(ItemPaint::CustomRender),
+        "CustomItem" => &super::custom_item::Native,
         "Path" => &Draw(ItemPaint::Vector),
         "ColorPlane" => &super::slider::ColorPlane,
         "ColorPreview" => &Draw(ItemPaint::ColorPreview),

@@ -35312,3 +35312,256 @@ fn callback_loops_traverse_full_counts_and_models() {
         Ok(Value::Int(generated.get_visited()))
     );
 }
+
+#[test]
+fn native_item_shares_geometry_state_input_and_lifecycle_in_both_backends() {
+    use layout_ui::NativeControlDemo;
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+        time::Instant,
+    };
+    use xrack_layout::{ActivationKey, Point, Size};
+    use xrack_runtime::{
+        CustomItem, CustomItemChange, CustomItemContext, CustomItemData, CustomItemDrawing,
+        CustomItemEvent, CustomItemUpdate, CustomItemUpdater, EventResult, KeyEvent, KeyPhase,
+        PointerButton, PointerEvent, PointerEventKind, register_custom_item,
+    };
+
+    #[derive(Default)]
+    struct Trace {
+        width: Cell<f32>,
+        updaters: RefCell<Vec<CustomItemUpdater>>,
+        changes: RefCell<Vec<CustomItemChange>>,
+        pointers: RefCell<Vec<(PointerEventKind, bool)>>,
+        keys: Cell<usize>,
+        activations: Cell<usize>,
+    }
+
+    struct Meter(Rc<Trace>);
+    impl CustomItem for Meter {
+        fn measure(&self, _: CustomItemData<'_>, _: [f32; 2]) -> [f32; 2] {
+            [self.0.width.get(), 40.0]
+        }
+
+        fn baseline(&self, _: CustomItemData<'_>, _: [f32; 2]) -> f32 {
+            24.0
+        }
+
+        fn paint(&self, _: CustomItemContext<'_>, _: &mut Vec<CustomItemDrawing>) {}
+
+        fn contains(&self, context: CustomItemContext<'_>, [x, y]: [f32; 2]) -> bool {
+            let bounds = context.placement.bounds;
+            x < bounds.width * 0.75 && bounds.contains([x, y])
+        }
+
+        fn update_effects(&self, _: CustomItemData<'_>, _: CustomItemData<'_>) -> CustomItemUpdate {
+            CustomItemUpdate::Paint
+        }
+
+        fn event(&self, context: CustomItemContext<'_>, event: CustomItemEvent<'_>) -> EventResult {
+            match event {
+                CustomItemEvent::Pointer(event) => {
+                    assert!(context.state.id.is_some());
+                    self.0
+                        .pointers
+                        .borrow_mut()
+                        .push((event.kind, event.inside));
+                    if event.kind == PointerEventKind::Down {
+                        context.request_update(CustomItemUpdate::Paint);
+                    }
+                }
+                CustomItemEvent::Key(KeyPhase::Pressed, _) => {
+                    self.0.keys.set(self.0.keys.get() + 1)
+                }
+                CustomItemEvent::Activate => self.0.activations.set(self.0.activations.get() + 1),
+                _ => {}
+            }
+            EventResult::Reject
+        }
+
+        fn changed(&self, context: CustomItemContext<'_>, change: CustomItemChange) {
+            self.0.changes.borrow_mut().push(change);
+            if change == CustomItemChange::Mounted {
+                self.0
+                    .updaters
+                    .borrow_mut()
+                    .push(context.updater().unwrap());
+            }
+        }
+    }
+
+    fn exercise<C: Component>(driver: &mut ui_driver::UiDriver<C>) {
+        driver.click("meter");
+        assert_eq!(driver.focused(), Some("meter"));
+        assert!(driver.activate(ActivationKey::Enter));
+
+        let scene = Rc::new(driver.scene().clone());
+        let layout = driver.layout().clone();
+        let route = driver.input().key_route(&scene, &layout).unwrap();
+        driver.update(|ui| {
+            route.dispatch(
+                ui,
+                &scene,
+                &layout,
+                KeyPhase::Pressed,
+                &KeyEvent {
+                    key: "ArrowUp".into(),
+                    ..KeyEvent::default()
+                },
+            );
+        });
+
+        let scene = Rc::new(driver.scene().clone());
+        let layout = driver.layout().clone();
+        let rect = driver.bounds("meter");
+        let start = Point {
+            x: rect.x + rect.width * 0.5,
+            y: rect.y + rect.height * 0.5,
+        };
+        let outside = Point {
+            x: rect.x + rect.width * 0.9,
+            y: start.y,
+        };
+        let event = PointerEvent {
+            button: PointerButton::Primary,
+            ..PointerEvent::default()
+        };
+        let input = xrack_layout::Interaction::default();
+        assert!(
+            input
+                .begin_pointer_sequence(&scene, &layout, outside, event, Instant::now())
+                .is_none()
+        );
+        let (mut sequence, down) = input
+            .begin_pointer_sequence(&scene, &layout, start, event, Instant::now())
+            .unwrap();
+        let up = sequence
+            .sample(
+                &input,
+                &scene,
+                &layout,
+                outside,
+                PointerEventKind::Up,
+                KeyModifiers::default(),
+            )
+            .unwrap();
+        assert!(down.event.inside);
+        assert!(!up.event.inside);
+        driver.update(|ui| {
+            down.apply(ui, &scene);
+            up.apply(ui, &scene);
+        });
+    }
+
+    use xrack_runtime::KeyModifiers;
+    let trace = Rc::new(Trace::default());
+    trace.width.set(80.0);
+    let _registration = register_custom_item("level-meter", Meter(trace.clone())).unwrap();
+    let source = include_str!("../examples/layout/layout.xr");
+    let module = xrack_compiler::prepare_preview(source, "layout.xr", Default::default()).unwrap();
+    let instance = Program::from_module(&module.module)
+        .unwrap()
+        .create("NativeControlDemo")
+        .unwrap();
+    let size = Size::new(280.0, 170.0);
+    let mut interpreted = ui_driver::UiDriver::headless(instance, size);
+    let mut aot = ui_driver::UiDriver::headless(NativeControlDemo::new(), size);
+
+    assert_eq!(
+        trace.changes.borrow().as_slice(),
+        &[CustomItemChange::Mounted, CustomItemChange::Mounted]
+    );
+    assert_eq!(interpreted.bounds("meter"), aot.bounds("meter"));
+    let initial_width = aot.bounds("meter").width;
+    assert!(initial_width >= 80.0);
+    let meter = aot.bounds("meter");
+    let marker = aot.bounds("marker");
+    assert_eq!(marker, interpreted.bounds("marker"));
+    assert_eq!(marker.x, meter.x + meter.width - marker.width - 3.0);
+    assert_eq!(marker.y, meter.y + 3.0);
+    assert_eq!(
+        aot.component().get_meter_line(),
+        aot.component().get_label_line()
+    );
+    assert_eq!(
+        aot.component().get_anchored_line(),
+        aot.component().get_reference_line()
+    );
+    assert_eq!(
+        interpreted.component().get("meter-line"),
+        Ok(aot.component().get_meter_line().into())
+    );
+    assert_eq!(
+        interpreted.component().get("anchored-line"),
+        Ok(aot.component().get_anchored_line().into())
+    );
+
+    exercise(&mut aot);
+    exercise(&mut interpreted);
+    assert_eq!(trace.activations.get(), 4);
+    assert_eq!(trace.keys.get(), 2);
+    assert_eq!(
+        trace.pointers.borrow().as_slice(),
+        &[
+            (PointerEventKind::Down, true),
+            (PointerEventKind::Up, false),
+            (PointerEventKind::Down, true),
+            (PointerEventKind::Up, false),
+        ]
+    );
+    assert_eq!(aot.component().get_activations(), 2);
+    assert_eq!(aot.component().get_key_count(), 1);
+    assert_eq!(
+        interpreted.component().get("activations"),
+        Ok(Value::Int(2))
+    );
+    assert_eq!(interpreted.component().get("key-count"), Ok(Value::Int(1)));
+    assert!(!aot.component().get_inside());
+    assert_eq!(
+        interpreted.component().get("inside"),
+        Ok(Value::Bool(false))
+    );
+
+    let old_aot = aot.scene().clone();
+    aot.update(|ui| ui.set_meter_data("color-only".to_owned()));
+    assert!(old_aot.same_frame_inputs(aot.scene()));
+
+    trace.width.set(112.0);
+    for updater in trace.updaters.borrow().iter() {
+        assert!(updater.request(CustomItemUpdate::Layout));
+    }
+    aot.update(|_| {});
+    interpreted.update(|_| {});
+    assert!(aot.bounds("meter").width > initial_width);
+    assert!(aot.bounds("meter").width >= 112.0);
+    assert_eq!(interpreted.bounds("meter"), aot.bounds("meter"));
+    assert_eq!(
+        trace
+            .changes
+            .borrow()
+            .iter()
+            .filter(|change| matches!(change, CustomItemChange::Placement { .. }))
+            .count(),
+        2
+    );
+
+    aot.update(|ui| ui.set_show_meter(false));
+    interpreted.update(|ui| ui.set("show-meter", false.into()).unwrap());
+    assert!(
+        trace
+            .updaters
+            .borrow()
+            .iter()
+            .all(|updater| !updater.request(CustomItemUpdate::Paint))
+    );
+    assert_eq!(
+        trace
+            .changes
+            .borrow()
+            .iter()
+            .filter(|change| **change == CustomItemChange::Unmounted)
+            .count(),
+        2
+    );
+}

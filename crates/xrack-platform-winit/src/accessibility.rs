@@ -1554,7 +1554,7 @@ impl Builder<'_> {
                 }
             }
             if !ios_container
-                && (supports_click(node.kind) || self.ios && supports_ios_edit_activation(node))
+                && (supports_click(node) || self.ios && supports_ios_edit_activation(node))
             {
                 accessible.add_action(Action::Click);
             }
@@ -3048,6 +3048,14 @@ fn role(node: &Node, view: Option<&str>) -> Role {
         return Role::RadioButton;
     }
     match node.kind {
+        "CustomItem" => match node
+            .custom_item()
+            .map(|item| item.role(node.custom_item_data()))
+        {
+            Some(xrack_runtime::CustomItemRole::Button) => Role::Button,
+            Some(xrack_runtime::CustomItemRole::Image) => Role::Image,
+            _ => Role::Group,
+        },
         "Button" | "ToolButton" | "RoundButton" | "DelayButton" | "DialogButton" | "TouchArea"
         | "SwipeDelegate" => Role::Button,
         "CheckBox" => Role::CheckBox,
@@ -3290,9 +3298,14 @@ pub(crate) fn requested_standalone_scroll(
     }
 }
 
-pub(crate) fn supports_click(kind: &str) -> bool {
+pub(crate) fn supports_click(node: &Node) -> bool {
+    if node.kind == "CustomItem" {
+        return node.custom_item().is_some_and(|item| {
+            item.role(node.custom_item_data()) == xrack_runtime::CustomItemRole::Button
+        });
+    }
     matches!(
-        kind,
+        node.kind,
         "Button"
             | "ToolButton"
             | "RoundButton"
@@ -3836,6 +3849,53 @@ mod tests {
         assert!(!splitter.supports_action(Action::Focus));
         assert!(!splitter.supports_action(Action::SetValue));
         assert!(projection.route(id).is_none());
+    }
+
+    #[test]
+    fn native_items_project_their_registered_accessibility_role() {
+        use xrack_runtime::{
+            CustomItem, CustomItemContext, CustomItemData, CustomItemDrawing, CustomItemRole,
+            register_custom_item,
+        };
+        struct Native(CustomItemRole);
+        impl CustomItem for Native {
+            fn paint(&self, _: CustomItemContext<'_>, _: &mut Vec<CustomItemDrawing>) {}
+            fn role(&self, _: CustomItemData<'_>) -> CustomItemRole {
+                self.0
+            }
+        }
+
+        let _button =
+            register_custom_item("native-a11y-button", Native(CustomItemRole::Button)).unwrap();
+        let _image =
+            register_custom_item("native-a11y-image", Native(CustomItemRole::Image)).unwrap();
+        let mut window = Node::new("Window", None);
+        for (index, name) in ["native-a11y-button", "native-a11y-image"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut node = Node::new("CustomItem", None);
+            node.properties
+                .insert("implementation", name.to_owned().into());
+            node.properties
+                .insert("accessible-name", name.to_owned().into());
+            length(&mut node, "x", 60.0 * index as f64);
+            length(&mut node, "width", 48.0);
+            length(&mut node, "height", 48.0);
+            window.children.push(node);
+        }
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(200.0, 100.0), &mut Text));
+        let update = Projection::default()
+            .update(&scene, &frame, &Interaction::default(), 1.0, None)
+            .unwrap();
+        let (_, button) = named(&update, "native-a11y-button");
+        assert_eq!(button.role(), Role::Button);
+        assert!(button.supports_action(Action::Focus));
+        assert!(button.supports_action(Action::Click));
+        let (_, image) = named(&update, "native-a11y-image");
+        assert_eq!(image.role(), Role::Image);
+        assert!(!image.supports_action(Action::Click));
     }
 
     #[test]

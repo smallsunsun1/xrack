@@ -31,6 +31,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "CheckBox",
         "ColorPickerPopup",
         "CustomRender",
+        "CustomItem",
         "SceneView3D",
         "MeshLoader3D",
         "ComboBox",

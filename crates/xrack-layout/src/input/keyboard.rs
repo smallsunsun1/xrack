@@ -31,9 +31,9 @@ impl KeyRoute {
         let mut result = None;
         let mut visit = |scope: &Target| {
             if !valid(scope, scene, layout)
-                || !scene.at_path(&scope.path).is_some_and(|node| {
-                    node.kind == "FocusScope" && node.key_handlers & phase.mask() != 0
-                })
+                || !scene
+                    .at_path(&scope.path)
+                    .is_some_and(|node| node.handles_key_phase(phase))
             {
                 return false;
             }

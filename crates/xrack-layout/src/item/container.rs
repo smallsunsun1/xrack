@@ -71,6 +71,13 @@ impl super::menu::MenuItem for LineOrFlow {
 }
 
 impl Item for LineOrFlow {
+    fn reuses_placement(&self) -> bool {
+        matches!(
+            self.paint,
+            ItemPaint::Container(ContainerPaint::Horizontal | ContainerPaint::Vertical)
+        )
+    }
+
     fn focus_bounds(&self, item: super::ItemRef<'_, '_>) -> Option<crate::Rect> {
         if !item.layout.visible {
             return None;
@@ -146,6 +153,10 @@ impl Item for LineOrFlow {
 pub(super) struct Grid;
 
 impl Item for Grid {
+    fn reuses_placement(&self) -> bool {
+        true
+    }
+
     fn layout(&self) -> ItemLayout {
         ItemLayout::Grid
     }

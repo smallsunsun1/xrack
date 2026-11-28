@@ -402,6 +402,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             TransformDemo,
             AnchorsDemo,
             AnchoredContainersDemo,
+            NativeControlDemo,
             GeometryDemo,
             WheelDemo,
             HoverDemo,

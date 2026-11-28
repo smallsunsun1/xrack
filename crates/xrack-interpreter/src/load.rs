@@ -1440,6 +1440,10 @@ impl<'m> Loader<'m> {
             }
         } else {
             let kind = attribute(op, "kind")?;
+            if kind == "CustomItem" {
+                self.geometry_targets.insert(key.to_owned());
+                self.focus_targets.insert(key.to_owned());
+            }
             Visual::Builtin(builtin_element(kind).ok_or_else(|| unsupported(op, kind))?)
         };
         if matches!(
@@ -2617,9 +2621,12 @@ fn property_name(op: Op<'_>) -> Result<&'static str> {
 const PROPERTIES: &[&str] = &[
     "anchor-fill",
     "anchor-center-in",
+    "implementation",
+    "focusable",
     "anchor-left",
     "anchor-right",
     "anchor-top",
+    "anchor-baseline",
     "anchor-bottom",
     "anchor-horizontal-center",
     "anchor-vertical-center",

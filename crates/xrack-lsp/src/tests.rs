@@ -12017,3 +12017,28 @@ fn scene_fragments_node_references_and_window_preload_complete() {
         "component App inherits Window { out property <bool> ready <- root.preload-ready; }";
     assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
 }
+
+#[test]
+fn custom_item_and_baseline_are_available_to_declarative_controls() {
+    let source = r#"component App inherits Window {
+        label := Label { text: "level"; }
+        meter := CustomItem {
+            implementation: "level-meter";
+            anchor-baseline: label.baseline;
+            pointer-event(event) => { let local = event.x; }
+            key-pressed(event) => { EventResult.reject }
+        }
+        out property <length> baseline <- meter.baseline-offset;
+    }"#;
+    assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
+    let members = complete_at("component App inherits Window { CustomItem { implem| } }");
+    assert!(
+        members
+            .iter()
+            .any(|item| item["label"] == "implementation" && item["detail"] == "string")
+    );
+    let anchors = complete_at(
+        "component App inherits Window { label := Label {} CustomItem { anchor-baseline: label.base|; } }",
+    );
+    assert!(anchors.iter().any(|item| item["label"] == "baseline"));
+}

@@ -104,12 +104,13 @@ impl Item for Dial {
         ItemPaint::Dial
     }
 
-    fn event(&self, item: ItemRef<'_, '_>, event: ItemEvent) -> Option<ItemAction> {
+    fn contains(&self, item: ItemRef<'_, '_>, point: crate::Point) -> bool {
+        DialGeometry::new(item.local_rect(), item.node).contains(point)
+    }
+
+    fn event(&self, _item: ItemRef<'_, '_>, event: ItemEvent) -> Option<ItemAction> {
         match event {
             ItemEvent::Navigate(key) => range_key(key, true, true, false),
-            ItemEvent::HitTest(point) => (!DialGeometry::new(item.local_rect(), item.node)
-                .contains(point))
-            .then_some(ItemAction::SkipHit),
             _ => None,
         }
     }

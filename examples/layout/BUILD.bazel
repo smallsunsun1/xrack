@@ -36,11 +36,15 @@ exports_files(
 
 rust_binary(
     name = "layout",
-    srcs = ["main.rs"],
+    srcs = [
+        "main.rs",
+        "native_item.rs",
+    ],
     edition = "2024",
     deps = [
         ":bundled_ui",
         ":layout_ui",
         "//crates/xrack-platform-winit:xrack_platform_winit",
+        "//crates/xrack-runtime:xrack_runtime",
     ],
 )

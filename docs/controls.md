@@ -73,6 +73,8 @@ Label {
 
 ### 锚点布局
 
+`HorizontalLayout` 和横排控件可用 `cross-axis-alignment: CrossAxisAlignment.baseline;` 对齐第一行文字基线。单个子项可以用 `cross-axis-self-alignment` 覆盖对齐。布局后的只读 `baseline-offset: length` 是从元素顶部到基线的距离。绝对布局里的 `anchor-baseline: title.baseline;` 使用同一套几何，适合不同字号或正文与输入框对齐。
+
 `Window`、`Rectangle` 等采用绝对布局的容器，可以把直接子元素贴到父容器内容区或同级元素的边。锚点用布局坐标计算，旋转、缩放和裁剪在放置之后应用。
 
 ```xr
@@ -767,6 +769,53 @@ ui.invoke_increment(2);
 ui.dispatch("add", "clicked");
 let scene = ui.render();
 ```
+
+### CustomItem
+
+在 Rust 应用初始化时用 `register_custom_item` 注册实现，并在 UI 线程保留注册对象。随后在 `.xr` 里声明对应的 `CustomItem`。同一个实现可供 Rust AOT 和解释器实例使用。
+
+```xr
+meter := CustomItem {
+    implementation: "level-meter";
+    data <- root.level-text;
+    accessible-name: "Level meter";
+    clicked => { root.reset(); }
+}
+```
+
+```rust
+use xrack::{
+    Color, CustomItem, CustomItemContext, CustomItemData, CustomItemDrawing,
+    CustomItemRect, register_custom_item,
+};
+
+struct LevelMeter;
+
+impl CustomItem for LevelMeter {
+    fn measure(&self, _: CustomItemData<'_>, _: [f32; 2]) -> [f32; 2] {
+        [150.0, 28.0]
+    }
+
+    fn paint(&self, ctx: CustomItemContext<'_>, out: &mut Vec<CustomItemDrawing>) {
+        let bounds = ctx.placement.bounds;
+        out.push(CustomItemDrawing::Fill { bounds, color: Color(0x202a35ff) });
+        let level = ctx.state.data.parse::<f32>().unwrap_or(0.0).clamp(0.0, 1.0);
+        out.push(CustomItemDrawing::Fill {
+            bounds: CustomItemRect::new(0.0, 0.0, bounds.width * level, bounds.height),
+            color: Color(0x33cc77ff),
+        });
+    }
+}
+
+let _meter = register_custom_item("level-meter", LevelMeter)?;
+```
+
+- `measure` 提供首选尺寸，`baseline` 提供文字基线，`arrange` 可以调整子项的局部位置，子项显式声明的锚点随后应用。`contains` 定义局部命中形状，按下和捕获期间的 `inside` 共用该判定。
+- 绘制使用矩形、折线、多边形、图像和文字命令。实例上下文提供局部可见范围、布置边界和实例 ID。在 `changed` 中可观测挂载、位置或可见范围变化和卸载。列表中使用命名组件作 delegate 可为每行创建自己的控件实例。
+- Rust `event` 可接收指针、键盘、滚轮、焦点和激活事件。组件可用 `pointer-event`、`key-pressed`、`scroll-event` 和 `clicked` 绑定自己的行为。可聚焦的按钮角色也支持键盘和无障碍激活。`role` 可声明图像或分组角色。
+- 数据和 `revision` 可通过 `.xr` 绑定更新。`update_effects` 声明这次属性变更是否需要布局，默认重新布局。Rust 状态变化时，用 `ctx.request_update(CustomItemUpdate::Paint)` 请求只重绘，用 `Layout` 请求重新测量和布置。可以保留 `ctx.updater()` 从同一 UI 线程稍后调度更新。
+
+运行 `bazel run //examples/layout:layout -- --native-item` 体验 Rust 注册的原生控件，点击或使用键盘调整读数。
 
 ### CustomRender
 

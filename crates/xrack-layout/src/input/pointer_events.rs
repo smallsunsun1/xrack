@@ -176,7 +176,7 @@ impl PointerSequence {
         now: Instant,
     ) -> Option<(Self, PointerDelivery)> {
         let node = scene.interactive_at_path(&target.path)?;
-        if node.kind != "TouchArea" {
+        if !matches!(node.kind, "TouchArea" | "CustomItem") {
             return None;
         }
         let mut sequence = Self {
@@ -315,12 +315,13 @@ impl PointerSequence {
                 self.press_and_hold = None;
                 return;
             };
-            let inside = layout.at_path(&self.target.path).is_some_and(|item| {
-                item.contains_clip_point(point)
-                    && item
-                        .map_from_window(point)
-                        .is_some_and(|local| item.bounds.contains(local))
-            });
+            let inside = self
+                .target
+                .node_in(scene)
+                .zip(layout.at_path(&self.target.path))
+                .is_some_and(|(node, layout)| {
+                    crate::item::ItemRef { node, layout }.contains_window(point)
+                });
             self.update_hold_position(point, inside);
         }
     }
@@ -383,13 +384,16 @@ impl PointerSequence {
         self.refresh_target(input, scene, layout)?;
         self.physical = point;
         let point = self.routed_point(input, scene, layout, point)?;
-        let item = layout.at_path(&self.target.path)?;
-        let (local, x, y) = local_position(item, point)?;
+        let layout = layout.at_path(&self.target.path)?;
+        let node = self.target.node_in(scene)?;
+        let item = crate::item::ItemRef { node, layout };
+        let local = item.window_to_local(point)?;
+        let (x, y) = (Length(f64::from(local.x)), Length(f64::from(local.y)));
         self.last = PointerEvent {
             kind,
             x,
             y,
-            inside: item.bounds.contains(local) && item.contains_clip_point(point),
+            inside: layout.visible && layout.contains_clip_point(point) && item.contains(local),
             modifiers,
             ..self.last
         };

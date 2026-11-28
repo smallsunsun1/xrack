@@ -1528,17 +1528,10 @@ fn hit_subtree(
     if behavior == HitBehavior::Transparent {
         return Hit::None;
     }
-    if !layout.bounds.contains(point) {
+    let placed = ItemRef { node, layout };
+    let local = layout.layout_to_local(point);
+    if !placed.contains(local) {
         return hit_children(node, layout, window, path, transitioning_stacks, purpose);
-    }
-    if behavior == HitBehavior::RoundedButton
-        && !(crate::RoundedClip {
-            bounds: layout.bounds,
-            radii: crate::corner_radii(node, layout.bounds),
-        })
-        .contains(point)
-    {
-        return Hit::None;
     }
     if transitioning_stacks.contains(path) {
         return Hit::StackSlide;
@@ -1557,8 +1550,6 @@ fn hit_subtree(
         target.push(slot);
         return Hit::Target(Target::from_node(target, handle, true, None));
     }
-    let placed = ItemRef { node, layout };
-    let local = layout.layout_to_local(point);
     match item.event(placed, ItemEvent::HitTest(local)) {
         Some(ItemAction::Control(action)) if layout.enabled => {
             return Hit::ControlPart(Target::from_node(path.clone(), node, true, None), action);
@@ -2491,7 +2482,7 @@ impl Interaction {
         };
         let point = projection.map_or(point, |projection| projection.point);
         let node = scene.interactive_at_path(&target.path)?;
-        if node.kind != "TouchArea" {
+        if !matches!(node.kind, "TouchArea" | "CustomItem") {
             return None;
         }
         let (_, x, y) =
@@ -13592,6 +13583,9 @@ impl Interaction {
             .filter_map(|depth| {
                 let path = &focus.path[..depth];
                 let node = scene.at_path(path)?;
+                if node.kind == "CustomItem" && path == focus.path {
+                    return Some(focus.clone());
+                }
                 if !matches!(item_paint(node), ItemPaint::FocusScope) || node.key_handlers == 0 {
                     return None;
                 }

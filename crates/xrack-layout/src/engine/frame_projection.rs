@@ -58,17 +58,8 @@ pub(crate) fn reproject(old: &Node, node: &Node, layout: &LayoutNode) -> Option<
 
 fn can_reproject(old: &Node, node: &Node, layout: &LayoutNode, parent: Option<&Node>) -> bool {
     // Moving a sibling can resize or move an anchored item.
-    matches!(
-        node.kind,
-        "Window"
-            | "Rectangle"
-            | "Text"
-            | "Label"
-            | "Image"
-            | "HorizontalLayout"
-            | "VerticalLayout"
-            | "GridLayout"
-    ) && !node.application_window
+    crate::item::item(node.kind).reuses_placement()
+        && !node.application_window
         && !super::anchors::has_anchors(node)
         && layout.visible
         && layout.overlay_index().is_none()

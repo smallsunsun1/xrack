@@ -1,5 +1,5 @@
-use crate::linear::{self, Axis};
 use crate::{Rect, Size, TextMeasurer};
+use crate::{item::LayoutServices, linear::Axis};
 use std::collections::HashMap;
 use xrack_runtime::Node;
 
@@ -15,6 +15,7 @@ pub(crate) fn has_anchors(node: &Node) -> bool {
                     | "anchor-left"
                     | "anchor-right"
                     | "anchor-top"
+                    | "anchor-baseline"
                     | "anchor-bottom"
                     | "anchor-horizontal-center"
                     | "anchor-vertical-center"
@@ -31,7 +32,7 @@ enum Target {
 #[derive(Clone, Copy)]
 struct Line {
     target: Target,
-    fraction: f32,
+    fraction: Option<f32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -39,6 +40,7 @@ struct Constraints {
     start: Option<Line>,
     end: Option<Line>,
     center: Option<Line>,
+    baseline: Option<Line>,
 }
 
 impl Axis {
@@ -92,9 +94,10 @@ fn constraints(
         let (name, edge) = child.text(name)?.rsplit_once('.')?;
         let edges = axis.edge_names();
         let fraction = match edge {
-            edge if edge == edges[0] => 0.0,
-            edge if edge == edges[1] => 1.0,
-            edge if edge == edges[2] => 0.5,
+            edge if edge == edges[0] => Some(0.0),
+            edge if edge == edges[1] => Some(1.0),
+            edge if edge == edges[2] => Some(0.5),
+            "baseline" if axis == Axis::Vertical => None,
             _ => return None,
         };
         Some(Line {
@@ -107,26 +110,34 @@ fn constraints(
     let start = read_line(start).or_else(|| {
         fill.map(|target| Line {
             target,
-            fraction: 0.0,
+            fraction: Some(0.0),
         })
     });
     let end = read_line(end).or_else(|| {
         fill.map(|target| Line {
             target,
-            fraction: 1.0,
+            fraction: Some(1.0),
         })
     });
-    let center = if start.is_none() && end.is_none() {
+    let baseline = (axis == Axis::Vertical && start.is_none() && end.is_none())
+        .then(|| read_line("anchor-baseline"))
+        .flatten();
+    let center = if start.is_none() && end.is_none() && baseline.is_none() {
         read_line(center).or_else(|| {
             Some(Line {
                 target: target(child.text("anchor-center-in")?)?,
-                fraction: 0.5,
+                fraction: Some(0.5),
             })
         })
     } else {
         None
     };
-    Constraints { start, end, center }
+    Constraints {
+        start,
+        end,
+        center,
+        baseline,
+    }
 }
 
 pub(crate) fn children(parent: &Node, content: Rect, text: &mut impl TextMeasurer) -> Vec<Rect> {
@@ -145,7 +156,7 @@ pub(crate) fn apply(
     children: &[Node],
     content: Rect,
     rects: &mut [Rect],
-    text: &mut impl TextMeasurer,
+    text: &mut dyn LayoutServices,
     fixed: impl Fn(&Node) -> bool,
     mut fixed_heights: Option<&mut [bool]>,
 ) {
@@ -175,11 +186,11 @@ pub(crate) fn apply(
         &names,
         rects,
         (&fixed, |_| {}),
-        |child, _| linear::measure(child, reference, text).x.preferred,
+        text,
     );
     for ((child, rect), width) in children.iter().zip(rects.iter_mut()).zip(widths) {
         if rect.width != width {
-            let metrics = linear::measure_with_width(child, reference, Some(rect.width), text);
+            let metrics = text.metrics(child, reference, Some(rect.width));
             rect.height = crate::absolute_height(child, metrics.y, content.height);
         }
     }
@@ -194,11 +205,7 @@ pub(crate) fn apply(
                 heights[index] = true;
             }
         }),
-        |child, rect| {
-            linear::measure_with_width(child, reference, Some(rect.width), text)
-                .y
-                .preferred
-        },
+        text,
     );
 }
 
@@ -209,7 +216,7 @@ fn resolve_axis(
     names: &HashMap<&str, Option<usize>>,
     rects: &mut [Rect],
     (fixed, mut on_resolved): (&impl Fn(&Node) -> bool, impl FnMut(usize)),
-    mut preferred: impl FnMut(&Node, Rect) -> f32,
+    text: &mut dyn LayoutServices,
 ) {
     let constraints: Vec<_> = children
         .iter()
@@ -226,7 +233,10 @@ fn resolve_axis(
     let mut pending = vec![0; children.len()];
     let mut ready = Vec::with_capacity(children.len());
     for (index, lines) in constraints.iter().enumerate() {
-        for line in [lines.start, lines.end, lines.center].into_iter().flatten() {
+        for line in [lines.start, lines.end, lines.center, lines.baseline]
+            .into_iter()
+            .flatten()
+        {
             if let Target::Sibling(sibling) = line.target {
                 dependents[sibling].push(index);
                 pending[index] += 1;
@@ -241,13 +251,22 @@ fn resolve_axis(
     while let Some(index) = ready.pop() {
         let lines = constraints[index];
         let child = &children[index];
-        let coordinate = |line: Line| {
+        let mut coordinate = |line: Line| {
             let rect = match line.target {
                 Target::Parent => content,
                 Target::Sibling(sibling) => rects[sibling],
             };
             let (origin, extent) = axis.interval(rect);
-            origin + line.fraction * extent
+            origin
+                + match (line.fraction, line.target) {
+                    (Some(fraction), _) => fraction * extent,
+                    (None, Target::Parent) => 0.0,
+                    (None, Target::Sibling(sibling)) => crate::item::baseline(
+                        &children[sibling],
+                        Size::new(rect.width, rect.height),
+                        text,
+                    ),
+                }
         };
         let margin = child
             .length("anchor-margin")
@@ -255,20 +274,31 @@ fn resolve_axis(
             .unwrap_or(0.0);
         let start = lines.start.map(|line| coordinate(line) + margin);
         let end = lines.end.map(|line| coordinate(line) - margin);
-        let center = lines.center.map(coordinate);
+        let center = lines.center.map(&mut coordinate);
+        let baseline = lines.baseline.map(coordinate);
         let rect = rects[index];
+        let reference = Size::new(content.width, content.height);
+        let preferred = |text: &mut dyn LayoutServices| match axis {
+            Axis::Horizontal => text.metrics(child, reference, None).x.preferred,
+            Axis::Vertical => text.metrics(child, reference, Some(rect.width)).y.preferred,
+        };
+
         let interval = match (start, end, center) {
             (Some(start), Some(end), _) => Some((start, (end - start).max(0.0))),
-            (Some(start), None, _) => Some((start, preferred(child, rect))),
+            (Some(start), None, _) => Some((start, preferred(text))),
             (None, Some(end), _) => {
-                let size = preferred(child, rect);
+                let size = preferred(text);
                 Some((end - size, size))
             }
             (None, None, Some(center)) => {
-                let size = preferred(child, rect);
+                let size = preferred(text);
                 Some((center - size * 0.5, size))
             }
-            _ => None,
+            _ => baseline.map(|baseline| {
+                let height = preferred(text);
+                let offset = crate::item::baseline(child, Size::new(rect.width, height), text);
+                (baseline - offset, height)
+            }),
         };
         if let Some((origin, size)) = interval {
             axis.set_interval(&mut rects[index], origin, size);

@@ -132,7 +132,7 @@ static bool isSceneTextureSize(llvm::StringRef name) {
 
 static bool geometryProperty(llvm::StringRef name) {
   return isSceneTextureSize(name) || llvm::StringSwitch<bool>(name)
-      .Cases({"layout-x", "layout-y", "layout-width", "layout-height", "layout-ready", "preload-ready",
+      .Cases({"layout-x", "layout-y", "layout-width", "layout-height", "layout-ready", "preload-ready", "baseline-offset",
               "window-bounds-x", "window-bounds-y", "window-bounds-width", "window-bounds-height",
               "available-width", "available-height"}, true)
       .Default(false);
@@ -803,7 +803,7 @@ static bool validTransformBinding(llvm::StringRef kind, llvm::StringRef name,
 static bool anchorTargetProperty(llvm::StringRef name) {
   return llvm::StringSwitch<bool>(name)
       .Cases({"anchor-fill", "anchor-center-in", "anchor-left", "anchor-right", "anchor-top",
-              "anchor-bottom", "anchor-horizontal-center", "anchor-vertical-center"}, true)
+              "anchor-bottom", "anchor-horizontal-center", "anchor-vertical-center", "anchor-baseline"}, true)
       .Default(false);
 }
 
@@ -2162,11 +2162,11 @@ LogicalResult ElementOp::verify() {
       if (kind == "TouchArea" && touchAreaType(getContext(), name))
         return child.emitOpError("TouchArea state is read-only");
       if (name == "press-and-hold-interval" &&
-          ((kind != "TouchArea" && !isPushButton(kind)) ||
+          ((kind != "TouchArea" && kind != "CustomItem" && !isPushButton(kind)) ||
            !isa<IntType>(bind.getInput().getType())))
         return child.emitOpError("press-and-hold-interval requires an integer on TouchArea or a push button");
       if (name == "accepted-buttons" &&
-          (kind != "TouchArea" || !isa<PointerButtonsType>(bind.getInput().getType())))
+          ((kind != "TouchArea" && kind != "CustomItem") || !isa<PointerButtonsType>(bind.getInput().getType())))
         return child.emitOpError("accepted-buttons requires PointerButtons on TouchArea");
       if (name == "wheel-enabled" &&
           (!llvm::StringSwitch<bool>(kind)
@@ -2175,7 +2175,7 @@ LogicalResult ElementOp::verify() {
            !isa<BoolType>(bind.getInput().getType())))
         return child.emitOpError("wheel-enabled requires a boolean on a numeric control");
       if (name == "multi-touch" &&
-          (kind != "TouchArea" || !isa<BoolType>(bind.getInput().getType())))
+          ((kind != "TouchArea" && kind != "CustomItem") || !isa<BoolType>(bind.getInput().getType())))
         return child.emitOpError("multi-touch requires a boolean on TouchArea");
       if (name == "cursor-shape" &&
           ((kind != "HoverHandler" && kind != "TouchArea") ||
@@ -3793,13 +3793,13 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
                    .Cases({"capture-key-pressed", "capture-key-released", "key-pressed", "key-released"}, true)
                    .Default(false)) {
       auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
-      if (kind != "FocusScope" || !arg || arg->getString("ty") != "KeyEvent" ||
+      if ((kind != "FocusScope" && kind != "CustomItem") || !arg || arg->getString("ty") != "KeyEvent" ||
           !arg->getString("name") || !llvm::hasSingleElement(results) ||
           !isa<EventResultType>((*results.begin()).getInput().getType()))
         return handler.emitOpError("FocusScope key handlers require (KeyEvent) -> EventResult");
     } else if (handler.getName() == "pointer-event") {
       auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
-      if (kind != "TouchArea" || !arg || arg->getString("ty") != "PointerEvent" ||
+      if ((kind != "TouchArea" && kind != "CustomItem") || !arg || arg->getString("ty") != "PointerEvent" ||
           !arg->getString("name") || !results.empty())
         return handler.emitOpError("TouchArea requires pointer-event(PointerEvent)");
     } else if (isPushButton(kind) &&
@@ -3808,18 +3808,18 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
       if (!args->empty() || !results.empty())
         return handler.emitOpError("requires a zero-argument button event");
     } else if (handler.getName() == "press-and-hold") {
-      if ((kind != "TouchArea" && !isPushButton(kind)) || !args->empty() || !results.empty())
+      if ((kind != "TouchArea" && kind != "CustomItem" && !isPushButton(kind)) || !args->empty() || !results.empty())
         return handler.emitOpError("requires press-and-hold() on TouchArea or a push button");
     } else if (handler.getName() == "double-clicked") {
-      if ((kind != "TouchArea" && !isPushButton(kind)) || !args->empty() || !results.empty())
+      if ((kind != "TouchArea" && kind != "CustomItem" && !isPushButton(kind)) || !args->empty() || !results.empty())
         return handler.emitOpError("requires double-clicked() on TouchArea or a push button");
     } else if (handler.getName() == "moved") {
-      if (kind != "TouchArea" || !args->empty() || !results.empty())
+      if ((kind != "TouchArea" && kind != "CustomItem") || !args->empty() || !results.empty())
         return handler.emitOpError("requires a zero-argument TouchArea event");
     } else if (handler.getName() == "wheel" || handler.getName() == "scroll-event") {
       const bool wheel = handler.getName() == "wheel";
       auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
-      if (kind != (wheel ? "WheelHandler" : "TouchArea") || !arg || arg->getString("ty") != "WheelEvent" ||
+      if ((wheel ? kind != "WheelHandler" : kind != "TouchArea" && kind != "CustomItem") || !arg || arg->getString("ty") != "WheelEvent" ||
           !arg->getString("name") || !llvm::hasSingleElement(results) ||
           !isa<EventResultType>((*results.begin()).getInput().getType()))
         return handler.emitOpError(wheel
@@ -3839,7 +3839,7 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
             .Cases({"focus-gained", "focus-lost", "focus-changed-event", "focus-within-changed"}, true)
             .Default(false)) {
       bool within = handler.getName() == "focus-within-changed";
-      if (kind != "FocusScope" || args->size() != (within ? 2u : 1u) ||
+      if ((kind != "FocusScope" && kind != "CustomItem") || args->size() != (within ? 2u : 1u) ||
           !argIs(within ? 1 : 0, "FocusReason") || (within && !argIs(0, "bool")))
         return handler.emitOpError("incorrect FocusScope focus event signature");
     }
@@ -5077,7 +5077,8 @@ LogicalResult LiteralOp::verify() {
             spelling == "space-evenly";
   } else if (isa<CrossAxisAlignmentType>(type)) {
     valid = spelling == "auto" || spelling == "stretch" ||
-            spelling == "start" || spelling == "end" || spelling == "center";
+            spelling == "start" || spelling == "end" || spelling == "center" ||
+            spelling == "baseline";
   } else if (isa<OrientationType>(type)) {
     valid = spelling == "horizontal" || spelling == "vertical";
   } else if (isa<FlickDirectionType>(type)) {

@@ -1,15 +1,27 @@
+mod native_item;
+
 use bundled_ui::BundledFontsDemo;
 use layout_ui::{
     AnchorsDemo, AnimationsDemo, ClippingDemo, ComponentStatesDemo, CompositingDemo, FlexDemo,
     FlickableDemo, FlowDemo, FocusScopesDemo, FontsDemo, FramelessDemo, GeometryDemo, HoverDemo,
-    LabelsDemo, LayoutDemo, LayoutDirectionDemo, PointerDemo, PointerPassThroughDemo,
-    RectangleShadowDemo, ScaleRotateDemo, ScopedKeysDemo, StatesDemo, StyledTextDemo,
-    SwipeGestureDemo, TransformDemo, WheelDemo,
+    LabelsDemo, LayoutDemo, LayoutDirectionDemo, NativeControlDemo, PointerDemo,
+    PointerPassThroughDemo, RectangleShadowDemo, ScaleRotateDemo, ScopedKeysDemo, StatesDemo,
+    StyledTextDemo, SwipeGestureDemo, TransformDemo, WheelDemo,
 };
 
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("--anchors") => xrack_platform_winit::run(AnchorsDemo::new()),
+        Some("--native-item") => {
+            match xrack_runtime::register_custom_item("level-meter", native_item::Meter::default())
+            {
+                Ok(_registration) => xrack_platform_winit::run(NativeControlDemo::new()),
+                Err(error) => {
+                    eprintln!("{error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            }
+        }
         Some("--geometry") => xrack_platform_winit::run(GeometryDemo::new()),
         Some("--transforms") => xrack_platform_winit::run(TransformDemo::new()),
         Some("--flickable") => xrack_platform_winit::run(FlickableDemo::new()),

@@ -195,6 +195,11 @@ pub trait TextMeasurer {
         false
     }
 
+    /// Distance from the top of a glyph line to its baseline.
+    fn font_ascent(&mut self, _node: &Node, size: f32) -> f32 {
+        size * 0.8
+    }
+
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
         if let Some(plan) = self.layout_styled_text(node, Size::new(max_width, f32::INFINITY)) {
             return plan.size;
@@ -219,6 +224,7 @@ struct TransformPlacement {
 #[derive(Clone, Debug, Default, PartialEq)]
 struct LayoutDetails {
     texture_only: bool,
+    baseline_offset: f32,
     content_bounds: Option<Rect>,
     list_section_headers: Option<Box<[ListSectionHeader]>>,
     horizontal_scroll: Option<ScrollLayout>,
@@ -252,6 +258,7 @@ impl LayoutDetails {
         }
         compare!(
             texture_only,
+            baseline_offset,
             content_bounds,
             list_section_headers,
             horizontal_scroll,
@@ -795,6 +802,13 @@ impl LayoutNode {
         self.details
             .as_deref()
             .and_then(|details| details.tab_strip)
+    }
+
+    /// Distance from the item's top edge to its first text baseline.
+    pub fn baseline_offset(&self) -> f32 {
+        self.details
+            .as_deref()
+            .map_or(0.0, |details| details.baseline_offset)
     }
 
     fn content_bounds(&self) -> Option<Rect> {
@@ -2264,6 +2278,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 parent_enabled,
             );
             layout.details_mut().texture_only = true;
+            self.observe_item_baseline(node, &mut layout);
             self.space = outside;
             self.layout_direction = previous_direction;
             return layout;
@@ -2282,6 +2297,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     self.text.shared_styled_text_layout(node, size)
                 });
             }
+            self.observe_item_baseline(node, &mut leaf);
             return leaf;
         }
         let outer_key = self.row_key;
@@ -2295,7 +2311,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             && row_children.is_none()
             && self.space.is_none()
             && self.row_layouts.is_some();
-        let layout = if row_cache && let Some(row) = node.routing_row_key() {
+        let mut layout = if row_cache && let Some(row) = node.routing_row_key() {
             let slot = row_layout::Slot { row, column: None };
             let inputs = row_layout::RowInputs {
                 size: Size::new(bounds.width, bounds.height),
@@ -2320,12 +2336,25 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 row_children,
             )
         };
+        self.observe_item_baseline(node, &mut layout);
         self.row_key = outer_key;
         self.layout_direction = outer_direction;
         self.anchor = outer_anchor;
         self.ancestor_shapes = outer_shapes;
         self.space = outer_space;
         layout
+    }
+
+    fn observe_item_baseline(&mut self, node: &Node, layout: &mut LayoutNode) {
+        if layout.visible
+            && (node.geometry_handle.is_some() || node.instance_geometry_handle.is_some())
+        {
+            let size = Size::new(layout.bounds.width, layout.bounds.height);
+            let baseline = item::baseline(node, size, self.text);
+            if baseline != layout.baseline_offset() {
+                layout.details_mut().baseline_offset = baseline;
+            }
+        }
     }
 
     fn is_absolute_leaf(&self, node: &Node) -> bool {

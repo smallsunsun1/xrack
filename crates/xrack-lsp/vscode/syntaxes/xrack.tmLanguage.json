@@ -288,7 +288,7 @@
     "members": {
       "patterns": [
         {
-          "match": "(?<![A-Za-z_0-9-])(anchor-(?:left|right|top|bottom|horizontal-center|vertical-center|fill|center-in))\\s*(:|<-)\\s*(parent)(?![A-Za-z_0-9-])",
+          "match": "(?<![A-Za-z_0-9-])(anchor-(?:left|right|top|bottom|horizontal-center|vertical-center|baseline|fill|center-in))\\s*(:|<-)\\s*(parent)(?![A-Za-z_0-9-])",
           "captures": {
             "1": {
               "name": "variable.other.property.xrack"

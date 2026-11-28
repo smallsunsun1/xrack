@@ -3113,6 +3113,13 @@ impl TextMeasurer for TextSystem {
         (size * self.text_scale).clamp(1.0, 512.0)
     }
 
+    fn font_ascent(&mut self, node: &Node, size: f32) -> f32 {
+        let paint = self.paint_node_at_size(node, size, Color::white(), false);
+        self.context()
+            .measure_font(&paint)
+            .map_or(size * 0.8, |metrics| metrics.ascender())
+    }
+
     fn measure_node(&mut self, node: &Node, text: &str, max_width: f32) -> Size {
         let size = self.font_size(node);
         self.measure_node_at_size(node, text, size, max_width)

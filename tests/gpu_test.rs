@@ -23903,3 +23903,51 @@ fn reserved_scroll_view_gutters_clip_contents_and_mirror_in_rtl() {
         assert_eq!(images[0].pixel(100, 56), images[1].pixel(100, 56));
     }
 }
+
+#[test]
+fn native_custom_item_paints_identically_in_both_backends() {
+    use layout_ui::NativeControlDemo;
+    use xrack_runtime::{
+        Color, CustomItem, CustomItemContext, CustomItemData, CustomItemDrawing,
+        register_custom_item,
+    };
+
+    struct Meter;
+    impl CustomItem for Meter {
+        fn measure(&self, _: CustomItemData<'_>, _: [f32; 2]) -> [f32; 2] {
+            [80.0, 40.0]
+        }
+
+        fn paint(&self, context: CustomItemContext<'_>, drawings: &mut Vec<CustomItemDrawing>) {
+            drawings.push(CustomItemDrawing::Fill {
+                bounds: context.placement.bounds,
+                color: Color(0x33cc77ff),
+            });
+        }
+    }
+
+    let _registration = register_custom_item("level-meter", Meter).unwrap();
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let aot = NativeControlDemo::new();
+    let interpreted = interpret_example("examples/layout/layout.xr")
+        .create("NativeControlDemo")
+        .unwrap();
+    let input = Interaction::default();
+    let expected = renderer
+        .snapshot(&aot.render(), 280, 170, 1.0, &input)
+        .unwrap();
+    let actual = renderer
+        .snapshot(&interpreted.render(), 280, 170, 1.0, &input)
+        .unwrap();
+    assert_same_pixels(&expected, &actual);
+    assert!(
+        actual
+            .rgba
+            .chunks_exact(4)
+            .any(|pixel| pixel == [0x33, 0xcc, 0x77, 0xff])
+    );
+}

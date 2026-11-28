@@ -2334,6 +2334,8 @@ impl Renderer {
             self.paint_scene3d(node, layout, path, scale)?;
         } else if matches!(item_paint, ItemPaint::CustomRender) {
             self.paint_custom(node, layout, path, scale)?;
+        } else if matches!(item_paint, ItemPaint::CustomItem) {
+            self.paint_native_item(node, layout, scale)?;
         } else if matches!(item_paint, ItemPaint::ColorPlane) {
             controls::color_plane(&mut self.canvas, node, bounds);
         } else if matches!(item_paint, ItemPaint::ColorPreview) {

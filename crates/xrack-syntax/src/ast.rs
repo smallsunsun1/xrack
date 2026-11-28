@@ -647,7 +647,7 @@ impl Type {
                 "space-around",
                 "space-evenly",
             ],
-            Self::CrossAxisAlignment => &["auto", "stretch", "start", "end", "center"],
+            Self::CrossAxisAlignment => &["auto", "stretch", "start", "end", "center", "baseline"],
             Self::Orientation => &["horizontal", "vertical"],
             Self::FlickDirection => &["both", "horizontal", "vertical"],
             Self::FlickBoundsBehavior => &[

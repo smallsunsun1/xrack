@@ -213,6 +213,43 @@ impl<'a> ButtonContent<'a> {
 pub(super) struct Button(pub(super) Size, pub(super) super::ButtonStyle);
 
 impl Item for Button {
+    fn baseline(&self, node: &Node, size: Size, text: &mut dyn super::LayoutServices) -> f32 {
+        let original = Rect::new(0.0, 0.0, size.width, size.height);
+        let content = ButtonContent::new(node);
+        let mut area = original.inset(content.padding);
+        if let Some(part) = node.control_part("ButtonContent") {
+            return area.y
+                + part.children.first().map_or(0.0, |child| {
+                    super::baseline(child, Size::new(area.width, area.height), text)
+                });
+        }
+        if content.label.is_empty() {
+            return 0.0;
+        }
+        let mut font = text.font_size(node);
+        if text.text_scale() > 1.0 {
+            (area, font) = content.scaled_label_metrics(original, font);
+        }
+        let line = font * 1.4;
+        let label_width = content.label_width(area, line);
+        let measured = text.measure_node_at_size(node, content.label, font, label_width);
+        let height = if text.text_scale() > 1.0 {
+            measured
+                .height
+                .min((content.label_height(area, line) / line).floor() * line)
+        } else {
+            measured.height
+        };
+        let placed = content.place(
+            area,
+            Size::new(measured.width, height),
+            line,
+            true,
+            node.layout_direction().unwrap_or_default(),
+        );
+        placed.label.y + text.font_ascent(node, font)
+    }
+
     fn size_policy(&self, _node: &xrack_runtime::Node) -> super::SizePolicy {
         super::SizePolicy {
             preferred_minimum: true,
@@ -220,11 +257,16 @@ impl Item for Button {
         }
     }
 
-    fn hit_behavior(&self, _node: &Node) -> super::HitBehavior {
+    fn contains(&self, item: super::ItemRef<'_, '_>, point: crate::Point) -> bool {
+        let bounds = item.local_rect();
         if self.1 == super::ButtonStyle::Round {
-            super::HitBehavior::RoundedButton
+            crate::RoundedClip {
+                bounds,
+                radii: crate::corner_radii(item.node, bounds),
+            }
+            .contains(point)
         } else {
-            super::HitBehavior::Normal
+            bounds.contains(point)
         }
     }
 

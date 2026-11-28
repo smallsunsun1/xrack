@@ -1971,7 +1971,7 @@ impl<C: Component> Application<C> {
                     }
                     self.update_editor();
                 }
-                AccessibleAction::Click if accessibility::supports_click(kind) => {
+                AccessibleAction::Click if accessibility::supports_click(node) => {
                     if node.boolean("focus-on-click", true) {
                         let focus = target
                             .path

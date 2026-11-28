@@ -48,6 +48,10 @@ impl Item for Deferred {
 pub(super) struct Window;
 
 impl Item for Window {
+    fn reuses_placement(&self) -> bool {
+        true
+    }
+
     fn paint(&self, _node: &Node) -> ItemPaint {
         ItemPaint::Window
     }

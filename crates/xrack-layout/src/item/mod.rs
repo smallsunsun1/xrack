@@ -1,4 +1,6 @@
 //! Behavior of individual scene nodes. Components still own bindings and callbacks.
+pub(crate) mod custom_item;
+pub use custom_item::custom_item_context;
 mod builtin;
 pub(crate) use builtin::item;
 pub(crate) mod button;
@@ -67,6 +69,20 @@ impl<'a, 'b> ItemRef<'a, 'b> {
     /// Both items must belong to the same prepared window frame.
     pub fn map_to_item(self, target: ItemRef<'_, '_>, point: Point) -> Option<Point> {
         target.window_to_local(self.local_to_window(point))
+    }
+
+    /// Test a point in the item's local coordinates.
+    pub fn contains(self, point: Point) -> bool {
+        item(self.node.kind).contains(self, point)
+    }
+
+    /// Apply the same hit shape used at press time, with ancestor clipping.
+    pub fn contains_window(self, point: Point) -> bool {
+        self.layout.visible
+            && self.layout.contains_clip_point(point)
+            && self
+                .window_to_local(point)
+                .is_some_and(|local| self.contains(local))
     }
 
     pub fn paint(self) -> ItemPaint {
@@ -158,7 +174,6 @@ pub(crate) enum HitBehavior {
     Normal,
     ChildrenOnly,
     Transparent,
-    RoundedButton,
     TabHeader,
     ScrollBar,
     SplitHandle,
@@ -190,6 +205,7 @@ pub enum ItemPaint {
     Combo,
     SceneView3D,
     CustomRender,
+    CustomItem,
     ColorPlane,
     ColorPreview,
     ToolSeparator,
@@ -456,7 +472,25 @@ pub(crate) enum ItemAction {
     SkipHit,
 }
 
+pub(crate) fn baseline(node: &Node, size: Size, text: &mut dyn LayoutServices) -> f32 {
+    let value = item(node.kind).baseline(node, size, text);
+    if value.is_finite() { value } else { 0.0 }
+}
+
 pub(crate) trait Item {
+    fn baseline(&self, _node: &Node, _size: Size, _text: &mut dyn LayoutServices) -> f32 {
+        0.0
+    }
+
+    /// Whether a transform-only edit can reuse this item's measured bounds.
+    fn reuses_placement(&self) -> bool {
+        false
+    }
+
+    fn contains(&self, item: ItemRef<'_, '_>, point: Point) -> bool {
+        item.local_rect().contains(point)
+    }
+
     fn size_policy(&self, _node: &Node) -> SizePolicy {
         SizePolicy::FILL
     }

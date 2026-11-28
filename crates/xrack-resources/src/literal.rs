@@ -385,7 +385,7 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
         Type::FlexboxLayoutWrap => enumeration!(FlexboxLayoutWrap,
             "wrap" => Wrap, "no-wrap" => NoWrap, "wrap-reverse" => WrapReverse),
         Type::CrossAxisAlignment => enumeration!(CrossAxisAlignment,
-            "auto" => Auto, "stretch" => Stretch, "start" => Start, "end" => End, "center" => Center),
+            "auto" => Auto, "stretch" => Stretch, "start" => Start, "end" => End, "center" => Center, "baseline" => Baseline),
         Type::TextWrap => {
             enumeration!(TextWrap, "word-wrap" => WordWrap, "no-wrap" => NoWrap, "char-wrap" => CharWrap)
         }

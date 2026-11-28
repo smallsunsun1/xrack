@@ -1605,3 +1605,45 @@ export component LayoutDirectionDemo inherits Window {
         text <- "当前索引 " + root.grid-index;
     }
 }
+
+export component NativeControlDemo inherits Window {
+    width: 280px; height: 170px;
+    background: #182535;
+    in-out property <bool> show-meter: true;
+    in-out property <string> meter-data: "sample";
+    out property <int> activations: 0;
+    out property <int> key-count: 0;
+    out property <bool> inside: false;
+    out property <length> meter-line <- meter.layout-y + meter.baseline-offset;
+    out property <length> label-line <- name.layout-y + name.baseline-offset;
+    out property <length> anchored-line <- guide.layout-y + guide.baseline-offset;
+    out property <length> reference-line <- reference.layout-y + reference.baseline-offset;
+
+    HorizontalLayout {
+        width: 250px; height: 64px; spacing: 8px;
+        cross-axis-alignment: CrossAxisAlignment.baseline;
+        name := Label { text: "Level"; font-size: 20px; }
+        if root.show-meter : meter := CustomItem {
+            implementation: "level-meter";
+            data <- root.meter-data;
+            accessible-name: "Level meter";
+            marker := Rectangle {
+                anchor-right: parent.right;
+                anchor-top: parent.top;
+                anchor-margin: 3px;
+                width: 8px; height: 8px; background: #ffffff;
+            }
+            clicked => { root.activations += 1; }
+            pointer-event(event) => { root.inside = event.inside; }
+            key-pressed(event) => {
+                if event.key == "ArrowUp" { root.key-count += 1; }
+                EventResult.reject
+            }
+        }
+    }
+    reference := Label { y: 90px; text: "Reference"; font-size: 20px; }
+    guide := Label {
+        x: 150px; text: "Baseline"; font-size: 10px;
+        anchor-baseline: reference.baseline;
+    }
+}

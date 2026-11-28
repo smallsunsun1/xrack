@@ -418,6 +418,71 @@ impl Renderer {
         .map_err(|error| format!("custom renderer {name:?}: {error}"))
     }
 
+    pub(crate) fn paint_native_item(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        scale: f32,
+    ) -> Result<(), String> {
+        use xrack_runtime::CustomItemDrawing;
+
+        let bounds = layout.bounds;
+        let Some(definition) = node.custom_item().filter(|_| usable_rect(bounds)) else {
+            return Ok(());
+        };
+        let state = xrack_layout::item::custom_item_context(node, layout);
+        let mut drawings = Vec::new();
+        definition.paint(state, &mut drawings);
+        let point = |[x, y]: [f32; 2]| Point { x, y };
+        let geometry: Vec<_> = drawings
+            .into_iter()
+            .map(|drawing| match drawing {
+                CustomItemDrawing::Fill { bounds, color } => Geometry::Rectangle {
+                    bounds: Rect::new(bounds.x, bounds.y, bounds.width, bounds.height),
+                    color,
+                },
+                CustomItemDrawing::Polyline {
+                    points,
+                    width,
+                    color,
+                } => Geometry::Polyline {
+                    points: points.into_iter().map(point).collect(),
+                    width,
+                    color,
+                },
+                CustomItemDrawing::Polygon { points, color } => Geometry::Polygon {
+                    points: points.into_iter().map(point).collect(),
+                    color,
+                },
+                CustomItemDrawing::Image { bounds, image } => Geometry::Image {
+                    bounds: Rect::new(bounds.x, bounds.y, bounds.width, bounds.height),
+                    image,
+                },
+                CustomItemDrawing::Text {
+                    origin,
+                    text,
+                    size,
+                    color,
+                } => Geometry::Text {
+                    origin: point(origin),
+                    text,
+                    size,
+                    color,
+                },
+            })
+            .collect();
+        let context = PaintContext {
+            bounds: Rect::new(0.0, 0.0, bounds.width, bounds.height),
+            scale,
+            data: state.state.data,
+            revision: state.state.revision,
+        };
+        self.paint_group(bounds, 1.0, |renderer| {
+            renderer.canvas.translate(bounds.x, bounds.y);
+            renderer.draw_geometry(&geometry, context)
+        })
+    }
+
     fn draw_geometry(
         &mut self,
         geometry: &[Geometry],
