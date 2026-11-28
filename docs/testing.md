@@ -39,6 +39,12 @@ fn increments_from_mouse_and_keyboard() {
 - 测试可通过 `ui.update(|component| { … })` 注入业务结果并刷新场景。异步请求用测试桩控制完成顺序，DSL Timer 用 `advance_time(Duration)` 推进。该时钟用于 DSL Timer、编辑和测试驱动产生的交互时间，应用的 Tokio runtime 由应用测试自行控制。
 - `UiDriver::headless` 使用近似字宽。需验证字体、像素输出、IME 或系统窗口行为时，应使用对应的原生测试。GPU 用例可复用驱动的 `scene()`、`layout()` 和 `input()`。
 
+## 帧准备与布局回归
+
+`FrameCache` 产出 `PreparedFrame`，其中包含最终场景、对应的布局、逻辑视口和代次。桌面、预览和 `UiDriver::prepared_frame()` 都从这份结果读取布局。虚拟视图先布局视口，计算可见行与列，再请求委托内容并放入同一帧。仍需读取组件的事件句柄、行 renderer 和媒体注册归入 `NodeRuntime`，保留旧帧时这些引用仍指向运行时对象。
+
+Attach 性能面板分别报告直接复用布局、用原尺寸重算变换和裁剪、重新布局。虚拟视图的基础场景更换时会重新准备，因为可见行的内容可以依赖组件状态。`prepared_virtual_table_matches_fresh_layout_while_editing_in_both_backends` 用同一份表格场景验证滚动后的编辑、重绘、旋转和列宽变化，并逐次对照全新布局和命中结果。
+
 ## 运行仓库基准
 
 `//tests:ui_scenario_test` 验证万行表格滚动、修改一条可见记录、键盘编辑和插入后保持行身份。同一用例运行 AOT 和解释器两次，还验证键盘激活和确定性的 DSL Timer。

@@ -185,9 +185,11 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     let mut frame_cache = window_entry.then(FrameCache::default);
     let mut prepare = |renderer: &mut Renderer, base, input: &Interaction| {
         if let Some(cache) = &mut frame_cache {
-            cache.prepare_reusing(base, viewport, input, |base, previous| {
-                renderer.prepare_scene_recycling(&ui, base, viewport, input, previous)
-            })
+            cache
+                .prepare_reusing(base, viewport, input, |base, previous| {
+                    renderer.prepare_scene_recycling(&ui, base, viewport, input, previous)
+                })
+                .into_parts()
         } else {
             let (scene, layout) = renderer.prepare_scene(&ui, base, viewport, input);
             (scene, Rc::new(layout))

@@ -9,7 +9,10 @@ pub struct UpdateSample {
     pub property_evaluations: usize,
     pub property_cache_hits: usize,
     pub layout_runs: usize,
+    /// Total of direct reuse and reprojection, for compatibility.
     pub layout_reuses: usize,
+    pub layout_direct_reuses: usize,
+    pub layout_reprojections: usize,
     pub materialized_rows: usize,
     pub model_rows_scanned: usize,
     pub model_rows_cloned: usize,
@@ -62,6 +65,8 @@ pub fn measure(update: impl FnOnce()) -> Option<UpdateSample> {
             cache_hits = sample.property_cache_hits as u64,
             layout_runs = sample.layout_runs as u64,
             layout_reuses = sample.layout_reuses as u64,
+            layout_direct_reuses = sample.layout_direct_reuses as u64,
+            layout_reprojections = sample.layout_reprojections as u64,
             materialized_rows = sample.materialized_rows as u64,
             scene_projections_built = sample.scene_projections_built as u64,
             scene_projection_cache_hits = sample.scene_projection_cache_hits as u64,
@@ -96,9 +101,17 @@ pub fn layout(reused: bool) {
     count(|sample| {
         if reused {
             sample.layout_reuses += 1;
+            sample.layout_direct_reuses += 1;
         } else {
             sample.layout_runs += 1;
         }
+    });
+}
+
+pub fn layout_reprojected() {
+    count(|sample| {
+        sample.layout_reuses += 1;
+        sample.layout_reprojections += 1;
     });
 }
 

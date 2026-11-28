@@ -35565,3 +35565,179 @@ fn native_item_shares_geometry_state_input_and_lifecycle_in_both_backends() {
         2
     );
 }
+
+#[test]
+fn prepared_virtual_table_matches_fresh_layout_while_editing_in_both_backends() {
+    use records_ui::{PreparedTableDemo, StockRow};
+    use xrack_layout::{
+        FrameCache, FramePreparation, Interaction, LabelLayout, Point, Size,
+        prepare_scene_with_input,
+    };
+    use xrack_runtime::{Color, Length, RecordList, RecordValue, VecModel};
+
+    fn exercise<C: Component>(ui: C, mut update: impl FnMut(&mut C, usize)) {
+        use xrack_layout::TextMeasurer;
+
+        let viewport = Size::new(420.0, 260.0);
+        let mut driver = ui_driver::UiDriver::headless(ui, viewport);
+        assert!(driver.scroll("stock", Point { x: 0.0, y: 1280.0 }));
+        let row = driver
+            .node("stock")
+            .children
+            .iter()
+            .find(|row| row.at_path(&[0, 0]).and_then(|cell| cell.text("text")) == Some("Row 20"))
+            .and_then(|row| row.row_key)
+            .expect("row 20 should be in the scrolled viewport");
+        let cell = driver.find_table_cell_path("stock", row, 0).unwrap();
+        driver.click_at_path(&cell);
+        assert!(driver.begin_table_edit());
+        let draft = "Edited while scrolled";
+        driver.fill_focused(draft);
+        let table_path = [0, 0];
+        let mut cache = FrameCache::default();
+        let mut previous_generation = 0;
+        let mut initial_lines = 0;
+        for step in 0..4 {
+            if step > 0 {
+                driver.update(|ui| update(ui, step));
+            }
+            let ui = driver.component();
+            let input = driver.input();
+            let focus = input.focused.as_ref().unwrap();
+            assert_eq!(focus.row_key, Some(row));
+            assert!(input.table_cell_editing(&focus.path));
+            let base = ui.render_shared();
+            let prepared = cache.prepare(base.clone(), viewport, input, |base| {
+                prepare_scene_with_input(ui, base, viewport, &mut ui_driver::FixedText, input)
+            });
+            assert!(!prepared.uses_base_scene());
+            assert_eq!(prepared.preparation(), FramePreparation::LaidOut);
+            assert!(prepared.generation() > previous_generation);
+            previous_generation = prepared.generation();
+            let (scene, layout) = prepared.parts();
+            let (fresh_scene, fresh_layout) = prepare_scene_with_input(
+                ui,
+                base.clone(),
+                viewport,
+                &mut ui_driver::FixedText,
+                input,
+            );
+            assert_eq!(layout.as_ref(), &fresh_layout);
+            assert_eq!(driver.prepared_frame().layout().as_ref(), &fresh_layout);
+            assert_eq!(
+                input.editor_value(scene.at_path(&focus.path).unwrap()),
+                draft
+            );
+
+            let table = scene.at_path(&table_path).unwrap();
+            let listed = table.list.unwrap();
+            assert!(listed.first_row > 0, "verify a materialized scrolled range");
+            assert!(table.children.len() < listed.row_count);
+
+            let cell = layout.at_path(&focus.path).unwrap();
+            let center = cell.map_to_window(Point {
+                x: cell.bounds.x + cell.bounds.width * 0.5,
+                y: cell.bounds.y + cell.bounds.height * 0.5,
+            });
+            let hit = |scene: &Node, layout: &xrack_layout::LayoutNode| {
+                let mut input = Interaction::default();
+                input.pointer_move(scene, layout, center);
+                input.hovered
+            };
+            let actual_hit = hit(scene, layout);
+            assert_eq!(
+                actual_hit.as_ref().map(|target| target.path.as_slice()),
+                Some(focus.path.as_slice()),
+                "the edited cell remains hittable",
+            );
+            assert_eq!(actual_hit, hit(&fresh_scene, &fresh_layout));
+
+            let mut note_path = focus.path.clone();
+            *note_path.last_mut().unwrap() = 1;
+            let note = scene.at_path(&note_path).unwrap();
+            let note_width = layout.at_path(&note_path).unwrap().bounds.width;
+            let mut text = ui_driver::FixedText;
+            let lines = LabelLayout::new(note, Size::new(note_width, f32::INFINITY), |line| {
+                text.measure_node(note, line, f32::MAX).width
+            })
+            .lines
+            .len();
+            if step == 0 {
+                initial_lines = lines;
+            } else if step == 3 {
+                assert!(lines > initial_lines, "column resize must wrap the notes");
+            }
+
+            let reused = cache.prepare(base, viewport, input, |_| {
+                panic!("the same virtual frame should keep its materialized rows")
+            });
+            assert_eq!(reused.preparation(), FramePreparation::Reused);
+            assert_eq!(reused.generation(), prepared.generation());
+            assert!(std::rc::Rc::ptr_eq(reused.parts().0, scene));
+            assert!(std::rc::Rc::ptr_eq(reused.parts().1, layout));
+        }
+        assert_eq!(
+            driver.finish_table_edit(),
+            ui_driver::TableEditCommit::Changed
+        );
+        let cell = driver.find_table_cell_path("stock", row, 0).unwrap();
+        assert_eq!(
+            driver.scene().at_path(&cell).unwrap().text("text"),
+            Some(draft)
+        );
+    }
+
+    let source = include_str!("../examples/table/records.xr");
+    let module = xrack_compiler::prepare_preview(source, "records.xr", Default::default()).unwrap();
+    let interpreted = Program::from_module(&module.module)
+        .unwrap()
+        .create("PreparedTableDemo")
+        .unwrap();
+    let mut aot = PreparedTableDemo::new();
+    let rows: Vec<_> = (0..96)
+        .map(|index| StockRow {
+            name: format!("Row {index}"),
+            owner: "A long note with several words that wrap in a narrow column".to_owned(),
+            units: index,
+            available: true,
+            load: 0.0,
+        })
+        .collect();
+    let record = |row: &StockRow| {
+        RecordValue::new(
+            "StockRow",
+            [
+                ("name".into(), row.name.clone().into()),
+                ("owner".into(), row.owner.clone().into()),
+                ("units".into(), row.units.into()),
+                ("available".into(), row.available.into()),
+                ("load".into(), row.load.into()),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    };
+    interpreted
+        .set(
+            "records",
+            Value::RecordList(RecordList::new(
+                "StockRow",
+                rows.iter().map(record).collect(),
+            )),
+        )
+        .unwrap();
+    aot.bind_model_records(VecModel::from(rows));
+
+    exercise(interpreted, |ui, step| match step {
+        1 => ui.set("panel-color", Color(0x26374aff).into()).unwrap(),
+        2 => ui.set("panel-angle", 13.0.into()).unwrap(),
+        3 => ui.set("note-width", Length(104.0).into()).unwrap(),
+        _ => unreachable!(),
+    });
+    exercise(aot, |ui, step| match step {
+        1 => ui.set_panel_color(Color(0x26374aff)),
+        2 => ui.set_panel_angle(13.0),
+        3 => ui.set_note_width(Length(104.0)),
+        _ => unreachable!(),
+    });
+}

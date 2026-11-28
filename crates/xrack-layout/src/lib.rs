@@ -20,7 +20,7 @@ use engine::{anchors, clip, flow, frame, frame_projection, geometry, grid, linea
 pub use file_drop::{FileDragInput, FileDropScope, TextDrop};
 pub use focus_observers::{FocusDelivery, FocusObservers};
 #[doc(hidden)]
-pub use frame::FrameCache;
+pub use frame::{FrameCache, FramePreparation, PreparedFrame};
 pub use geometry::{Point, Rect, Size};
 pub use group_box::group_header;
 pub use history::EditSource;
@@ -395,7 +395,8 @@ impl<'a> WindowEffects<'a> {
         {
             return;
         }
-        if let Some(handle) = node
+        let runtime = node.runtime();
+        if let Some(handle) = runtime
             .button_press_handle
             .as_ref()
             .filter(|handle| handle.supports_animation())
@@ -404,13 +405,13 @@ impl<'a> WindowEffects<'a> {
         }
         self.timers.extend(layout.timer_registrations(node));
         if layout.visible && layout.enabled {
-            self.dialogs.extend(&node.native_dialogs);
+            self.dialogs.extend(&runtime.native_dialogs);
         }
         self.playback.extend(layout.image_playback(node));
         if layout.visible {
-            self.media.extend(node.media.as_ref());
+            self.media.extend(runtime.media.as_ref());
         }
-        self.media.extend(&node.sound_effects);
+        self.media.extend(&runtime.sound_effects);
         for (child, item) in node.children.iter().zip(&layout.children) {
             self.extend(child, item);
         }
@@ -1740,6 +1741,8 @@ fn prepare_scene_with_offsets(
     {
         scene = Rc::new(populated);
     }
+    // Resolve viewport geometry first. Virtual views use its visible range
+    // to request rows and columns from the component before publication.
     let mut layout = layout_current_window(
         &scene,
         viewport,
@@ -1767,7 +1770,7 @@ fn prepare_scene_with_offsets(
             space: None,
             viewport,
         }
-        .populate_lists(component, Rc::make_mut(&mut scene), &mut layout);
+        .materialize_visible_rows(component, Rc::make_mut(&mut scene), &mut layout);
         modal::index_overlays(
             &scene,
             &mut layout,
@@ -1777,6 +1780,30 @@ fn prepare_scene_with_offsets(
     }
     scroll_bar::attach(&scene, &mut layout, text);
     (scene, layout)
+}
+
+fn visible_view_rows(node: &Node, layout: &LayoutNode, row_count: usize) -> std::ops::Range<usize> {
+    let viewport = layout
+        .table
+        .as_ref()
+        .map_or(layout.bounds, |table| table.body);
+    let clipped = layout.clip_rect(
+        layout
+            .table
+            .as_ref()
+            .map_or(viewport, |table| table.rows_area()),
+    );
+    let clipped = view_cells::list_body_clip(clipped, layout.list_section_headers());
+    if let Some(scroll) = layout.scroll
+        && clipped.width > 0.0
+        && clipped.height > 0.0
+    {
+        let top = f64::from(scroll.offset) + f64::from(clipped.y - viewport.y);
+        let bottom = top + f64::from(clipped.height);
+        ViewCells::new(node, viewport.width).visible(top, bottom, row_count)
+    } else {
+        0..0
+    }
 }
 
 fn populate_font_choices(node: &Node, families: &[String]) -> Option<Node> {
@@ -1936,7 +1963,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         }
     }
 
-    fn populate_lists(
+    fn materialize_visible_rows(
         &mut self,
         component: &impl Component,
         node: &mut Node,
@@ -1959,27 +1986,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     .first()
                     .is_some_and(|child| child.kind == "EmptyState"))
         {
-            let viewport = layout
-                .table
-                .as_ref()
-                .map_or(layout.bounds, |table| table.body);
-            let clipped = layout.clip_rect(
-                layout
-                    .table
-                    .as_ref()
-                    .map_or(viewport, |table| table.rows_area()),
-            );
-            let clipped = view_cells::list_body_clip(clipped, layout.list_section_headers());
-            let range = if let Some(scroll) = layout.scroll
-                && clipped.width > 0.0
-                && clipped.height > 0.0
-            {
-                let top = f64::from(scroll.offset) + f64::from(clipped.y - viewport.y);
-                let bottom = top + f64::from(clipped.height);
-                ViewCells::new(node, viewport.width).visible(top, bottom, list.row_count)
-            } else {
-                0..0
-            };
+            let range = visible_view_rows(node, layout, list.row_count);
             list.first_row = range.start;
             let selected = ListMetrics::selection(node);
             let selection = node.table_selection.as_ref();
@@ -1990,11 +1997,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .as_ref()
                 .is_some_and(|table| table.row_header.width > 0.0);
             let indentation = node.length("indentation").unwrap_or(16.0).clamp(0.0, 64.0);
-            let renderer = node.list_row_renderer.as_ref();
+            let renderer = node.runtime().list_row_renderer.as_ref();
             let scope = renderer
                 .filter(|_| self.row_key.is_some())
                 .map_or(0, xrack_runtime::ListRowRenderer::scope);
             let expects_rows = !range.is_empty();
+            // Pass geometry's visible rows and columns across the component
+            // boundary, then place the returned delegates in the same frame.
             let delegates = if let Some(renderer) = renderer {
                 let columns = layout
                     .table
@@ -2187,7 +2196,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             .enumerate()
         {
             self.path.push(columns.logical_index(index));
-            self.populate_lists(component, child, item);
+            self.materialize_visible_rows(component, child, item);
             layout.missing_descendant_list_rows |= item.has_missing_list_rows();
             self.path.pop();
         }
@@ -2198,7 +2207,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             && let Some(item) = &mut layout.swipe_preview
         {
             self.path.push(*index);
-            self.populate_lists(component, page, item);
+            self.materialize_visible_rows(component, page, item);
             self.path.pop();
             scroll_bar::attach(page, item, self.text);
         }

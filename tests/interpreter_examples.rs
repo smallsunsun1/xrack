@@ -533,7 +533,12 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
     check!(
         "table/records.xr",
         records_ui,
-        [RecordTableDemo, DelegateTableDemo, NestedRecordsDemo]
+        [
+            RecordTableDemo,
+            DelegateTableDemo,
+            NestedRecordsDemo,
+            PreparedTableDemo
+        ]
     );
     check!(
         "table/table.xr",

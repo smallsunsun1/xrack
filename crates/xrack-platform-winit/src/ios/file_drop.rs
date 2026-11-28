@@ -27,17 +27,16 @@ use std::{
     cell::{Cell, RefCell},
     fs,
     path::{Component, Path},
-    rc::Rc,
     sync::{Arc, Mutex},
 };
 use tempfile::TempDir;
 use winit::window::{Window, WindowId};
 use xrack_layout::{
-    EditAction, EditSource, FileDragInput, FileDropScope, LayoutNode, Point, Rect, Target,
+    EditAction, EditSource, FileDragInput, FileDropScope, Point, PreparedFrame, Rect, Target,
     TextDrop, TextEditContext,
 };
 use xrack_renderer_femtovg::PointerCaret;
-use xrack_runtime::{Component as UiComponent, Node, TextCommand};
+use xrack_runtime::{Component as UiComponent, TextCommand};
 
 type Session = ProtocolObject<dyn UIDropSession>;
 type DragSession = ProtocolObject<dyn UIDragSession>;
@@ -48,8 +47,7 @@ enum Payload {
 }
 
 struct Snapshot {
-    scene: Rc<Node>,
-    layout: Rc<LayoutNode>,
+    frame: PreparedFrame,
     scope: FileDropScope,
 }
 
@@ -68,14 +66,15 @@ impl TextDragSource {
             .is_some_and(|revision| !revision.is_current())
             || snapshot
                 .scope
-                .text_drag_source(&snapshot.scene, &snapshot.layout, point)
+                .text_drag_source(snapshot.frame.scene(), snapshot.frame.layout(), point)
                 .as_ref()
                 != Some(&self.target)
         {
             return false;
         }
         snapshot
-            .layout
+            .frame
+            .layout()
             .at_path(&self.target.path)
             .is_some_and(|item| {
                 item.contains_clip_point(point)
@@ -423,11 +422,11 @@ impl FileDropDelegate {
             Payload::Text(_) => {
                 snapshot
                     .scope
-                    .text_target(&snapshot.scene, &snapshot.layout, point)
+                    .text_target(snapshot.frame.scene(), snapshot.frame.layout(), point)
             }
             Payload::Files(files) => snapshot.scope.target_for_extensions(
-                &snapshot.scene,
-                &snapshot.layout,
+                snapshot.frame.scene(),
+                snapshot.frame.layout(),
                 point,
                 &extensions(files),
             ),
@@ -838,10 +837,9 @@ impl FileDropBridge {
         }
     }
 
-    pub(crate) fn sync(&self, scene: Rc<Node>, layout: Rc<LayoutNode>, scope: FileDropScope) {
+    pub(crate) fn sync(&self, frame: &PreparedFrame, scope: FileDropScope) {
         self.delegate.ivars().snapshot.replace(Some(Snapshot {
-            scene,
-            layout,
+            frame: frame.clone(),
             scope,
         }));
     }
@@ -892,14 +890,14 @@ impl<C: UiComponent> Application<C> {
             {
                 return None;
             }
-            let layout = self.layout.as_ref()?;
+            let layout = self.frame.layout()?;
             let target = self.input.focused.as_ref()?;
-            let node = target.node_in(&self.scene)?;
+            let node = target.node_in(self.frame.scene())?;
             if !(xrack_runtime::is_text_input(node.kind) || xrack_runtime::combo_editable(node)) {
                 return None;
             }
             let context =
-                TextEditContext::for_clipboard(&self.input, &self.scene, TextCommand::Copy)?;
+                TextEditContext::for_clipboard(&self.input, self.frame.scene(), TextCommand::Copy)?;
             let native = match state
                 .ios_text
                 .as_ref()
@@ -938,8 +936,8 @@ impl<C: UiComponent> Application<C> {
         {
             return;
         }
-        self.pending_text_drop = self.layout.as_ref().and_then(|layout| {
-            TextDrop::capture(&self.input, &self.scene, layout, point, target)
+        self.pending_text_drop = self.frame.layout().and_then(|layout| {
+            TextDrop::capture(&self.input, self.frame.scene(), layout, point, target)
                 .map(|drop| (sequence, drop))
         });
     }
@@ -950,7 +948,7 @@ impl<C: UiComponent> Application<C> {
         sequence: u64,
         text: Option<String>,
     ) {
-        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
+        let (Some(state), Some(layout)) = (&self.state, self.frame.layout()) else {
             return;
         };
         if state.window.id() != window {
@@ -966,13 +964,14 @@ impl<C: UiComponent> Application<C> {
             return;
         };
         let scope = self.input.file_drop_scope(layout);
-        let Some((target, point)) = drop.destination(&self.input, &self.scene, layout, &scope)
+        let Some((target, point)) =
+            drop.destination(&self.input, self.frame.scene(), layout, &scope)
         else {
             return;
         };
         let Some(caret) = PointerCaret::new(
             &self.input,
-            &self.scene,
+            self.frame.scene(),
             layout,
             target,
             point,
@@ -983,8 +982,13 @@ impl<C: UiComponent> Application<C> {
         };
         if self
             .input
-            .focus_text_from_touch(&self.scene, layout, target.clone())
-            && caret.place(&state.renderer.text, &mut self.input, &self.scene, layout)
+            .focus_text_from_touch(self.frame.scene(), layout, target.clone())
+            && caret.place(
+                &state.renderer.text,
+                &mut self.input,
+                self.frame.scene(),
+                layout,
+            )
         {
             self.edit_text_from(EditAction::Insert(&text), EditSource::Atomic);
         }

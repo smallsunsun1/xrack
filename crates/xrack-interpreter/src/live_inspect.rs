@@ -253,7 +253,10 @@ pub(crate) fn snapshot(ui: &ReloadableInstance, versions: SourceVersions) -> Jso
         payload["updates"] = json!(samples.into_iter().map(|(id, generation, sample)| json!({
             "id": id, "generation": generation, "propertyEvaluations": sample.property_evaluations,
             "propertyCacheHits": sample.property_cache_hits, "layoutRuns": sample.layout_runs,
-            "layoutReuses": sample.layout_reuses, "materializedRows": sample.materialized_rows,
+            "layoutReuses": sample.layout_reuses,
+            "layoutDirectReuses": sample.layout_direct_reuses,
+            "layoutReprojections": sample.layout_reprojections,
+            "materializedRows": sample.materialized_rows,
             "cpuMicros": sample.cpu_micros,
             "modelRowsScanned": sample.model_rows_scanned,
             "modelRowsCloned": sample.model_rows_cloned,

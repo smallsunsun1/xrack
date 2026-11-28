@@ -12,7 +12,7 @@ use std::{
 use xrack_layout::{
     ActivationKey, ButtonClick, ChoiceKey, ControlInput, DragUpdate, EditAction, EditSource,
     FileDragInput, FocusObservers, HoverObservers, Interaction, LayoutNode, LayoutObservers,
-    MenuKey, MenuShortcut, NavigationKey, Point, RangeInput, Rect, ScrollBarUpdate,
+    MenuKey, MenuShortcut, NavigationKey, Point, PreparedFrame, RangeInput, Rect, ScrollBarUpdate,
     ScrollGestureKind, ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size, SplitResize,
     StackTransitions, TableEditCommit, TableEditTarget, TablePasteDestination, TextAreaMotion,
     TextEditContext, TextMeasurer, TumblerScroll, WheelAdjustment, WindowEffects,
@@ -80,9 +80,8 @@ pub struct PreviewScene {
     pointer_carets: Vec<PointerCaret>,
     ime_area: Option<Rect>,
     reveal_editor_caret: bool,
-    frame: Option<(Rc<Node>, Rc<LayoutNode>)>,
+    frame: Option<PreparedFrame>,
     frame_cache: xrack_layout::FrameCache,
-    dimensions: (u32, u32),
     png: Vec<u8>,
     target: Option<Rc<Node>>,
     transition: SceneTransition,
@@ -138,7 +137,6 @@ impl PreviewScene {
             reveal_editor_caret: false,
             frame: None,
             frame_cache: xrack_layout::FrameCache::default(),
-            dimensions: (0, 0),
             png: Vec::new(),
             target: None,
             transition: SceneTransition::default(),
@@ -186,7 +184,7 @@ impl PreviewScene {
         let cancelled = pressed && self.input.cancel_text_composition(None);
         let _scroll = self.scroll.enter();
         let _focus = self.focus.enter();
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let tooltip = pressed && event.key != "Tab" && self.input.dismiss_tooltip();
@@ -228,7 +226,7 @@ impl PreviewScene {
             return true;
         }
         let bubbled = route.as_ref().and_then(|route| {
-            let (scene, layout) = self.frame.as_ref()?;
+            let (scene, layout) = self.frame.as_ref().map(PreparedFrame::parts)?;
             route.dispatch(&mut self.component, scene, layout, bubble, event)
         });
         cancelled || tooltip || captured.is_some() || bubbled.is_some()
@@ -266,7 +264,7 @@ impl PreviewScene {
             let popup = self.input.menu_open() || self.input.choice_open();
             self.input.dismiss_choice();
             self.input.dismiss_menu();
-            if let Some((scene, layout)) = &self.frame {
+            if let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) {
                 let before = self.input.focused.clone();
                 return self.input.focus_next(scene, layout, event.modifiers.shift)
                     || self.input.focused != before
@@ -287,7 +285,7 @@ impl PreviewScene {
         }
         if event.key == "F2"
             && !event.repeat
-            && let Some((scene, layout)) = &self.frame
+            && let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
             && self.input.begin_table_edit(scene, layout)
         {
             self.clipboard_edit = None;
@@ -321,7 +319,8 @@ impl PreviewScene {
                     return true;
                 }
                 key @ ("c" | "x" | "v") => {
-                    let Some((scene, layout)) = &self.frame else {
+                    let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
+                    else {
                         return false;
                     };
                     let command = match key {
@@ -369,7 +368,7 @@ impl PreviewScene {
         if event.key == "Delete"
             && !event.repeat
             && !(modifiers.shift || modifiers.control || modifiers.alt || modifiers.meta)
-            && let Some((scene, layout)) = &self.frame
+            && let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
             && let Some(ControlInput { path, action }) = self.input.focused_tab_close(scene, layout)
         {
             self.component.control_at(scene, &path, action);
@@ -381,7 +380,7 @@ impl PreviewScene {
         if navigation_key(&event.key).is_some_and(|key| self.input.combo_completion_accepts(key))
             && !event.repeat
             && !(modifiers.shift || modifiers.control || modifiers.alt || modifiers.meta)
-            && let Some((scene, _)) = &self.frame
+            && let Some((scene, _)) = self.frame.as_ref().map(PreparedFrame::parts)
             && self
                 .input
                 .accept_combo_completion(&mut self.component, scene, Instant::now())
@@ -390,7 +389,7 @@ impl PreviewScene {
             return true;
         }
         if let Some(action) = EditAction::word_shortcut(&event.key, modifiers, macos)
-            && let Some((scene, layout)) = &self.frame
+            && let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
             && let Some(target) = &self.input.focused
             && scene.interactive_at_path(&target.path).is_some_and(|node| {
                 self.input.is_text_editor(node, target) || xrack_runtime::spin_editable(node)
@@ -410,7 +409,7 @@ impl PreviewScene {
         if let Some(text) = text
             && let Some(key) = navigation_key(&event.key)
             && let Some(motion) = TextAreaMotion::from_navigation(key, shortcut)
-            && let Some((scene, layout)) = &self.frame
+            && let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
             && text.move_editor_caret(&mut self.input, scene, layout, motion, shift)
         {
             self.clipboard_edit = None;
@@ -418,7 +417,7 @@ impl PreviewScene {
         }
         if (event.key == "BrowserBack" || event.key == "ArrowLeft" && event.modifiers.alt)
             && !event.repeat
-            && let Some((scene, layout)) = &self.frame
+            && let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
             && let Some(ControlInput { path, action }) = self.input.stack_back(scene, layout)
         {
             self.component.control_at(scene, &path, action);
@@ -428,7 +427,7 @@ impl PreviewScene {
             && modifiers.shift
             && !modifiers.alt
             && let Some(key) = navigation_key(&event.key)
-            && let Some((scene, layout)) = &self.frame
+            && let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
             && let Some(action) = self.input.tab_move_key(scene, layout, key)
         {
             if let Some(ControlInput { path, action }) = action {
@@ -441,7 +440,7 @@ impl PreviewScene {
             && !modifiers.control
             && !modifiers.meta
             && let Some(key) = navigation_key(&event.key)
-            && let Some((scene, layout)) = &self.frame
+            && let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
             && let Some(ControlInput { path, action }) =
                 self.input.table_row_move_key(scene, layout, key)
         {
@@ -494,7 +493,7 @@ impl PreviewScene {
     }
 
     fn range_key(&mut self, key: &str, pressed: bool) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let Some(input) =
@@ -508,7 +507,7 @@ impl PreviewScene {
     }
 
     fn spin_key(&mut self, key: &str) -> bool {
-        let Some((scene, _)) = &self.frame else {
+        let Some((scene, _)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let Some(target) = self.input.focused.as_ref() else {
@@ -545,7 +544,7 @@ impl PreviewScene {
         if self.input.menu_open() || self.input.choice_open() {
             return false;
         }
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let Some(ControlInput { path, action }) =
@@ -561,7 +560,7 @@ impl PreviewScene {
     }
 
     fn navigation_control_key(&mut self, key: NavigationKey, selection: RowSelection) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         if let Some(update) = self.input.scroll_bar_key(scene, layout, key) {
@@ -596,7 +595,7 @@ impl PreviewScene {
     }
 
     fn activate_key_target(&mut self, key: ActivationKey, pressed: bool) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let focused = self
@@ -652,46 +651,49 @@ impl PreviewScene {
     }
 
     pub fn control_navigation_enabled(&self) -> bool {
-        self.frame.as_ref().is_some_and(|(scene, _)| {
-            self.input
-                .focused
-                .as_ref()
-                .and_then(|target| scene.interactive_at_path(&target.path))
-                .is_some_and(|node| {
-                    matches!(
-                        node.kind,
-                        "Slider"
-                            | "RangeThumb"
-                            | "Dial"
-                            | "SpinBox"
-                            | "DoubleSpinBox"
-                            | "ComboBox"
-                            | "SearchField"
-                            | "Calendar"
-                            | "MonthGrid"
-                            | "Tumbler"
-                            | "PathView"
-                            | "RadioButton"
-                            | "Tab"
-                            | "TabButton"
-                            | "SwipeView"
-                            | "SwipeDelegate"
-                            | "PageIndicator"
-                            | "ScrollBar"
-                            | "ListView"
-                            | "StandardListView"
-                            | "GridView"
-                            | "TableView"
-                            | "TableCell"
-                            | "TextArea"
-                            | "TextEdit"
-                    )
-                })
-        })
+        self.frame
+            .as_ref()
+            .map(PreparedFrame::parts)
+            .is_some_and(|(scene, _)| {
+                self.input
+                    .focused
+                    .as_ref()
+                    .and_then(|target| scene.interactive_at_path(&target.path))
+                    .is_some_and(|node| {
+                        matches!(
+                            node.kind,
+                            "Slider"
+                                | "RangeThumb"
+                                | "Dial"
+                                | "SpinBox"
+                                | "DoubleSpinBox"
+                                | "ComboBox"
+                                | "SearchField"
+                                | "Calendar"
+                                | "MonthGrid"
+                                | "Tumbler"
+                                | "PathView"
+                                | "RadioButton"
+                                | "Tab"
+                                | "TabButton"
+                                | "SwipeView"
+                                | "SwipeDelegate"
+                                | "PageIndicator"
+                                | "ScrollBar"
+                                | "ListView"
+                                | "StandardListView"
+                                | "GridView"
+                                | "TableView"
+                                | "TableCell"
+                                | "TextArea"
+                                | "TextEdit"
+                        )
+                    })
+            })
     }
 
     fn focused_accepts_text(&self) -> bool {
-        let Some((scene, _)) = &self.frame else {
+        let Some((scene, _)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         self.input.focused.as_ref().is_some_and(|target| {
@@ -704,7 +706,7 @@ impl PreviewScene {
     }
 
     fn shortcut_key(&mut self, event: &KeyEvent) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let modifiers = event.modifiers;
@@ -777,7 +779,7 @@ impl PreviewScene {
     }
 
     pub fn open_context_menu(&mut self, point: Option<Point>) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         if let Some(point) = point {
@@ -788,7 +790,7 @@ impl PreviewScene {
 
     pub fn hover(&mut self, point: Point) -> bool {
         self.hover_pointer = Some(point);
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let deadline = self.input.tooltip_deadline();
@@ -805,11 +807,12 @@ impl PreviewScene {
     }
 
     fn sync_current_hover(&mut self) -> bool {
-        let Some((scene, layout)) = self.frame.take() else {
+        let Some(frame) = self.frame.take() else {
             return false;
         };
-        let changed = self.sync_hover(&scene, &layout);
-        self.frame = Some((scene, layout));
+        let (scene, layout) = frame.parts();
+        let changed = self.sync_hover(scene, layout);
+        self.frame = Some(frame);
         changed
     }
 
@@ -837,7 +840,7 @@ impl PreviewScene {
     }
 
     fn menu_key(&mut self, name: &str) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let open = self.input.menu_open();
@@ -869,7 +872,7 @@ impl PreviewScene {
     }
 
     fn choice_key(&mut self, event: &KeyEvent) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let Some(node) = self
@@ -976,7 +979,7 @@ impl PreviewScene {
 
     pub fn begin_text_composition(&mut self, renderer: &mut Renderer, id: u64) -> bool {
         self.flush_pointer_carets(renderer, Instant::now());
-        let Some((scene, _)) = &self.frame else {
+        let Some((scene, _)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let started = self.input.begin_text_composition(scene, id);
@@ -990,13 +993,14 @@ impl PreviewScene {
         let updated = self
             .frame
             .as_ref()
+            .map(PreparedFrame::parts)
             .is_some_and(|(scene, _)| self.input.update_text_composition(scene, id, text));
         self.reveal_editor_caret |= updated;
         updated
     }
 
     pub fn finish_text_composition(&mut self, id: u64, text: &str) -> bool {
-        let Some((scene, _)) = &self.frame else {
+        let Some((scene, _)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let (ended, commit) = self.input.finish_text_composition(scene, id);
@@ -1007,7 +1011,7 @@ impl PreviewScene {
     }
 
     fn list_typeahead_text(&mut self, value: &str) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let Some(ControlInput { path, action }) =
@@ -1033,7 +1037,7 @@ impl PreviewScene {
     }
 
     fn edit_from(&mut self, action: EditAction<'_>, source: EditSource) {
-        if let Some((scene, layout)) = &self.frame {
+        if let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) {
             let _scroll = self.scroll.enter();
             let _focus = self.focus.enter();
             if source == EditSource::Keyboard {
@@ -1130,7 +1134,7 @@ impl PreviewScene {
     }
 
     pub fn paste(&mut self, text: &str) {
-        if let Some((scene, layout)) = &self.frame
+        if let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
             && let Some(target) = self.input.table_paste_target(scene, layout)
         {
             let _scroll = self.scroll.enter();
@@ -1147,7 +1151,7 @@ impl PreviewScene {
     }
 
     pub fn replay_edit(&mut self, redo: bool) {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return;
         };
         let _scroll = self.scroll.enter();
@@ -1170,21 +1174,25 @@ impl PreviewScene {
     pub fn tree_navigation_enabled(&self) -> bool {
         self.frame
             .as_ref()
+            .map(PreparedFrame::parts)
             .is_some_and(|(scene, layout)| self.input.tree_has_focus(scene, layout))
     }
 
     pub fn split_navigation_enabled(&self) -> bool {
-        self.frame.as_ref().is_some_and(|(scene, _)| {
-            self.input
-                .focused
-                .as_ref()
-                .and_then(|target| scene.interactive_at_path(&target.path))
-                .is_some_and(|node| node.kind == "SplitHandle")
-        })
+        self.frame
+            .as_ref()
+            .map(PreparedFrame::parts)
+            .is_some_and(|(scene, _)| {
+                self.input
+                    .focused
+                    .as_ref()
+                    .and_then(|target| scene.interactive_at_path(&target.path))
+                    .is_some_and(|node| node.kind == "SplitHandle")
+            })
     }
 
     pub fn navigate_tree_or_split(&mut self, key: NavigationKey, extend: bool) {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return;
         };
         let _scroll = self.scroll.enter();
@@ -1201,11 +1209,12 @@ impl PreviewScene {
     pub fn table_tab_enabled(&self) -> bool {
         self.frame
             .as_ref()
+            .map(PreparedFrame::parts)
             .is_some_and(|(scene, _)| self.input.tab_edit_origin(scene).is_some())
     }
 
     pub fn table_tab(&mut self, backward: bool) {
-        let Some((scene, _)) = &self.frame else {
+        let Some((scene, _)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return;
         };
         let Some(origin) = self.input.tab_edit_origin(scene) else {
@@ -1222,13 +1231,16 @@ impl PreviewScene {
     }
 
     pub fn delay_keyboard_enabled(&self) -> bool {
-        self.frame.as_ref().is_some_and(|(scene, _)| {
-            self.input
-                .focused
-                .as_ref()
-                .and_then(|target| scene.interactive_at_path(&target.path))
-                .is_some_and(|node| node.kind == "DelayButton")
-        })
+        self.frame
+            .as_ref()
+            .map(PreparedFrame::parts)
+            .is_some_and(|(scene, _)| {
+                self.input
+                    .focused
+                    .as_ref()
+                    .and_then(|target| scene.interactive_at_path(&target.path))
+                    .is_some_and(|node| node.kind == "DelayButton")
+            })
     }
 
     pub fn press_delay_key(&mut self, key: ActivationKey) -> bool {
@@ -1238,7 +1250,7 @@ impl PreviewScene {
         {
             return false;
         }
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         self.input.key_press_with_scene(scene, key);
@@ -1253,7 +1265,7 @@ impl PreviewScene {
             return false;
         }
         self.delay_key = None;
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let _scroll = self.scroll.enter();
@@ -1306,7 +1318,7 @@ impl PreviewScene {
                 );
                 if contact.event.is_touch
                     && self.pointer_capture.is_none()
-                    && let Some((scene, layout)) = &self.frame
+                    && let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
                     && self.input.begin_scroll_gesture(
                         scene,
                         layout,
@@ -1333,7 +1345,7 @@ impl PreviewScene {
         ) {
             return true;
         }
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return captured;
         };
         let _scroll = self.scroll.enter();
@@ -1403,7 +1415,7 @@ impl PreviewScene {
         if !contact.event.is_touch {
             changed |= self.hover(point);
         }
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return changed;
         };
         let _scroll = self.scroll.enter();
@@ -1467,7 +1479,7 @@ impl PreviewScene {
                 self.hover(point);
             }
         }
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let _scroll = self.scroll.enter();
@@ -1528,7 +1540,7 @@ impl PreviewScene {
         {
             self.cancel_widget_capture();
         }
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return;
         };
         let mut context = PointerContext {
@@ -1544,7 +1556,7 @@ impl PreviewScene {
     }
 
     fn discard_direct_contact(&mut self, contact: PointerContact, point: Point) {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return;
         };
         let mut context = PointerContext {
@@ -1566,7 +1578,7 @@ impl PreviewScene {
         if !contact.event.is_touch {
             return false;
         }
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let scene = scene.clone();
@@ -1615,7 +1627,7 @@ impl PreviewScene {
         else {
             return false;
         };
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let scene = scene.clone();
@@ -1651,7 +1663,7 @@ impl PreviewScene {
         let Some(drag) = self.drag_contact.take() else {
             return false;
         };
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return drag.captured;
         };
         let scene = scene.clone();
@@ -1683,7 +1695,7 @@ impl PreviewScene {
         paths: Vec<String>,
         drop: bool,
     ) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let scene = scene.clone();
@@ -1716,7 +1728,7 @@ impl PreviewScene {
     }
 
     pub fn leave_file_drag(&mut self, sequence: u64) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         let scene = scene.clone();
@@ -1736,7 +1748,7 @@ impl PreviewScene {
         let cancelled = self.cancel_pointer_captures()
             | self.cancel_delay_key()
             | self.input.cancel_text_composition(None);
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return cancelled;
         };
         let _scroll = self.scroll.enter();
@@ -1769,7 +1781,7 @@ impl PreviewScene {
             self.pointer_capture = Some(PointerCapture::Split);
             return true;
         }
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return cancelled;
         };
         if self.input.range_pointer_press(scene, layout, point) {
@@ -1831,7 +1843,7 @@ impl PreviewScene {
 
     pub fn begin_pan(&mut self, point: Point) -> bool {
         let cancelled = self.cancel_pointer_captures() | self.cancel_delay_key();
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return cancelled;
         };
         if !self.input.begin_scroll_gesture(
@@ -1850,16 +1862,18 @@ impl PreviewScene {
     pub fn move_pointer(&mut self, point: Point) -> bool {
         match self.pointer_capture {
             Some(PointerCapture::Split) => self.move_split_drag(point),
-            Some(PointerCapture::ScrollGesture) => {
-                self.frame.as_ref().is_some_and(|(scene, layout)| {
+            Some(PointerCapture::ScrollGesture) => self
+                .frame
+                .as_ref()
+                .map(PreparedFrame::parts)
+                .is_some_and(|(scene, layout)| {
                     let moved =
                         self.input
                             .move_scroll_gesture(scene, layout, point, Instant::now());
                     moved || self.input.has_pending_swipe_events()
-                })
-            }
+                }),
             Some(PointerCapture::ScrollBar { touch }) => {
-                let Some((scene, layout)) = &self.frame else {
+                let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
                     return false;
                 };
                 let _scroll = self.scroll.enter();
@@ -1875,7 +1889,7 @@ impl PreviewScene {
                 })
             }
             Some(PointerCapture::TableResize) => {
-                let Some((scene, layout)) = &self.frame else {
+                let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
                     return false;
                 };
                 let _scroll = self.scroll.enter();
@@ -1892,7 +1906,7 @@ impl PreviewScene {
                 }
             }
             Some(PointerCapture::TextSelection) => {
-                let Some((scene, layout)) = &self.frame else {
+                let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
                     return false;
                 };
                 if self.input.pointer_position() == Some(point) {
@@ -1912,7 +1926,7 @@ impl PreviewScene {
                 true
             }
             Some(PointerCapture::TableReorder) => {
-                let Some((scene, layout)) = &self.frame else {
+                let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
                     return false;
                 };
                 let moved = self.input.pointer_move(scene, layout, point);
@@ -1922,7 +1936,7 @@ impl PreviewScene {
                     || moved
             }
             Some(PointerCapture::TableSelection) => {
-                let Some((scene, layout)) = &self.frame else {
+                let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
                     return false;
                 };
                 let _focus = self.focus.enter();
@@ -1930,7 +1944,7 @@ impl PreviewScene {
                 self.input.move_table_drag_selection(layout, Instant::now()) || moved
             }
             Some(PointerCapture::Range) => {
-                let Some((scene, layout)) = &self.frame else {
+                let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
                     return false;
                 };
                 if self.input.pointer_position() == Some(point) {
@@ -1946,7 +1960,7 @@ impl PreviewScene {
                 true
             }
             Some(PointerCapture::Delay | PointerCapture::ButtonHold) => {
-                let Some((scene, layout)) = &self.frame else {
+                let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
                     return false;
                 };
                 let _scroll = self.scroll.enter();
@@ -1977,7 +1991,7 @@ impl PreviewScene {
         let previous = self.last_button_click.take();
         if matches!(self.pointer_capture, Some(PointerCapture::ScrollGesture)) {
             self.pointer_capture = None;
-            let Some((scene, layout)) = &self.frame else {
+            let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
                 return false;
             };
             let _scroll = self.scroll.enter();
@@ -1994,7 +2008,7 @@ impl PreviewScene {
         }
         if let Some(PointerCapture::ScrollBar { touch }) = self.pointer_capture {
             self.pointer_capture = None;
-            let Some((scene, layout)) = &self.frame else {
+            let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
                 return false;
             };
             let _scroll = self.scroll.enter();
@@ -2044,7 +2058,7 @@ impl PreviewScene {
         if self.pointer_capture.is_some() {
             self.move_pointer(point);
             if matches!(self.pointer_capture, Some(PointerCapture::Range))
-                && let Some((scene, layout)) = &self.frame
+                && let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
                 && let Some(input) = self.input.slider_release(scene, layout)
             {
                 let _scroll = self.scroll.enter();
@@ -2068,7 +2082,7 @@ impl PreviewScene {
         }
         let _scroll = self.scroll.enter();
         let _focus = self.focus.enter();
-        if let Some((scene, layout)) = &self.frame {
+        if let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) {
             let action = if row {
                 self.input.finish_table_row_move(scene, layout)
             } else {
@@ -2089,7 +2103,7 @@ impl PreviewScene {
         }
         let _scroll = self.scroll.enter();
         let _focus = self.focus.enter();
-        if let Some((scene, layout)) = &self.frame
+        if let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
             && let Some(ControlInput { path, action }) =
                 self.input.finish_table_drag_selection(scene, layout)
         {
@@ -2107,7 +2121,7 @@ impl PreviewScene {
         let canceled = self.cancel_pointer_captures();
         let scale_rotate = self.scale_rotate.cancel();
         let drag = self.input.cancel_drag();
-        let Some((scene, _)) = &self.frame else {
+        let Some((scene, _)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return canceled;
         };
         let scene = scene.clone();
@@ -2123,7 +2137,7 @@ impl PreviewScene {
 
     fn cancel_pointer_captures(&mut self) -> bool {
         let widgets = self.cancel_widget_capture();
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return widgets;
         };
         let _scroll = self.scroll.enter();
@@ -2171,11 +2185,12 @@ impl PreviewScene {
     pub fn begin_split_drag(&mut self, point: Point) -> bool {
         self.frame
             .as_ref()
+            .map(PreparedFrame::parts)
             .is_some_and(|(scene, layout)| self.input.touch_split_press(scene, layout, point))
     }
 
     pub fn move_split_drag(&mut self, point: Point) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         if !self.input.split_resize_active() {
@@ -2228,7 +2243,7 @@ impl PreviewScene {
         event: WheelEvent,
         mut renderer: Option<&mut Renderer>,
     ) {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return;
         };
         let _scroll = self.scroll.enter();
@@ -2264,7 +2279,7 @@ impl PreviewScene {
         {
             self.refresh_input_frame(renderer);
         }
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return;
         };
         let changed = match self
@@ -2287,7 +2302,7 @@ impl PreviewScene {
         }
         if !event.modifiers.shift
             && delta.y.abs() > delta.x.abs()
-            && let Some((scene, layout)) = &self.frame
+            && let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts)
         {
             let distance = if event.is_line {
                 event.lines_y as f32
@@ -2306,7 +2321,7 @@ impl PreviewScene {
                 TumblerScroll::Unhandled => {}
             }
         }
-        if let Some((scene, layout)) = &self.frame {
+        if let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) {
             let remaining = renderer.as_deref().map_or(delta, |renderer| {
                 renderer
                     .text
@@ -2352,7 +2367,7 @@ impl PreviewScene {
     }
 
     fn escape_focused(&mut self) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return false;
         };
         if self.input.cancel_table_edit() || self.input.dismiss_combo_completion(scene) {
@@ -2391,7 +2406,7 @@ impl PreviewScene {
         replay: bool,
     ) {
         self.input.cancel_text_composition(None);
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return;
         };
         let _scroll = self.scroll.enter();
@@ -2471,7 +2486,7 @@ impl PreviewScene {
         previous: Option<ButtonClick<bool>>,
         pressed_handler_ran: bool,
     ) {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return;
         };
         let _scroll = self.scroll.enter();
@@ -2616,7 +2631,7 @@ impl PreviewScene {
     /// The scene and layout used for the current preview frame.
     #[doc(hidden)]
     pub fn inspect_frame(&self) -> Option<(&Node, &LayoutNode, Option<&[usize]>)> {
-        let (scene, layout) = self.frame.as_ref()?;
+        let (scene, layout) = self.frame.as_ref().map(PreparedFrame::parts)?;
         Some((
             scene,
             layout,
@@ -2628,7 +2643,10 @@ impl PreviewScene {
     }
 
     pub fn logical_size(&self) -> [u32; 2] {
-        [self.dimensions.0, self.dimensions.1]
+        self.frame.as_ref().map_or([0, 0], |frame| {
+            let viewport = frame.viewport();
+            [viewport.width as u32, viewport.height as u32]
+        })
     }
 
     #[doc(hidden)]
@@ -2639,9 +2657,10 @@ impl PreviewScene {
     ) -> Result<&[u8], String> {
         let (scene, layout) = self
             .frame
-            .take()
-            .ok_or("preview window has no prepared scene")?;
-        let (width, height) = self.dimensions;
+            .as_ref()
+            .ok_or("preview window has no prepared scene")?
+            .parts();
+        let [width, height] = self.logical_size();
         // Bound readback and PNG transfer for large windows at high display zoom.
         let scale = if scale.is_finite() { scale } else { 1.0 };
         let pixel_budget = (7_000_000.0 / (width as f32 * height as f32)).sqrt();
@@ -2649,7 +2668,7 @@ impl PreviewScene {
             renderer.device.limits().max_texture_dimension_2d as f32 / width.max(height) as f32;
         let scale = scale.clamp(1.0, 4.0).min(pixel_budget).min(texture_limit);
         let snapshot = renderer.snapshot_prepared_with_transitions(
-            &scene,
+            scene,
             layout.as_ref().clone(),
             [
                 (width as f32 * scale).ceil() as u32,
@@ -2664,15 +2683,15 @@ impl PreviewScene {
         snapshot.write_png(&mut self.png)?;
         self.input
             .set_painted_combo_completion(renderer.take_painted_combo_completion());
-        self.loader_redraw |= xrack_runtime::finish_loader_frame(&scene);
-        self.frame = Some((scene, layout));
+        self.loader_redraw |= xrack_runtime::finish_loader_frame(scene);
         Ok(&self.png)
     }
 
     #[doc(hidden)]
     pub fn title(&self) -> Option<&str> {
         self.frame
-            .as_ref()?
+            .as_ref()
+            .map(PreparedFrame::parts)?
             .0
             .text("title")
             .filter(|title| !title.is_empty())
@@ -2716,22 +2735,36 @@ impl PreviewScene {
             .chain(self.input.password_echo_deadline())
             .chain(self.observers.scroll_activity_deadline())
             .chain(self.input.table_touch_hold_deadline())
-            .chain(self.frame.as_ref().and_then(|(scene, layout)| {
-                self.input
-                    .choice_artwork_dirty(scene, layout)
-                    .then_some(now)
-            }))
-            .chain(self.frame.as_ref().and_then(|(scene, layout)| {
-                self.input.table_drag_selection_deadline(scene, layout)
-            }))
             .chain(
-                self.frame.as_ref().and_then(|(scene, layout)| {
-                    self.input.table_column_move_deadline(scene, layout)
-                }),
+                self.frame
+                    .as_ref()
+                    .map(PreparedFrame::parts)
+                    .and_then(|(scene, layout)| {
+                        self.input
+                            .choice_artwork_dirty(scene, layout)
+                            .then_some(now)
+                    }),
             )
             .chain(
                 self.frame
                     .as_ref()
+                    .map(PreparedFrame::parts)
+                    .and_then(|(scene, layout)| {
+                        self.input.table_drag_selection_deadline(scene, layout)
+                    }),
+            )
+            .chain(
+                self.frame
+                    .as_ref()
+                    .map(PreparedFrame::parts)
+                    .and_then(|(scene, layout)| {
+                        self.input.table_column_move_deadline(scene, layout)
+                    }),
+            )
+            .chain(
+                self.frame
+                    .as_ref()
+                    .map(PreparedFrame::parts)
                     .and_then(|(scene, layout)| self.input.table_row_move_deadline(scene, layout)),
             )
             .chain(self.input.has_pending_swipe_events().then_some(now))
@@ -2764,11 +2797,7 @@ impl PreviewScene {
         self.transition.sample_shared(&target, self.sampled_at)
     }
 
-    fn prepare_frame(
-        &mut self,
-        renderer: &mut Renderer,
-        animated: bool,
-    ) -> (Rc<Node>, Rc<LayoutNode>, u32, u32) {
+    fn prepare_frame(&mut self, renderer: &mut Renderer, animated: bool) -> PreparedFrame {
         let scene = self.scene(animated);
         let dimension = |name, default| {
             scene
@@ -2782,90 +2811,80 @@ impl PreviewScene {
         let size = Size::new(width as f32, height as f32);
         self.frame_cache
             .update_typography(renderer.text.typography_revision());
-        let (scene, layout) =
-            self.frame_cache
-                .prepare_reusing(scene, size, &self.input, |base, previous| {
-                    renderer.prepare_scene_recycling(
-                        &self.component,
-                        base,
-                        size,
-                        &self.input,
-                        previous,
-                    )
-                });
-        (scene, layout, width, height)
+        self.frame_cache
+            .prepare_reusing(scene, size, &self.input, |base, previous| {
+                renderer.prepare_scene_recycling(&self.component, base, size, &self.input, previous)
+            })
     }
 
-    fn settle_frame(
-        &mut self,
-        renderer: &mut Renderer,
-        animated: bool,
-    ) -> (Rc<Node>, Rc<LayoutNode>, u32, u32) {
-        let (mut scene, mut layout, mut width, mut height) = self.prepare_frame(renderer, animated);
-        self.input.reconcile(&scene, &layout);
-        let deliveries = self.input.take_scroll_events(&scene, &layout);
+    fn settle_frame(&mut self, renderer: &mut Renderer, animated: bool) -> PreparedFrame {
+        let mut prepared = self.prepare_frame(renderer, animated);
+        let (mut scene, mut layout) = prepared.parts();
+        self.input.reconcile(scene, layout);
+        let deliveries = self.input.take_scroll_events(scene, layout);
         // Layout reads can invalidate bindings. Bound the settling loop for
         // scenes that use their own measured size to drive their constraints.
-        let mut previous = self.frame.as_ref().map(|(scene, _)| scene.clone());
+        let mut previous = self.frame.as_ref().map(|frame| frame.scene().clone());
         for pass in 0..8 {
             if self.input.apply_scroll_requests_with_text(
-                &scene,
-                &layout,
+                scene,
+                layout,
                 self.scroll.drain(),
                 |node, item| renderer.text.measure_styled_text(node, item),
             ) {
-                (scene, layout, width, height) = self.prepare_frame(renderer, animated);
-                self.input.reconcile(&scene, &layout);
+                prepared = self.prepare_frame(renderer, animated);
+                (scene, layout) = prepared.parts();
+                self.input.reconcile(scene, layout);
             }
-            self.observers.sync(&scene, &layout);
+            self.observers.sync(scene, layout);
             self.observers.sync_scroll_activity(
-                &scene,
-                &layout,
+                scene,
+                layout,
                 &self.input,
                 self.clock + self.sampled_at,
             );
-            xrack_runtime::dispatch_loader_events(&mut self.component, &scene);
+            xrack_runtime::dispatch_loader_events(&mut self.component, scene);
             let mut changed = self.apply_window_commands();
-            changed |= animated && self.sync_window_effects(&scene, &layout);
+            changed |= animated && self.sync_window_effects(scene, layout);
             if animated {
                 if let Some(delivery) = self
                     .button_animations
-                    .next(&scene, self.clock + self.sampled_at)
+                    .next(scene, self.clock + self.sampled_at)
                 {
                     let _focus = self.focus.enter();
                     let _scroll = self.scroll.enter();
-                    delivery.apply(&mut self.component, &scene);
+                    delivery.apply(&mut self.component, scene);
                     changed = true;
                 }
-                self.input.reconcile_swipe(&scene, &layout);
+                self.input.reconcile_swipe(scene, layout);
                 for event in self.input.take_swipe_events() {
-                    let target = if event.matches(&scene) {
-                        &scene
+                    let target = if event.matches(scene) {
+                        scene
                     } else {
-                        previous.as_ref().unwrap_or(&scene)
+                        previous.as_ref().unwrap_or(scene)
                     };
                     event.apply(&mut self.component, target);
                     changed = true;
                 }
                 let context = scale_rotate_gestures::Context {
-                    scene: &scene,
-                    layout: &layout,
+                    scene,
+                    layout,
                     input: &self.input,
                 };
                 if let Some(event) = self.scale_rotate.reconcile(&context) {
-                    event.apply(&mut self.component, previous.as_ref().unwrap_or(&scene));
+                    event.apply(&mut self.component, previous.as_ref().unwrap_or(scene));
                     changed = true;
                 }
                 let requested = self.drag_contact.as_ref().and_then(|drag| drag.requested);
-                let update = self.input.reconcile_drag(&scene, &layout, requested);
-                let files = self.input.reconcile_file_drag(&scene, &layout);
+                let update = self.input.reconcile_drag(scene, layout, requested);
+                let files = self.input.reconcile_file_drag(scene, layout);
                 for event in update.events.into_iter().chain(files.events) {
-                    changed |= event.apply(&mut self.component, &scene);
+                    changed |= event.apply(&mut self.component, scene);
                 }
             }
             if pass == 0 {
                 for event in &deliveries {
-                    changed |= event.apply(&mut self.component, &scene);
+                    changed |= event.apply(&mut self.component, scene);
                 }
             }
             // A row-only mutation can cancel materialization without invalidating the base scene.
@@ -2878,10 +2897,11 @@ impl PreviewScene {
                 break;
             }
             previous = Some(scene.clone());
-            (scene, layout, width, height) = self.prepare_frame(renderer, animated);
-            self.input.reconcile(&scene, &layout);
+            prepared = self.prepare_frame(renderer, animated);
+            (scene, layout) = prepared.parts();
+            self.input.reconcile(scene, layout);
         }
-        (scene, layout, width, height)
+        prepared
     }
 
     fn prepare_snapshot(&mut self, renderer: &mut Renderer, animated: bool) {
@@ -2889,81 +2909,88 @@ impl PreviewScene {
         self.loader_redraw = false;
         let _scroll = self.scroll.enter();
         let _focus = self.focus.enter();
-        let (mut scene, mut layout, mut width, mut height) = self.settle_frame(renderer, animated);
+        let mut prepared = self.settle_frame(renderer, animated);
+        let (mut scene, mut layout) = prepared.parts();
         if self
             .input
-            .dispatch_button_press_events(&mut self.component, &scene, &layout)
+            .dispatch_button_press_events(&mut self.component, scene, layout)
         {
-            (scene, layout, width, height) = self.settle_frame(renderer, animated);
+            prepared = self.settle_frame(renderer, animated);
+            (scene, layout) = prepared.parts();
         }
         if let Some(target) = self.pending_button_click.take()
             && self
                 .input
-                .accessibility_target(&scene, &layout, &target.path)
+                .accessibility_target(scene, layout, &target.path)
                 .as_ref()
                 == Some(&target)
-            && self.component.dispatch_at(&scene, &target.path, "clicked")
+            && self.component.dispatch_at(scene, &target.path, "clicked")
         {
-            (scene, layout, width, height) = self.settle_frame(renderer, animated);
+            prepared = self.settle_frame(renderer, animated);
+            (scene, layout) = prepared.parts();
         }
         if let Some(click) = self.pending_button_double_click.take()
-            && click.deliver(&mut self.component, &self.input, &scene, &layout)
+            && click.deliver(&mut self.component, &self.input, scene, layout)
         {
-            (scene, layout, width, height) = self.settle_frame(renderer, animated);
+            prepared = self.settle_frame(renderer, animated);
+            (scene, layout) = prepared.parts();
         }
         if let Some((view, row)) = self.list_item_click.take()
-            && let Some(target) = self
-                .input
-                .resolve_item_delegate(&scene, &layout, &view, row)
+            && let Some(target) = self.input.resolve_item_delegate(scene, layout, &view, row)
         {
-            self.component.dispatch_at(&scene, &target.path, "clicked");
-            (scene, layout, width, height) = self.settle_frame(renderer, animated);
+            self.component.dispatch_at(scene, &target.path, "clicked");
+            prepared = self.settle_frame(renderer, animated);
+            (scene, layout) = prepared.parts();
         }
         if let Some(target) = self.table_cell_click.take() {
-            if let Some(action) = self.input.text_link_activation(&scene, &layout, &target) {
-                self.apply_control(&scene, action);
+            if let Some(action) = self.input.text_link_activation(scene, layout, &target) {
+                self.apply_control(scene, action);
             } else if target.text_link_index().is_none()
                 && self
                     .input
-                    .accessibility_target(&scene, &layout, &target.path)
+                    .accessibility_target(scene, layout, &target.path)
                     .as_ref()
                     == Some(&target)
             {
-                self.component.dispatch_at(&scene, &target.path, "clicked");
+                self.component.dispatch_at(scene, &target.path, "clicked");
             }
-            (scene, layout, width, height) = self.settle_frame(renderer, animated);
+            prepared = self.settle_frame(renderer, animated);
+            (scene, layout) = prepared.parts();
         }
         if animated {
             let now = self.clock + self.sampled_at;
-            if self.input.advance_table_touch_hold(&scene, &layout, now) {
-                (scene, layout, width, height) = self.settle_frame(renderer, animated);
+            if self.input.advance_table_touch_hold(scene, layout, now) {
+                prepared = self.settle_frame(renderer, animated);
+                (scene, layout) = prepared.parts();
             }
-            if self.input.advance_table_column_move(&scene, &layout, now)
-                || self.input.advance_table_row_move(&scene, &layout, now)
-                || self
-                    .input
-                    .advance_table_drag_selection(&scene, &layout, now)
+            if self.input.advance_table_column_move(scene, layout, now)
+                || self.input.advance_table_row_move(scene, layout, now)
+                || self.input.advance_table_drag_selection(scene, layout, now)
             {
-                (scene, layout, width, height) = self.settle_frame(renderer, animated);
+                prepared = self.settle_frame(renderer, animated);
+                (scene, layout) = prepared.parts();
             }
-            let tumbler = self.input.advance_tumbler_motion(&scene, &layout, now);
+            let tumbler = self.input.advance_tumbler_motion(scene, layout, now);
             if let Some(action) = tumbler.control {
-                self.apply_control(&scene, action);
+                self.apply_control(scene, action);
             }
-            if self.input.advance_scroll_motion(&scene, &layout, now) || tumbler.scrolled {
-                (scene, layout, width, height) = self.settle_frame(renderer, animated);
+            if self.input.advance_scroll_motion(scene, layout, now) || tumbler.scrolled {
+                prepared = self.settle_frame(renderer, animated);
+                (scene, layout) = prepared.parts();
             }
             if let Some(ControlInput { path, action }) =
-                self.input.advance_delay(&scene, &layout, now)
+                self.input.advance_delay(scene, layout, now)
             {
-                self.component.control_at(&scene, &path, action);
-                (scene, layout, width, height) = self.settle_frame(renderer, animated);
+                self.component.control_at(scene, &path, action);
+                prepared = self.settle_frame(renderer, animated);
+                (scene, layout) = prepared.parts();
             }
-            if let Some((target, event)) = self.input.advance_button_hold(&scene, &layout, now) {
+            if let Some((target, event)) = self.input.advance_button_hold(scene, layout, now) {
                 self.last_button_click = None;
                 self.component
-                    .dispatch_at(&scene, &target.path, event.handler());
-                (scene, layout, width, height) = self.settle_frame(renderer, animated);
+                    .dispatch_at(scene, &target.path, event.handler());
+                prepared = self.settle_frame(renderer, animated);
+                (scene, layout) = prepared.parts();
             }
             for _ in 0..64 {
                 let Some(delivery) = self.timers.next_due(now) else {
@@ -2971,7 +2998,8 @@ impl PreviewScene {
                 };
                 if delivery.fire() {
                     // Reconcile visibility and registrations before delivering another due timer.
-                    (scene, layout, width, height) = self.settle_frame(renderer, animated);
+                    prepared = self.settle_frame(renderer, animated);
+                    (scene, layout) = prepared.parts();
                 }
             }
             if self.window_closed || self.window_status.minimized == Some(true) {
@@ -2979,57 +3007,57 @@ impl PreviewScene {
             } else if self.timers.has_frame_animations() {
                 for delivery in self.timers.frame_deliveries(now) {
                     if self.timers.frame_delivery_is_current(&delivery) && delivery.fire() {
-                        (scene, layout, width, height) = self.settle_frame(renderer, animated);
+                        prepared = self.settle_frame(renderer, animated);
+                        (scene, layout) = prepared.parts();
                     }
                 }
             }
         }
         if let Some((origin, backward)) = self.table_tab.take() {
-            if let Some(target) = self.input.next_table_edit_target(
-                &self.component,
-                &scene,
-                &layout,
-                &origin,
-                backward,
-            ) {
+            if let Some(target) =
+                self.input
+                    .next_table_edit_target(&self.component, scene, layout, &origin, backward)
+            {
                 if self
                     .input
-                    .apply_scroll_requests(&scene, &layout, [target.scroll_request()])
+                    .apply_scroll_requests(scene, layout, [target.scroll_request()])
                 {
-                    (scene, layout, width, height) = self.prepare_frame(renderer, animated);
-                    self.input.reconcile(&scene, &layout);
-                    self.observers.sync(&scene, &layout);
+                    prepared = self.prepare_frame(renderer, animated);
+                    (scene, layout) = prepared.parts();
+                    self.input.reconcile(scene, layout);
+                    self.observers.sync(scene, layout);
                     self.observers.sync_scroll_activity(
-                        &scene,
-                        &layout,
+                        scene,
+                        layout,
                         &self.input,
                         self.clock + self.sampled_at,
                     );
                     if animated {
-                        self.sync_window_effects(&scene, &layout);
+                        self.sync_window_effects(scene, layout);
                     }
                 }
-                self.input.begin_table_edit_target(&scene, &layout, &target);
-            } else if self.input.focus_next(&scene, &layout, backward) {
-                (scene, layout, width, height) = self.settle_frame(renderer, animated);
+                self.input.begin_table_edit_target(scene, layout, &target);
+            } else if self.input.focus_next(scene, layout, backward) {
+                prepared = self.settle_frame(renderer, animated);
             }
         }
-        let (mut scene, mut layout, mut width, mut height) =
-            self.settle_focus(renderer, animated, (scene, layout, width, height));
+        prepared = self.settle_focus(renderer, animated, prepared);
+        (scene, layout) = prepared.parts();
         if animated {
             for _ in 0..8 {
                 let mut context = PointerContext {
                     input: &mut self.input,
                     component: &mut self.component,
-                    scene: &scene,
-                    layout: &layout,
+                    scene,
+                    layout,
                 };
                 let pointer = self.direct_pointers.sync(&mut context, Instant::now());
-                if !self.sync_hover(&scene, &layout) && !pointer {
+                if !self.sync_hover(scene, layout) && !pointer {
                     break;
                 }
                 let frame = self.settle_frame(renderer, animated);
-                (scene, layout, width, height) = self.settle_focus(renderer, animated, frame);
+                prepared = self.settle_focus(renderer, animated, frame);
+                (scene, layout) = prepared.parts();
             }
         }
         if animated && self.component.take_window_close_request() {
@@ -3040,17 +3068,17 @@ impl PreviewScene {
                 self.dialogs.close();
             } else {
                 let frame = self.settle_frame(renderer, animated);
-                (scene, layout, width, height) = self.settle_focus(renderer, animated, frame);
+                prepared = self.settle_focus(renderer, animated, frame);
+                (scene, layout) = prepared.parts();
             }
         }
-        self.update_stack_transitions(&scene, &layout, animated);
-        self.input.sync_editor(&scene);
+        self.update_stack_transitions(scene, layout, animated);
+        self.input.sync_editor(scene);
         if animated && self.window_status.active {
-            self.input.update_tooltip(&scene, &layout, Instant::now());
+            self.input.update_tooltip(scene, layout, Instant::now());
         }
         self.renderer_needs_redraw = false;
-        self.dimensions = (width, height);
-        self.frame = Some((scene, layout));
+        self.frame = Some(prepared);
         let now = if animated {
             self.clock + self.sampled_at
         } else {
@@ -3058,27 +3086,31 @@ impl PreviewScene {
         };
         let placed = self.flush_pointer_carets(renderer, now);
         let scrolled = animated
-            && self.frame.as_ref().is_some_and(|(scene, layout)| {
-                PointerCaret::advance_drag_scroll(
-                    &renderer.text,
-                    &mut self.input,
-                    scene,
-                    layout,
-                    now,
-                )
-            });
+            && self
+                .frame
+                .as_ref()
+                .map(PreparedFrame::parts)
+                .is_some_and(|(scene, layout)| {
+                    PointerCaret::advance_drag_scroll(
+                        &renderer.text,
+                        &mut self.input,
+                        scene,
+                        layout,
+                        now,
+                    )
+                });
         if scrolled {
             self.clipboard_edit = None;
         }
         if (placed || scrolled)
-            && let Some((scene, _)) = &self.frame
+            && let Some((scene, _)) = self.frame.as_ref().map(PreparedFrame::parts)
         {
             self.focus_observers.sync_text_editor(&self.input, scene);
             if self.component.scene_dirty() {
                 self.refresh_input_frame(renderer);
             }
         }
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             return;
         };
         self.ime_area = renderer
@@ -3093,7 +3125,7 @@ impl PreviewScene {
     }
 
     fn flush_pointer_carets(&mut self, renderer: &Renderer, now: Instant) -> bool {
-        let Some((scene, layout)) = &self.frame else {
+        let Some((scene, layout)) = self.frame.as_ref().map(PreparedFrame::parts) else {
             self.pointer_carets.clear();
             return false;
         };
@@ -3109,17 +3141,19 @@ impl PreviewScene {
 
     fn refresh_input_frame(&mut self, renderer: &mut Renderer) {
         let frame = self.settle_frame(renderer, true);
-        let (scene, layout, width, height) = self.settle_focus(renderer, true, frame);
-        self.update_stack_transitions(&scene, &layout, true);
-        self.dimensions = (width, height);
-        self.frame = Some((scene, layout));
+        let prepared = self.settle_focus(renderer, true, frame);
+        let (scene, layout) = prepared.parts();
+        self.update_stack_transitions(scene, layout, true);
+        self.frame = Some(prepared);
     }
 
     fn update_stack_transitions(&mut self, scene: &Node, layout: &LayoutNode, animated: bool) {
         if animated {
             let now = Instant::now();
             self.stack_transitions.advance(now);
-            if let Some((previous_scene, previous_layout)) = &self.frame {
+            if let Some((previous_scene, previous_layout)) =
+                self.frame.as_ref().map(PreparedFrame::parts)
+            {
                 self.stack_transitions.update_with_input(
                     (previous_scene, previous_layout),
                     (scene, layout),
@@ -3139,14 +3173,14 @@ impl PreviewScene {
         &mut self,
         renderer: &mut Renderer,
         animated: bool,
-        mut frame: (Rc<Node>, Rc<LayoutNode>, u32, u32),
-    ) -> (Rc<Node>, Rc<LayoutNode>, u32, u32) {
+        mut frame: PreparedFrame,
+    ) -> PreparedFrame {
         for _ in 0..8 {
             if self.scene_touches.reconcile(
                 &mut self.input,
                 &mut self.component,
-                &frame.0,
-                &frame.1,
+                frame.scene(),
+                frame.layout(),
             ) {
                 frame = self.settle_frame(renderer, animated);
             }
@@ -3157,8 +3191,8 @@ impl PreviewScene {
                         if self.scene_touches.apply(
                             &mut self.input,
                             &mut self.component,
-                            &frame.0,
-                            &frame.1,
+                            frame.scene(),
+                            frame.layout(),
                             request,
                         ) {
                             frame = self.settle_frame(renderer, animated);
@@ -3172,8 +3206,8 @@ impl PreviewScene {
                     } => {
                         if let Some(target) = self.input.apply_text_replacement(
                             &mut self.component,
-                            &frame.0,
-                            &frame.1,
+                            frame.scene(),
+                            frame.layout(),
                             &target,
                             &replacement,
                             Instant::now(),
@@ -3187,28 +3221,30 @@ impl PreviewScene {
                         continue;
                     }
                 };
-                let (command, scrolled) = self
-                    .input
-                    .apply_focus_request_with_scroll(&frame.0, &frame.1, request);
+                let (command, scrolled) = self.input.apply_focus_request_with_scroll(
+                    frame.scene(),
+                    frame.layout(),
+                    request,
+                );
                 if scrolled {
                     frame = self.settle_frame(renderer, animated);
                 }
                 if let Some(command) = command {
-                    self.input.sync_editor(&frame.0);
-                    self.text_command(&frame.0, command);
+                    self.input.sync_editor(frame.scene());
+                    self.text_command(frame.scene(), command);
                     if self.component.scene_dirty() || !self.scroll.is_empty() {
                         frame = self.settle_frame(renderer, animated);
                     }
                 }
             }
-            self.input.sync_editor(&frame.0);
+            self.input.sync_editor(frame.scene());
             for event in self.focus_observers.sync(
                 &self.input,
-                &frame.0,
-                &frame.1,
+                frame.scene(),
+                frame.layout(),
                 self.window_status.active,
             ) {
-                event.apply(&mut self.component, &frame.0);
+                event.apply(&mut self.component, frame.scene());
             }
             if !self.component.scene_dirty() && self.focus.is_empty() && self.scroll.is_empty() {
                 break;
@@ -3270,7 +3306,12 @@ impl PreviewScene {
         let Some((_, edit)) = self.clipboard_edit.take_if(|(pending, _)| *pending == id) else {
             return false;
         };
-        let Some((scene, layout)) = self.frame.as_ref().filter(|_| success) else {
+        let Some((scene, layout)) = self
+            .frame
+            .as_ref()
+            .filter(|_| success)
+            .map(PreparedFrame::parts)
+        else {
             return false;
         };
         match edit {

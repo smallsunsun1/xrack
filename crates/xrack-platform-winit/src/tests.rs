@@ -14,6 +14,33 @@ use xrack_runtime::Value;
 
 mod keyboard_touch;
 
+impl<C: Component> Application<C> {
+    pub(super) fn set_test_layout(&mut self, layout: Rc<LayoutNode>) {
+        let viewport = Size::new(layout.bounds.width, layout.bounds.height);
+        let frame = FrameCache::default().prepare(
+            self.frame.scene().clone(),
+            viewport,
+            &self.input,
+            |scene| (scene, Rc::unwrap_or_clone(layout)),
+        );
+        self.frame.replace(frame);
+    }
+
+    pub(super) fn set_test_scene(&mut self, scene: Rc<Node>) {
+        let layout = self.frame.layout().cloned();
+        self.frame = WindowFrame::Unprepared(scene);
+        if let Some(layout) = layout {
+            self.set_test_layout(layout);
+        }
+    }
+
+    fn edit_test_scene(&mut self, edit: impl FnOnce(&mut Node)) {
+        let mut scene = self.frame.scene().clone();
+        edit(Rc::make_mut(&mut scene));
+        self.set_test_scene(scene);
+    }
+}
+
 #[test]
 fn reports_initial_system_scheme_and_skips_duplicate_notifications() {
     #[derive(Default)]
@@ -111,30 +138,34 @@ fn native_cursor_resolution_prefers_resize_then_explicit_shapes_then_text() {
     let size = Size::new(280.0, 160.0);
     let mut measure = Measure;
     let sync = |app: &mut Application<View>, measure: &mut Measure, point: Point| {
-        let frame = Rc::new(layout(&app.scene, size, measure));
-        app.input.pointer_move(&app.scene, &frame, point);
+        let frame = Rc::new(layout(app.frame.scene(), size, measure));
+        app.input.pointer_move(app.frame.scene(), &frame, point);
         app.hover_pointer = Some(PhysicalPosition::new(
             f64::from(point.x),
             f64::from(point.y),
         ));
         let events = app
             .hover_observers
-            .sync(&app.input, &app.scene, &frame, Some(point));
-        app.layout = Some(frame);
+            .sync(&app.input, app.frame.scene(), &frame, Some(point));
+        app.set_test_layout(frame);
         events
     };
     let text = Point { x: 30.0, y: 30.0 };
     assert_eq!(sync(&mut app, &mut measure, text).len(), 2);
     assert_eq!(app.pointer_cursor(), CursorIcon::Pointer);
 
-    Rc::make_mut(&mut app.scene).children[0].children[0]
-        .properties
-        .insert("cursor-shape", CursorShape::Auto.into());
+    app.edit_test_scene(|scene| {
+        scene.children[0].children[0]
+            .properties
+            .insert("cursor-shape", CursorShape::Auto.into());
+    });
     assert!(sync(&mut app, &mut measure, text).is_empty());
     assert_eq!(app.pointer_cursor(), CursorIcon::Crosshair);
-    Rc::make_mut(&mut app.scene).children[0].children[0]
-        .properties
-        .insert("blocking", true.into());
+    app.edit_test_scene(|scene| {
+        scene.children[0].children[0]
+            .properties
+            .insert("blocking", true.into());
+    });
     sync(&mut app, &mut measure, text);
     assert_eq!(app.pointer_cursor(), CursorIcon::Text);
 
@@ -142,7 +173,8 @@ fn native_cursor_resolution_prefers_resize_then_explicit_shapes_then_text() {
     assert_eq!(app.pointer_cursor(), CursorIcon::Grab);
     let split = [0, 2];
     let handle = app
-        .scene
+        .frame
+        .scene()
         .at_path(&split)
         .unwrap()
         .children
@@ -150,8 +182,8 @@ fn native_cursor_resolution_prefers_resize_then_explicit_shapes_then_text() {
         .position(|node| node.kind == "SplitHandle")
         .unwrap();
     let bounds = app
-        .layout
-        .as_ref()
+        .frame
+        .layout()
         .unwrap()
         .at_path(&[0, 2, handle])
         .unwrap()
@@ -169,17 +201,23 @@ fn native_cursor_resolution_prefers_resize_then_explicit_shapes_then_text() {
     assert_eq!(app.pointer_cursor(), CursorIcon::Grab);
     let mut dialog = rect("Dialog", 0.0, 0.0, 100.0, 60.0);
     dialog.properties.insert("open", true.into());
-    Rc::make_mut(&mut app.scene).children.push(dialog);
-    let frame = Rc::new(layout(&app.scene, size, &mut measure));
+    app.edit_test_scene(|scene| {
+        scene.children.push(dialog);
+    });
+    let frame = Rc::new(layout(app.frame.scene(), size, &mut measure));
     app.hover_observers
-        .sync(&app.input, &app.scene, &frame, Some(touch));
-    app.layout = Some(frame);
+        .sync(&app.input, app.frame.scene(), &frame, Some(touch));
+    app.set_test_layout(frame);
     assert_eq!(app.pointer_cursor(), CursorIcon::Default);
 
     app.input.pointer_leave();
     app.hover_pointer = None;
-    app.hover_observers
-        .sync(&app.input, &app.scene, app.layout.as_ref().unwrap(), None);
+    app.hover_observers.sync(
+        &app.input,
+        app.frame.scene(),
+        app.frame.layout().unwrap(),
+        None,
+    );
     assert_eq!(app.pointer_cursor(), CursorIcon::Default);
 }
 
@@ -254,8 +292,8 @@ fn a_deferred_focus_command_is_consumed_with_an_unchanged_scene() {
     target.properties.insert("height", Length(48.0).into());
     scene.children.push(target);
     let mut app = Application::new(View(Rc::new(scene)), LocalExecutor::new(|| {}));
-    app.layout = Some(Rc::new(layout(
-        &app.scene,
+    app.set_test_layout(Rc::new(layout(
+        app.frame.scene(),
         Size::new(200.0, 100.0),
         &mut Measure,
     )));
@@ -313,8 +351,12 @@ fn native_text_replacements_keep_focus_and_leave_ime_preedit_intact() {
         },
         LocalExecutor::new(|| {}),
     );
-    let frame = Rc::new(layout(&app.scene, Size::new(200.0, 90.0), &mut Measure));
-    app.layout = Some(frame.clone());
+    let frame = Rc::new(layout(
+        app.frame.scene(),
+        Size::new(200.0, 90.0),
+        &mut Measure,
+    ));
+    app.set_test_layout(frame.clone());
     {
         let _focus = app.focus_requests.enter();
         handle.request_text_edit(
@@ -333,10 +375,10 @@ fn native_text_replacements_keep_focus_and_leave_ime_preedit_intact() {
     assert!(app.input.focused.is_none());
     app.input.accessibility_focus(
         app.input
-            .accessibility_target(&app.scene, &frame, &[])
+            .accessibility_target(app.frame.scene(), &frame, &[])
             .unwrap(),
     );
-    app.input.sync_editor(&app.scene);
+    app.input.sync_editor(app.frame.scene());
     app.input
         .editor
         .as_mut()
@@ -385,8 +427,8 @@ fn a_deferred_scroll_command_is_consumed_with_an_unchanged_scene() {
         .properties
         .insert("content-height", Length(320.0).into());
     let mut app = Application::new(View(Rc::new(scene)), LocalExecutor::new(|| {}));
-    app.layout = Some(Rc::new(layout(
-        &app.scene,
+    app.set_test_layout(Rc::new(layout(
+        app.frame.scene(),
         Size::new(160.0, 100.0),
         &mut Measure,
     )));
@@ -435,11 +477,13 @@ fn bound_scroll_offsets_invalidate_layout_without_rebuilding_the_scene() {
         let frame = layout(&scene, size, &mut Measure);
         (scene, frame)
     };
-    let (first_scene, first_layout) = cache.prepare(scene.clone(), size, &input, prepare);
+    let (first_scene, first_layout) = cache
+        .prepare(scene.clone(), size, &input, prepare)
+        .into_parts();
     assert_eq!(first_layout.scroll.unwrap().offset, 0.0);
     position.set(Length(-80.0));
     assert!(cache.is_dirty());
-    let (next_scene, next_layout) = cache.prepare(scene, size, &input, prepare);
+    let (next_scene, next_layout) = cache.prepare(scene, size, &input, prepare).into_parts();
     assert!(Rc::ptr_eq(&first_scene, &next_scene));
     assert_eq!(next_layout.scroll.unwrap().offset, 80.0);
 }
@@ -483,10 +527,10 @@ fn paint_only_updates_replace_the_scene_without_resolving_layout() {
         })
     };
     let mut cache = FrameCache::default();
-    let (_, original) = prepare(&mut cache, scene(0x112233ff, 40.0), false);
+    let (_, original) = prepare(&mut cache, scene(0x112233ff, 40.0), false).into_parts();
     let recolored = scene(0x445566ff, 40.0);
     let paint = xrack_runtime::update_profile::measure(|| {
-        let (painted, reused) = prepare(&mut cache, recolored.clone(), false);
+        let (painted, reused) = prepare(&mut cache, recolored.clone(), false).into_parts();
         assert!(Rc::ptr_eq(&painted, &recolored));
         assert!(Rc::ptr_eq(&original, &reused));
     })
@@ -494,7 +538,7 @@ fn paint_only_updates_replace_the_scene_without_resolving_layout() {
     assert_eq!((paint.layout_runs, paint.layout_reuses), (0, 1));
     assert_eq!(resolves.get(), 1);
     let resize = xrack_runtime::update_profile::measure(|| {
-        let (_, resized) = prepare(&mut cache, scene(0x445566ff, 80.0), false);
+        let (_, resized) = prepare(&mut cache, scene(0x445566ff, 80.0), false).into_parts();
         assert!(!Rc::ptr_eq(&original, &resized));
     })
     .unwrap();
@@ -502,8 +546,8 @@ fn paint_only_updates_replace_the_scene_without_resolving_layout() {
     assert_eq!(resolves.get(), 2);
 
     let mut materialized = FrameCache::default();
-    let (_, original) = prepare(&mut materialized, scene(0x112233ff, 40.0), true);
-    let (_, updated) = prepare(&mut materialized, recolored, true);
+    let (_, original) = prepare(&mut materialized, scene(0x112233ff, 40.0), true).into_parts();
+    let (_, updated) = prepare(&mut materialized, recolored, true).into_parts();
     assert!(!Rc::ptr_eq(&original, &updated));
     assert_eq!(resolves.get(), 4);
 }
@@ -553,13 +597,13 @@ fn tumbler_frame_tracks_visible_labels_only() {
             (base, layout)
         })
     };
-    let (_, first) = prepare(&mut cache);
+    let (_, first) = prepare(&mut cache).into_parts();
     assert_eq!(first.tumbler.as_ref().unwrap().rows.len(), 5);
     assert!(model.set_row(1_000, "offscreen".into()));
-    let (_, untouched) = prepare(&mut cache);
+    let (_, untouched) = prepare(&mut cache).into_parts();
     assert!(Rc::ptr_eq(&first, &untouched));
     assert!(model.set_row(1, "visible".into()));
-    let (_, updated) = prepare(&mut cache);
+    let (_, updated) = prepare(&mut cache).into_parts();
     assert!(!Rc::ptr_eq(&first, &updated));
     assert!(
         updated
@@ -643,11 +687,11 @@ fn accessibility_scrolls_the_requested_container_without_moving_its_parent() {
     }
     let mut app = Application::new(View, LocalExecutor::new(|| {}));
     let viewport = Size::new(220.0, 120.0);
-    let frame = Rc::new(layout(&app.scene, viewport, &mut Measure));
-    app.layout = Some(frame.clone());
+    let frame = Rc::new(layout(app.frame.scene(), viewport, &mut Measure));
+    app.set_test_layout(frame.clone());
     let mut projection = Projection::default();
     let update = projection
-        .update(&app.scene, &frame, &app.input, 2.0, None)
+        .update(app.frame.scene(), &frame, &app.input, 2.0, None)
         .unwrap();
     let (target_node, item) = update
         .nodes
@@ -664,7 +708,7 @@ fn accessibility_scrolls_the_requested_container_without_moving_its_parent() {
         Some(&ActionData::SetScrollOffset(accesskit::Point::new(
             120.0, 200.0,
         ))),
-        app.scene.at_path(&[0]).unwrap(),
+        app.frame.scene().at_path(&[0]).unwrap(),
         frame.at_path(&[0]).unwrap(),
         2.0,
     );
@@ -747,13 +791,17 @@ fn modified_tab_runs_shortcut_and_plain_tab_moves_focus() {
         }
     }
     let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
-    let layout = Rc::new(layout(&app.scene, Size::new(230.0, 90.0), &mut Measure));
-    app.layout = Some(layout.clone());
+    let layout = Rc::new(layout(
+        app.frame.scene(),
+        Size::new(230.0, 90.0),
+        &mut Measure,
+    ));
+    app.set_test_layout(layout.clone());
     let first = app
         .input
-        .accessibility_target(&app.scene, &layout, &[0])
+        .accessibility_target(app.frame.scene(), &layout, &[0])
         .unwrap();
-    app.input.focus_target(&app.scene, &layout, first);
+    app.input.focus_target(app.frame.scene(), &layout, first);
     let event = KeyEvent {
         logical_key: Key::Named(NamedKey::Tab),
         unmodified_key: Key::Named(NamedKey::Tab),
@@ -908,18 +956,21 @@ fn accessibility_escape_respects_topmost_overlay_policy_and_restores_focus() {
 
     let mut app = Application::new(OverlayDemo::default(), LocalExecutor::new(|| {}));
     let prepare = |app: &mut Application<OverlayDemo>| {
-        app.scene = Rc::new(app.component.render());
+        app.set_test_scene(Rc::new(app.component.render()));
         let layout = Rc::new(xrack_layout::layout(
-            &app.scene,
+            app.frame.scene(),
             Size::new(320.0, 250.0),
             &mut Measure,
         ));
-        app.input.reconcile(&app.scene, &layout);
-        app.layout = Some(layout);
+        app.input.reconcile(app.frame.scene(), &layout);
+        app.set_test_layout(layout);
     };
     prepare(&mut app);
-    app.input
-        .focus_next(&app.scene, app.layout.as_deref().unwrap(), false);
+    app.input.focus_next(
+        app.frame.scene(),
+        app.frame.layout().map(Rc::as_ref).unwrap(),
+        false,
+    );
     assert!(app.input.is_focused(&[0]));
     assert!(app.accessibility_escape().is_none());
 
@@ -1044,9 +1095,13 @@ fn accessibility_resizes_the_addressed_splitter_and_rejects_an_old_neighbor() {
 
     let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
     let frame = |app: &mut Application<View>| {
-        app.scene = Rc::new(app.component.render());
-        let layout = Rc::new(layout(&app.scene, Size::new(320.0, 140.0), &mut Measure));
-        app.layout = Some(layout.clone());
+        app.set_test_scene(Rc::new(app.component.render()));
+        let layout = Rc::new(layout(
+            app.frame.scene(),
+            Size::new(320.0, 140.0),
+            &mut Measure,
+        ));
+        app.set_test_layout(layout.clone());
         layout
     };
     let request = |node, action, data| ActionRequest {
@@ -1063,7 +1118,7 @@ fn accessibility_resizes_the_addressed_splitter_and_rejects_an_old_neighbor() {
     let mut projection = Projection::default();
     let layout = frame(&mut app);
     let update = projection
-        .update(&app.scene, &layout, &app.input, 2.0, None)
+        .update(app.frame.scene(), &layout, &app.input, 2.0, None)
         .unwrap();
     let lookup = |label| {
         update
@@ -1108,7 +1163,7 @@ fn accessibility_resizes_the_addressed_splitter_and_rejects_an_old_neighbor() {
     app.component.rtl = true;
     let layout = frame(&mut app);
     let mirrored = projection
-        .update(&app.scene, &layout, &app.input, 2.0, None)
+        .update(app.frame.scene(), &layout, &app.input, 2.0, None)
         .unwrap();
     let (_, mirror_handle) = mirrored.nodes.iter().find(|(id, _)| *id == first).unwrap();
     assert_eq!(mirror_handle.numeric_value(), Some(108.0));
@@ -1137,7 +1192,7 @@ fn accessibility_resizes_the_addressed_splitter_and_rejects_an_old_neighbor() {
     );
     let layout = frame(&mut app);
     let update = projection
-        .update(&app.scene, &layout, &app.input, 2.0, None)
+        .update(app.frame.scene(), &layout, &app.input, 2.0, None)
         .unwrap();
     let max = update.nodes.iter().find(|(id, _)| *id == first).unwrap();
     assert_eq!(max.1.numeric_value(), Some(140.0));
@@ -1160,7 +1215,7 @@ fn accessibility_resizes_the_addressed_splitter_and_rejects_an_old_neighbor() {
     app.accessibility_action(route, request(first, AccessibleAction::Decrement, None));
     assert_eq!(app.component.edits, 3);
     let update = projection
-        .update(&app.scene, &layout, &app.input, 2.0, None)
+        .update(app.frame.scene(), &layout, &app.input, 2.0, None)
         .unwrap();
     let splitters: Vec<_> = update
         .nodes
@@ -1235,11 +1290,11 @@ fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
     }
     let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
     let viewport = Size::new(220.0, 120.0);
-    let frame = Rc::new(layout(&app.scene, viewport, &mut Measure));
-    app.layout = Some(frame.clone());
+    let frame = Rc::new(layout(app.frame.scene(), viewport, &mut Measure));
+    app.set_test_layout(frame.clone());
     let mut projection = Projection::default();
     let update = projection
-        .update(&app.scene, &frame, &app.input, 1.0, None)
+        .update(app.frame.scene(), &frame, &app.input, 1.0, None)
         .unwrap();
     let id = |role| {
         update
@@ -1307,8 +1362,10 @@ fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
         Some("editor")
     );
 
-    Rc::make_mut(&mut app.scene).children[0].id = Some("recycled");
-    app.layout = Some(Rc::new(layout(&app.scene, viewport, &mut Measure)));
+    app.edit_test_scene(|scene| {
+        scene.children[0].id = Some("recycled");
+    });
+    app.set_test_layout(Rc::new(layout(app.frame.scene(), viewport, &mut Measure)));
     app.accessibility_action(route, request(click, AccessibleAction::Click, None));
     assert_eq!(app.component.clicks, 1);
 }
@@ -1340,8 +1397,8 @@ fn touch_text_hold_uses_the_event_loop_deadline_and_yields_to_queued_motion() {
     }
 
     let mut app = Application::new(Editor, LocalExecutor::new(|| {}));
-    app.layout = Some(Rc::new(layout(
-        &app.scene,
+    app.set_test_layout(Rc::new(layout(
+        app.frame.scene(),
         Size::new(220.0, 120.0),
         &mut Measure,
     )));
@@ -1423,7 +1480,7 @@ fn touch_context_menu_owns_the_hold_and_scrolls_its_own_rows() {
 
     let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
     let size = Size::new(220.0, 170.0);
-    app.layout = Some(Rc::new(layout(&app.scene, size, &mut Measure)));
+    app.set_test_layout(Rc::new(layout(app.frame.scene(), size, &mut Measure)));
     let device = DeviceId::dummy();
     let origin = Point { x: 20.0, y: 32.0 };
     let before_hold = Duration::from_millis(499);
@@ -1450,7 +1507,9 @@ fn touch_context_menu_owns_the_hold_and_scrolls_its_own_rows() {
 
     let now = now + hold_time;
     app.update_touch(device, 3, TouchPhase::Started, origin, now);
-    Rc::make_mut(&mut app.scene).id = Some("replacement");
+    app.edit_test_scene(|scene| {
+        scene.id = Some("replacement");
+    });
     app.tick(now + hold_time);
     assert!(!app.input.menu_open());
     app.update_touch(device, 3, TouchPhase::Cancelled, origin, now + hold_time);
@@ -1466,7 +1525,7 @@ fn touch_context_menu_owns_the_hold_and_scrolls_its_own_rows() {
     let menu_top = |app: &Application<View>| {
         let panels = app
             .input
-            .menu_panels(&app.scene, app.layout.as_ref().unwrap());
+            .menu_panels(app.frame.scene(), app.frame.layout().unwrap());
         let panel = &panels[0];
         (panel.bounds, panel.rows[0].label.to_owned())
     };
@@ -1571,13 +1630,17 @@ fn native_touch_keeps_range_capture_until_its_own_contact_ends() {
     }
 
     let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
-    let layout = Rc::new(layout(&app.scene, Size::new(180.0, 150.0), &mut Measure));
+    let layout = Rc::new(layout(
+        app.frame.scene(),
+        Size::new(180.0, 150.0),
+        &mut Measure,
+    ));
     let geometry = ColorPlaneGeometry::new(layout.at_path(&[0]).unwrap().bounds);
     let slider = SliderGeometry::new(
         layout.at_path(&[1]).unwrap().bounds,
         Orientation::Horizontal,
     );
-    app.layout = Some(layout);
+    app.set_test_layout(layout);
     let start = geometry.point(0.0, 1.0);
     let outside = Point { x: 165.0, y: 110.0 };
     let now = Instant::now();
@@ -1670,9 +1733,13 @@ fn native_split_drag_uses_one_touch_contact_and_cancels_without_a_tap() {
     }
 
     let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
-    let layout = Rc::new(layout(&app.scene, Size::new(180.0, 100.0), &mut Measure));
+    let layout = Rc::new(layout(
+        app.frame.scene(),
+        Size::new(180.0, 100.0),
+        &mut Measure,
+    ));
     let handle = layout.at_path(&[0, 2]).unwrap().bounds;
-    app.layout = Some(layout);
+    app.set_test_layout(layout);
     let start = Point {
         x: handle.x - 5.0,
         y: handle.y + 16.0,
@@ -1739,8 +1806,8 @@ fn native_touch_adapter_activates_taps_and_keeps_pans_out_of_click_dispatch() {
     }
     let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
     let viewport = Size::new(180.0, 120.0);
-    app.layout = Some(Rc::new(layout_with_input(
-        &app.scene,
+    app.set_test_layout(Rc::new(layout_with_input(
+        app.frame.scene(),
         viewport,
         &mut Measure,
         &app.input,
@@ -1824,8 +1891,8 @@ fn native_buttons_pair_mouse_and_touch_separately_after_both_clicks() {
     }
 
     let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
-    app.layout = Some(Rc::new(layout_with_input(
-        &app.scene,
+    app.set_test_layout(Rc::new(layout_with_input(
+        app.frame.scene(),
         Size::new(180.0, 120.0),
         &mut Measure,
         &app.input,
@@ -1834,7 +1901,7 @@ fn native_buttons_pair_mouse_and_touch_separately_after_both_clicks() {
     let start = Instant::now();
     let mouse = |app: &mut Application<View>, time| {
         app.input
-            .pointer_move(&app.scene, app.layout.as_ref().unwrap(), point);
+            .pointer_move(app.frame.scene(), app.frame.layout().unwrap(), point);
         app.left_pointer(ElementState::Pressed, None);
         app.left_pointer(
             ElementState::Released,
@@ -1937,8 +2004,8 @@ fn native_pointer_delivers_release_clicks_double_click_and_pan_cancel_in_order()
     }
 
     let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
-    app.layout = Some(Rc::new(layout_with_input(
-        &app.scene,
+    app.set_test_layout(Rc::new(layout_with_input(
+        app.frame.scene(),
         Size::new(180.0, 120.0),
         &mut Measure,
         &app.input,
@@ -1973,7 +2040,7 @@ fn native_pointer_delivers_release_clicks_double_click_and_pan_cancel_in_order()
 
     let mouse = PointerContact::Mouse(PointerButton::Primary);
     app.input
-        .pointer_move(&app.scene, app.layout.as_ref().unwrap(), start);
+        .pointer_move(app.frame.scene(), app.frame.layout().unwrap(), start);
     app.left_pointer(ElementState::Pressed, None);
     app.start_pointer(mouse, start, now);
     app.release_pointer(mouse, start, deadline);
@@ -1997,17 +2064,19 @@ fn native_pointer_delivers_release_clicks_double_click_and_pan_cancel_in_order()
     let capture = app.pointer_capture.as_ref().unwrap();
     assert!(app.input.owns_pointer_press(capture.sequence.target()));
     for enabled in [false, true] {
-        Rc::make_mut(&mut app.scene).children[0]
-            .properties
-            .insert("enabled", enabled.into());
+        app.edit_test_scene(|scene| {
+            scene.children[0]
+                .properties
+                .insert("enabled", enabled.into());
+        });
         let layout = Rc::new(layout_with_input(
-            &app.scene,
+            app.frame.scene(),
             Size::new(180.0, 120.0),
             &mut Measure,
             &app.input,
         ));
-        app.input.reconcile(&app.scene, &layout);
-        app.layout = Some(layout);
+        app.input.reconcile(app.frame.scene(), &layout);
+        app.set_test_layout(layout);
         app.reconcile_pointer();
     }
     app.update_touch(
@@ -2098,7 +2167,7 @@ fn native_pointer_delivers_release_clicks_double_click_and_pan_cancel_in_order()
         let time = now + Duration::from_millis(millis);
         let mouse = PointerContact::Mouse(PointerButton::Primary);
         app.input
-            .pointer_move(&app.scene, app.layout.as_ref().unwrap(), point);
+            .pointer_move(app.frame.scene(), app.frame.layout().unwrap(), point);
         app.left_pointer(ElementState::Pressed, None);
         app.start_pointer(mouse, point, time);
         app.release_pointer(mouse, point, time);
@@ -2211,8 +2280,8 @@ fn native_swipe_routes_mouse_touch_scroll_and_callback_cancellation() {
         LocalExecutor::new(|| {}),
     );
     let viewport = Size::new(180.0, 140.0);
-    app.layout = Some(Rc::new(layout_with_input(
-        &app.scene,
+    app.set_test_layout(Rc::new(layout_with_input(
+        app.frame.scene(),
         viewport,
         &mut Measure,
         &app.input,
@@ -2287,9 +2356,9 @@ fn native_swipe_routes_mouse_touch_scroll_and_callback_cancellation() {
         moved,
         now + Duration::from_millis(20),
     );
-    Rc::make_mut(&mut app.scene).children[0]
-        .properties
-        .insert("enabled", false.into());
+    app.edit_test_scene(|scene| {
+        scene.children[0].properties.insert("enabled", false.into());
+    });
     app.update_touch(
         device,
         3,
@@ -2378,8 +2447,8 @@ fn native_multi_touch_keeps_contact_ids_and_releases_each_contact_independently(
         },
         LocalExecutor::new(|| {}),
     );
-    app.layout = Some(Rc::new(layout(
-        &app.scene,
+    app.set_test_layout(Rc::new(layout(
+        app.frame.scene(),
         Size::new(180.0, 140.0),
         &mut Measure,
     )));
@@ -2426,9 +2495,9 @@ fn native_multi_touch_keeps_contact_ids_and_releases_each_contact_independently(
     app.update_touch(device, 3, TouchPhase::Started, first, now);
     app.update_touch(device, 4, TouchPhase::Started, second, now);
     let extra_id = app.component.events.last().unwrap().touch_finger_id;
-    Rc::make_mut(&mut app.scene)
-        .properties
-        .insert("multi-touch", false.into());
+    app.edit_test_scene(|scene| {
+        scene.properties.insert("multi-touch", false.into());
+    });
     app.reconcile_pointer();
     assert_eq!(handle.active_touch_count(), 1);
     assert_eq!(
@@ -2530,7 +2599,7 @@ fn native_scale_rotate_arbitrates_touch_and_combines_trackpad_channels() {
         LocalExecutor::new(|| {}),
     );
     let viewport = Size::new(280.0, 220.0);
-    app.layout = Some(Rc::new(layout(&app.scene, viewport, &mut Measure)));
+    app.set_test_layout(Rc::new(layout(app.frame.scene(), viewport, &mut Measure)));
     let now = Instant::now();
     let device = DeviceId::dummy();
     let first = Point { x: 50.0, y: 55.0 };
@@ -2599,7 +2668,7 @@ fn native_scale_rotate_arbitrates_touch_and_combines_trackpad_channels() {
     assert_eq!(app.component.taps, 1);
 
     app.input
-        .pointer_move(&app.scene, app.layout.as_ref().unwrap(), first);
+        .pointer_move(app.frame.scene(), app.frame.layout().unwrap(), first);
     use scale_rotate::TrackpadDelta::{Rotation, Scale};
     app.update_trackpad_gesture(device, TouchPhase::Started, Scale(0.25));
     app.update_trackpad_gesture(device, TouchPhase::Started, Rotation(-30.0));
@@ -2622,9 +2691,9 @@ fn native_scale_rotate_arbitrates_touch_and_combines_trackpad_channels() {
 
     app.update_touch(device, 4, TouchPhase::Started, first, now);
     app.update_touch(device, 5, TouchPhase::Started, second, now);
-    Rc::make_mut(&mut app.scene).children[0]
-        .properties
-        .insert("enabled", false.into());
+    app.edit_test_scene(|scene| {
+        scene.children[0].properties.insert("enabled", false.into());
+    });
     app.update_touch(device, 5, TouchPhase::Moved, moved, now);
     assert_eq!(app.component.events.last().unwrap().0, "cancelled");
     app.update_touch(device, 5, TouchPhase::Ended, moved, now);
@@ -2680,22 +2749,26 @@ fn native_wheel_preserves_another_spin_draft_and_active_ime_composition() {
         scene.children.push(spin);
     }
     let mut app = Application::new(View(scene), LocalExecutor::new(|| {}));
-    let frame = Rc::new(layout(&app.scene, Size::new(250.0, 100.0), &mut Measure));
-    app.layout = Some(frame.clone());
+    let frame = Rc::new(layout(
+        app.frame.scene(),
+        Size::new(250.0, 100.0),
+        &mut Measure,
+    ));
+    app.set_test_layout(frame.clone());
     let target = app
         .input
-        .accessibility_target(&app.scene, &frame, &[0])
+        .accessibility_target(app.frame.scene(), &frame, &[0])
         .unwrap();
-    app.input.focus_target(&app.scene, &frame, target);
+    app.input.focus_target(app.frame.scene(), &frame, target);
     app.input
-        .edit_spin(&app.scene.children[0], EditAction::ReplaceAll("37"));
-    assert_eq!(app.input.editor_value(&app.scene.children[0]), "37");
+        .edit_spin(&app.frame.scene().children[0], EditAction::ReplaceAll("37"));
+    assert_eq!(app.input.editor_value(&app.frame.scene().children[0]), "37");
     app.input
-        .pointer_move(&app.scene, &frame, Point { x: 158.0, y: 18.0 });
+        .pointer_move(app.frame.scene(), &frame, Point { x: 158.0, y: 18.0 });
     let event = app.wheel_event(Point { x: 0.0, y: -28.0 }, Some(Point { x: 0.0, y: -1.0 }));
     assert!(app.adjust_wheel(event, Instant::now()));
     assert_eq!(app.component.0.children[1].int("value"), Some(11));
-    assert_eq!(app.input.editor_value(&app.scene.children[0]), "37");
+    assert_eq!(app.input.editor_value(&app.frame.scene().children[0]), "37");
 
     app.input
         .editor
@@ -2703,10 +2776,10 @@ fn native_wheel_preserves_another_spin_draft_and_active_ime_composition() {
         .unwrap()
         .set_preedit("3".into(), None);
     app.input
-        .pointer_move(&app.scene, &frame, Point { x: 40.0, y: 18.0 });
+        .pointer_move(app.frame.scene(), &frame, Point { x: 40.0, y: 18.0 });
     assert!(!app.adjust_wheel(event, Instant::now()));
     assert_eq!(app.component.0.children[0].int("value"), Some(10));
-    assert_eq!(app.input.editor_value(&app.scene.children[0]), "37");
+    assert_eq!(app.input.editor_value(&app.frame.scene().children[0]), "37");
 }
 
 #[test]
@@ -2758,7 +2831,7 @@ fn native_scroll_bar_touch_release_snaps_and_cancellation_keeps_the_dragged_posi
         (1, 0.44, TouchPhase::Ended, 200.0),
         (2, 0.31, TouchPhase::Cancelled, 124.0),
     ] {
-        let layout = layout_with_input(&app.scene, viewport, &mut Measure, &app.input);
+        let layout = layout_with_input(app.frame.scene(), viewport, &mut Measure, &app.input);
         let bar = layout.children[1].attached_scroll_geometry().unwrap();
         let start = Point {
             x: bar.thumb.x + 6.0,
@@ -2770,7 +2843,7 @@ fn native_scroll_bar_touch_release_snaps_and_cancellation_keeps_the_dragged_posi
                 + bar.thumb.height * 0.5
                 + (bar.track.height - bar.thumb.height) * fraction,
         };
-        app.layout = Some(Rc::new(layout));
+        app.set_test_layout(Rc::new(layout));
         app.update_touch(device, id, TouchPhase::Started, start, now);
         app.update_touch(device, id, TouchPhase::Moved, end, now);
         let raw = app.input.scroll_offsets()[&[0][..]];
@@ -2863,7 +2936,7 @@ fn touch_table_drag_commits_only_the_owned_contact(reorder: bool) {
         },
         LocalExecutor::new(|| {}),
     );
-    let frame = layout(&app.scene, Size::new(200.0, 130.0), &mut Measure);
+    let frame = layout(app.frame.scene(), Size::new(200.0, 130.0), &mut Measure);
     let table = &frame.children[0];
     let x = if reorder { 12.0 } else { 30.0 };
     let row = app.component.model.row_key(0).unwrap();
@@ -2875,7 +2948,7 @@ fn touch_table_drag_commits_only_the_owned_contact(reorder: bool) {
         x,
         y: table.children[1].bounds.y + 24.0,
     };
-    app.layout = Some(Rc::new(frame));
+    app.set_test_layout(Rc::new(frame));
     let device = DeviceId::dummy();
     let now = Instant::now();
     let deadline = now + Duration::from_millis(500);
@@ -2931,7 +3004,7 @@ fn touch_table_drag_commits_only_the_owned_contact(reorder: bool) {
     if reorder {
         let target = app
             .input
-            .accessibility_target(&app.scene, app.layout.as_ref().unwrap(), &[0, 0])
+            .accessibility_target(app.frame.scene(), app.frame.layout().unwrap(), &[0, 0])
             .unwrap();
         let request = |id| ActionRequest {
             action: AccessibleAction::CustomAction,
@@ -2985,8 +3058,8 @@ fn touch_drag_claims_one_contact_and_dispatches_drop_or_cancel() {
         }
     }
     let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
-    app.layout = Some(Rc::new(layout(
-        &app.scene,
+    app.set_test_layout(Rc::new(layout(
+        app.frame.scene(),
         Size::new(200.0, 100.0),
         &mut Measure,
     )));
@@ -3052,9 +3125,9 @@ fn replacing_text_stops_an_active_touch_selection_scroll() {
 
     for dragging_handle in [false, true] {
         let mut app = Application::new(Notes("original notes"), LocalExecutor::new(|| {}));
-        let target = Target::from_node(vec![], &app.scene, true, None);
+        let target = Target::from_node(vec![], app.frame.scene(), true, None);
         app.input.focused = Some(target.clone());
-        app.input.sync_editor(&app.scene);
+        app.input.sync_editor(app.frame.scene());
         app.input.set_touch_selection_handles(true);
         let contact = PointerContact::Touch(DeviceId::dummy(), 1);
         let origin = Point::default();
@@ -3090,7 +3163,7 @@ fn replacing_text_stops_an_active_touch_selection_scroll() {
         assert!(app.input.text_selection_scroll_deadline().is_some());
 
         app.component.0 = "replacement notes";
-        app.scene = Rc::new(app.component.render());
+        app.set_test_scene(Rc::new(app.component.render()));
         app.refresh_deadline(now);
         assert_eq!(app.input.focused.as_ref(), Some(&target));
         assert!(app.input.text_selection_scroll_deadline().is_none());
@@ -3116,15 +3189,15 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
     }
     let mut app = Application::new(Editor("初始".into()), LocalExecutor::new(|| {}));
     app.focus_active = true;
-    app.input.focused = Some(Target::from_node(vec![], &app.scene, true, None));
-    app.input.sync_editor(&app.scene);
+    app.input.focused = Some(Target::from_node(vec![], app.frame.scene(), true, None));
+    app.input.sync_editor(app.frame.scene());
     app.input
         .editor
         .as_mut()
         .unwrap()
         .apply_multiline("初始", EditAction::SelectAll);
 
-    let context = xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap();
+    let context = xrack_layout::TextEditContext::capture(&app.input, app.frame.scene()).unwrap();
     assert_eq!(context.selection(), "初始");
     app.pending_clipboard = Some(PendingClipboard::new(1, ClipboardContext::Cut(context)));
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {
@@ -3136,7 +3209,7 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
     app.pending_clipboard = Some(PendingClipboard::new(
         5,
         ClipboardContext::Paste(
-            xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
+            xrack_layout::TextEditContext::capture(&app.input, app.frame.scene()).unwrap(),
         ),
     ));
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {
@@ -3148,7 +3221,7 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
     app.pending_clipboard = Some(PendingClipboard::new(
         2,
         ClipboardContext::Cut(
-            xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
+            xrack_layout::TextEditContext::capture(&app.input, app.frame.scene()).unwrap(),
         ),
     ));
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {
@@ -3156,11 +3229,11 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
         result: Ok(ClipboardValue::Written),
     }));
     assert_eq!(app.base_scene.text("text"), Some(""));
-    app.scene = app.base_scene.clone();
+    app.set_test_scene(app.base_scene.clone());
     app.pending_clipboard = Some(PendingClipboard::new(
         3,
         ClipboardContext::Paste(
-            xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
+            xrack_layout::TextEditContext::capture(&app.input, app.frame.scene()).unwrap(),
         ),
     ));
     app.accept_clipboard_reply(
@@ -3174,11 +3247,11 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
     app.finish_deferred_paste();
     assert_eq!(app.base_scene.text("text"), Some("一\n二"));
     assert!(app.pending_clipboard.is_none());
-    app.scene = app.base_scene.clone();
+    app.set_test_scene(app.base_scene.clone());
     app.pending_clipboard = Some(PendingClipboard::new(
         4,
         ClipboardContext::Paste(
-            xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
+            xrack_layout::TextEditContext::capture(&app.input, app.frame.scene()).unwrap(),
         ),
     ));
     app.accept_clipboard_reply(
@@ -3189,7 +3262,7 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
         false,
     );
     app.component.0 = "后台更新".into();
-    app.scene = app.component.render_shared();
+    app.set_test_scene(app.component.render_shared());
     app.finish_deferred_paste();
     assert_eq!(app.component.0, "后台更新");
     assert!(app.pending_clipboard.is_none());
@@ -3197,7 +3270,7 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
     app.pending_clipboard = Some(PendingClipboard::new(
         6,
         ClipboardContext::Paste(
-            xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
+            xrack_layout::TextEditContext::capture(&app.input, app.frame.scene()).unwrap(),
         ),
     ));
     app.accept_clipboard_reply(
@@ -3373,14 +3446,14 @@ fn frame_cache_observes_visible_rows_and_ignores_offscreen_row_updates() {
             prepare_scene(&ui, base, viewport, &mut Measure, input.scroll_offsets())
         })
     };
-    let (before, initial_layout) = render();
+    let (before, initial_layout) = render().into_parts();
     assert_eq!(before.children.len(), 2);
     assert!(ui.model.set_row(3, "offscreen".into()));
-    let (unchanged, layout) = render();
+    let (unchanged, layout) = render().into_parts();
     assert!(Rc::ptr_eq(&before, &unchanged));
     assert!(Rc::ptr_eq(&initial_layout, &layout));
     assert!(ui.model.set_row(1, "visible".into()));
-    let (updated, layout) = render();
+    let (updated, layout) = render().into_parts();
     assert!(!Rc::ptr_eq(&initial_layout, &layout));
     assert_eq!(
         updated.at_path(&[1, 0]).unwrap().text("text"),
@@ -3415,9 +3488,9 @@ fn window_timer_schedule_tracks_the_active_component_layout() {
             .timers
             .push(slot.register(TimerConfig::new(80, true, false).unwrap(), |_| true));
         window.children.push(child);
-        app.scene = Rc::new(window);
-        app.layout = Some(Rc::new(layout(
-            &app.scene,
+        app.set_test_scene(Rc::new(window));
+        app.set_test_layout(Rc::new(layout(
+            app.frame.scene(),
             Size::new(300.0, 60.0),
             &mut Measure,
         )));
@@ -3457,6 +3530,7 @@ fn elastic_displacement_invalidates_prepared_geometry_without_offset_changes() {
                 let layout = layout_with_input(&scene, viewport, &mut Measure, input);
                 (scene, layout)
             })
+            .into_parts()
             .1
     };
     let before = prepare(&mut cache, &input);
@@ -3519,24 +3593,24 @@ fn reduced_motion_finishes_running_transitions_and_restores_future_animation() {
     let size = Size::new(240.0, 180.0);
     let initial = make_scene(0, 0.0);
     let mut app = Application::new(View(initial.clone()), LocalExecutor::new(|| {}));
-    app.layout = Some(Rc::new(layout(&initial, size, &mut Measure)));
+    app.set_test_layout(Rc::new(layout(&initial, size, &mut Measure)));
     let update = |app: &mut Application<View>, index, progress| {
         let scene = make_scene(index, progress);
         let next_layout = Rc::new(layout(&scene, size, &mut Measure));
         app.component.0 = scene.clone();
         assert!(app.sync_base_scene());
         app.update_page_transitions(&scene, &next_layout, Instant::now());
-        app.scene = scene;
-        app.layout = Some(next_layout);
+        app.set_test_scene(scene);
+        app.set_test_layout(next_layout);
     };
 
     update(&mut app, 1, 0.5);
     assert!(app.transition.running(app.transition_epoch.elapsed()));
     assert!(app.stack_transitions.is_active());
-    let layout = app.layout.as_ref().unwrap();
+    let layout = app.frame.layout().unwrap();
     let pages = layout.at_path(&[1]).unwrap().bounds;
     app.input.pointer_move(
-        &app.scene,
+        app.frame.scene(),
         layout,
         Point {
             x: pages.x + 4.0,
@@ -3646,6 +3720,7 @@ fn swipe_preview_invalidates_the_native_frame_cache_until_canceled() {
                 let layout = layout_with_input(&scene, viewport, &mut Measure, input);
                 (scene, layout)
             })
+            .into_parts()
             .1
     };
     let before = prepare(&input);
@@ -3698,6 +3773,7 @@ fn range_preview_updates_cached_thumb_geometry_and_cancellation_restores_it() {
                 let layout = layout_with_input(&scene, viewport, &mut Measure, input);
                 (scene, layout)
             })
+            .into_parts()
             .1
     };
     let before = prepare(&mut cache, &input);
@@ -3742,6 +3818,7 @@ fn switch_drag_updates_cached_thumb_geometry_until_canceled() {
                 let layout = layout_with_input(&scene, viewport, &mut Measure, input);
                 (scene, layout)
             })
+            .into_parts()
             .1
     };
     let mut input = Interaction::default();
@@ -3799,6 +3876,7 @@ fn horizontal_scroll_invalidates_cached_table_geometry() {
                 let layout = layout_with_input(&scene, viewport, &mut Measure, input);
                 (scene, layout)
             })
+            .into_parts()
             .1
     };
     let before = prepare(&input);
@@ -3986,9 +4064,9 @@ fn image_playback_wakes_the_window_only_at_visible_frame_boundaries() {
     let start = Instant::now();
     let at = |ms| start + Duration::from_millis(ms);
     let place = |app: &mut Application<View>| {
-        app.scene = app.component.render_shared();
-        app.layout = Some(Rc::new(layout(
-            &app.scene,
+        app.set_test_scene(app.component.render_shared());
+        app.set_test_layout(Rc::new(layout(
+            app.frame.scene(),
             Size::new(100.0, 80.0),
             &mut Measure,
         )));
@@ -3999,7 +4077,7 @@ fn image_playback_wakes_the_window_only_at_visible_frame_boundaries() {
     app.tick(at(40));
     assert_eq!(app.component.slot.current_frame(), 1);
     assert_eq!(app.refresh_deadline(at(40)), Some(at(100)));
-    assert!(app.scene.same_frame_inputs(&app.base_scene));
+    assert!(app.frame.scene().same_frame_inputs(&app.base_scene));
 
     app.component.x = 200.0;
     place(&mut app);
@@ -4037,8 +4115,8 @@ fn unconsumed_keys_continue_after_a_native_suggestion_region() {
     for (value, preedit, cursor, expected) in [("O", "O", 1, "O!"), ("旧🚰", "新词", 3, "新!词")]
     {
         let mut app = Application::new(Editor(value.into()), LocalExecutor::new(|| {}));
-        app.input.focused = Some(Target::from_node(Vec::new(), &app.scene, true, None));
-        app.input.sync_editor(&app.scene);
+        app.input.focused = Some(Target::from_node(Vec::new(), app.frame.scene(), true, None));
+        app.input.sync_editor(app.frame.scene());
         let editor = app.input.editor.as_mut().unwrap();
         editor.set_selection(
             value,
@@ -4053,8 +4131,8 @@ fn unconsumed_keys_continue_after_a_native_suggestion_region() {
         assert!(app.input.editor.as_ref().unwrap().preedit.is_empty());
         assert_eq!(app.component.0, preedit);
         // Publish the updated model without creating a native renderer in this test.
-        app.scene = app.component.render_shared();
-        app.base_scene = app.scene.clone();
+        app.set_test_scene(app.component.render_shared());
+        app.base_scene = app.frame.scene().clone();
         app.edit_text(EditAction::Insert("!"));
         assert_eq!(app.component.0, expected);
     }
@@ -4093,8 +4171,8 @@ fn selecting_committed_ime_text_preserves_real_composition_and_avoids_model_writ
             },
             LocalExecutor::new(|| {}),
         );
-        app.input.focused = Some(Target::from_node(Vec::new(), &app.scene, true, None));
-        app.input.sync_editor(&app.scene);
+        app.input.focused = Some(Target::from_node(Vec::new(), app.frame.scene(), true, None));
+        app.input.sync_editor(app.frame.scene());
         let editor = app.input.editor.as_mut().unwrap();
         editor.set_selection(
             value,

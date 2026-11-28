@@ -10,17 +10,15 @@ use objc2_app_kit::{
     NSWindow, NSWindowDelegate,
 };
 use objc2_foundation::{NSArray, NSURL};
-use std::{cell::RefCell, ffi::CStr, ptr::NonNull, rc::Rc, sync::Arc};
+use std::{cell::RefCell, ffi::CStr, ptr::NonNull, sync::Arc};
 use winit::window::{Window, WindowId};
-use xrack_layout::{FileDragInput, FileDropScope, LayoutNode, Point};
-use xrack_runtime::Node;
+use xrack_layout::{FileDragInput, FileDropScope, Point, PreparedFrame};
 
 type DragInfo = ProtocolObject<dyn NSDraggingInfo>;
 type WindowDelegate = ProtocolObject<dyn NSWindowDelegate>;
 
 struct Snapshot {
-    scene: Rc<Node>,
-    layout: Rc<LayoutNode>,
+    frame: PreparedFrame,
     scope: FileDropScope,
 }
 
@@ -135,9 +133,12 @@ impl FileDropDelegate {
     fn target(&self, point: Point, paths: &[String]) -> Option<xrack_layout::Target> {
         let snapshot = self.ivars().snapshot.borrow();
         let snapshot = snapshot.as_ref()?;
-        snapshot
-            .scope
-            .target(&snapshot.scene, &snapshot.layout, point, paths)
+        snapshot.scope.target(
+            snapshot.frame.scene(),
+            snapshot.frame.layout(),
+            point,
+            paths,
+        )
     }
 
     fn observe(&self, sender: &DragInfo) -> NSDragOperation {
@@ -257,10 +258,9 @@ impl FileDropBridge {
         Ok(Self { window, delegate })
     }
 
-    pub(crate) fn sync(&self, scene: Rc<Node>, layout: Rc<LayoutNode>, scope: FileDropScope) {
+    pub(crate) fn sync(&self, frame: &PreparedFrame, scope: FileDropScope) {
         self.delegate.ivars().snapshot.replace(Some(Snapshot {
-            scene,
-            layout,
+            frame: frame.clone(),
             scope,
         }));
     }

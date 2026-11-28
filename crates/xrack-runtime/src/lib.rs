@@ -2037,23 +2037,71 @@ pub struct NodeData {
     metadata: Rc<NodeMetadata>,
 }
 
-/// Optional control and view state shared by copy-on-write scene snapshots.
+/// Values captured by the scene, together with references to live runtime objects.
 #[doc(hidden)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NodeMetadata {
+    #[doc(hidden)]
+    pub fonts: Option<&'static EmbeddedFonts>,
+    #[doc(hidden)]
+    pub loaded_fonts: Option<LoadedFonts>,
+    #[doc(hidden)]
+    pub table_column_window: TableColumnWindow,
+    pub animations: BTreeMap<&'static str, Animation>,
+    #[doc(hidden)]
+    pub state_timings: Option<Box<BTreeMap<&'static str, StateTiming>>>,
+    #[doc(hidden)]
+    pub scroll_event_handler: bool,
+    #[doc(hidden)]
+    pub press_and_hold_handler: bool,
+    #[doc(hidden)]
+    pub key_handlers: u8,
+    pub list: Option<ListMetrics>,
+    #[doc(hidden)]
+    pub row_heights: Option<Arc<RowHeights>>,
+    #[doc(hidden)]
+    pub list_sections: Option<Arc<[ListSection]>>,
+    /// Selection snapshot for model-backed views. Retains the generated field name.
+    #[doc(hidden)]
+    pub standard_list_stamp: Option<(u64, u64)>,
+    pub table_header: Option<Box<TableHeader>>,
+    #[doc(hidden)]
+    pub table_column_order: TableColumnOrder,
+    pub table_selection: Option<Box<TableSelectionSnapshot>>,
+    table_selection_parts: Option<Rc<[Option<Node>; 2]>>,
+    #[doc(hidden)]
+    pub table_cell_editor: Option<TableCellEditor>,
+    pub tree: Option<Arc<TreeSnapshot>>,
+    pub stack: Option<Arc<StackSnapshot>>,
+    pub action: Option<ActionKey>,
+    #[doc(hidden)]
+    pub button_group: Option<ButtonGroupMembership>,
+    pub(crate) radio_option_blocks: Option<Rc<Vec<control_semantics::RadioOptionBlock>>>,
+    /// Selected TreeView business keys and model row identities, including folded descendants.
+    pub tree_selection: Option<Arc<BTreeMap<i64, RowKey>>>,
+    pub split_weights: Option<Arc<[Option<f32>]>>,
+    #[doc(hidden)]
+    pub split_fill_pane: Option<&'static str>,
+    #[doc(hidden)]
+    pub split_fill_index: Option<usize>,
+    #[doc(hidden)]
+    pub split_sizes: Option<Arc<[Option<f32>]>>,
+    runtime: NodeRuntime,
+}
+
+/// Component-owned state, event routing and registrations referenced by a node.
+///
+/// These objects can outlive a frame. Copying scene data copies these references.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodeRuntime {
     #[doc(hidden)]
     pub loader_mount: Option<LoaderMount>,
     #[doc(hidden)]
     pub loader_frame: Option<LoaderFrame>,
     #[doc(hidden)]
     pub external_component: Option<ExternalComponent>,
-    #[doc(hidden)]
-    pub fonts: Option<&'static EmbeddedFonts>,
-    #[doc(hidden)]
-    pub loaded_fonts: Option<LoadedFonts>,
     pub tumbler_items: Option<TumblerItems>,
-    #[doc(hidden)]
-    pub table_column_window: TableColumnWindow,
     #[doc(hidden)]
     pub timers: Vec<TimerRegistration>,
     #[doc(hidden)]
@@ -2064,9 +2112,6 @@ pub struct NodeMetadata {
     pub sound_effects: Vec<MediaRegistration>,
     #[doc(hidden)]
     pub native_dialogs: Vec<NativeDialogRegistration>,
-    pub animations: BTreeMap<&'static str, Animation>,
-    #[doc(hidden)]
-    pub state_timings: Option<Box<BTreeMap<&'static str, StateTiming>>>,
     #[doc(hidden)]
     pub focus_handle: Option<FocusHandle>,
     #[doc(hidden)]
@@ -2086,10 +2131,6 @@ pub struct NodeMetadata {
     #[doc(hidden)]
     pub pointer_handle: Option<PointerHandle>,
     #[doc(hidden)]
-    pub scroll_event_handler: bool,
-    #[doc(hidden)]
-    pub press_and_hold_handler: bool,
-    #[doc(hidden)]
     pub viewport_handle: Option<ViewportHandle>,
     #[doc(hidden)]
     pub scroll_target: Option<ViewportHandle>,
@@ -2100,51 +2141,35 @@ pub struct NodeMetadata {
     #[doc(hidden)]
     pub initial_focus: Option<FocusHandle>,
     #[doc(hidden)]
-    pub key_handlers: u8,
-    pub list: Option<ListMetrics>,
-    #[doc(hidden)]
     pub row_locator: Option<ListRowLocator>,
     #[doc(hidden)]
     pub list_row_renderer: Option<ListRowRenderer>,
-    #[doc(hidden)]
-    pub row_heights: Option<Arc<RowHeights>>,
-    #[doc(hidden)]
-    pub list_sections: Option<Arc<[ListSection]>>,
     #[doc(hidden)]
     pub list_section_renderer: Option<ListSectionRenderer>,
     #[doc(hidden)]
     pub combo_option_renderer: Option<ComboOptionRenderer>,
     #[doc(hidden)]
     pub list_text_search: Option<ListTextSearch>,
-    /// Selection snapshot for model-backed views. Retains the generated field name.
-    #[doc(hidden)]
-    pub standard_list_stamp: Option<(u64, u64)>,
-    pub table_header: Option<Box<TableHeader>>,
-    #[doc(hidden)]
-    pub table_column_order: TableColumnOrder,
-    pub table_selection: Option<Box<TableSelectionSnapshot>>,
     #[doc(hidden)]
     pub table_selection_drag: Option<TableSelectionDragHandle>,
-    table_selection_parts: Option<Rc<[Option<Node>; 2]>>,
-    #[doc(hidden)]
-    pub table_cell_editor: Option<TableCellEditor>,
-    pub tree: Option<Arc<TreeSnapshot>>,
-    pub stack: Option<Arc<StackSnapshot>>,
-    pub action: Option<ActionKey>,
-    #[doc(hidden)]
-    pub button_group: Option<ButtonGroupMembership>,
-    pub(crate) radio_option_blocks: Option<Rc<Vec<control_semantics::RadioOptionBlock>>>,
-    /// Selected TreeView business keys and model row identities, including folded descendants.
-    pub tree_selection: Option<Arc<BTreeMap<i64, RowKey>>>,
-    pub split_weights: Option<Arc<[Option<f32>]>>,
-    #[doc(hidden)]
-    pub split_fill_pane: Option<&'static str>,
-    #[doc(hidden)]
-    pub split_fill_index: Option<usize>,
-    #[doc(hidden)]
-    pub split_sizes: Option<Arc<[Option<f32>]>>,
     #[doc(hidden)]
     pub split_resize_handle: Option<SplitResizeHandle>,
+}
+
+// Keep field access for generated components while distinguishing the two kinds
+// of metadata in the scene representation.
+impl std::ops::Deref for NodeMetadata {
+    type Target = NodeRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.runtime
+    }
+}
+
+impl std::ops::DerefMut for NodeMetadata {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.runtime
+    }
 }
 
 thread_local! {
@@ -2629,7 +2654,11 @@ impl Node {
             .or_else(|| self.loaded_path.as_ref()?.geometry(commands))
     }
 
-    /// Mark a generated Rectangle's background as independent of layout and input.
+    /// Live objects referenced by the scene, including delegate renderers and host registrations.
+    #[doc(hidden)]
+    pub fn runtime(&self) -> &NodeRuntime {
+        &self.metadata.runtime
+    }
 
     fn data_mut(&mut self) -> &mut NodeData {
         let node = Rc::make_mut(&mut self.0);

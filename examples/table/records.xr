@@ -282,3 +282,28 @@ component ReserveCell inherits Text {
     in-out property <StockDetails> details;
     text <- root.details.note;
 }
+
+export component PreparedTableDemo inherits Window {
+    width: 420px; height: 260px;
+    in-out property <[StockRow]> records: [];
+    in property <color> panel-color: #182331;
+    in property <float> panel-angle: 0;
+    in property <length> note-width: 232px;
+
+    Rectangle {
+        width: 360px; height: 192px;
+        x: 26px; y: 20px;
+        background <- root.panel-color;
+        transform-rotation <- root.panel-angle;
+        stock := TableView {
+            row-height: 64px;
+            edit-on-key: true;
+            TableColumn { title: "Name"; width: 112px; }
+            TableColumn { title: "Notes"; width <- root.note-width; }
+            for row in root.records : TableRow {
+                TableCell { text <-> row.name; }
+                Label { text <- row.owner; wrap: word-wrap; }
+            }
+        }
+    }
+}

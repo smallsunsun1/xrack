@@ -2,14 +2,12 @@
 //!
 //! `UiDriver` routes input through XRack's layout and interaction state machine.
 //! Both generated Rust components and interpreter instances implement `Component`.
-use std::{
-    rc::Rc,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 pub use xrack_layout::{ActivationKey, EditAction, Point, Size, TableEditCommit, TextMeasurer};
 use xrack_layout::{
     ChoiceKey, EditSource, FrameCache, Interaction, LayoutNode, MenuKey, MenuPanel, MenuShortcut,
-    NavigationKey, ScrollBarUpdate, ViewportObservers, WindowEffects, prepare_scene_with_input,
+    NavigationKey, PreparedFrame, ScrollBarUpdate, ViewportObservers, WindowEffects,
+    prepare_scene_with_input,
 };
 pub use xrack_runtime::RowKey;
 use xrack_runtime::{
@@ -40,8 +38,7 @@ pub struct UiDriver<C, T = FixedText> {
     component: C,
     text: T,
     input: Interaction,
-    scene: Rc<Node>,
-    layout: Rc<LayoutNode>,
+    frame: PreparedFrame,
     frame_cache: FrameCache,
     viewport: Size,
     scroll_requests: ScrollRequests,
@@ -62,21 +59,20 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     pub fn new(component: C, mut text: T, viewport: Size) -> Self {
         let mut input = Interaction::default();
         let mut frame_cache = FrameCache::default();
-        let (scene, layout) =
-            frame_cache.prepare(component.render_shared(), viewport, &input, |scene| {
-                prepare_scene_with_input(&component, scene, viewport, &mut text, &input)
-            });
-        input.reconcile(&scene, &layout);
+        let frame = frame_cache.prepare(component.render_shared(), viewport, &input, |scene| {
+            prepare_scene_with_input(&component, scene, viewport, &mut text, &input)
+        });
+        let (scene, layout) = frame.parts();
+        input.reconcile(scene, layout);
         let mut viewport_observers = ViewportObservers::default();
-        viewport_observers.sync(&scene, &layout);
+        viewport_observers.sync(scene, layout);
         let now = Instant::now();
-        viewport_observers.sync_scroll_activity(&scene, &layout, &input, now);
+        viewport_observers.sync_scroll_activity(scene, layout, &input, now);
         let mut driver = Self {
             component,
             text,
             input,
-            scene,
-            layout,
+            frame,
             frame_cache,
             viewport,
             scroll_requests: ScrollRequests::default(),
@@ -95,15 +91,18 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
 
     fn dispatch_loader_events(&mut self) {
         let _focus = self.focus_requests.enter();
-        xrack_runtime::dispatch_loader_events(&mut self.component, &self.scene);
-        self.input
-            .apply_focus_requests(&self.scene, &self.layout, self.focus_requests.drain());
+        xrack_runtime::dispatch_loader_events(&mut self.component, self.frame.scene());
+        self.input.apply_focus_requests(
+            self.frame.scene(),
+            self.frame.layout(),
+            self.focus_requests.drain(),
+        );
     }
 
     fn prepare(&mut self) {
         self.frame_cache
             .update_typography(self.text.typography_revision());
-        (self.scene, self.layout) = self.frame_cache.prepare(
+        self.frame = self.frame_cache.prepare(
             self.component.render_shared(),
             self.viewport,
             &self.input,
@@ -117,12 +116,13 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
                 )
             },
         );
-        self.input.reconcile(&self.scene, &self.layout);
+        self.input
+            .reconcile(self.frame.scene(), self.frame.layout());
         self.sync_timers();
     }
 
     fn sync_timers(&mut self) {
-        let effects = WindowEffects::collect(&self.scene, &self.layout);
+        let effects = WindowEffects::collect(self.frame.scene(), self.frame.layout());
         self.timers.sync(self.now, effects.timers);
     }
 
@@ -151,32 +151,39 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         let _scroll = self.scroll_requests.enter();
         self.prepare();
         self.dispatch_loader_events();
-        let scrolled = self.input.take_scroll_events(&self.scene, &self.layout);
-        if self
+        let scrolled = self
             .input
-            .apply_scroll_requests(&self.scene, &self.layout, self.scroll_requests.drain())
-        {
+            .take_scroll_events(self.frame.scene(), self.frame.layout());
+        if self.input.apply_scroll_requests(
+            self.frame.scene(),
+            self.frame.layout(),
+            self.scroll_requests.drain(),
+        ) {
             self.prepare();
         }
-        self.viewport_observers.sync(&self.scene, &self.layout);
+        self.viewport_observers
+            .sync(self.frame.scene(), self.frame.layout());
         self.viewport_observers.sync_scroll_activity(
-            &self.scene,
-            &self.layout,
+            self.frame.scene(),
+            self.frame.layout(),
             &self.input,
             self.now,
         );
         for event in scrolled {
-            event.apply(&mut self.component, &self.scene);
+            event.apply(&mut self.component, self.frame.scene());
         }
         if self.component.scene_dirty() {
             self.prepare();
         }
-        self.input
-            .apply_focus_requests(&self.scene, &self.layout, self.focus_requests.drain());
+        self.input.apply_focus_requests(
+            self.frame.scene(),
+            self.frame.layout(),
+            self.focus_requests.drain(),
+        );
     }
 
     pub fn finish_loader_frame(&mut self) -> bool {
-        if !xrack_runtime::finish_loader_frame(&self.scene) {
+        if !xrack_runtime::finish_loader_frame(self.frame.scene()) {
             return false;
         }
         self.refresh();
@@ -203,8 +210,9 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     pub fn scroll_at(&mut self, point: Point, delta: Point) -> bool {
-        self.input.pointer_move(&self.scene, &self.layout, point);
-        let moved = self.input.scroll_wheel(&self.layout, delta, false);
+        self.input
+            .pointer_move(self.frame.scene(), self.frame.layout(), point);
+        let moved = self.input.scroll_wheel(self.frame.layout(), delta, false);
         if moved {
             self.refresh();
         }
@@ -212,7 +220,9 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     pub fn scroll_to_top(&mut self) -> bool {
-        let moved = self.input.scroll_to_top(&self.scene, &self.layout);
+        let moved = self
+            .input
+            .scroll_to_top(self.frame.scene(), self.frame.layout());
         if moved {
             self.refresh();
         }
@@ -221,9 +231,10 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
 
     pub fn scroll_bar(&self, id: &str) -> Option<xrack_layout::ScrollBarGeometry> {
         let path = self.path(id);
-        self.layout
+        self.frame
+            .layout()
             .at_path(&path)?
-            .scroll_control_geometry(self.scene.at_path(&path)?)
+            .scroll_control_geometry(self.frame.scene().at_path(&path)?)
     }
 
     pub fn drag_scroll_bar(&mut self, id: &str, fraction: f32, touch: bool) -> bool {
@@ -273,25 +284,27 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         let update = if touch {
             if self
                 .input
-                .touch_scroll_bar_press(&self.scene, &self.layout, start)
+                .touch_scroll_bar_press(self.frame.scene(), self.frame.layout(), start)
                 .is_none()
             {
                 return false;
             }
             self.input
-                .touch_scroll_bar_drag(&self.scene, &self.layout, end)
+                .touch_scroll_bar_drag(self.frame.scene(), self.frame.layout(), end)
         } else {
-            self.input.pointer_move(&self.scene, &self.layout, start);
+            self.input
+                .pointer_move(self.frame.scene(), self.frame.layout(), start);
             if self
                 .input
-                .scroll_bar_press(&self.scene, &self.layout)
+                .scroll_bar_press(self.frame.scene(), self.frame.layout())
                 .is_none()
             {
                 return false;
             }
-            self.input.pointer_move(&self.scene, &self.layout, end);
             self.input
-                .scroll_bar_drag(&self.scene, &self.layout)
+                .pointer_move(self.frame.scene(), self.frame.layout(), end);
+            self.input
+                .scroll_bar_drag(self.frame.scene(), self.frame.layout())
                 .unwrap_or(ScrollBarUpdate::Unchanged)
         };
         let moved = self.apply_scroll_bar(update);
@@ -305,9 +318,10 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         }
         let release = if touch {
             self.input
-                .release_touch_scroll_bar(&self.scene, &self.layout, end)
+                .release_touch_scroll_bar(self.frame.scene(), self.frame.layout(), end)
         } else {
-            self.input.release_scroll_bar(&self.scene, &self.layout)
+            self.input
+                .release_scroll_bar(self.frame.scene(), self.frame.layout())
         };
         moved | release.is_some_and(|update| self.apply_scroll_bar(update))
     }
@@ -315,7 +329,9 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     pub fn scroll_bar_key(&mut self, key: NavigationKey) -> Option<bool> {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
-        let update = self.input.scroll_bar_key(&self.scene, &self.layout, key)?;
+        let update = self
+            .input
+            .scroll_bar_key(self.frame.scene(), self.frame.layout(), key)?;
         Some(self.apply_scroll_bar(update))
     }
 
@@ -325,7 +341,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             ScrollBarUpdate::ViewportMoved => true,
             ScrollBarUpdate::Range(input) => {
                 self.component
-                    .adjust_range_at(&self.scene, &input.path, input.action)
+                    .adjust_range_at(self.frame.scene(), &input.path, input.action)
             }
         };
         if moved {
@@ -345,13 +361,15 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             y: start.y + delta.y,
         };
         let now = self.now;
-        self.input.pointer_press_in_scene(&self.scene, &self.layout);
-        self.input.arm_drag(&self.scene, &self.layout, start);
         self.input
-            .arm_mouse_viewport_pan(&self.scene, &self.layout, start, now);
+            .pointer_press_in_scene(self.frame.scene(), self.frame.layout());
+        self.input
+            .arm_drag(self.frame.scene(), self.frame.layout(), start);
+        self.input
+            .arm_mouse_viewport_pan(self.frame.scene(), self.frame.layout(), start, now);
         let moved = self.input.move_scroll_gesture(
-            &self.scene,
-            &self.layout,
+            self.frame.scene(),
+            self.frame.layout(),
             end,
             now + Duration::from_millis(20),
         );
@@ -361,17 +379,18 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         }
         if claimed {
             self.input.end_scroll_gesture(
-                &self.scene,
-                &self.layout,
+                self.frame.scene(),
+                self.frame.layout(),
                 end,
                 now + Duration::from_millis(160),
             );
         } else {
             self.input.cancel_scroll_gesture();
-            self.input.pointer_move(&self.scene, &self.layout, end);
+            self.input
+                .pointer_move(self.frame.scene(), self.frame.layout(), end);
             if let Some(target) = self.input.pointer_release_target() {
                 self.component
-                    .dispatch_at(&self.scene, &target.path, "clicked");
+                    .dispatch_at(self.frame.scene(), &target.path, "clicked");
             }
             self.refresh();
         }
@@ -379,7 +398,11 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     pub fn scene(&self) -> &Node {
-        &self.scene
+        self.frame.scene()
+    }
+    /// The scene and layout published for the current input state.
+    pub fn prepared_frame(&self) -> &PreparedFrame {
+        &self.frame
     }
     pub fn component(&self) -> &C {
         &self.component
@@ -390,7 +413,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
 
     /// Resolve a unique ID among the materialized scene nodes.
     pub fn find_path(&self, id: &str) -> Result<Vec<usize>, TargetError> {
-        find_path(&self.scene, Vec::new(), id.to_owned(), |node| {
+        find_path(self.frame.scene(), Vec::new(), id.to_owned(), |node| {
             node.element_id() == Some(id)
         })
     }
@@ -405,7 +428,8 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     ) -> Result<Vec<usize>, TargetError> {
         let view_path = self.find_path(view)?;
         let view_node = self
-            .scene
+            .frame
+            .scene()
             .at_path(&view_path)
             .ok_or_else(|| TargetError::Missing(view.into()))?;
         let row = find_path(
@@ -417,7 +441,8 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         match child {
             Some(id) => {
                 let node = self
-                    .scene
+                    .frame
+                    .scene()
                     .at_path(&row)
                     .ok_or_else(|| TargetError::Missing(id.into()))?;
                 find_path(
@@ -441,14 +466,16 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     ) -> Result<Vec<usize>, TargetError> {
         let mut path = self.find_row_path(view, key, None)?;
         if self
-            .scene
+            .frame
+            .scene()
             .at_path(&path)
             .is_some_and(|node| node.kind == "ListRow")
         {
             path.push(0);
         }
         if self
-            .scene
+            .frame
+            .scene()
             .at_path(&path)
             .is_some_and(|node| node.kind == "TableRow" && node.child_at(column).is_some())
         {
@@ -467,24 +494,26 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
 
     /// Prepared layout for the current frame, usable with the native renderer.
     pub fn layout(&self) -> &LayoutNode {
-        &self.layout
+        self.frame.layout()
     }
 
     #[track_caller]
     pub fn bounds(&self, id: &str) -> xrack_layout::Rect {
-        self.layout
+        self.frame
+            .layout()
             .at_path(&self.path(id))
             .unwrap_or_else(|| panic!("UI target {id:?} has no layout"))
             .bounds
     }
 
     pub fn layout_at(&self, path: &[usize]) -> Option<&LayoutNode> {
-        self.layout.at_path(path)
+        self.frame.layout().at_path(path)
     }
 
     #[track_caller]
     pub fn node(&self, id: &str) -> &Node {
-        self.scene
+        self.frame
+            .scene()
             .at_path(&self.path(id))
             .unwrap_or_else(|| panic!("UI target {id:?} left the scene"))
     }
@@ -505,17 +534,20 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     #[track_caller]
     fn move_to(&mut self, path: &[usize]) {
         let point = self.point_at(path);
-        self.input.pointer_move(&self.scene, &self.layout, point);
+        self.input
+            .pointer_move(self.frame.scene(), self.frame.layout(), point);
     }
 
     #[track_caller]
     fn point_at(&self, path: &[usize]) -> Point {
         let item = self
-            .layout
+            .frame
+            .layout()
             .at_path(path)
             .unwrap_or_else(|| panic!("UI target {path:?} has no layout"));
         let node = self
-            .scene
+            .frame
+            .scene()
             .at_path(path)
             .unwrap_or_else(|| panic!("UI target {path:?} has no scene node"));
         let bounds = if let Some(header) = item.tab_header {
@@ -546,26 +578,39 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
         self.move_to(path);
-        if self.input.menu_press(&self.scene, &self.layout) {
+        if self
+            .input
+            .menu_press(self.frame.scene(), self.frame.layout())
+        {
             self.release_menu();
             return;
         }
-        if let Some(close) = self.input.popup_outside_press(&self.scene, &self.layout) {
+        if let Some(close) = self
+            .input
+            .popup_outside_press(self.frame.scene(), self.frame.layout())
+        {
             assert!(
                 self.component
-                    .control_at(&self.scene, &close.path, close.action)
+                    .control_at(self.frame.scene(), &close.path, close.action)
             );
             self.refresh();
             self.move_to(path);
         }
-        if let Some(update) = self.input.scroll_bar_press(&self.scene, &self.layout) {
+        if let Some(update) = self
+            .input
+            .scroll_bar_press(self.frame.scene(), self.frame.layout())
+        {
             self.apply_scroll_bar(update);
-            if let Some(update) = self.input.release_scroll_bar(&self.scene, &self.layout) {
+            if let Some(update) = self
+                .input
+                .release_scroll_bar(self.frame.scene(), self.frame.layout())
+            {
                 self.apply_scroll_bar(update);
             }
             return;
         }
-        self.input.pointer_press_in_scene(&self.scene, &self.layout);
+        self.input
+            .pointer_press_in_scene(self.frame.scene(), self.frame.layout());
         let target = self
             .input
             .pointer_release_target()
@@ -575,62 +620,68 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     fn activate_target(&mut self, mut target: xrack_layout::Target) -> bool {
-        if let Some(selection) =
-            self.input
-                .list_item_delegate_selection(&self.scene, &self.layout, &target)
-        {
+        if let Some(selection) = self.input.list_item_delegate_selection(
+            self.frame.scene(),
+            self.frame.layout(),
+            &target,
+        ) {
             let Some(row) = target.row_key else {
                 return false;
             };
-            assert!(
-                self.component
-                    .control_at(&self.scene, &selection.path, selection.action)
-            );
+            assert!(self.component.control_at(
+                self.frame.scene(),
+                &selection.path,
+                selection.action
+            ));
             self.refresh();
-            let Some(resolved) =
-                self.input
-                    .resolve_item_delegate(&self.scene, &self.layout, &selection.path, row)
-            else {
+            let Some(resolved) = self.input.resolve_item_delegate(
+                self.frame.scene(),
+                self.frame.layout(),
+                &selection.path,
+                row,
+            ) else {
                 return false;
             };
             target = resolved;
         }
         if let Some(selection) = self.input.table_delegate_selection(
-            &self.scene,
-            &self.layout,
+            self.frame.scene(),
+            self.frame.layout(),
             &target,
             RowSelection::Replace,
         ) {
             self.component
-                .control_at(&self.scene, &selection.path, selection.action);
+                .control_at(self.frame.scene(), &selection.path, selection.action);
             self.refresh();
-            if self.scene.row_key_at(&target.path) != target.row_key {
+            if self.frame.scene().row_key_at(&target.path) != target.row_key {
                 return true;
             }
         }
         let action = self
             .input
-            .dialog_button(&self.scene, &self.layout, &target)
+            .dialog_button(self.frame.scene(), self.frame.layout(), &target)
             .or_else(|| {
                 self.input.select_group_option_with_selection(
-                    &self.scene,
-                    &self.layout,
+                    self.frame.scene(),
+                    self.frame.layout(),
                     &target,
                     RowSelection::Replace,
                 )
             });
         let changed = if let Some(action) = action {
             self.component
-                .control_at(&self.scene, &action.path, action.action)
+                .control_at(self.frame.scene(), &action.path, action.action)
         } else {
             self.input
-                .open_menu_bar(&self.scene, &self.layout, target.clone())
-                || self
-                    .input
-                    .open_choice_at_pointer(&self.scene, &self.layout, target.clone())
+                .open_menu_bar(self.frame.scene(), self.frame.layout(), target.clone())
+                || self.input.open_choice_at_pointer(
+                    self.frame.scene(),
+                    self.frame.layout(),
+                    target.clone(),
+                )
                 || self
                     .component
-                    .dispatch_at(&self.scene, &target.path, "clicked")
+                    .dispatch_at(self.frame.scene(), &target.path, "clicked")
         };
         self.refresh();
         changed
@@ -640,13 +691,13 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     pub fn activate(&mut self, key: ActivationKey) -> bool {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
-        self.input.key_press_with_scene(&self.scene, key);
-        let Some(target) = self.input.key_release_with_scene(&self.scene, key) else {
+        self.input.key_press_with_scene(self.frame.scene(), key);
+        let Some(target) = self.input.key_release_with_scene(self.frame.scene(), key) else {
             return false;
         };
         let target = self
             .input
-            .current_item_delegate(&self.scene, &self.layout, &target)
+            .current_item_delegate(self.frame.scene(), self.frame.layout(), &target)
             .unwrap_or(target);
         self.activate_target(target)
     }
@@ -656,7 +707,8 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     pub fn begin_table_edit(&mut self) -> bool {
-        self.input.begin_table_edit(&self.scene, &self.layout)
+        self.input
+            .begin_table_edit(self.frame.scene(), self.frame.layout())
     }
 
     /// Commit an active cell editor using normal validation and model writes.
@@ -665,7 +717,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         let _scroll = self.scroll_requests.enter();
         let result = self
             .input
-            .finish_table_edit(&mut self.component, &self.scene);
+            .finish_table_edit(&mut self.component, self.frame.scene());
         self.refresh();
         result
     }
@@ -673,11 +725,11 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     pub fn tab_with_direction(&mut self, backward: bool) {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
-        if let Some(origin) = self.input.tab_edit_origin(&self.scene) {
+        if let Some(origin) = self.input.tab_edit_origin(self.frame.scene()) {
             use xrack_layout::TableEditCommit;
             let result = self
                 .input
-                .finish_table_edit(&mut self.component, &self.scene);
+                .finish_table_edit(&mut self.component, self.frame.scene());
             if result == TableEditCommit::Kept {
                 return;
             }
@@ -687,28 +739,32 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
                 TableEditCommit::Changed | TableEditCommit::Unchanged
             ) && let Some(target) = self.input.next_table_edit_target(
                 &self.component,
-                &self.scene,
-                &self.layout,
+                self.frame.scene(),
+                self.frame.layout(),
                 &origin,
                 backward,
             ) {
                 if self.input.apply_scroll_requests(
-                    &self.scene,
-                    &self.layout,
+                    self.frame.scene(),
+                    self.frame.layout(),
                     [target.scroll_request()],
                 ) {
                     self.prepare();
                 }
-                if self
-                    .input
-                    .begin_table_edit_target(&self.scene, &self.layout, &target)
-                {
+                if self.input.begin_table_edit_target(
+                    self.frame.scene(),
+                    self.frame.layout(),
+                    &target,
+                ) {
                     self.refresh();
                     return;
                 }
             }
         }
-        if self.input.focus_next(&self.scene, &self.layout, backward) {
+        if self
+            .input
+            .focus_next(self.frame.scene(), self.frame.layout(), backward)
+        {
             self.refresh();
         }
     }
@@ -716,12 +772,15 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     pub fn group_key(&mut self, key: NavigationKey) -> bool {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
-        let Some(action) = self.input.group_key(&self.scene, &self.layout, key) else {
+        let Some(action) = self
+            .input
+            .group_key(self.frame.scene(), self.frame.layout(), key)
+        else {
             return false;
         };
         let changed = self
             .component
-            .control_at(&self.scene, &action.path, action.action);
+            .control_at(self.frame.scene(), &action.path, action.action);
         self.refresh();
         changed
     }
@@ -729,36 +788,43 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     pub fn back(&mut self) -> bool {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
-        let Some(action) = self.input.stack_back(&self.scene, &self.layout) else {
+        let Some(action) = self
+            .input
+            .stack_back(self.frame.scene(), self.frame.layout())
+        else {
             return false;
         };
         let moved = self
             .component
-            .control_at(&self.scene, &action.path, action.action);
+            .control_at(self.frame.scene(), &action.path, action.action);
         self.refresh();
         moved
     }
 
     pub fn menus(&self) -> Vec<MenuPanel<'_>> {
-        self.input.menu_panels(&self.scene, &self.layout)
+        self.input
+            .menu_panels(self.frame.scene(), self.frame.layout())
     }
 
     pub fn context_menu(&mut self, id: &str) -> bool {
         let path = self.path(id);
         self.move_to(&path);
         self.input
-            .open_context_menu(&self.scene, &self.layout, false)
+            .open_context_menu(self.frame.scene(), self.frame.layout(), false)
     }
 
     pub fn keyboard_context_menu(&mut self) -> bool {
         self.input
-            .open_context_menu(&self.scene, &self.layout, true)
+            .open_context_menu(self.frame.scene(), self.frame.layout(), true)
     }
 
     pub fn menu_key(&mut self, key: MenuKey) {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
-        if let Some(action) = self.input.menu_key(&self.scene, &self.layout, key) {
+        if let Some(action) = self
+            .input
+            .menu_key(self.frame.scene(), self.frame.layout(), key)
+        {
             self.apply_menu_action(action);
         }
         self.refresh();
@@ -767,10 +833,14 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     pub fn menu_shortcut(&mut self, key: MenuShortcut) -> bool {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
-        let Some(action) = self.input.menu_shortcut(&self.scene, &self.layout, key) else {
+        let Some(action) = self
+            .input
+            .menu_shortcut(self.frame.scene(), self.frame.layout(), key)
+        else {
             return false;
         };
-        self.input.close_menu(&self.scene, &self.layout);
+        self.input
+            .close_menu(self.frame.scene(), self.frame.layout());
         self.apply_menu_action(action);
         self.refresh();
         true
@@ -793,21 +863,24 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             panel.row_bounds(slot)
         };
         self.input.pointer_move(
-            &self.scene,
-            &self.layout,
+            self.frame.scene(),
+            self.frame.layout(),
             Point {
                 x: rect.x + rect.width * 0.5,
                 y: rect.y + rect.height * 0.5,
             },
         );
-        assert!(self.input.menu_press(&self.scene, &self.layout));
+        assert!(
+            self.input
+                .menu_press(self.frame.scene(), self.frame.layout())
+        );
         self.release_menu()
     }
 
     fn release_menu(&mut self) -> bool {
         let activated = self
             .input
-            .menu_release(&self.scene, &self.layout)
+            .menu_release(self.frame.scene(), self.frame.layout())
             .is_some_and(|action| {
                 self.apply_menu_action(action);
                 true
@@ -819,16 +892,19 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     fn apply_menu_action(&mut self, input: xrack_layout::ControlInput) {
         match input.action {
             ControlAction::TextCommand(command @ TextCommand::SelectAll) => {
-                self.input.apply_text_selection(&self.scene, command);
+                self.input.apply_text_selection(self.frame.scene(), command);
             }
             ControlAction::TextCommand(command @ (TextCommand::Undo | TextCommand::Redo)) => {
                 assert!(self.input.replay_text_edit(
                     &mut self.component,
-                    &self.scene,
+                    self.frame.scene(),
                     command == TextCommand::Redo
                 ));
             }
-            action => assert!(self.component.control_at(&self.scene, &input.path, action)),
+            action => assert!(
+                self.component
+                    .control_at(self.frame.scene(), &input.path, action)
+            ),
         }
     }
 
@@ -836,10 +912,13 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
         assert!(self.input.choice_open(), "choice popup is closed");
-        if let Some(action) = self.input.choice_key(&self.scene, &self.layout, key) {
+        if let Some(action) = self
+            .input
+            .choice_key(self.frame.scene(), self.frame.layout(), key)
+        {
             assert!(
                 self.component
-                    .control_at(&self.scene, &action.path, action.action)
+                    .control_at(self.frame.scene(), &action.path, action.action)
             );
         }
         self.refresh();
@@ -851,11 +930,11 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         let _scroll = self.scroll_requests.enter();
         let action = self
             .input
-            .dialog_escape(&self.scene, &self.layout)
+            .dialog_escape(self.frame.scene(), self.frame.layout())
             .unwrap_or_else(|| panic!("there is no dismissible dialog"));
         assert!(
             self.component
-                .control_at(&self.scene, &action.path, action.action)
+                .control_at(self.frame.scene(), &action.path, action.action)
         );
         self.refresh();
     }
@@ -876,7 +955,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         let _scroll = self.scroll_requests.enter();
         let changed = self.input.edit_text(
             &mut self.component,
-            &self.scene,
+            self.frame.scene(),
             action,
             EditSource::Atomic,
             self.now,

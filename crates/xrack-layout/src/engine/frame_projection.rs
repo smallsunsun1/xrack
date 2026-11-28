@@ -158,9 +158,11 @@ mod tests {
         group.children[0]
             .properties
             .insert("text", "A new status".to_owned().into());
-        let (prepared, reused) = cache.prepare(scene.clone(), size, &input, |_| {
-            panic!("a transform and fixed caption change should only project the layout")
-        });
+        let (prepared, reused) = cache
+            .prepare(scene.clone(), size, &input, |_| {
+                panic!("a transform and fixed caption change should only project the layout")
+            })
+            .into_parts();
         assert_eq!(
             prepared.children[0].children[0].text("text"),
             Some("A new status")
@@ -203,9 +205,11 @@ mod tests {
             let group = &mut Rc::make_mut(&mut scene).children[0];
             group.properties.insert("transform-rotation", angle.into());
             group.properties.insert("transform-scale", scale.into());
-            let (_, cached) = cache.prepare(scene.clone(), size, &input, |_| {
-                panic!("transform-only changes should reuse measured bounds")
-            });
+            let (_, cached) = cache
+                .prepare(scene.clone(), size, &input, |_| {
+                    panic!("transform-only changes should reuse measured bounds")
+                })
+                .into_parts();
             let fresh = layout_with_input(&scene, size, &mut Metrics, &input);
             assert_eq!(*cached, fresh);
         }
@@ -214,10 +218,12 @@ mod tests {
                 .properties
                 .insert("transform-scale", scale.into());
             let mut measured = false;
-            let (_, actual) = cache.prepare(scene.clone(), size, &input, |scene| {
-                measured = true;
-                prepare(scene)
-            });
+            let (_, actual) = cache
+                .prepare(scene.clone(), size, &input, |scene| {
+                    measured = true;
+                    prepare(scene)
+                })
+                .into_parts();
             assert!(measured);
             assert_eq!(
                 *actual,

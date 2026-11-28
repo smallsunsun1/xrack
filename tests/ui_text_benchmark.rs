@@ -255,10 +255,11 @@ fn benchmark_document(
         if let Some(y) = y {
             properties.insert("y", Length(y.into()).into());
         }
-        let (render_scene, layout) =
-            cache.prepare_reusing(scene.clone(), viewport, &input, |source, previous| {
+        let (render_scene, layout) = cache
+            .prepare_reusing(scene.clone(), viewport, &input, |source, previous| {
                 renderer.prepare_scene_recycling(&Document, source, viewport, &input, previous)
-            });
+            })
+            .into_parts();
         let prepared = Instant::now();
         renderer.draw_with_layout(&render_scene, &layout, &target, SCALE as f32, &input)?;
         let submitted = Instant::now();

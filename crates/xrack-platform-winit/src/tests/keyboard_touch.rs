@@ -39,8 +39,8 @@ impl TextMeasurer for Measure {
 fn key_releases_do_not_cancel_an_in_progress_touch() {
     for logical_key in [Key::Named(NamedKey::Control), Key::Character("v".into())] {
         let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
-        app.layout = Some(Rc::new(layout_with_input(
-            &app.scene,
+        app.set_test_layout(Rc::new(layout_with_input(
+            app.frame.scene(),
             Size::new(180.0, 120.0),
             &mut Measure,
             &app.input,

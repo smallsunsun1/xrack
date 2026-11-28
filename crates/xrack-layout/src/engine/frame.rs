@@ -22,6 +22,65 @@ struct FrameInput {
     keyboard_avoidance: Option<(Vec<usize>, f32)>,
 }
 
+/// Work performed by the layout cache to prepare a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FramePreparation {
+    Reused,
+    Reprojected,
+    LaidOut,
+}
+
+/// The final scene and geometry for one frame.
+///
+/// This pairs scene nodes with their matching layout. Live handles inside
+/// the scene still refer to their runtime state.
+#[derive(Clone)]
+pub struct PreparedFrame {
+    scene: Rc<Node>,
+    layout: Rc<LayoutNode>,
+    viewport: Size,
+    generation: u64,
+    preparation: FramePreparation,
+    uses_base_scene: bool,
+}
+
+impl PreparedFrame {
+    pub fn scene(&self) -> &Rc<Node> {
+        &self.scene
+    }
+
+    pub fn layout(&self) -> &Rc<LayoutNode> {
+        &self.layout
+    }
+
+    pub fn parts(&self) -> (&Rc<Node>, &Rc<LayoutNode>) {
+        (&self.scene, &self.layout)
+    }
+
+    pub fn into_parts(self) -> (Rc<Node>, Rc<LayoutNode>) {
+        (self.scene, self.layout)
+    }
+
+    /// Logical viewport used to prepare this frame.
+    pub fn viewport(&self) -> Size {
+        self.viewport
+    }
+
+    /// Changes when the scene or its layout changes.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn preparation(&self) -> FramePreparation {
+        self.preparation
+    }
+
+    /// Whether preparation used the base tree without creating a derived scene.
+    pub fn uses_base_scene(&self) -> bool {
+        self.uses_base_scene
+    }
+}
+
 /// Reuses layout until the base scene, geometry, or an observed row changes.
 #[derive(Default)]
 #[doc(hidden)]
@@ -31,16 +90,12 @@ pub struct FrameCache {
     prepared: Property<(Option<Rc<Node>>, Rc<LayoutNode>)>,
     uses_base_scene: bool,
     typography: Option<Weak<()>>,
-    revision: u64,
+    generation: u64,
     layout: Weak<LayoutNode>,
     recyclable: Option<Rc<LayoutNode>>,
 }
 
 impl FrameCache {
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
     pub fn update_typography(&mut self, revision: Option<Rc<()>>) {
         let revision = revision.as_ref().map(Rc::downgrade);
         let same = match (&self.typography, &revision) {
@@ -79,7 +134,7 @@ impl FrameCache {
         viewport: Size,
         input: &Interaction,
         resolve: impl FnOnce(Rc<Node>) -> (Rc<Node>, LayoutNode),
-    ) -> (Rc<Node>, Rc<LayoutNode>) {
+    ) -> PreparedFrame {
         self.prepare_impl(scene, viewport, input, false, |scene, _| resolve(scene))
     }
 
@@ -90,7 +145,7 @@ impl FrameCache {
         viewport: Size,
         input: &Interaction,
         resolve: impl FnOnce(Rc<Node>, Option<LayoutNode>) -> (Rc<Node>, LayoutNode),
-    ) -> (Rc<Node>, Rc<LayoutNode>) {
+    ) -> PreparedFrame {
         self.prepare_impl(scene, viewport, input, true, resolve)
     }
 
@@ -101,7 +156,7 @@ impl FrameCache {
         input: &Interaction,
         recycle: bool,
         resolve: impl FnOnce(Rc<Node>, Option<LayoutNode>) -> (Rc<Node>, LayoutNode),
-    ) -> (Rc<Node>, Rc<LayoutNode>) {
+    ) -> PreparedFrame {
         let changed_scene = self
             .input
             .as_ref()
@@ -215,12 +270,28 @@ impl FrameCache {
             ((!self.uses_base_scene).then_some(prepared), Rc::new(layout))
         });
         self.layout = Rc::downgrade(&layout);
-        xrack_runtime::update_profile::layout(reused || projected);
+        let preparation = if reused {
+            xrack_runtime::update_profile::layout(true);
+            FramePreparation::Reused
+        } else if projected {
+            xrack_runtime::update_profile::layout_reprojected();
+            FramePreparation::Reprojected
+        } else {
+            xrack_runtime::update_profile::layout(false);
+            FramePreparation::LaidOut
+        };
         if changed_scene || !reused {
             static NEXT_FRAME: AtomicU64 = AtomicU64::new(1);
-            self.revision = NEXT_FRAME.fetch_add(1, Ordering::Relaxed);
+            self.generation = NEXT_FRAME.fetch_add(1, Ordering::Relaxed);
         }
-        (prepared.unwrap_or(scene), layout)
+        PreparedFrame {
+            scene: prepared.unwrap_or(scene),
+            layout,
+            viewport,
+            generation: self.generation,
+            preparation,
+            uses_base_scene: self.uses_base_scene,
+        }
     }
 }
 
@@ -239,6 +310,87 @@ mod tests {
     }
 
     #[test]
+    fn prepared_frames_distinguish_reuse_projection_and_layout() {
+        use xrack_runtime::{Color, update_profile};
+
+        let mut window = Node::new("Window", None);
+        let mut child = Node::new("Rectangle", None);
+        child.mark_paint_only_background();
+        child.properties.insert("width", Length(40.0).into());
+        child.properties.insert("height", Length(32.0).into());
+        window.children.push(child);
+        let mut base = Rc::new(window);
+        let mut cache = FrameCache::default();
+        let size = Size::new(120.0, 90.0);
+        let input = Interaction::default();
+        let resolve = |base: Rc<Node>| {
+            let geometry = layout_with_input(&base, size, &mut Metrics, &input);
+            (base, geometry)
+        };
+        let first = cache.prepare(base.clone(), size, &input, resolve);
+        assert_eq!(first.preparation(), FramePreparation::LaidOut);
+
+        Rc::make_mut(&mut base).children[0]
+            .properties
+            .insert("background", Color(0x123456ff).into());
+        let mut paint_generation = first.generation();
+        let profile = update_profile::measure(|| {
+            let next = cache.prepare(base.clone(), size, &input, |_| panic!("paint only"));
+            paint_generation = next.generation();
+            assert_eq!(next.preparation(), FramePreparation::Reused);
+            assert!(Rc::ptr_eq(next.parts().1, first.parts().1));
+            assert!(next.generation() > first.generation());
+        })
+        .unwrap();
+        assert_eq!(
+            (
+                profile.layout_direct_reuses,
+                profile.layout_reprojections,
+                profile.layout_runs
+            ),
+            (1, 0, 0)
+        );
+
+        Rc::make_mut(&mut base).children[0]
+            .properties
+            .insert("transform-rotation", 20.0.into());
+        let profile = update_profile::measure(|| {
+            let next = cache.prepare(base.clone(), size, &input, |_| panic!("transform only"));
+            assert_eq!(next.preparation(), FramePreparation::Reprojected);
+            assert_eq!(next.parts().1.as_ref(), &resolve(base.clone()).1);
+            assert!(next.generation() > paint_generation);
+        })
+        .unwrap();
+        assert_eq!(
+            (
+                profile.layout_direct_reuses,
+                profile.layout_reprojections,
+                profile.layout_runs
+            ),
+            (0, 1, 0)
+        );
+        assert_eq!(profile.layout_reuses, 1);
+
+        Rc::make_mut(&mut base).children[0]
+            .properties
+            .insert("width", Length(64.0).into());
+        let profile = update_profile::measure(|| {
+            let next = cache.prepare(base.clone(), size, &input, resolve);
+            assert_eq!(next.preparation(), FramePreparation::LaidOut);
+            assert_eq!(next.parts().1.as_ref(), &resolve(base.clone()).1);
+        })
+        .unwrap();
+        assert_eq!(
+            (
+                profile.layout_direct_reuses,
+                profile.layout_reprojections,
+                profile.layout_runs
+            ),
+            (0, 0, 1)
+        );
+    }
+
+    #[test]
     fn recycling_keeps_shared_snapshots_and_returns_an_exclusive_older_layout() {
         let mut child = Node::new("Rectangle", None);
         child.properties.insert("width", Length(16.0).into());
@@ -250,28 +402,33 @@ mod tests {
         let viewport = Size::new(128.0, 96.0);
         let input = Interaction::default();
 
-        let (_, held) =
-            cache.prepare_reusing(scene.clone(), viewport, &input, |scene, previous| {
+        let (_, held) = cache
+            .prepare_reusing(scene.clone(), viewport, &input, |scene, previous| {
                 assert!(previous.is_none());
                 let fresh = layout_with_input(&scene, viewport, &mut Metrics, &input);
                 (scene, fresh)
-            });
+            })
+            .into_parts();
         let saved = held.as_ref().clone();
 
         for step in 1..=4 {
+            let width = 16 + step;
             Rc::make_mut(&mut scene).children[0]
                 .properties
-                .insert("x", Length(f64::from(step)).into());
-            let (_, current) =
-                cache.prepare_reusing(scene.clone(), viewport, &input, |scene, previous| {
+                .insert("width", Length(f64::from(width)).into());
+            let (_, current) = cache
+                .prepare_reusing(scene.clone(), viewport, &input, |scene, previous| {
                     assert_eq!(
-                        previous.as_ref().map(|layout| layout.children[0].bounds.x),
-                        (step >= 3).then_some((step - 2) as f32),
+                        previous
+                            .as_ref()
+                            .map(|layout| layout.children[0].bounds.width),
+                        (step >= 3).then_some((width - 2) as f32),
                     );
                     let fresh = layout_with_input(&scene, viewport, &mut Metrics, &input);
                     (scene, fresh)
-                });
-            assert_eq!(current.children[0].bounds.x, step as f32);
+                })
+                .into_parts();
+            assert_eq!(current.children[0].bounds.width, width as f32);
         }
         assert_eq!(*held, saved);
     }

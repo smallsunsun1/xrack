@@ -182,10 +182,11 @@ fn transcript_layout_benchmark() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             let updated = Instant::now();
-            let (prepared, layout) =
-                frames.prepare_reusing(scene.clone(), size, &input, |base, previous| {
+            let (prepared, layout) = frames
+                .prepare_reusing(scene.clone(), size, &input, |base, previous| {
                     renderer.prepare_scene_recycling(&Bench, base, size, &input, previous)
-                });
+                })
+                .into_parts();
             let laid_out = Instant::now();
             let target = &targets[index % 2];
             renderer.draw_window_prepared(&prepared, &layout, target, 2.0, &input, &transitions)?;

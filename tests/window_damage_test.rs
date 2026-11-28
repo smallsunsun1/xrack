@@ -229,17 +229,19 @@ fn caption_changes_reuse_fixed_geometry_through_aot_and_interpreter() -> TestRes
         } else {
             aot.render_shared()
         };
-        let (before, layout) = frame.prepare(scene, viewport, &input, |scene| {
-            if interpreted {
-                harness
-                    .incremental
-                    .prepare_scene(&dynamic, scene, viewport, &input)
-            } else {
-                harness
-                    .incremental
-                    .prepare_scene(&aot, scene, viewport, &input)
-            }
-        });
+        let (before, layout) = frame
+            .prepare(scene, viewport, &input, |scene| {
+                if interpreted {
+                    harness
+                        .incremental
+                        .prepare_scene(&dynamic, scene, viewport, &input)
+                } else {
+                    harness
+                        .incremental
+                        .prepare_scene(&aot, scene, viewport, &input)
+                }
+            })
+            .into_parts();
         let (_, first) = harness.compare_prepared(&before, &layout, &input, true)?;
 
         let message = "Queue 41, pending";
@@ -251,9 +253,11 @@ fn caption_changes_reuse_fixed_geometry_through_aot_and_interpreter() -> TestRes
             aot.render_shared()
         };
         assert!(!before.children[0].same_frame_inputs(&scene.children[0]));
-        let (changed, reused) = frame.prepare(scene, viewport, &input, |_| {
-            panic!("text in a fixed child box should keep the layout")
-        });
+        let (changed, reused) = frame
+            .prepare(scene, viewport, &input, |_| {
+                panic!("text in a fixed child box should keep the layout")
+            })
+            .into_parts();
         assert!(Rc::ptr_eq(&layout, &reused));
         assert_eq!(changed.children[0].text("text"), Some(message));
         let (work, updated) = harness.compare_prepared(&changed, &reused, &input, true)?;
@@ -267,17 +271,19 @@ fn caption_changes_reuse_fixed_geometry_through_aot_and_interpreter() -> TestRes
             aot.set_caption_width(Length(68.0));
             aot.render_shared()
         };
-        let (_, resized) = frame.prepare(scene, viewport, &input, |scene| {
-            if interpreted {
-                harness
-                    .incremental
-                    .prepare_scene(&dynamic, scene, viewport, &input)
-            } else {
-                harness
-                    .incremental
-                    .prepare_scene(&aot, scene, viewport, &input)
-            }
-        });
+        let (_, resized) = frame
+            .prepare(scene, viewport, &input, |scene| {
+                if interpreted {
+                    harness
+                        .incremental
+                        .prepare_scene(&dynamic, scene, viewport, &input)
+                } else {
+                    harness
+                        .incremental
+                        .prepare_scene(&aot, scene, viewport, &input)
+                }
+            })
+            .into_parts();
         assert_eq!(resized.children[0].bounds.width, 68.0);
     }
     Ok(())

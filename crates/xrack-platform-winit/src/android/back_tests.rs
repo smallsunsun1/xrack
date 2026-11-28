@@ -42,10 +42,14 @@ impl TextMeasurer for Measure {
 }
 
 fn prepare(app: &mut Application<Dialogs>) {
-    app.scene = app.component.render_shared();
-    let frame = Rc::new(layout(&app.scene, Size::new(400.0, 700.0), &mut Measure));
-    app.input.reconcile(&app.scene, &frame);
-    app.layout = Some(frame);
+    app.set_test_scene(app.component.render_shared());
+    let frame = Rc::new(layout(
+        app.frame.scene(),
+        Size::new(400.0, 700.0),
+        &mut Measure,
+    ));
+    app.input.reconcile(app.frame.scene(), &frame);
+    app.set_test_layout(frame);
 }
 
 fn back(app: &mut Application<Dialogs>, state: ElementState, repeat: bool) {
@@ -87,12 +91,15 @@ fn back_closes_the_choice_then_one_dialog_per_physical_gesture() {
         LocalExecutor::new(|| {}),
     );
     prepare(&mut app);
-    let frame = app.layout.as_ref().unwrap();
+    let frame = app.frame.layout().unwrap();
     let target = app
         .input
-        .accessibility_target(&app.scene, frame, &[0, 0, 0])
+        .accessibility_target(app.frame.scene(), frame, &[0, 0, 0])
         .unwrap();
-    assert!(app.input.open_choice_at_pointer(&app.scene, frame, target));
+    assert!(
+        app.input
+            .open_choice_at_pointer(app.frame.scene(), frame, target)
+    );
     assert!(app.input.choice_open());
 
     back(&mut app, ElementState::Pressed, false);
@@ -141,8 +148,8 @@ fn a_nonmodal_popup_can_block_back_without_falling_through() {
         LocalExecutor::new(|| {}),
     );
     prepare(&mut app);
-    assert!(app.layout.as_ref().unwrap().dialog_paths().is_empty());
-    assert_eq!(app.layout.as_ref().unwrap().overlay_paths(), [vec![0]]);
+    assert!(app.frame.layout().unwrap().dialog_paths().is_empty());
+    assert_eq!(app.frame.layout().unwrap().overlay_paths(), [vec![0]]);
     back(&mut app, ElementState::Pressed, false);
     assert!(app.component.root.children[0].boolean("open", false));
     app.component.root.children[0]

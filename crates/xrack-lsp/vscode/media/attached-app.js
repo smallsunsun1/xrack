@@ -241,7 +241,12 @@
                 sample.propertyEvaluations + ' property evaluations',
                 sample.propertyCacheHits + ' property cache hits',
                 sample.layoutRuns + ' layouts',
-                sample.layoutReuses + ' layout reuses',
+                ...(sample.layoutDirectReuses == null
+                    ? [sample.layoutReuses + ' layout reuses']
+                    : [
+                        sample.layoutDirectReuses + ' direct layout reuses',
+                        sample.layoutReprojections + ' layout reprojections',
+                    ]),
                 sample.materializedRows + ' rows materialized',
                 (sample.cpuMicros / 1000).toFixed(2) + ' ms CPU',
             ];

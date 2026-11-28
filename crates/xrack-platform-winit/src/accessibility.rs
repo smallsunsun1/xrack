@@ -4942,9 +4942,10 @@ mod tests {
                 (scene, frame)
             })
         };
-        let (before, original) = prepare(make_scene("Ready"));
+        let before = prepare(make_scene("Ready"));
+        let (before, original) = before.parts();
         let first = projection
-            .update(&before, &original, &input, 1.0, None)
+            .update(before, original, &input, 1.0, None)
             .unwrap();
         let (id, _) = first
             .nodes
@@ -4952,11 +4953,10 @@ mod tests {
             .find(|(_, node)| node.value() == Some("Ready"))
             .unwrap();
 
-        let (after, reused) = prepare(make_scene("Downloading an update"));
-        assert!(Rc::ptr_eq(&original, &reused));
-        let update = projection
-            .update(&after, &reused, &input, 1.0, None)
-            .unwrap();
+        let after = prepare(make_scene("Downloading an update"));
+        let (after, reused) = after.parts();
+        assert!(Rc::ptr_eq(original, reused));
+        let update = projection.update(after, reused, &input, 1.0, None).unwrap();
         assert!(update.nodes.iter().any(|(updated, node)| {
             updated == id && node.value() == Some("Downloading an update")
         }));

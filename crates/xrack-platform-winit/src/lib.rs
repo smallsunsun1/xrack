@@ -85,10 +85,10 @@ use winit::{
 use xrack_layout::{
     ActivationKey, ButtonClick, ChoiceKey, ControlInput, DragUpdate, EditAction, EditSource,
     FocusObservers, HoverObservers, Interaction, LayoutNode, MenuKey, MenuShortcut, NavigationKey,
-    Point, PointerDelivery, PointerSequence, RangeInput, ScrollBarUpdate, ScrollGestureKind,
-    ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size, SplitResize, StackTransitions,
-    TableEditCommit, TableEditTarget, TablePasteDestination, Target, TextAreaMotion, TouchTooltip,
-    TumblerScroll, ViewportObservers, WheelAdjustment, WindowEffects,
+    Point, PointerDelivery, PointerSequence, PreparedFrame, RangeInput, ScrollBarUpdate,
+    ScrollGestureKind, ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size, SplitResize,
+    StackTransitions, TableEditCommit, TableEditTarget, TablePasteDestination, Target,
+    TextAreaMotion, TouchTooltip, TumblerScroll, ViewportObservers, WheelAdjustment, WindowEffects,
 };
 #[cfg(any(not(target_os = "android"), test))]
 use xrack_layout::{ComboGeometry, SpinGeometry};
@@ -809,13 +809,45 @@ impl PointerClick {
 type ViewportHandler<C> = Box<dyn FnMut(&mut C, Size)>;
 type SystemColorSchemeHandler<C> = Box<dyn FnMut(&mut C, ColorScheme)>;
 
+enum WindowFrame {
+    Unprepared(Rc<Node>),
+    Prepared(PreparedFrame),
+}
+
+impl WindowFrame {
+    fn scene(&self) -> &Rc<Node> {
+        match self {
+            Self::Unprepared(scene) => scene,
+            Self::Prepared(frame) => frame.scene(),
+        }
+    }
+
+    fn prepared(&self) -> Option<&PreparedFrame> {
+        match self {
+            Self::Unprepared(_) => None,
+            Self::Prepared(frame) => Some(frame),
+        }
+    }
+
+    fn layout(&self) -> Option<&Rc<LayoutNode>> {
+        self.prepared().map(PreparedFrame::layout)
+    }
+
+    fn replace(&mut self, frame: PreparedFrame) -> Rc<Node> {
+        match std::mem::replace(self, Self::Prepared(frame)) {
+            Self::Unprepared(scene) => scene,
+            Self::Prepared(frame) => frame.into_parts().0,
+        }
+    }
+}
+
 struct Application<C> {
     component: C,
     viewport_handler: Option<ViewportHandler<C>>,
     system_color_scheme_handler: Option<SystemColorSchemeHandler<C>>,
     system_color_scheme: Option<ColorScheme>,
     base_scene: Rc<Node>,
-    scene: Rc<Node>,
+    frame: WindowFrame,
     transition: SceneTransition,
     reduce_motion: bool,
     transition_epoch: Instant,
@@ -826,7 +858,6 @@ struct Application<C> {
     media: xrack_runtime::MediaQueue,
     native_dialogs: NativeDialogQueue,
     stack_transitions: StackTransitions,
-    layout: Option<Rc<LayoutNode>>,
     input: Interaction,
     scale_rotate: scale_rotate::Gestures,
     focus_requests: FocusRequests,
@@ -884,7 +915,7 @@ impl<C: Component> Application<C> {
             system_color_scheme_handler: None,
             system_color_scheme: None,
             base_scene: scene.clone(),
-            scene,
+            frame: WindowFrame::Unprepared(scene),
             transition: SceneTransition::default(),
             reduce_motion: false,
             transition_epoch: Instant::now(),
@@ -895,7 +926,6 @@ impl<C: Component> Application<C> {
             media: xrack_runtime::MediaQueue::default(),
             native_dialogs: NativeDialogQueue::default(),
             stack_transitions: StackTransitions::default(),
-            layout: None,
             input: Interaction::default(),
             scale_rotate: scale_rotate::Gestures::default(),
             focus_requests: FocusRequests::default(),
@@ -969,11 +999,14 @@ impl<C: Component> Application<C> {
                     .and_then(|state| state.ios_edit_menu.as_ref())
                     .and_then(|menu| menu.take(session));
                 if let Some(menu) = menu {
-                    if let (Some(layout), Some(item)) = (&self.layout, item)
+                    if let (Some(layout), Some(item)) = (self.frame.layout(), item)
                         && self.ios_application_active
-                        && let Some(action) =
-                            self.input
-                                .native_text_menu_input(menu, &self.scene, layout, item)
+                        && let Some(action) = self.input.native_text_menu_input(
+                            menu,
+                            self.frame.scene(),
+                            layout,
+                            item,
+                        )
                     {
                         self.apply_control(action);
                     } else {
@@ -1029,8 +1062,8 @@ impl<C: Component> Application<C> {
             #[cfg(target_os = "ios")]
             UserEvent::IosScrollToTop => {
                 if self.ios_application_active
-                    && let Some(layout) = &self.layout
-                    && self.input.scroll_to_top(&self.scene, layout)
+                    && let Some(layout) = self.frame.layout()
+                    && self.input.scroll_to_top(self.frame.scene(), layout)
                 {
                     self.relayout_with_caret(false);
                 }
@@ -1209,7 +1242,7 @@ impl<C: Component> Application<C> {
                     && self.state.as_ref().is_some_and(|state| {
                         state.window.id() == window && state.window.has_focus()
                     })
-                    && context.is_current(&self.input, &self.scene)
+                    && context.is_current(&self.input, self.frame.scene())
                 {
                     self.cancel_drag();
                     self.cancel_direct_scroll();
@@ -1249,9 +1282,10 @@ impl<C: Component> Application<C> {
     fn update_accessibility(&mut self) {
         #[cfg(target_os = "ios")]
         let escape = self.accessibility_escape();
-        let (Some(state), Some(layout)) = (&mut self.state, &self.layout) else {
+        let (Some(state), Some(frame)) = (&mut self.state, self.frame.prepared()) else {
             return;
         };
+        let (scene, layout) = frame.parts();
         let scale_factor = state.window.scale_factor();
         #[cfg(target_os = "ios")]
         if let Some(back) = &state.ios_edge_back {
@@ -1263,7 +1297,7 @@ impl<C: Component> Application<C> {
                             action: ControlAction::StackBack { .. },
                             ..
                         }
-                    ) || !layout.has_leading_edge_drawer(&self.scene))
+                    ) || !layout.has_leading_edge_drawer(scene))
             });
             back.prepare(layout.layout_direction, request);
         }
@@ -1271,7 +1305,7 @@ impl<C: Component> Application<C> {
         state.accessibility.prepare(scale_factor, escape);
         if state.accessibility_active
             && let Some(update) = state.projection.update(
-                &self.scene,
+                scene,
                 layout,
                 &self.input,
                 scale_factor,
@@ -1311,7 +1345,7 @@ impl<C: Component> Application<C> {
                 _ => return,
             };
             if self.input.focused.as_ref() == Some(&target)
-                && let Some(node) = target.node_in(&self.scene)
+                && let Some(node) = target.node_in(self.frame.scene())
                 && accessibility_text::accessible_text_value(node, &self.input, &target.path)
                     == request.value
                 && let Some(editor) = self.input.editor.as_mut()
@@ -1350,7 +1384,7 @@ impl<C: Component> Application<C> {
 
     #[cfg(target_os = "android")]
     fn android_editor_selection(&self, target: &Target, value: &str) -> Option<[usize; 2]> {
-        let node = target.node_in(&self.scene)?;
+        let node = target.node_in(self.frame.scene())?;
         if accessibility_text::accessible_text_value(node, &self.input, &target.path) != value {
             return None;
         }
@@ -1398,10 +1432,12 @@ impl<C: Component> Application<C> {
                 {
                     let viewport = state.projection.refresh_owner(request.target_node).cloned();
                     if let Some(viewport) = viewport
-                        && let Some(layout) = &self.layout
-                        && self
-                            .input
-                            .request_viewport_refresh(&self.scene, layout, &viewport)
+                        && let Some(layout) = self.frame.layout()
+                        && self.input.request_viewport_refresh(
+                            self.frame.scene(),
+                            layout,
+                            &viewport,
+                        )
                     {
                         self.refresh_editor(false);
                         self.refresh_after_update_with_caret(false, false);
@@ -1420,7 +1456,7 @@ impl<C: Component> Application<C> {
     }
 
     fn accessibility_action(&mut self, route: Route, request: ActionRequest) {
-        let Some(layout) = &self.layout else {
+        let Some(layout) = self.frame.layout() else {
             return;
         };
         let target = match &route {
@@ -1432,11 +1468,14 @@ impl<C: Component> Application<C> {
             | Route::TableRowHeader(target) => target,
             Route::TabClose(target) => {
                 if request.action == AccessibleAction::Click
-                    && let Some(action) = self.input.tab_close_action(&self.scene, layout, target)
+                    && let Some(action) =
+                        self.input
+                            .tab_close_action(self.frame.scene(), layout, target)
                 {
                     if cfg!(target_os = "ios")
                         && self
-                            .scene
+                            .frame
+                            .scene()
                             .at_path(&action.path)
                             .and_then(xrack_runtime::group_index)
                             == target.path.last().copied()
@@ -1445,9 +1484,11 @@ impl<C: Component> Application<C> {
                             .focused
                             .as_ref()
                             .is_none_or(|focus| !focus.path.starts_with(&target.path))
-                        && let Some(header) =
-                            self.input
-                                .accessibility_target(&self.scene, layout, &target.path)
+                        && let Some(header) = self.input.accessibility_target(
+                            self.frame.scene(),
+                            layout,
+                            &target.path,
+                        )
                     {
                         self.input.accessibility_focus(header);
                     }
@@ -1456,17 +1497,21 @@ impl<C: Component> Application<C> {
                 return;
             }
             Route::TextLink(target) => {
-                let Some(action) = self.input.text_link_activation(&self.scene, layout, target)
+                let Some(action) =
+                    self.input
+                        .text_link_activation(self.frame.scene(), layout, target)
                 else {
                     return;
                 };
                 match request.action {
                     AccessibleAction::Focus => {
-                        self.input.focus_target(&self.scene, layout, target.clone());
+                        self.input
+                            .focus_target(self.frame.scene(), layout, target.clone());
                         self.update_editor();
                     }
                     AccessibleAction::Click => {
-                        self.input.focus_target(&self.scene, layout, target.clone());
+                        self.input
+                            .focus_target(self.frame.scene(), layout, target.clone());
                         self.apply_control(action);
                     }
                     _ => {}
@@ -1481,7 +1526,7 @@ impl<C: Component> Application<C> {
                     _ => return,
                 };
                 if let Some(action) = self.input.accessibility_menu_entry(
-                    &self.scene,
+                    self.frame.scene(),
                     layout,
                     trigger,
                     entry,
@@ -1500,7 +1545,7 @@ impl<C: Component> Application<C> {
             } => {
                 if request.action == AccessibleAction::Collapse {
                     self.input.accessibility_close_menu(
-                        &self.scene,
+                        self.frame.scene(),
                         layout,
                         trigger,
                         path,
@@ -1514,7 +1559,7 @@ impl<C: Component> Application<C> {
                     request.action,
                     AccessibleAction::ScrollUp | AccessibleAction::ScrollDown
                 ) && self.input.accessibility_menu_page(
-                    &self.scene,
+                    self.frame.scene(),
                     layout,
                     trigger,
                     path,
@@ -1522,10 +1567,10 @@ impl<C: Component> Application<C> {
                     request.action == AccessibleAction::ScrollUp,
                 ) {
                     self.update_editor();
-                    if let Some(layout) = &self.layout
+                    if let Some(layout) = self.frame.layout()
                         && let Some(panel) = self
                             .input
-                            .menu_panels(&self.scene, layout)
+                            .menu_panels(self.frame.scene(), layout)
                             .into_iter()
                             .find(|panel| panel.session() == *session && panel.path() == path)
                     {
@@ -1543,13 +1588,13 @@ impl<C: Component> Application<C> {
         };
         if self
             .input
-            .accessibility_target(&self.scene, layout, &target.path)
+            .accessibility_target(self.frame.scene(), layout, &target.path)
             .as_ref()
             != Some(target)
         {
             return;
         }
-        let Some(node) = self.scene.at_path(&target.path) else {
+        let Some(node) = self.frame.scene().at_path(&target.path) else {
             return;
         };
         if self.input.menu_open() && node.kind != "Menu" {
@@ -1568,7 +1613,7 @@ impl<C: Component> Application<C> {
                 };
                 let value = match (request.action, request.data) {
                     (AccessibleAction::Focus, _) => {
-                        self.input.focus_target(&self.scene, layout, target);
+                        self.input.focus_target(self.frame.scene(), layout, target);
                         self.update_editor();
                         return;
                     }
@@ -1588,7 +1633,7 @@ impl<C: Component> Application<C> {
                 };
                 if let Some(resize) = value.and_then(|value| {
                     self.input
-                        .split_set_value(&self.scene, layout, &target, value)
+                        .split_set_value(self.frame.scene(), layout, &target, value)
                 }) {
                     self.apply_split_resize(resize);
                 }
@@ -1596,7 +1641,7 @@ impl<C: Component> Application<C> {
             Route::TableRowHeader(target) => {
                 let action = match (request.action, request.data) {
                     (AccessibleAction::Click, _) => self.input.table_row_header_selection(
-                        &self.scene,
+                        self.frame.scene(),
                         layout,
                         &target,
                         RowSelection::Replace,
@@ -1607,7 +1652,7 @@ impl<C: Component> Application<C> {
                             .find(|action| action.0 == id)
                         {
                             if let Some(action) = self.input.table_row_header_resize(
-                                &self.scene,
+                                self.frame.scene(),
                                 layout,
                                 &target,
                                 *increase,
@@ -1621,7 +1666,7 @@ impl<C: Component> Application<C> {
                             .find(|action| action.0 == id)
                             .and_then(|(_, direction, _)| {
                                 self.input.table_row_header_move(
-                                    &self.scene,
+                                    self.frame.scene(),
                                     layout,
                                     &target,
                                     *direction,
@@ -1633,7 +1678,7 @@ impl<C: Component> Application<C> {
                 if let Some(action) = action
                     && let Some(table) =
                         self.input
-                            .accessibility_target(&self.scene, layout, &action.path)
+                            .accessibility_target(self.frame.scene(), layout, &action.path)
                 {
                     self.input.accessibility_focus(table);
                     self.apply_control(action);
@@ -1666,7 +1711,7 @@ impl<C: Component> Application<C> {
                         .find(|action| action.0 == id)
                         .and_then(|(_, direction, _)| {
                             self.input.table_column_header_move(
-                                &self.scene,
+                                self.frame.scene(),
                                 layout,
                                 &target,
                                 column,
@@ -1678,7 +1723,7 @@ impl<C: Component> Application<C> {
                                 .iter()
                                 .find(|action| action.0 == id)?;
                             self.input.table_column_header_resize(
-                                &self.scene,
+                                self.frame.scene(),
                                 layout,
                                 &target,
                                 column,
@@ -1751,7 +1796,7 @@ impl<C: Component> Application<C> {
                 record,
             } => {
                 if self.input.choice_is_open_for(&target.path)
-                    && let Some(menu) = self.input.choice_menu(&self.scene, layout)
+                    && let Some(menu) = self.input.choice_menu(self.frame.scene(), layout)
                     && menu.session() == session
                     && let Some(offset) = index.checked_sub(menu.first)
                     && menu.rows.get(offset) == Some(&value)
@@ -1772,13 +1817,14 @@ impl<C: Component> Application<C> {
                         #[cfg(target_os = "ios")]
                         AccessibleAction::ScrollUp | AccessibleAction::ScrollDown => {
                             if self.input.choice_page(
-                                &self.scene,
+                                self.frame.scene(),
                                 layout,
                                 request.action == AccessibleAction::ScrollUp,
                             ) {
                                 self.update_editor();
-                                if let Some(layout) = &self.layout
-                                    && let Some(menu) = self.input.choice_menu(&self.scene, layout)
+                                if let Some(layout) = self.frame.layout()
+                                    && let Some(menu) =
+                                        self.input.choice_menu(self.frame.scene(), layout)
                                     && menu.session() == session
                                 {
                                     ios::announce_accessibility_scroll(&format!(
@@ -1802,7 +1848,7 @@ impl<C: Component> Application<C> {
                 .action
             {
                 AccessibleAction::Focus => {
-                    self.input.focus_target(&self.scene, layout, target);
+                    self.input.focus_target(self.frame.scene(), layout, target);
                     self.update_editor();
                 }
                 #[cfg(target_os = "ios")]
@@ -1812,7 +1858,7 @@ impl<C: Component> Application<C> {
                             .iter()
                             .find(|action| action.0 == id)
                         && let Some(action) = self.input.swipe_delegate_accessibility_side(
-                            &self.scene,
+                            self.frame.scene(),
                             layout,
                             &target,
                             *side,
@@ -1831,7 +1877,7 @@ impl<C: Component> Application<C> {
                             .find(|action| action.0 == id)
                         && let Some(action) = self
                             .input
-                            .tab_move_target(&self.scene, layout, &target, *direction)
+                            .tab_move_target(self.frame.scene(), layout, &target, *direction)
                             .flatten()
                     {
                         self.apply_accessible_layout_change(
@@ -1871,7 +1917,7 @@ impl<C: Component> Application<C> {
                 }
                 AccessibleAction::Expand | AccessibleAction::Collapse if kind == "ListRow" => {
                     if let Some(action) = self.input.tree_row_expansion(
-                        &self.scene,
+                        self.frame.scene(),
                         layout,
                         &target,
                         request.action == AccessibleAction::Expand,
@@ -1885,7 +1931,7 @@ impl<C: Component> Application<C> {
                 {
                     let expand = request.action == AccessibleAction::Expand;
                     if let Some(action) = self.input.swipe_delegate_accessibility(
-                        &self.scene,
+                        self.frame.scene(),
                         layout,
                         &target,
                         expand,
@@ -1896,7 +1942,7 @@ impl<C: Component> Application<C> {
                 }
                 AccessibleAction::Click if kind == "DelayButton" => {
                     if let Some(action) = self.input.accessibility_delay_click(
-                        &self.scene,
+                        self.frame.scene(),
                         layout,
                         target,
                         Instant::now(),
@@ -1917,8 +1963,11 @@ impl<C: Component> Application<C> {
                     {
                         if self.ios_application_active
                             && self.input.focused.as_ref() == Some(&target)
-                            && accessibility_text::IosTextActions::focused(&self.scene, &self.input)
-                                .is_some_and(|actions| actions.allows(*command))
+                            && accessibility_text::IosTextActions::focused(
+                                self.frame.scene(),
+                                &self.input,
+                            )
+                            .is_some_and(|actions| actions.allows(*command))
                         {
                             if self.run_text_command(*command) {
                                 self.refresh_scene();
@@ -1931,7 +1980,7 @@ impl<C: Component> Application<C> {
                         match id {
                             accessibility::EDIT_CELL_ACTION => {
                                 if self.input.begin_accessible_table_edit(
-                                    &self.scene,
+                                    self.frame.scene(),
                                     layout,
                                     target,
                                 ) {
@@ -1953,16 +2002,17 @@ impl<C: Component> Application<C> {
                     if self.input.focused.as_ref() != Some(&target) {
                         self.commit_spin();
                     }
-                    let Some(layout) = &self.layout else {
+                    let Some(layout) = self.frame.layout() else {
                         return;
                     };
                     if !target
-                        .node_in(&self.scene)
+                        .node_in(self.frame.scene())
                         .is_some_and(accessibility::supports_ios_edit_activation)
                     {
                         return;
                     }
-                    self.input.focus_target(&self.scene, layout, target.clone());
+                    self.input
+                        .focus_target(self.frame.scene(), layout, target.clone());
                     if self.input.focused.as_ref() == Some(&target)
                         && let Some(state) = &mut self.state
                     {
@@ -1979,12 +2029,14 @@ impl<C: Component> Application<C> {
                             .filter(|(_, parent)| {
                                 kind == "ListRow"
                                     && self
-                                        .scene
+                                        .frame
+                                        .scene()
                                         .at_path(parent)
                                         .is_some_and(|node| node.kind == "GridView")
                             })
                             .and_then(|(_, parent)| {
-                                self.input.accessibility_target(&self.scene, layout, parent)
+                                self.input
+                                    .accessibility_target(self.frame.scene(), layout, parent)
                             })
                             .unwrap_or_else(|| target.clone());
                         self.input.accessibility_focus(focus);
@@ -1993,7 +2045,7 @@ impl<C: Component> Application<C> {
                         if self.input.choice_is_open_for(&target.path) {
                             self.input.dismiss_choice();
                         } else {
-                            self.input.open_choice(&self.scene, layout, target);
+                            self.input.open_choice(self.frame.scene(), layout, target);
                         }
                         self.update_editor();
                     } else {
@@ -2007,7 +2059,7 @@ impl<C: Component> Application<C> {
                         {
                             let original = node.text("text").unwrap_or_default();
                             if self.component.commit_table_cell(
-                                &self.scene,
+                                self.frame.scene(),
                                 &target.path,
                                 original,
                                 value.into(),
@@ -2070,12 +2122,15 @@ impl<C: Component> Application<C> {
                 }
                 AccessibleAction::ShowContextMenu
                     if target.focusable
-                        && self
-                            .input
-                            .supports_context_menu(&self.scene, layout, &target) =>
+                        && self.input.supports_context_menu(
+                            self.frame.scene(),
+                            layout,
+                            &target,
+                        ) =>
                 {
                     self.input.accessibility_focus(target);
-                    self.input.open_context_menu(&self.scene, layout, true);
+                    self.input
+                        .open_context_menu(self.frame.scene(), layout, true);
                     self.pending_clipboard = None;
                     self.update_editor();
                 }
@@ -2273,13 +2328,13 @@ impl<C: Component> Application<C> {
             insets
         };
         let base = self.transition.sample_shared(&self.base_scene, elapsed);
-        if self.layout.is_none() {
+        if self.frame.layout().is_none() {
             state
                 .renderer
                 .prepare_window_text_pipelines(&base, state.config.format);
         }
         #[cfg(target_os = "ios")]
-        let resized_base = self.layout.as_ref().and_then(|layout| {
+        let resized_base = self.frame.layout().and_then(|layout| {
             (previous_insets != insets
                 || viewport != Size::new(layout.bounds.width, layout.bounds.height))
             .then(|| base.clone())
@@ -2305,7 +2360,7 @@ impl<C: Component> Application<C> {
             let base = xrack_layout::apply_system_layout_direction(base, direction);
             base
         };
-        let (mut scene, mut layout) =
+        let mut frame =
             state
                 .frame
                 .prepare_reusing(base, viewport, &self.input, |base, previous| {
@@ -2317,19 +2372,20 @@ impl<C: Component> Application<C> {
                         previous,
                     )
                 });
+        let (mut scene, mut layout) = frame.parts();
         #[cfg(target_os = "ios")]
         if let Some(base) = floating_base {
             let caret = floating_keyboard.and_then(|_| {
                 state
                     .renderer
                     .text
-                    .visible_multiline_caret_rect(&self.input, &scene, &layout)
+                    .visible_multiline_caret_rect(&self.input, scene, layout)
             });
             if self
                 .input
-                .avoid_floating_keyboard(&scene, &layout, floating_keyboard, caret)
+                .avoid_floating_keyboard(scene, layout, floating_keyboard, caret)
             {
-                (scene, layout) =
+                frame =
                     state
                         .frame
                         .prepare_reusing(base, viewport, &self.input, |base, previous| {
@@ -2341,19 +2397,20 @@ impl<C: Component> Application<C> {
                                 previous,
                             )
                         });
+                (scene, layout) = frame.parts();
             }
         }
         if self
-            .layout
-            .as_ref()
-            .is_some_and(|previous| Rc::ptr_eq(previous, &layout))
+            .frame
+            .layout()
+            .is_some_and(|previous| Rc::ptr_eq(previous, layout))
         {
             let cancelled = self.scale_rotate.reconcile(&scale_rotate::Context {
-                scene: &scene,
-                layout: &layout,
+                scene,
+                layout,
                 input: &self.input,
             });
-            let previous = std::mem::replace(&mut self.scene, scene);
+            let previous = self.frame.replace(frame);
             let swiped = self.flush_swipe_events(Some(&previous));
             if let Some(event) = cancelled {
                 self.dispatch_scale_rotate(&previous, event);
@@ -2365,20 +2422,20 @@ impl<C: Component> Application<C> {
         // Reveal it in the new viewport before focus reconciliation.
         #[cfg(target_os = "ios")]
         if let Some(base) = resized_base
-            && self.input.reveal_focused_editor(&scene, &layout)
+            && self.input.reveal_focused_editor(scene, layout)
         {
-            (scene, layout) =
-                state
-                    .frame
-                    .prepare_reusing(base, viewport, &self.input, |base, previous| {
-                        state.renderer.prepare_scene_recycling(
-                            &self.component,
-                            prepare_base(base),
-                            viewport,
-                            &self.input,
-                            previous,
-                        )
-                    });
+            frame = state
+                .frame
+                .prepare_reusing(base, viewport, &self.input, |base, previous| {
+                    state.renderer.prepare_scene_recycling(
+                        &self.component,
+                        prepare_base(base),
+                        viewport,
+                        &self.input,
+                        previous,
+                    )
+                });
+            (scene, layout) = frame.parts();
         }
         #[cfg(target_os = "ios")]
         let native_editor = self
@@ -2396,46 +2453,45 @@ impl<C: Component> Application<C> {
             .cloned();
         #[cfg(not(target_os = "ios"))]
         let native_editor = None;
-        self.update_page_transitions(&scene, &layout, Instant::now());
+        self.update_page_transitions(scene, layout, Instant::now());
         self.input
-            .reconcile_with_native_editor(&scene, &layout, native_editor.as_ref());
+            .reconcile_with_native_editor(scene, layout, native_editor.as_ref());
         if let Some((base, offsets)) = elastic_input
             && offsets != self.input.overscroll_frame()
         {
             let Some(state) = self.state.as_mut() else {
                 return false;
             };
-            (scene, layout) =
-                state
-                    .frame
-                    .prepare_reusing(base, viewport, &self.input, |base, previous| {
-                        state.renderer.prepare_scene_recycling(
-                            &self.component,
-                            prepare_base(base),
-                            viewport,
-                            &self.input,
-                            previous,
-                        )
-                    });
+            frame = state
+                .frame
+                .prepare_reusing(base, viewport, &self.input, |base, previous| {
+                    state.renderer.prepare_scene_recycling(
+                        &self.component,
+                        prepare_base(base),
+                        viewport,
+                        &self.input,
+                        previous,
+                    )
+                });
+            (scene, layout) = frame.parts();
             self.input
-                .reconcile_with_native_editor(&scene, &layout, native_editor.as_ref());
+                .reconcile_with_native_editor(scene, layout, native_editor.as_ref());
         }
         let requested = self.requested_drag_action();
-        let drag = self.input.reconcile_drag(&scene, &layout, requested);
-        let files = self.input.reconcile_file_drag(&scene, &layout);
+        let drag = self.input.reconcile_drag(scene, layout, requested);
+        let files = self.input.reconcile_file_drag(scene, layout);
         let cancelled_gesture = self
             .scale_rotate
             .reconcile(&scale_rotate::Context {
-                scene: &scene,
-                layout: &layout,
+                scene,
+                layout,
                 input: &self.input,
             })
-            .map(|event| (self.scene.clone(), event));
+            .map(|event| (self.frame.scene().clone(), event));
         if self.scroll_requests.is_empty() {
-            self.viewport_observers.sync(&scene, &layout);
+            self.viewport_observers.sync(scene, layout);
         }
-        let previous = std::mem::replace(&mut self.scene, scene);
-        self.layout = Some(layout);
+        let previous = self.frame.replace(frame);
         self.flush_swipe_events(Some(&previous));
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         self.install_file_drop();
@@ -2450,10 +2506,10 @@ impl<C: Component> Application<C> {
 
     fn update_page_transitions(&mut self, scene: &Node, layout: &LayoutNode, now: Instant) {
         if !self.reduce_motion
-            && let Some(previous) = &self.layout
+            && let Some(previous) = self.frame.layout()
         {
             self.stack_transitions.update_with_input(
-                (&self.scene, previous),
+                (self.frame.scene(), previous),
                 (scene, layout),
                 now,
                 Some(&self.input),
@@ -2475,7 +2531,7 @@ impl<C: Component> Application<C> {
             state.frame = FrameCache::default();
         }
         self.update_system_appearance(appearance.scheme, Some(appearance.increased_contrast));
-        if layout_changed && self.layout.is_some() {
+        if layout_changed && self.frame.layout().is_some() {
             self.relayout();
         }
     }
@@ -2492,7 +2548,7 @@ impl<C: Component> Application<C> {
         {
             state.window.request_redraw();
         }
-        if self.publish_system_color_scheme(scheme) && self.layout.is_some() {
+        if self.publish_system_color_scheme(scheme) && self.frame.layout().is_some() {
             self.refresh_after_update(false);
         }
     }
@@ -2548,9 +2604,9 @@ impl<C: Component> Application<C> {
             self.animation_wake = None;
             self.stack_transitions = StackTransitions::default();
             if self.input.sync_stack_transitions(&self.stack_transitions)
-                && let Some(layout) = &self.layout
+                && let Some(layout) = self.frame.layout()
             {
-                self.input.reconcile(&self.scene, layout);
+                self.input.reconcile(self.frame.scene(), layout);
             }
         }
         true
@@ -2604,7 +2660,7 @@ impl<C: Component> Application<C> {
                 DragAction::Move => CursorIcon::Move,
                 DragAction::Link => CursorIcon::Alias,
             }
-        } else if let Some(orientation) = self.input.split_orientation(&self.scene) {
+        } else if let Some(orientation) = self.input.split_orientation(self.frame.scene()) {
             match orientation {
                 Orientation::Horizontal => CursorIcon::ColResize,
                 Orientation::Vertical => CursorIcon::RowResize,
@@ -2620,14 +2676,15 @@ impl<C: Component> Application<C> {
         } else {
             let hit = self.input.hovered.as_ref().and_then(|target| {
                 if self
-                    .layout
-                    .as_ref()
+                    .frame
+                    .layout()
                     .is_some_and(|layout| !self.input.allows_popup(layout, &target.path))
                 {
                     return None;
                 }
-                let node = self.scene.interactive_at_path(&target.path)?;
-                (self.scene.row_key_at(&target.path) == target.row_key).then_some((target, node))
+                let node = self.frame.scene().interactive_at_path(&target.path)?;
+                (self.frame.scene().row_key_at(&target.path) == target.row_key)
+                    .then_some((target, node))
             });
             if self.hover_pointer.is_some() {
                 let direct = hit
@@ -2660,8 +2717,8 @@ impl<C: Component> Application<C> {
             return true;
         }
         let Some((item, point)) = self
-            .layout
-            .as_ref()
+            .frame
+            .layout()
             .and_then(|layout| layout.at_path(&target.path))
             .zip(self.input.pointer_position())
         else {
@@ -2692,7 +2749,7 @@ impl<C: Component> Application<C> {
             return None;
         }
         self.input
-            .window_resize_edge(&self.scene, self.layout.as_ref()?)
+            .window_resize_edge(self.frame.scene(), self.frame.layout()?)
     }
 
     fn dismiss_tooltip(&mut self) -> bool {
@@ -2715,32 +2772,32 @@ impl<C: Component> Application<C> {
         if self.flush_button_press_events() {
             self.refresh_scene();
             target = target.filter(|target| {
-                self.layout.as_ref().is_some_and(|layout| {
+                self.frame.layout().is_some_and(|layout| {
                     self.input
-                        .accessibility_target(&self.scene, layout, &target.path)
+                        .accessibility_target(self.frame.scene(), layout, &target.path)
                         .as_ref()
                         == Some(target)
                 })
             });
         }
-        if let (Some(delegate_target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
+        if let (Some(delegate_target), Some(layout)) = (target.as_ref(), self.frame.layout())
             && let Some(selection) =
                 self.input
-                    .list_item_delegate_selection(&self.scene, layout, delegate_target)
+                    .list_item_delegate_selection(self.frame.scene(), layout, delegate_target)
         {
             let row = delegate_target.row_key;
             let view = selection.path.clone();
             let operation = self.row_selection(false);
-            let selection = selection.with_row_selection(&self.scene, operation);
+            let selection = selection.with_row_selection(self.frame.scene(), operation);
             let selection_only = operation != RowSelection::Replace
                 && matches!(selection.action, ControlAction::TableSelection(_));
             self.apply_control(selection);
             if selection_only {
                 return;
             }
-            let resolved = row.zip(self.layout.as_ref()).and_then(|(row, layout)| {
+            let resolved = row.zip(self.frame.layout()).and_then(|(row, layout)| {
                 self.input
-                    .resolve_item_delegate(&self.scene, layout, &view, row)
+                    .resolve_item_delegate(self.frame.scene(), layout, &view, row)
             });
             if resolved.is_none() {
                 return;
@@ -2748,9 +2805,9 @@ impl<C: Component> Application<C> {
             // Selecting a partially visible row can move it to a different slot.
             target = resolved;
         }
-        if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
+        if let (Some(target), Some(layout)) = (target.as_ref(), self.frame.layout())
             && let Some(selection) = self.input.table_delegate_selection(
-                &self.scene,
+                self.frame.scene(),
                 layout,
                 target,
                 self.row_selection(false),
@@ -2758,7 +2815,7 @@ impl<C: Component> Application<C> {
         {
             self.apply_control(selection);
             // A selection handler can sort, replace, or remove the clicked row.
-            if self.scene.row_key_at(&target.path) != target.row_key {
+            if self.frame.scene().row_key_at(&target.path) != target.row_key {
                 return;
             }
         }
@@ -2766,17 +2823,16 @@ impl<C: Component> Application<C> {
             .as_ref()
             .filter(|target| target.text_link_index().is_some())
         {
-            if let Some(action) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.text_link_activation(&self.scene, layout, target))
-            {
+            if let Some(action) = self.frame.layout().and_then(|layout| {
+                self.input
+                    .text_link_activation(self.frame.scene(), layout, target)
+            }) {
                 self.apply_control(action);
             }
             return;
         }
         if let Some(target) = &target
-            && let Some(node) = self.scene.interactive_at_path(&target.path)
+            && let Some(node) = self.frame.scene().interactive_at_path(&target.path)
             && node.kind == "DelayButton"
         {
             if node.boolean("checked", false) {
@@ -2787,36 +2843,43 @@ impl<C: Component> Application<C> {
             }
             return;
         }
-        if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
-            && self
-                .input
-                .open_menu_bar_with_touch(&self.scene, layout, target.clone(), touch)
+        if let (Some(target), Some(layout)) = (target.as_ref(), self.frame.layout())
+            && self.input.open_menu_bar_with_touch(
+                self.frame.scene(),
+                layout,
+                target.clone(),
+                touch,
+            )
         {
             self.pending_clipboard = None;
             self.update_editor();
             return;
         }
-        if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
-            && let Some(action) = self.input.calendar_activate(&self.scene, layout, target)
+        if let (Some(target), Some(layout)) = (target.as_ref(), self.frame.layout())
+            && let Some(action) = self
+                .input
+                .calendar_activate(self.frame.scene(), layout, target)
         {
             self.apply_control(action);
             return;
         }
-        if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
-            && let Some(action) = self.input.dialog_button(&self.scene, layout, target)
+        if let (Some(target), Some(layout)) = (target.as_ref(), self.frame.layout())
+            && let Some(action) = self.input.dialog_button(self.frame.scene(), layout, target)
         {
             self.apply_control(action);
             return;
         }
-        if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
-            && let Some(action) = self.input.tree_pointer_action(&self.scene, layout, target)
+        if let (Some(target), Some(layout)) = (target.as_ref(), self.frame.layout())
+            && let Some(action) = self
+                .input
+                .tree_pointer_action(self.frame.scene(), layout, target)
         {
             self.apply_control(action);
             return;
         }
-        if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
+        if let (Some(target), Some(layout)) = (target.as_ref(), self.frame.layout())
             && let Some(action) = self.input.select_group_option_with_selection(
-                &self.scene,
+                self.frame.scene(),
                 layout,
                 target,
                 self.row_selection(false),
@@ -2825,10 +2888,10 @@ impl<C: Component> Application<C> {
             self.apply_control(action);
             return;
         }
-        if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
+        if let (Some(target), Some(layout)) = (target.as_ref(), self.frame.layout())
             && self
                 .input
-                .open_choice_at_pointer(&self.scene, layout, target.clone())
+                .open_choice_at_pointer(self.frame.scene(), layout, target.clone())
         {
             self.update_editor();
             return;
@@ -2837,20 +2900,21 @@ impl<C: Component> Application<C> {
         if let Some(target) = target {
             if self
                 .component
-                .dispatch_at(&self.scene, &target.path, "clicked")
+                .dispatch_at(self.frame.scene(), &target.path, "clicked")
             {
                 self.refresh_scene();
                 dispatched = true;
             }
             if let Some(handle) = double_click
-                && self.scene.row_key_at(&target.path) == target.row_key
+                && self.frame.scene().row_key_at(&target.path) == target.row_key
                 && self
-                    .scene
+                    .frame
+                    .scene()
                     .interactive_at_path(&target.path)
                     .is_some_and(|node| node.pointer_handle.as_ref() == Some(&handle))
                 && self
                     .component
-                    .dispatch_at(&self.scene, &target.path, "double-clicked")
+                    .dispatch_at(self.frame.scene(), &target.path, "double-clicked")
             {
                 self.refresh_scene();
                 dispatched = true;
@@ -2862,7 +2926,7 @@ impl<C: Component> Application<C> {
     }
 
     fn dialog_key(&mut self, event: &KeyEvent) -> bool {
-        let Some(layout) = &self.layout else {
+        let Some(layout) = self.frame.layout() else {
             return false;
         };
         if event.logical_key != Key::Named(NamedKey::Escape)
@@ -2876,12 +2940,12 @@ impl<C: Component> Application<C> {
         }
         if event.state == ElementState::Pressed
             && !event.repeat
-            && let Some(action) = self.input.dismiss_focused_swipe(&self.scene, layout)
+            && let Some(action) = self.input.dismiss_focused_swipe(self.frame.scene(), layout)
         {
             self.apply_control(action);
             return true;
         }
-        let action = self.input.dialog_escape(&self.scene, layout);
+        let action = self.input.dialog_escape(self.frame.scene(), layout);
         if layout.dialog_paths().is_empty() && action.is_none() {
             return false;
         }
@@ -2908,12 +2972,12 @@ impl<C: Component> Application<C> {
         &self,
         native_menu: Option<u64>,
     ) -> Option<AccessibilityEscape> {
-        let layout = self.layout.as_deref()?;
+        let layout = self.frame.layout().map(Rc::as_ref)?;
         if let Some(session) = native_menu {
             return Some(AccessibilityEscape::NativeTextMenu(session));
         }
         if self.input.menu_open() {
-            let panels = self.input.menu_panels(&self.scene, layout);
+            let panels = self.input.menu_panels(self.frame.scene(), layout);
             let panel = panels.last()?;
             return Some(AccessibilityEscape::Menu {
                 session: panel.session(),
@@ -2942,18 +3006,21 @@ impl<C: Component> Application<C> {
         {
             return Some(AccessibilityEscape::CellEdit(target.clone()));
         }
-        let next = self.input.dialog_escape(&self.scene, layout).or_else(|| {
-            if layout
-                .overlay_paths()
-                .iter()
-                .any(|path| self.input.allows_popup(layout, path))
-            {
-                return None;
-            }
-            self.input.stack_back_in_window(&self.scene, layout)
-        })?;
-        let node = self.scene.at_path(&next.path)?;
-        let row = self.scene.row_key_at(&next.path);
+        let next = self
+            .input
+            .dialog_escape(self.frame.scene(), layout)
+            .or_else(|| {
+                if layout
+                    .overlay_paths()
+                    .iter()
+                    .any(|path| self.input.allows_popup(layout, path))
+                {
+                    return None;
+                }
+                self.input.stack_back_in_window(self.frame.scene(), layout)
+            })?;
+        let node = self.frame.scene().at_path(&next.path)?;
+        let row = self.frame.scene().row_key_at(&next.path);
         Some(AccessibilityEscape::Control {
             target: Target::from_node(next.path, node, false, row),
             action: next.action,
@@ -3018,9 +3085,9 @@ impl<C: Component> Application<C> {
     fn refresh_dependencies(&mut self) {
         if let Some(state) = &self.state
             && self
-                .layout
-                .as_ref()
-                .is_some_and(|layout| self.input.choice_artwork_dirty(&self.scene, layout))
+                .frame
+                .layout()
+                .is_some_and(|layout| self.input.choice_artwork_dirty(self.frame.scene(), layout))
         {
             state.window.request_redraw();
         }
@@ -3187,15 +3254,15 @@ impl<C: Component> Application<C> {
 
     fn publish_focus(&mut self) {
         self.flush_button_press_events();
-        self.input.sync_editor(&self.scene);
-        let Some(layout) = &self.layout else {
+        self.input.sync_editor(self.frame.scene());
+        let Some(layout) = self.frame.layout() else {
             return;
         };
-        let events = self
-            .focus_observers
-            .sync(&self.input, &self.scene, layout, self.focus_active);
+        let events =
+            self.focus_observers
+                .sync(&self.input, self.frame.scene(), layout, self.focus_active);
         for event in events {
-            event.apply(&mut self.component, &self.scene);
+            event.apply(&mut self.component, self.frame.scene());
         }
         if (self.component.scene_dirty()
             || !self.focus_requests.is_empty()
@@ -3207,7 +3274,7 @@ impl<C: Component> Application<C> {
     }
 
     fn publish_hover(&mut self) {
-        let Some(layout) = &self.layout else {
+        let Some(layout) = self.frame.layout() else {
             return;
         };
         let pointer = self
@@ -3221,17 +3288,17 @@ impl<C: Component> Application<C> {
                 }
             });
         self.viewport_observers.sync_scroll_activity(
-            &self.scene,
+            self.frame.scene(),
             layout,
             &self.input,
             Instant::now(),
         );
         let events = self
             .hover_observers
-            .sync(&self.input, &self.scene, layout, pointer);
+            .sync(&self.input, self.frame.scene(), layout, pointer);
         self.update_pointer_cursor();
         for event in events {
-            event.apply(&mut self.component, &self.scene);
+            event.apply(&mut self.component, self.frame.scene());
         }
         if (self.component.scene_dirty()
             || !self.focus_requests.is_empty()
@@ -3253,23 +3320,25 @@ impl<C: Component> Application<C> {
 
     fn refresh_editor_with_caret(&mut self, reveal: CaretFollow, request_redraw: fn(&Window)) {
         self.flush_swipe_events(None);
-        if self.layout.is_some() && self.loader_events_scene.as_ptr() != Rc::as_ptr(&self.scene) {
+        if self.frame.layout().is_some()
+            && self.loader_events_scene.as_ptr() != Rc::as_ptr(self.frame.scene())
+        {
             let _focus = self.focus_requests.enter();
             let _scroll = self.scroll_requests.enter();
-            if xrack_runtime::dispatch_loader_events(&mut self.component, &self.scene) {
-                self.loader_events_scene = Rc::downgrade(&self.scene);
+            if xrack_runtime::dispatch_loader_events(&mut self.component, self.frame.scene()) {
+                self.loader_events_scene = Rc::downgrade(self.frame.scene());
             }
         }
         // Capture the result of input before applying queued programmatic moves.
-        let scrolled = self.layout.as_ref().map_or_else(Vec::new, |layout| {
-            self.input.take_scroll_events(&self.scene, layout)
+        let scrolled = self.frame.layout().map_or_else(Vec::new, |layout| {
+            self.input.take_scroll_events(self.frame.scene(), layout)
         });
         let scroll = self.scroll_requests.drain();
         if !scroll.is_empty()
-            && let Some(layout) = &self.layout
+            && let Some(layout) = self.frame.layout()
         {
             if self.input.apply_scroll_requests_with_text(
-                &self.scene,
+                self.frame.scene(),
                 layout,
                 scroll,
                 |node, item| {
@@ -3282,16 +3351,16 @@ impl<C: Component> Application<C> {
             ) {
                 self.prepare_frame(self.transition_epoch.elapsed());
             } else {
-                self.viewport_observers.sync(&self.scene, layout);
+                self.viewport_observers.sync(self.frame.scene(), layout);
             }
         }
         let edited_focused = self.apply_focus_and_text_requests();
-        if let Some(layout) = &self.layout {
-            self.input.remember_focus_scope(&self.scene, layout);
+        if let Some(layout) = self.frame.layout() {
+            self.input.remember_focus_scope(self.frame.scene(), layout);
         }
         #[cfg(target_os = "ios")]
         if let Some(target) = &self.input.focused
-            && let Some(node) = target.node_in(&self.scene)
+            && let Some(node) = target.node_in(self.frame.scene())
             && let Some(native) = self
                 .state
                 .as_mut()
@@ -3319,20 +3388,21 @@ impl<C: Component> Application<C> {
         self.publish_hover();
         self.reconcile_pointer();
         for event in scrolled {
-            event.apply(&mut self.component, &self.scene);
+            event.apply(&mut self.component, self.frame.scene());
         }
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         self.sync_file_drop();
-        self.input.sync_editor(&self.scene);
-        if let Some(layout) = &self.layout {
-            self.input.reconcile_text_menu(&self.scene, layout);
+        self.input.sync_editor(self.frame.scene());
+        if let Some(layout) = self.frame.layout() {
+            self.input.reconcile_text_menu(self.frame.scene(), layout);
         }
         let Some(state) = &mut self.state else {
             return;
         };
         let focused = self.input.focused.clone();
         let field = focused.as_ref().and_then(|target| {
-            self.scene
+            self.frame
+                .scene()
                 .at_path(&target.path)
                 .filter(|node| self.input.is_text_editor(node, target) || spin_editable(node))
         });
@@ -3348,10 +3418,10 @@ impl<C: Component> Application<C> {
                 state.ime_purpose = purpose;
             }
         }
-        let list_caret = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.list_typeahead_ime_area(&self.scene, layout));
+        let list_caret = self.frame.layout().and_then(|layout| {
+            self.input
+                .list_typeahead_ime_area(self.frame.scene(), layout)
+        });
         let ime_allowed = (field.is_some_and(|node| !node.text_read_only())
             || list_caret.is_some())
             && state.window.has_focus()
@@ -3392,9 +3462,9 @@ impl<C: Component> Application<C> {
         let keyboard = {
             let show_navigation = field.is_some_and(Node::keyboard_navigation);
             let neighbors = if show_navigation || requested_return_key == ReturnKey::Next {
-                self.layout.as_ref().map_or([false, false], |layout| {
+                self.frame.layout().map_or([false, false], |layout| {
                     self.input
-                        .adjacent_text_fields(&self.scene, layout)
+                        .adjacent_text_fields(self.frame.scene(), layout)
                         .map(|target| target.is_some())
                 })
             } else {
@@ -3413,8 +3483,10 @@ impl<C: Component> Application<C> {
         #[cfg(target_os = "android")]
         let return_key = match requested_return_key {
             ReturnKey::Next
-                if self.layout.as_ref().is_none_or(|layout| {
-                    self.input.next_text_field(&self.scene, layout).is_none()
+                if self.frame.layout().is_none_or(|layout| {
+                    self.input
+                        .next_text_field(self.frame.scene(), layout)
+                        .is_none()
                 }) =>
             {
                 ReturnKey::Done
@@ -3459,7 +3531,7 @@ impl<C: Component> Application<C> {
                 let value = self.input.editor_value(node);
                 let selection = editor.selection(&value);
                 let commands = self.input.text_command_availability(
-                    &self.scene,
+                    self.frame.scene(),
                     target,
                     node,
                     &value,
@@ -3482,13 +3554,13 @@ impl<C: Component> Application<C> {
         if let Some(keyboard) = &state.ios_keyboard {
             keyboard.focus(self.focus_active && self.ios_application_active && !ime_allowed);
         }
-        if let Some(layout) = &self.layout
+        if let Some(layout) = self.frame.layout()
             && let Some(caret) = state
                 .renderer
                 .text
                 .editor_ime_area(
                     &mut self.input,
-                    &self.scene,
+                    self.frame.scene(),
                     layout,
                     reveal != CaretFollow::None || edited_focused,
                 )
@@ -3505,18 +3577,18 @@ impl<C: Component> Application<C> {
         #[cfg(target_os = "ios")]
         if let Some(menu) = &state.ios_edit_menu {
             menu.sync_anchor(|menu| {
-                let layout = self.layout.as_ref()?;
+                let layout = self.frame.layout()?;
                 if !self.ios_application_active
                     || !state.window.has_focus()
                     || self.selection_handle_drag.is_some()
                     || !self
                         .input
-                        .native_text_menu_is_current(menu, &self.scene, layout)
+                        .native_text_menu_is_current(menu, self.frame.scene(), layout)
                 {
                     return None;
                 }
                 state.renderer.text.editor_menu_anchor(
-                    &self.scene,
+                    self.frame.scene(),
                     layout,
                     &mut self.input,
                     state.ios_keyboard_occlusion.floating(),
@@ -3530,7 +3602,7 @@ impl<C: Component> Application<C> {
 
     #[cfg(target_os = "ios")]
     fn reveal_ios_keyboard_caret(&mut self) -> bool {
-        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
+        let (Some(state), Some(layout)) = (&self.state, self.frame.layout()) else {
             return false;
         };
         if matches!(state.ios_keyboard_occlusion, ios::KeyboardOcclusion::None)
@@ -3541,34 +3613,35 @@ impl<C: Component> Application<C> {
                 .input
                 .focused
                 .as_ref()
-                .and_then(|target| target.node_in(&self.scene))
+                .and_then(|target| target.node_in(self.frame.scene()))
                 .is_some_and(|node| is_multiline_text_input(node.kind) && !node.text_read_only())
         {
             return false;
         }
-        self.input.sync_editor(&self.scene);
-        let caret =
-            state
-                .renderer
-                .text
-                .editor_caret_rect(&mut self.input, &self.scene, layout, true);
+        self.input.sync_editor(self.frame.scene());
+        let caret = state.renderer.text.editor_caret_rect(
+            &mut self.input,
+            self.frame.scene(),
+            layout,
+            true,
+        );
         // Floating keyboards move the viewport's contents temporarily in
         // prepare_frame. Only a docked keyboard changes normal scroll offsets.
         matches!(state.ios_keyboard_occlusion, ios::KeyboardOcclusion::Docked)
             && caret.is_some_and(|caret| {
                 self.input
-                    .reveal_focused_editor_caret(&self.scene, layout, caret)
+                    .reveal_focused_editor_caret(self.frame.scene(), layout, caret)
             })
     }
 
     fn apply_focus_and_text_requests(&mut self) -> bool {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
-        if let Some(layout) = &self.layout
+        if let Some(layout) = self.frame.layout()
             && self.scene_touches.reconcile(
                 &mut self.input,
                 &mut self.component,
-                &self.scene,
+                self.frame.scene(),
                 layout,
             )
         {
@@ -3576,7 +3649,7 @@ impl<C: Component> Application<C> {
         }
         let mut edited_focused = false;
         for request in self.focus_requests.drain_commands() {
-            let Some(layout) = &self.layout else {
+            let Some(layout) = self.frame.layout() else {
                 break;
             };
             let request = match request {
@@ -3585,7 +3658,7 @@ impl<C: Component> Application<C> {
                     if self.scene_touches.apply(
                         &mut self.input,
                         &mut self.component,
-                        &self.scene,
+                        self.frame.scene(),
                         layout,
                         request,
                     ) {
@@ -3600,7 +3673,7 @@ impl<C: Component> Application<C> {
                 } => {
                     if let Some(target) = self.input.apply_text_replacement(
                         &mut self.component,
-                        &self.scene,
+                        self.frame.scene(),
                         layout,
                         &target,
                         &replacement,
@@ -3620,7 +3693,7 @@ impl<C: Component> Application<C> {
                 .is_some_and(|target| self.input.table_cell_editing(&target.path));
             let (command, scrolled) =
                 self.input
-                    .apply_focus_request_with_scroll(&self.scene, layout, request);
+                    .apply_focus_request_with_scroll(self.frame.scene(), layout, request);
             if scrolled {
                 self.sync_base_scene();
                 self.prepare_frame(self.transition_epoch.elapsed());
@@ -3664,7 +3737,7 @@ impl<C: Component> Application<C> {
             | TextCommand::SelectWord
             | TextCommand::ClearSelection
             | TextCommand::SetSelection { .. } => {
-                self.input.apply_text_selection(&self.scene, command);
+                self.input.apply_text_selection(self.frame.scene(), command);
             }
             TextCommand::Undo | TextCommand::Redo => {
                 return self.replay_text_edit(command == TextCommand::Redo);
@@ -3682,14 +3755,16 @@ impl<C: Component> Application<C> {
         window: WindowId,
         input: xrack_layout::FileDragInput,
     ) -> bool {
-        let Some(layout) = self.layout.as_ref().filter(|_| {
+        let Some(layout) = self.frame.layout().filter(|_| {
             self.state
                 .as_ref()
                 .is_some_and(|state| state.window.id() == window)
         }) else {
             return false;
         };
-        let update = self.input.file_drag_event(&self.scene, layout, input);
+        let update = self
+            .input
+            .file_drag_event(self.frame.scene(), layout, input);
         let dropped = update
             .events
             .iter()
@@ -3716,7 +3791,7 @@ impl<C: Component> Application<C> {
                     && (xrack_runtime::is_text_input(node.kind) || combo_editable(node))
                 || node.children.iter().any(accepts_drop)
         }
-        if accepts_drop(&self.scene) {
+        if accepts_drop(self.frame.scene()) {
             let Some(events) = self.events.clone() else {
                 return;
             };
@@ -3733,15 +3808,15 @@ impl<C: Component> Application<C> {
             .state
             .as_ref()
             .and_then(|state| state.file_drop.as_ref())
-            && let Some(layout) = &self.layout
+            && let Some(frame) = self.frame.prepared()
         {
-            let scope = self.input.file_drop_scope(layout);
+            let scope = self.input.file_drop_scope(frame.layout());
             #[cfg(target_os = "ios")]
             self.pending_text_drop.take_if(|(_, drop)| {
-                drop.destination(&self.input, &self.scene, layout, &scope)
+                drop.destination(&self.input, frame.scene(), frame.layout(), &scope)
                     .is_none()
             });
-            bridge.sync(self.scene.clone(), layout.clone(), scope);
+            bridge.sync(frame, scope);
         }
     }
 
@@ -3752,11 +3827,11 @@ impl<C: Component> Application<C> {
         mouse_press: Option<Instant>,
         dragging: bool,
     ) {
-        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
+        let (Some(state), Some(layout)) = (&self.state, self.frame.layout()) else {
             return;
         };
         let Some(pointer) =
-            PointerCaret::from_pressed(&self.input, &self.scene, layout, point, selecting)
+            PointerCaret::from_pressed(&self.input, self.frame.scene(), layout, point, selecting)
         else {
             return;
         };
@@ -3767,18 +3842,23 @@ impl<C: Component> Application<C> {
         } else {
             pointer
         };
-        if pointer.place(&state.renderer.text, &mut self.input, &self.scene, layout) {
+        if pointer.place(
+            &state.renderer.text,
+            &mut self.input,
+            self.frame.scene(),
+            layout,
+        ) {
             self.pending_clipboard = None;
         }
     }
 
     fn move_text_caret(&mut self, motion: TextAreaMotion, selecting: bool) -> bool {
-        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
+        let (Some(state), Some(layout)) = (&self.state, self.frame.layout()) else {
             return false;
         };
         if !state.renderer.text.move_editor_caret(
             &mut self.input,
-            &self.scene,
+            self.frame.scene(),
             layout,
             motion,
             selecting,
@@ -3791,13 +3871,13 @@ impl<C: Component> Application<C> {
     }
 
     fn scroll_text_area(&mut self, delta: Point) -> Point {
-        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
+        let (Some(state), Some(layout)) = (&self.state, self.frame.layout()) else {
             return delta;
         };
         state
             .renderer
             .text
-            .scroll_editor_area(&mut self.input, &self.scene, layout, delta)
+            .scroll_editor_area(&mut self.input, self.frame.scene(), layout, delta)
     }
 
     #[cfg(target_os = "android")]
@@ -3806,7 +3886,8 @@ impl<C: Component> Application<C> {
             return;
         };
         if self
-            .scene
+            .frame
+            .scene()
             .at_path(&target.path)
             .is_none_or(|node| node.text_read_only())
         {
@@ -3837,7 +3918,7 @@ impl<C: Component> Application<C> {
             self.submit_editor_action(target);
             return;
         }
-        let Some(node) = self.scene.at_path(&target.path) else {
+        let Some(node) = self.frame.scene().at_path(&target.path) else {
             return;
         };
         if node.kind == "DoubleSpinBox" || node.input_type() == xrack_runtime::InputType::Decimal {
@@ -3856,7 +3937,8 @@ impl<C: Component> Application<C> {
             return;
         }
         let Some(value) = self
-            .scene
+            .frame
+            .scene()
             .at_path(&target.path)
             .map(|node| self.input.editor_value(node).into_owned())
             .filter(|value| *value == edit.value)
@@ -3931,7 +4013,7 @@ impl<C: Component> Application<C> {
                 selection,
             } => {
                 self.pending_clipboard = None;
-                if let Some(node) = self.scene.at_path(&target.path) {
+                if let Some(node) = self.frame.scene().at_path(&target.path) {
                     let committed = self.input.editor_value(node).into_owned();
                     if let Some(editor) = &mut self.input.editor {
                         ios::text::apply_marked_text(editor, &committed, &value, marked, selection);
@@ -3962,7 +4044,7 @@ impl<C: Component> Application<C> {
             self.update_editor();
             return;
         };
-        let Some(node) = self.scene.at_path(&target.path) else {
+        let Some(node) = self.frame.scene().at_path(&target.path) else {
             return;
         };
         if node.kind == "DoubleSpinBox" || node.input_type() == xrack_runtime::InputType::Decimal {
@@ -3974,7 +4056,8 @@ impl<C: Component> Application<C> {
         }
         if self.input.focused.as_ref() == Some(&target)
             && let Some(displayed) = self
-                .scene
+                .frame
+                .scene()
                 .at_path(&target.path)
                 .map(|node| self.input.editor_value(node).into_owned())
                 .filter(|displayed| *displayed == value)
@@ -4004,7 +4087,7 @@ impl<C: Component> Application<C> {
 
     fn submit_editor_action_with_navigation(&mut self, target: &Target, navigation: Option<bool>) {
         let Some(node) = target
-            .node_in(&self.scene)
+            .node_in(self.frame.scene())
             .filter(|_| self.input.focused.as_ref() == Some(target))
         else {
             return;
@@ -4029,8 +4112,9 @@ impl<C: Component> Application<C> {
         let return_key = node.return_key();
         if let Some(reverse) = navigation {
             if !node.keyboard_navigation()
-                || self.layout.as_ref().is_none_or(|layout| {
-                    let [previous, next] = self.input.adjacent_text_fields(&self.scene, layout);
+                || self.frame.layout().is_none_or(|layout| {
+                    let [previous, next] =
+                        self.input.adjacent_text_fields(self.frame.scene(), layout);
                     (if reverse { previous } else { next }).is_none()
                 })
             {
@@ -4049,7 +4133,7 @@ impl<C: Component> Application<C> {
             node.kind,
             "TextInput" | "LineEdit" | "TextEdit" | "TextArea"
         ) && !self.component.control_at(
-            &self.scene,
+            self.frame.scene(),
             &target.path,
             ControlAction::ValidateTextSubmission,
         ) {
@@ -4059,9 +4143,9 @@ impl<C: Component> Application<C> {
             self.commit_spin();
             true
         } else if node.kind == "SearchField" || combo_editable(node) {
-            let Some(action) = self.layout.as_ref().and_then(|layout| {
+            let Some(action) = self.frame.layout().and_then(|layout| {
                 self.input
-                    .choice_key(&self.scene, layout, ChoiceKey::Accept)
+                    .choice_key(self.frame.scene(), layout, ChoiceKey::Accept)
             }) else {
                 return;
             };
@@ -4081,9 +4165,9 @@ impl<C: Component> Application<C> {
         }
         if let Some(reverse) =
             navigation.or_else(|| (return_key == ReturnKey::Next).then_some(false))
-            && let Some(revealed) = self.layout.as_ref().and_then(|layout| {
+            && let Some(revealed) = self.frame.layout().and_then(|layout| {
                 self.input
-                    .focus_adjacent_text_field(&self.scene, layout, reverse)
+                    .focus_adjacent_text_field(self.frame.scene(), layout, reverse)
             })
         {
             if revealed {
@@ -4107,7 +4191,7 @@ impl<C: Component> Application<C> {
         let Some(target) = self.input.focused.clone() else {
             return false;
         };
-        let Some(node) = target.node_in(&self.scene) else {
+        let Some(node) = target.node_in(self.frame.scene()) else {
             return false;
         };
         #[cfg(target_os = "ios")]
@@ -4132,7 +4216,8 @@ impl<C: Component> Application<C> {
 
     fn submit_text(&mut self, target: &Target, accept_dialog: bool) -> bool {
         if !self
-            .scene
+            .frame
+            .scene()
             .at_path(&target.path)
             .is_some_and(Node::accepts_text_submission)
         {
@@ -4140,14 +4225,14 @@ impl<C: Component> Application<C> {
         }
         if self
             .component
-            .dispatch_at(&self.scene, &target.path, "accepted")
+            .dispatch_at(self.frame.scene(), &target.path, "accepted")
         {
             self.refresh_scene();
         } else if accept_dialog
             && let Some(action) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.dialog_accept(&self.scene, layout))
+                .frame
+                .layout()
+                .and_then(|layout| self.input.dialog_accept(self.frame.scene(), layout))
         {
             self.apply_control(action);
         }
@@ -4164,7 +4249,8 @@ impl<C: Component> Application<C> {
             return;
         };
         let Some(node) = self
-            .scene
+            .frame
+            .scene()
             .at_path(&target.path)
             .filter(|node| self.input.is_text_editor(node, &target) || spin_editable(node))
         else {
@@ -4187,7 +4273,7 @@ impl<C: Component> Application<C> {
             && matches!(action, EditAction::ReplaceAll(_)));
         if self.input.edit_text(
             &mut self.component,
-            &self.scene,
+            self.frame.scene(),
             action,
             source,
             Instant::now(),
@@ -4196,7 +4282,7 @@ impl<C: Component> Application<C> {
             if let Some(inspector) = self.component.window_inspector(&self.base_scene)
                 && self.input.focused.as_ref() == Some(&target)
             {
-                inspector.record_fill(&self.scene, &target.path);
+                inspector.record_fill(self.frame.scene(), &target.path);
             }
         } else {
             self.refresh_editor(follow_caret);
@@ -4207,7 +4293,7 @@ impl<C: Component> Application<C> {
         self.pending_clipboard = None;
         self.input.break_text_edit_group();
         let Some((operation, context)) =
-            clipboard::edit_request(&self.input, &self.scene, &shortcut)
+            clipboard::edit_request(&self.input, self.frame.scene(), &shortcut)
         else {
             return;
         };
@@ -4270,19 +4356,21 @@ impl<C: Component> Application<C> {
         }
         match (request.context, result) {
             (ClipboardContext::Paste(context), ClipboardValue::Text(text))
-                if !text.is_empty() && context.is_current(&self.input, &self.scene) =>
+                if !text.is_empty() && context.is_current(&self.input, self.frame.scene()) =>
             {
                 self.edit_text_from(EditAction::Insert(&text), EditSource::Atomic);
             }
             (ClipboardContext::Cut(context), ClipboardValue::Written)
-                if context.is_current(&self.input, &self.scene) =>
+                if context.is_current(&self.input, self.frame.scene()) =>
             {
                 self.edit_text_from(EditAction::Delete, EditSource::Atomic);
             }
             (ClipboardContext::Table { destination, apply }, ClipboardValue::Text(text))
                 if !text.is_empty()
-                    && self.layout.as_ref().is_some_and(|layout| {
-                        self.input.table_paste_target(&self.scene, layout).as_ref()
+                    && self.frame.layout().is_some_and(|layout| {
+                        self.input
+                            .table_paste_target(self.frame.scene(), layout)
+                            .as_ref()
                             == Some(&destination)
                     }) =>
             {
@@ -4353,16 +4441,18 @@ impl<C: Component> Application<C> {
             return false;
         }
         let Some((path, columns)) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.table_copy_target(&self.scene, layout))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.table_copy_target(self.frame.scene(), layout))
         else {
             return false;
         };
         if pressed {
             self.pending_clipboard = None;
             if let (Some(clipboard), Some(events)) = (&self.clipboard, &self.events)
-                && let Some(text) = self.component.copy_table_at(&self.scene, &path, &columns)
+                && let Some(text) =
+                    self.component
+                        .copy_table_at(self.frame.scene(), &path, &columns)
                 && let Err(error) = clipboard
                     .borrow_mut()
                     .request(events, clipboard::Operation::Write(text))
@@ -4374,16 +4464,17 @@ impl<C: Component> Application<C> {
     }
 
     fn table_history_key(&mut self, pressed: bool, redo: bool) -> bool {
-        let Some(path) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.table_edit_history_target(&self.scene, layout))
-        else {
+        let Some(path) = self.frame.layout().and_then(|layout| {
+            self.input
+                .table_edit_history_target(self.frame.scene(), layout)
+        }) else {
             return false;
         };
         if pressed {
             self.pending_clipboard = None;
-            if self.component.replay_table_edit_at(&self.scene, path, redo)
+            if self
+                .component
+                .replay_table_edit_at(self.frame.scene(), path, redo)
                 || self.component.scene_dirty()
             {
                 self.refresh_scene();
@@ -4394,9 +4485,9 @@ impl<C: Component> Application<C> {
 
     fn table_paste_key(&mut self, pressed: bool) -> bool {
         let Some(destination) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.table_paste_target(&self.scene, layout))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.table_paste_target(self.frame.scene(), layout))
         else {
             return false;
         };
@@ -4404,7 +4495,7 @@ impl<C: Component> Application<C> {
             self.pending_clipboard = None;
             if let (Some(clipboard), Some(events)) = (&self.clipboard, &self.events)
                 && let Some(apply) = self.component.prepare_table_paste(
-                    &self.scene,
+                    self.frame.scene(),
                     &destination.path,
                     destination.row,
                     destination.columns.clone(),
@@ -4456,7 +4547,7 @@ impl<C: Component> Application<C> {
     fn replay_text_edit(&mut self, redo: bool) -> bool {
         self.pending_clipboard = None;
         self.input
-            .replay_text_edit(&mut self.component, &self.scene, redo)
+            .replay_text_edit(&mut self.component, self.frame.scene(), redo)
     }
 
     #[cfg(any(target_os = "android", test))]
@@ -4464,7 +4555,7 @@ impl<C: Component> Application<C> {
         let Some(target) = self.input.focused.clone() else {
             return;
         };
-        let Some(node) = self.scene.at_path(&target.path) else {
+        let Some(node) = self.frame.scene().at_path(&target.path) else {
             return;
         };
         let Some(editor) = self
@@ -4488,7 +4579,8 @@ impl<C: Component> Application<C> {
         }
         if self.input.focused.as_ref() == Some(&target)
             && let Some(value) = self
-                .scene
+                .frame
+                .scene()
                 .at_path(&target.path)
                 .map(|node| self.input.editor_value(node).into_owned())
             && let Some(editor) = self.input.editor.as_mut()
@@ -4512,7 +4604,7 @@ impl<C: Component> Application<C> {
             .focused
             .as_ref()
             .and_then(|target| {
-                let node = self.scene.at_path(&target.path)?;
+                let node = self.frame.scene().at_path(&target.path)?;
                 let editor = self.input.editor.as_ref()?;
                 let value = self.input.editor_value(node);
                 Some(editor.has_committed_suggestion(&value))
@@ -4558,7 +4650,8 @@ impl<C: Component> Application<C> {
             return false;
         };
         let Some(node) = self
-            .scene
+            .frame
+            .scene()
             .at_path(&target.path)
             .filter(|node| self.input.is_text_editor(node, &target) || spin_editable(node))
         else {
@@ -4593,9 +4686,11 @@ impl<C: Component> Application<C> {
             .is_some_and(|key| self.input.combo_completion_accepts(key))
             && self.modifiers.is_empty()
             && !event.repeat
-            && self
-                .input
-                .accept_combo_completion(&mut self.component, &self.scene, Instant::now())
+            && self.input.accept_combo_completion(
+                &mut self.component,
+                self.frame.scene(),
+                Instant::now(),
+            )
         {
             self.pending_clipboard = None;
             self.refresh_scene();
@@ -4683,19 +4778,21 @@ impl<C: Component> Application<C> {
     fn apply_control(&mut self, mut input: ControlInput) {
         if input.action == ControlAction::Dialog(xrack_runtime::DialogRole::Accept)
             && let Some(session) = self
-                .scene
+                .frame
+                .scene()
                 .at_path(&input.path)
                 .and_then(Node::picker_session_id)
-            && let Some(wheel) = self.layout.as_ref().and_then(|layout| {
+            && let Some(wheel) = self.frame.layout().and_then(|layout| {
                 self.input
-                    .settle_time_picker_wheel(&self.scene, layout, &input.path)
+                    .settle_time_picker_wheel(self.frame.scene(), layout, &input.path)
             })
         {
             self.apply_control(wheel);
             // The wheel writes a new draft. Confirm against that draft's scene
             // without letting the old activation reach a replacement dialog.
             if self
-                .scene
+                .frame
+                .scene()
                 .at_path(&input.path)
                 .and_then(Node::picker_session_id)
                 != Some(session)
@@ -4704,35 +4801,36 @@ impl<C: Component> Application<C> {
             }
         }
         if let ControlAction::Spin(action) = input.action {
-            let Some(action) = self
-                .input
-                .resolve_spin_action(&self.scene, &input.path, action)
+            let Some(action) =
+                self.input
+                    .resolve_spin_action(self.frame.scene(), &input.path, action)
             else {
                 return;
             };
             input.action = ControlAction::Spin(action);
             if self.input.focused.as_ref().is_some_and(|target| {
-                target.path == input.path && target.node_in(&self.scene).is_some()
+                target.path == input.path && target.node_in(self.frame.scene()).is_some()
             }) {
                 self.input.discard_spin_draft();
             }
         }
         let search = self
-            .scene
+            .frame
+            .scene()
             .at_path(&input.path)
             .is_some_and(|node| node.kind == "SearchField");
         let changed = match input.action {
             ControlAction::TextCommand(command) => {
                 self.input.focused.as_ref().is_some_and(|target| {
                     target.path == input.path
-                        && target.row_key == self.scene.row_key_at(&target.path)
+                        && target.row_key == self.frame.scene().row_key_at(&target.path)
                 }) && self.run_text_command(command)
             }
             ControlAction::Select(index) if search => {
                 self.pending_clipboard = None;
                 self.input.select_search_suggestion(
                     &mut self.component,
-                    &self.scene,
+                    self.frame.scene(),
                     index,
                     Instant::now(),
                 )
@@ -4741,17 +4839,20 @@ impl<C: Component> Application<C> {
                 self.pending_clipboard = None;
                 self.input.clear_search(
                     &mut self.component,
-                    &self.scene,
+                    self.frame.scene(),
                     &input.path,
                     Instant::now(),
                 )
             }
-            action => self.component.control_at(&self.scene, &input.path, action),
+            action => self
+                .component
+                .control_at(self.frame.scene(), &input.path, action),
         };
         if changed || self.component.scene_dirty() {
             self.refresh_scene();
         } else if self
-            .scene
+            .frame
+            .scene()
             .at_path(&input.path)
             .is_some_and(|node| node.list.is_some() || node.kind == "TabBar")
         {
@@ -4768,7 +4869,7 @@ impl<C: Component> Application<C> {
     ) {
         if !self
             .component
-            .control_at(&self.scene, &input.path, input.action)
+            .control_at(self.frame.scene(), &input.path, input.action)
         {
             self.refresh_after_update_with_caret(false, false);
             return;
@@ -4776,8 +4877,8 @@ impl<C: Component> Application<C> {
         self.sync_base_scene();
         self.prepare_frame(self.transition_epoch.elapsed());
         // Reveal the affected control before UIKit receives the new accessibility tree.
-        if let Some(layout) = &self.layout
-            && reveal(&mut self.input, &self.scene, layout, &input.path)
+        if let Some(layout) = self.frame.layout()
+            && reveal(&mut self.input, self.frame.scene(), layout, &input.path)
         {
             self.prepare_frame(self.transition_epoch.elapsed());
         }
@@ -4793,10 +4894,10 @@ impl<C: Component> Application<C> {
     fn apply_split_resize(&mut self, input: SplitResize) {
         let changed = if let Some(sizes) = &input.sizes {
             self.component
-                .resize_split_sizes_at(&self.scene, &input.path, sizes)
+                .resize_split_sizes_at(self.frame.scene(), &input.path, sizes)
         } else {
             self.component
-                .resize_split_at(&self.scene, &input.path, &input.weights)
+                .resize_split_at(self.frame.scene(), &input.path, &input.weights)
         };
         if changed {
             self.refresh_scene();
@@ -4820,7 +4921,7 @@ impl<C: Component> Application<C> {
     }
 
     fn deliver_pointer(&mut self, delivery: PointerDelivery) {
-        delivery.apply(&mut self.component, &self.scene);
+        delivery.apply(&mut self.component, self.frame.scene());
         if (self.component.scene_dirty()
             || !self.focus_requests.is_empty()
             || !self.scroll_requests.is_empty())
@@ -4886,8 +4987,13 @@ impl<C: Component> Application<C> {
             modifiers: self.input_modifiers(),
             ..Default::default()
         };
-        self.input
-            .begin_pointer_sequence(&self.scene, self.layout.as_ref()?, point, event, now)
+        self.input.begin_pointer_sequence(
+            self.frame.scene(),
+            self.frame.layout()?,
+            point,
+            event,
+            now,
+        )
     }
 
     fn advance_touch_finger_id(&mut self) {
@@ -4899,7 +5005,8 @@ impl<C: Component> Application<C> {
     }
 
     fn accepts_additional_touch(&self, target: &Target) -> bool {
-        self.scene
+        self.frame
+            .scene()
             .at_path(&target.path)
             .is_some_and(|node| node.boolean("multi-touch", false))
     }
@@ -4959,10 +5066,15 @@ impl<C: Component> Application<C> {
         {
             None
         } else {
-            self.layout.as_ref().and_then(|layout| {
-                capture
-                    .sequence
-                    .sample(&self.input, &self.scene, layout, point, kind, modifiers)
+            self.frame.layout().and_then(|layout| {
+                capture.sequence.sample(
+                    &self.input,
+                    self.frame.scene(),
+                    layout,
+                    point,
+                    kind,
+                    modifiers,
+                )
             })
         };
         if let Some(delivery) = delivery {
@@ -5043,21 +5155,28 @@ impl<C: Component> Application<C> {
             self.input.direct_pointer_claimed()
                 || capture.contact == PointerContact::Mouse(PointerButton::Primary)
                     && !self.input.owns_pointer_press(capture.sequence.target())
-                || self.layout.as_ref().is_none_or(|layout| {
-                    !capture.sequence.is_live(&self.input, &self.scene, layout)
+                || self.frame.layout().is_none_or(|layout| {
+                    !capture
+                        .sequence
+                        .is_live(&self.input, self.frame.scene(), layout)
                 })
         }) {
             self.cancel_pointer();
-        } else if let (Some(capture), Some(layout)) = (&mut self.pointer_capture, &self.layout) {
-            capture
-                .sequence
-                .constrain_press_and_hold(&self.input, &self.scene, layout, None);
+        } else if let (Some(capture), Some(layout)) =
+            (&mut self.pointer_capture, self.frame.layout())
+        {
+            capture.sequence.constrain_press_and_hold(
+                &self.input,
+                self.frame.scene(),
+                layout,
+                None,
+            );
         }
         let mut index = 0;
         while index < self.additional_touch_captures.len() {
             let sequence = &self.additional_touch_captures[index].sequence;
-            if self.layout.as_ref().is_some_and(|layout| {
-                sequence.is_live(&self.input, &self.scene, layout)
+            if self.frame.layout().is_some_and(|layout| {
+                sequence.is_live(&self.input, self.frame.scene(), layout)
                     && self.accepts_additional_touch(sequence.target())
             }) {
                 index += 1;
@@ -5069,10 +5188,10 @@ impl<C: Component> Application<C> {
     }
 
     fn tick_pointer_hold(&mut self, now: Instant) {
-        if let (Some(capture), Some(layout)) = (&mut self.pointer_capture, &self.layout)
+        if let (Some(capture), Some(layout)) = (&mut self.pointer_capture, self.frame.layout())
             && capture.sequence.advance_press_and_hold(
                 &self.input,
-                &self.scene,
+                self.frame.scene(),
                 layout,
                 &mut self.component,
                 now,
@@ -5116,10 +5235,11 @@ impl<C: Component> Application<C> {
         let kind = if self.input.direct_pointer_claimed() {
             PointerEventKind::Cancel
         } else {
-            if let (Some(capture), Some(layout)) = (&mut self.pointer_capture, &self.layout) {
+            if let (Some(capture), Some(layout)) = (&mut self.pointer_capture, self.frame.layout())
+            {
                 capture.sequence.constrain_press_and_hold(
                     &self.input,
-                    &self.scene,
+                    self.frame.scene(),
                     layout,
                     Some(point),
                 );
@@ -5144,35 +5264,34 @@ impl<C: Component> Application<C> {
 
     fn dispatch_wheel(&mut self, event: xrack_runtime::WheelEvent) -> bool {
         let Some(route) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.wheel_route(&self.scene, layout, event))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.wheel_route(self.frame.scene(), layout, event))
         else {
             return false;
         };
-        let result = route.dispatch(&mut self.component, &self.scene);
+        let result = route.dispatch(&mut self.component, self.frame.scene());
         self.refresh_dependencies();
         result == EventResult::Accept
     }
 
     fn adjust_wheel(&mut self, event: xrack_runtime::WheelEvent, now: Instant) -> bool {
-        let Some(adjustment) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.wheel_adjustment(&self.scene, layout, event, now))
-        else {
+        let Some(adjustment) = self.frame.layout().and_then(|layout| {
+            self.input
+                .wheel_adjustment(self.frame.scene(), layout, event, now)
+        }) else {
             return false;
         };
         let changed = match adjustment {
             WheelAdjustment::Pending => return true,
             WheelAdjustment::Range(input) => {
                 self.component
-                    .adjust_range_at(&self.scene, &input.path, input.action)
+                    .adjust_range_at(self.frame.scene(), &input.path, input.action)
             }
             WheelAdjustment::Spin(input) => {
-                let changed = self
-                    .component
-                    .control_at(&self.scene, &input.path, input.action);
+                let changed =
+                    self.component
+                        .control_at(self.frame.scene(), &input.path, input.action);
                 if changed
                     && self
                         .input
@@ -5195,7 +5314,7 @@ impl<C: Component> Application<C> {
         self.pending_clipboard = None;
         let result = self
             .input
-            .finish_table_edit(&mut self.component, &self.scene);
+            .finish_table_edit(&mut self.component, self.frame.scene());
         if result == TableEditCommit::Changed {
             self.refresh_scene();
         } else {
@@ -5220,12 +5339,12 @@ impl<C: Component> Application<C> {
     }
 
     fn continue_table_edit(&mut self, origin: &TableEditTarget, backward: bool) -> bool {
-        let Some(layout) = &self.layout else {
+        let Some(layout) = self.frame.layout() else {
             return false;
         };
         let Some(target) = self.input.next_table_edit_target(
             &self.component,
-            &self.scene,
+            self.frame.scene(),
             layout,
             origin,
             backward,
@@ -5234,13 +5353,13 @@ impl<C: Component> Application<C> {
         };
         if self
             .input
-            .apply_scroll_requests(&self.scene, layout, [target.scroll_request()])
+            .apply_scroll_requests(self.frame.scene(), layout, [target.scroll_request()])
         {
             self.prepare_frame(self.transition_epoch.elapsed());
         }
-        let opened = self.layout.as_ref().is_some_and(|layout| {
+        let opened = self.frame.layout().is_some_and(|layout| {
             self.input
-                .begin_table_edit_target(&self.scene, layout, &target)
+                .begin_table_edit_target(self.frame.scene(), layout, &target)
         });
         if opened {
             self.update_editor();
@@ -5285,7 +5404,7 @@ impl<C: Component> Application<C> {
                 .input
                 .focused
                 .as_ref()
-                .and_then(|target| self.scene.at_path(&target.path))
+                .and_then(|target| self.frame.scene().at_path(&target.path))
                 .is_some_and(|node| matches!(node.kind, "TableView" | "TableCell")),
             _ => false,
         };
@@ -5300,11 +5419,11 @@ impl<C: Component> Application<C> {
                 && !text.is_empty()
                 && text.chars().all(|ch| !ch.is_control())
         });
-        let started = self.layout.as_ref().is_some_and(|layout| {
+        let started = self.frame.layout().is_some_and(|layout| {
             if edit_key {
-                self.input.begin_table_edit(&self.scene, layout)
+                self.input.begin_table_edit(self.frame.scene(), layout)
             } else {
-                typed.is_some() && self.input.begin_table_typing(&self.scene, layout)
+                typed.is_some() && self.input.begin_table_typing(self.frame.scene(), layout)
             }
         });
         if started {
@@ -5324,7 +5443,8 @@ impl<C: Component> Application<C> {
             return false;
         };
         let Some(node) = self
-            .scene
+            .frame
+            .scene()
             .interactive_at_path(&target.path)
             .filter(|node| is_spin_box(node.kind))
         else {
@@ -5354,7 +5474,7 @@ impl<C: Component> Application<C> {
     }
 
     fn context_menu_key(&mut self, event: &KeyEvent) -> bool {
-        let Some(layout) = &self.layout else {
+        let Some(layout) = self.frame.layout() else {
             return false;
         };
         if event.state == ElementState::Pressed
@@ -5362,7 +5482,9 @@ impl<C: Component> Application<C> {
             && (event.logical_key == Key::Named(NamedKey::ContextMenu)
                 || event.logical_key == Key::Named(NamedKey::F10)
                     && self.modifiers == ModifiersState::SHIFT)
-            && self.input.open_context_menu(&self.scene, layout, true)
+            && self
+                .input
+                .open_context_menu(self.frame.scene(), layout, true)
         {
             self.pending_clipboard = None;
             self.update_editor();
@@ -5372,7 +5494,7 @@ impl<C: Component> Application<C> {
     }
 
     fn shortcut_key(&mut self, event: &KeyEvent) -> bool {
-        if event.state != ElementState::Pressed || self.layout.is_none() {
+        if event.state != ElementState::Pressed || self.frame.layout().is_none() {
             return false;
         }
         let key = event.unmodified_key.clone();
@@ -5446,27 +5568,27 @@ impl<C: Component> Application<C> {
     }
 
     fn route_shortcut(&mut self, key: MenuShortcut, repeat: bool) -> bool {
-        let Some(layout) = &self.layout else {
+        let Some(layout) = self.frame.layout() else {
             return false;
         };
         match self
             .input
-            .shortcut_press(&self.scene, layout, key, repeat, Instant::now())
+            .shortcut_press(self.frame.scene(), layout, key, repeat, Instant::now())
         {
             ShortcutOutcome::Unmatched => false,
             ShortcutOutcome::Consumed => true,
             ShortcutOutcome::Activate(action) => {
                 self.pending_clipboard = None;
-                self.input.close_menu(&self.scene, layout);
+                self.input.close_menu(self.frame.scene(), layout);
                 self.apply_control(action);
                 true
             }
             ShortcutOutcome::Ambiguous(actions) => {
                 let mut handled = false;
                 for action in actions {
-                    handled |= self
-                        .component
-                        .control_at(&self.scene, &action.path, action.action);
+                    handled |=
+                        self.component
+                            .control_at(self.frame.scene(), &action.path, action.action);
                 }
                 if handled {
                     self.refresh_scene();
@@ -5477,7 +5599,7 @@ impl<C: Component> Application<C> {
     }
 
     fn menu_key(&mut self, event: &KeyEvent) -> bool {
-        let Some(layout) = &self.layout else {
+        let Some(layout) = self.frame.layout() else {
             return false;
         };
         let open = self.input.menu_open();
@@ -5499,13 +5621,13 @@ impl<C: Component> Application<C> {
             .input
             .focused
             .as_ref()
-            .and_then(|target| self.scene.at_path(&target.path))
+            .and_then(|target| self.frame.scene().at_path(&target.path))
             .is_some_and(|node| node.kind == "Menu");
         if !open && (!header || matches!(key, MenuKey::Escape | MenuKey::Home | MenuKey::End)) {
             return false;
         }
         self.pending_clipboard = None;
-        if let Some(action) = self.input.menu_key(&self.scene, layout, key) {
+        if let Some(action) = self.input.menu_key(self.frame.scene(), layout, key) {
             self.apply_control(action);
         } else {
             self.update_editor();
@@ -5527,9 +5649,9 @@ impl<C: Component> Application<C> {
     }
 
     fn list_typeahead_text(&mut self, text: &str) -> bool {
-        let Some(action) = self.layout.as_ref().and_then(|layout| {
+        let Some(action) = self.frame.layout().and_then(|layout| {
             self.input
-                .list_typeahead(&self.scene, layout, text, Instant::now())
+                .list_typeahead(self.frame.scene(), layout, text, Instant::now())
         }) else {
             return false;
         };
@@ -5543,7 +5665,7 @@ impl<C: Component> Application<C> {
             .input
             .focused
             .as_ref()
-            .and_then(|target| self.scene.at_path(&target.path));
+            .and_then(|target| self.frame.scene().at_path(&target.path));
         let search = focused.is_some_and(|node| node.kind == "SearchField");
         let editing = search || focused.is_some_and(combo_editable);
         if event.state != ElementState::Pressed {
@@ -5555,11 +5677,11 @@ impl<C: Component> Application<C> {
                 || self.modifiers.super_key()
                 || self.modifiers.alt_key())
             && let Key::Character(text) = &event.logical_key
-            && let Some(layout) = &self.layout
+            && let Some(layout) = self.frame.layout()
         {
             if let Some(action) =
                 self.input
-                    .choice_typeahead(&self.scene, layout, text, Instant::now())
+                    .choice_typeahead(self.frame.scene(), layout, text, Instant::now())
             {
                 self.apply_control(action);
             } else if open {
@@ -5578,7 +5700,7 @@ impl<C: Component> Application<C> {
         }
         if !open
             && event.logical_key == Key::Named(NamedKey::Escape)
-            && self.input.dismiss_combo_completion(&self.scene)
+            && self.input.dismiss_combo_completion(self.frame.scene())
         {
             self.update_editor();
             return true;
@@ -5592,9 +5714,9 @@ impl<C: Component> Application<C> {
                 || self.modifiers.control_key()
                 || self.modifiers.super_key()
                 || self
-                    .layout
-                    .as_ref()
-                    .and_then(|layout| self.input.choice_menu(&self.scene, layout))
+                    .frame
+                    .layout()
+                    .and_then(|layout| self.input.choice_menu(self.frame.scene(), layout))
                     .is_none_or(|menu| menu.highlighted.is_none()))
         {
             return false;
@@ -5638,9 +5760,9 @@ impl<C: Component> Application<C> {
             _ => return open && !search,
         };
         if let Some(input) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.choice_key(&self.scene, layout, key))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.choice_key(self.frame.scene(), layout, key))
         {
             if !event.repeat
                 || !matches!(
@@ -5662,7 +5784,7 @@ impl<C: Component> Application<C> {
     fn adjust_range(&mut self, input: RangeInput) {
         if self
             .component
-            .adjust_range_at(&self.scene, &input.path, input.action)
+            .adjust_range_at(self.frame.scene(), &input.path, input.action)
         {
             self.refresh_scene();
         } else if let Some(state) = &self.state {
@@ -5701,7 +5823,10 @@ impl<C: Component> Application<C> {
             self.input.clear_editor_click();
         }
         let route = (!is_synthetic)
-            .then(|| self.input.key_route(&self.scene, self.layout.as_deref()?))
+            .then(|| {
+                self.input
+                    .key_route(self.frame.scene(), self.frame.layout().map(Rc::as_ref)?)
+            })
             .flatten();
         let Some(route) = route else {
             self.default_key_input(event, is_synthetic);
@@ -5723,8 +5848,14 @@ impl<C: Component> Application<C> {
             repeat: event.repeat,
             modifiers: self.input_modifiers(),
         };
-        if let Some(result) = self.layout.as_ref().and_then(|layout| {
-            route.dispatch(&mut self.component, &self.scene, layout, capture, &key)
+        if let Some(result) = self.frame.layout().and_then(|layout| {
+            route.dispatch(
+                &mut self.component,
+                self.frame.scene(),
+                layout,
+                capture,
+                &key,
+            )
         }) {
             if result == EventResult::Accept {
                 self.input.cancel_shortcut_sequence();
@@ -5748,10 +5879,16 @@ impl<C: Component> Application<C> {
             return;
         }
         if self
-            .layout
-            .as_ref()
+            .frame
+            .layout()
             .and_then(|layout| {
-                route.dispatch(&mut self.component, &self.scene, layout, bubble, &key)
+                route.dispatch(
+                    &mut self.component,
+                    self.frame.scene(),
+                    layout,
+                    bubble,
+                    &key,
+                )
             })
             .is_some()
         {
@@ -5827,7 +5964,7 @@ impl<C: Component> Application<C> {
                 .as_ref()
                 .is_some_and(|target| self.input.table_cell_editing(&target.path))
             {
-                let origin = self.input.tab_edit_origin(&self.scene);
+                let origin = self.input.tab_edit_origin(self.frame.scene());
                 if self
                     .input
                     .editor
@@ -5854,9 +5991,9 @@ impl<C: Component> Application<C> {
             }
             self.input.dismiss_choice();
             self.input.dismiss_menu();
-            if self.layout.as_ref().is_some_and(|layout| {
+            if self.frame.layout().is_some_and(|layout| {
                 self.input
-                    .focus_next(&self.scene, layout, self.modifiers.shift_key())
+                    .focus_next(self.frame.scene(), layout, self.modifiers.shift_key())
             }) {
                 self.relayout();
             } else {
@@ -5891,34 +6028,38 @@ impl<C: Component> Application<C> {
             return false;
         };
         if !self.input.focused.as_ref().is_some_and(|target| {
-            self.scene.at_path(&target.path).is_some_and(|node| {
-                node.kind != "FocusScope"
-                    && !self.input.is_text_editor(node, target)
-                    && !spin_editable(node)
-            })
+            self.frame
+                .scene()
+                .at_path(&target.path)
+                .is_some_and(|node| {
+                    node.kind != "FocusScope"
+                        && !self.input.is_text_editor(node, target)
+                        && !spin_editable(node)
+                })
         }) {
             return false;
         }
         if event.state == ElementState::Pressed {
-            self.input.key_press_with_scene(&self.scene, key);
-            if let Some(layout) = &self.layout {
+            self.input.key_press_with_scene(self.frame.scene(), key);
+            if let Some(layout) = self.frame.layout() {
                 let now = Instant::now();
-                self.input.begin_key_delay(&self.scene, layout, key, now);
                 self.input
-                    .begin_key_button_hold(&self.scene, layout, key, now);
+                    .begin_key_delay(self.frame.scene(), layout, key, now);
+                self.input
+                    .begin_key_button_hold(self.frame.scene(), layout, key, now);
             }
             self.flush_button_press_events();
             if let Some(state) = &self.state {
                 state.window.request_redraw();
             }
         } else {
-            let target = self.input.key_release_with_scene(&self.scene, key);
+            let target = self.input.key_release_with_scene(self.frame.scene(), key);
             let target = target.map(|target| {
-                self.layout
-                    .as_ref()
+                self.frame
+                    .layout()
                     .and_then(|layout| {
                         self.input
-                            .current_item_delegate(&self.scene, layout, &target)
+                            .current_item_delegate(self.frame.scene(), layout, &target)
                     })
                     .unwrap_or(target)
             });
@@ -5943,9 +6084,9 @@ impl<C: Component> Application<C> {
             return false;
         }
         let Some(action) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.focused_tab_close(&self.scene, layout))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.focused_tab_close(self.frame.scene(), layout))
         else {
             return false;
         };
@@ -5989,7 +6130,7 @@ impl<C: Component> Application<C> {
         if self.dismiss_tooltip() || self.dialog_key(&cancel) {
             return true;
         }
-        if self.layout.as_ref().is_some_and(|layout| {
+        if self.frame.layout().is_some_and(|layout| {
             layout
                 .overlay_paths()
                 .iter()
@@ -5999,9 +6140,9 @@ impl<C: Component> Application<C> {
             return true;
         }
         let Some(action) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.stack_back_in_window(&self.scene, layout))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.stack_back_in_window(self.frame.scene(), layout))
         else {
             return false;
         };
@@ -6024,9 +6165,9 @@ impl<C: Component> Application<C> {
             && modifiers.shift
             && !modifiers.alt
             && let Some(action) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.tab_move_key(&self.scene, layout, key))
+                .frame
+                .layout()
+                .and_then(|layout| self.input.tab_move_key(self.frame.scene(), layout, key))
         {
             if let Some(action) = action {
                 self.apply_control(action);
@@ -6038,35 +6179,35 @@ impl<C: Component> Application<C> {
             && !self.modifiers.shift_key()
             && !self.modifiers.control_key()
             && !self.modifiers.super_key()
-            && let Some(action) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.table_row_move_key(&self.scene, layout, key))
+            && let Some(action) = self.frame.layout().and_then(|layout| {
+                self.input
+                    .table_row_move_key(self.frame.scene(), layout, key)
+            })
         {
             self.apply_control(action);
             return true;
         }
         if event.state == ElementState::Pressed
             && let Some(update) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.scroll_bar_key(&self.scene, layout, key))
+                .frame
+                .layout()
+                .and_then(|layout| self.input.scroll_bar_key(self.frame.scene(), layout, key))
         {
             self.apply_scroll_bar(update, false);
             return true;
         }
         if event.state == ElementState::Pressed
             && let Some(input) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.split_key(&self.scene, layout, key))
+                .frame
+                .layout()
+                .and_then(|layout| self.input.split_key(self.frame.scene(), layout, key))
         {
             self.apply_split_resize(input);
             return true;
         }
-        if let Some(input) = self.layout.as_ref().and_then(|layout| {
+        if let Some(input) = self.frame.layout().and_then(|layout| {
             self.input.slider_key(
-                &self.scene,
+                self.frame.scene(),
                 layout,
                 key,
                 event.state == ElementState::Pressed,
@@ -6076,29 +6217,39 @@ impl<C: Component> Application<C> {
             return true;
         }
         if event.state == ElementState::Pressed
-            && self
-                .layout
-                .as_ref()
-                .is_some_and(|layout| self.input.calendar_page_key(&self.scene, layout, key))
+            && self.frame.layout().is_some_and(|layout| {
+                self.input
+                    .calendar_page_key(self.frame.scene(), layout, key)
+            })
         {
             self.relayout();
             return true;
         }
         let operation = self.row_selection(true);
         if event.state == ElementState::Pressed
-            && let Some(input) = self.layout.as_ref().and_then(|layout| {
+            && let Some(input) = self.frame.layout().and_then(|layout| {
                 self.input
-                    .tree_key_with_selection(&self.scene, layout, key, operation)
+                    .tree_key_with_selection(self.frame.scene(), layout, key, operation)
+                    .or_else(|| {
+                        self.input.list_key_with_selection(
+                            self.frame.scene(),
+                            layout,
+                            key,
+                            operation,
+                        )
+                    })
+                    .or_else(|| self.input.group_key(self.frame.scene(), layout, key))
                     .or_else(|| {
                         self.input
-                            .list_key_with_selection(&self.scene, layout, key, operation)
+                            .page_indicator_key(self.frame.scene(), layout, key)
                     })
-                    .or_else(|| self.input.group_key(&self.scene, layout, key))
-                    .or_else(|| self.input.page_indicator_key(&self.scene, layout, key))
-                    .or_else(|| self.input.calendar_key(&self.scene, layout, key))
-                    .or_else(|| self.input.tumbler_key(&self.scene, layout, key))
-                    .or_else(|| self.input.swipe_delegate_key(&self.scene, layout, key))
-                    .or_else(|| self.input.swipe_key(&self.scene, layout, key))
+                    .or_else(|| self.input.calendar_key(self.frame.scene(), layout, key))
+                    .or_else(|| self.input.tumbler_key(self.frame.scene(), layout, key))
+                    .or_else(|| {
+                        self.input
+                            .swipe_delegate_key(self.frame.scene(), layout, key)
+                    })
+                    .or_else(|| self.input.swipe_key(self.frame.scene(), layout, key))
             })
         {
             self.apply_control(input);
@@ -6109,9 +6260,9 @@ impl<C: Component> Application<C> {
 
     fn back_in_stack(&mut self) -> bool {
         let Some(action) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.stack_back(&self.scene, layout))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.stack_back(self.frame.scene(), layout))
         else {
             return false;
         };
@@ -6130,9 +6281,9 @@ impl<C: Component> Application<C> {
             return false;
         }
         let Some(action) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.tree_toggle(&self.scene, layout))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.tree_toggle(self.frame.scene(), layout))
         else {
             return false;
         };
@@ -6151,9 +6302,9 @@ impl<C: Component> Application<C> {
             Key::Character(key) => key.as_str(),
             _ => return false,
         };
-        let input = self.layout.as_ref().and_then(|layout| {
+        let input = self.frame.layout().and_then(|layout| {
             self.input
-                .selection_key_action(&self.scene, layout, key, self.input_modifiers())
+                .selection_key_action(self.frame.scene(), layout, key, self.input_modifiers())
         });
         let Some(input) = input else {
             return false;
@@ -6166,7 +6317,7 @@ impl<C: Component> Application<C> {
 
     fn window_chrome_press(&mut self) -> bool {
         let edge = self.window_resize_cursor();
-        let (Some(layout), Some(state)) = (&self.layout, &mut self.state) else {
+        let (Some(layout), Some(state)) = (self.frame.layout(), &mut self.state) else {
             return false;
         };
         if state.presentation.observed().full_screen
@@ -6177,7 +6328,7 @@ impl<C: Component> Application<C> {
         }
         if edge.is_some_and(|edge| state.begin_client_resize(edge)) {
             self.input.cancel_press();
-        } else if !self.input.arm_window_move(&self.scene, layout) {
+        } else if !self.input.arm_window_move(self.frame.scene(), layout) {
             return false;
         }
         self.pending_clipboard = None;
@@ -6208,9 +6359,9 @@ impl<C: Component> Application<C> {
         };
         if state == ElementState::Released && self.input.table_row_move_claimed() {
             let action = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.finish_table_row_move(&self.scene, layout));
+                .frame
+                .layout()
+                .and_then(|layout| self.input.finish_table_row_move(self.frame.scene(), layout));
             if let Some(action) = action {
                 self.apply_control(action);
             } else {
@@ -6220,10 +6371,10 @@ impl<C: Component> Application<C> {
             return;
         }
         if state == ElementState::Released && self.input.table_drag_selection_claimed() {
-            let action = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.finish_table_drag_selection(&self.scene, layout));
+            let action = self.frame.layout().and_then(|layout| {
+                self.input
+                    .finish_table_drag_selection(self.frame.scene(), layout)
+            });
             if let Some(action) = action {
                 self.apply_control(action);
             } else {
@@ -6240,9 +6391,9 @@ impl<C: Component> Application<C> {
         }
         if state == ElementState::Pressed {
             self.pending_clipboard = None;
-            if self.layout.as_ref().is_some_and(|layout| {
-                self.input.menu_press(&self.scene, layout)
-                    || self.input.choice_press(&self.scene, layout)
+            if self.frame.layout().is_some_and(|layout| {
+                self.input.menu_press(self.frame.scene(), layout)
+                    || self.input.choice_press(self.frame.scene(), layout)
             }) {
                 self.update_editor();
                 return;
@@ -6251,53 +6402,53 @@ impl<C: Component> Application<C> {
                 return;
             }
             if let Some(action) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.popup_outside_press(&self.scene, layout))
+                .frame
+                .layout()
+                .and_then(|layout| self.input.popup_outside_press(self.frame.scene(), layout))
             {
                 self.apply_control(action);
             }
             if let Some(update) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.scroll_bar_press(&self.scene, layout))
+                .frame
+                .layout()
+                .and_then(|layout| self.input.scroll_bar_press(self.frame.scene(), layout))
             {
                 self.apply_scroll_bar(update, true);
                 return;
             }
             if self
-                .layout
-                .as_ref()
+                .frame
+                .layout()
                 .is_some_and(|layout| self.input.dialog_pointer_press(layout))
             {
                 self.update_editor();
                 return;
             }
-            if self
-                .layout
-                .as_ref()
-                .is_some_and(|layout| self.input.press_table_selection_handle(&self.scene, layout))
-            {
+            if self.frame.layout().is_some_and(|layout| {
+                self.input
+                    .press_table_selection_handle(self.frame.scene(), layout)
+            }) {
                 self.update_editor();
                 return;
             }
             if self.input.focused != self.input.hovered && !self.input.table_row_resize_cursor() {
                 self.commit_spin();
             }
-            if let Some(layout) = &self.layout {
+            if let Some(layout) = self.frame.layout() {
                 if replay {
-                    self.input.replay_tap_in_scene(&self.scene, layout);
+                    self.input.replay_tap_in_scene(self.frame.scene(), layout);
                 } else {
-                    self.input.pointer_press_in_scene(&self.scene, layout);
+                    self.input
+                        .pointer_press_in_scene(self.frame.scene(), layout);
                 }
             } else {
                 self.input.pointer_press();
             }
             if let Some(point) = self.input.pointer_position() {
-                if let Some(layout) = &self.layout {
-                    self.input.arm_drag(&self.scene, layout, point);
+                if let Some(layout) = self.frame.layout() {
+                    self.input.arm_drag(self.frame.scene(), layout, point);
                     self.input.arm_table_drag_selection(
-                        &self.scene,
+                        self.frame.scene(),
                         layout,
                         self.modifiers.control_key() || self.modifiers.super_key(),
                     );
@@ -6310,13 +6461,14 @@ impl<C: Component> Application<C> {
                     self.place_text_caret(point, self.modifiers.shift_key(), mouse_press, false);
                 }
             }
-            if let Some(layout) = &self.layout {
+            if let Some(layout) = self.frame.layout() {
                 let now = Instant::now();
-                self.input.begin_pointer_delay(&self.scene, layout, now);
                 self.input
-                    .begin_pointer_button_hold(&self.scene, layout, now);
-                self.input.split_press(&self.scene, layout);
-                let _step_pressed = self.input.spin_press(&self.scene, layout);
+                    .begin_pointer_delay(self.frame.scene(), layout, now);
+                self.input
+                    .begin_pointer_button_hold(self.frame.scene(), layout, now);
+                self.input.split_press(self.frame.scene(), layout);
+                let _step_pressed = self.input.spin_press(self.frame.scene(), layout);
                 #[cfg(target_os = "android")]
                 if let Some(state) = &mut self.state {
                     // A stepper changes a number without opening an editor.
@@ -6348,17 +6500,17 @@ impl<C: Component> Application<C> {
                 }
             }
             if let Some(input) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.slider_press(&self.scene, layout))
+                .frame
+                .layout()
+                .and_then(|layout| self.input.slider_press(self.frame.scene(), layout))
             {
                 self.adjust_range(input);
             }
             self.update_editor();
         } else if self.input.scroll_bar_captured() {
-            let update = if let Some(layout) = &self.layout {
+            let update = if let Some(layout) = self.frame.layout() {
                 self.input
-                    .release_scroll_bar(&self.scene, layout)
+                    .release_scroll_bar(self.frame.scene(), layout)
                     .unwrap_or(ScrollBarUpdate::Unchanged)
             } else {
                 self.input.finish_scroll_bar();
@@ -6367,9 +6519,9 @@ impl<C: Component> Application<C> {
             self.apply_scroll_bar(update, true);
         } else if self.input.menu_open() {
             if let Some(action) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.menu_release(&self.scene, layout))
+                .frame
+                .layout()
+                .and_then(|layout| self.input.menu_release(self.frame.scene(), layout))
             {
                 self.apply_control(action);
             } else {
@@ -6377,39 +6529,38 @@ impl<C: Component> Application<C> {
             }
         } else if self.input.choice_open() {
             if let Some(input) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.choice_release(&self.scene, layout))
+                .frame
+                .layout()
+                .and_then(|layout| self.input.choice_release(self.frame.scene(), layout))
             {
                 self.apply_control(input);
             } else {
                 self.update_editor();
             }
-        } else if let Some(action) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.dialog_pointer_release(&self.scene, layout))
-        {
+        } else if let Some(action) = self.frame.layout().and_then(|layout| {
+            self.input
+                .dialog_pointer_release(self.frame.scene(), layout)
+        }) {
             self.apply_control(action);
         } else if let Some(input) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.spin_release(&self.scene, layout))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.spin_release(self.frame.scene(), layout))
         {
             self.apply_control(input);
         } else if let Some(input) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.slider_release(&self.scene, layout))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.slider_release(self.frame.scene(), layout))
         {
             self.adjust_range(input);
         } else if self.input.finish_split_resize() || self.input.finish_table_resize() {
             self.layout_changed(true);
         } else if self.input.table_column_move_claimed() {
-            let action = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.finish_table_column_move(&self.scene, layout));
+            let action = self.frame.layout().and_then(|layout| {
+                self.input
+                    .finish_table_column_move(self.frame.scene(), layout)
+            });
             if let Some(action) = action {
                 self.apply_control(action);
             } else {
@@ -6417,13 +6568,13 @@ impl<C: Component> Application<C> {
                 self.update_editor();
             }
         } else if let Some(input) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.control_part_release(&self.scene, layout))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.control_part_release(self.frame.scene(), layout))
         {
             self.apply_control(input);
         } else if let Some(input) = self.input.table_header_release(
-            &self.scene,
+            self.frame.scene(),
             self.row_selection(false),
             self.modifiers.alt_key(),
         ) {
@@ -6433,23 +6584,23 @@ impl<C: Component> Application<C> {
             if let Some(target) = &target
                 && let Some(inspector) = self.component.window_inspector(&self.base_scene)
             {
-                inspector.record_click(&self.scene, &target.path);
+                inspector.record_click(self.frame.scene(), &target.path);
             }
             let edit_target = if self.row_selection(false) == RowSelection::Replace {
                 target.as_ref()
             } else {
                 None
             };
-            let editing = self.layout.as_ref().is_some_and(|layout| {
+            let editing = self.frame.layout().is_some_and(|layout| {
                 self.input
-                    .table_cell_click(&self.scene, layout, edit_target, Instant::now())
+                    .table_cell_click(self.frame.scene(), layout, edit_target, Instant::now())
             });
             let double_button = click
                 .as_ref()
                 .zip(target.as_ref())
                 .and_then(|(click, target)| {
                     let candidate = ButtonClick::new(
-                        &self.scene,
+                        self.frame.scene(),
                         target,
                         click.touch_device,
                         (click.point, click.time),
@@ -6466,7 +6617,8 @@ impl<C: Component> Application<C> {
                 .is_some_and(|click| click.touch_device.is_some());
             let double_click = click.zip(target.as_ref()).and_then(|(click, target)| {
                 let handle = self
-                    .scene
+                    .frame
+                    .scene()
                     .interactive_at_path(&target.path)?
                     .pointer_handle
                     .clone()?;
@@ -6480,8 +6632,8 @@ impl<C: Component> Application<C> {
                 }
             });
             self.activate_with_double_click(target, double_click, touch);
-            if let (Some(click), Some(layout)) = (double_button, &self.layout)
-                && click.deliver(&mut self.component, &self.input, &self.scene, layout)
+            if let (Some(click), Some(layout)) = (double_button, self.frame.layout())
+                && click.deliver(&mut self.component, &self.input, self.frame.scene(), layout)
             {
                 self.refresh_scene();
             }
@@ -6503,9 +6655,9 @@ impl<C: Component> Application<C> {
         let overscroll = self.input.overscroll_frame();
         let additive = kind == ScrollGestureKind::MouseControl
             && (self.modifiers.control_key() || self.modifiers.super_key());
-        if self.layout.as_ref().is_some_and(|layout| {
+        if self.frame.layout().is_some_and(|layout| {
             self.input.begin_scroll_gesture_with_selection(
-                &self.scene,
+                self.frame.scene(),
                 layout,
                 point,
                 now,
@@ -6535,7 +6687,7 @@ impl<C: Component> Application<C> {
     fn dispatch_drag(&mut self, update: DragUpdate) -> bool {
         let mut handled = false;
         for event in update.events {
-            handled |= event.apply(&mut self.component, &self.scene);
+            handled |= event.apply(&mut self.component, self.frame.scene());
         }
         handled
     }
@@ -6554,20 +6706,20 @@ impl<C: Component> Application<C> {
 
     fn move_drag(&mut self, point: Point, now: Instant) -> bool {
         let requested = self.requested_drag_action();
-        let Some(layout) = &self.layout else {
+        let Some(layout) = self.frame.layout() else {
             return false;
         };
         let update = self
             .input
-            .drag_motion_at(&self.scene, layout, point, requested, now);
+            .drag_motion_at(self.frame.scene(), layout, point, requested, now);
         self.apply_drag(update)
     }
 
     fn finish_drag(&mut self, point: Point) -> bool {
         let requested = self.requested_drag_action();
-        let update = if let Some(layout) = &self.layout {
+        let update = if let Some(layout) = self.frame.layout() {
             self.input
-                .finish_drag(&self.scene, layout, point, requested)
+                .finish_drag(self.frame.scene(), layout, point, requested)
         } else {
             self.input.cancel_drag()
         };
@@ -6582,8 +6734,8 @@ impl<C: Component> Application<C> {
     fn flush_swipe_events(&mut self, previous: Option<&Node>) -> bool {
         let mut delivered = false;
         loop {
-            if let Some(layout) = &self.layout {
-                self.input.reconcile_swipe(&self.scene, layout);
+            if let Some(layout) = self.frame.layout() {
+                self.input.reconcile_swipe(self.frame.scene(), layout);
             }
             let events = self.input.take_swipe_events();
             if events.is_empty() {
@@ -6591,10 +6743,10 @@ impl<C: Component> Application<C> {
             }
             delivered = true;
             for event in events {
-                let scene = if event.matches(&self.scene) {
-                    &*self.scene
+                let scene = if event.matches(self.frame.scene()) {
+                    &*self.frame.scene()
                 } else {
-                    previous.unwrap_or(&self.scene)
+                    previous.unwrap_or(self.frame.scene())
                 };
                 event.apply(&mut self.component, scene);
             }
@@ -6602,18 +6754,18 @@ impl<C: Component> Application<C> {
     }
 
     fn flush_button_press_events(&mut self) -> bool {
-        self.layout.as_ref().is_some_and(|layout| {
+        self.frame.layout().is_some_and(|layout| {
             self.input
-                .dispatch_button_press_events(&mut self.component, &self.scene, layout)
+                .dispatch_button_press_events(&mut self.component, self.frame.scene(), layout)
         })
     }
 
     fn move_direct_scroll(&mut self, point: Point, now: Instant) -> bool {
         let was_claimed = self.input.mouse_viewport_pan_claimed();
         let was_dragging_table = self.input.scroll_table_drag_claimed();
-        let moved = self.layout.as_ref().is_some_and(|layout| {
+        let moved = self.frame.layout().is_some_and(|layout| {
             self.input
-                .move_scroll_gesture(&self.scene, layout, point, now)
+                .move_scroll_gesture(self.frame.scene(), layout, point, now)
         });
         #[cfg(target_os = "ios")]
         let dismissed_keyboard = self.dismiss_ios_keyboard_for_scroll();
@@ -6677,13 +6829,13 @@ impl<C: Component> Application<C> {
 
     fn end_direct_scroll(&mut self, point: Point, now: Instant) {
         let contact = self.scroll_contact.take();
-        let Some(layout) = &self.layout else {
+        let Some(layout) = self.frame.layout() else {
             self.cancel_direct_scroll();
             return;
         };
         let outcome = self
             .input
-            .end_scroll_gesture(&self.scene, layout, point, now);
+            .end_scroll_gesture(self.frame.scene(), layout, point, now);
         #[cfg(target_os = "ios")]
         self.dismiss_ios_keyboard_for_scroll();
         if self.input.has_pending_swipe_events() {
@@ -6704,9 +6856,9 @@ impl<C: Component> Application<C> {
                         | ScrollContact::MouseViewport(_)
                 )
             ))
-            && let Some(layout) = &self.layout
+            && let Some(layout) = self.frame.layout()
         {
-            self.input.pointer_move(&self.scene, layout, point);
+            self.input.pointer_move(self.frame.scene(), layout, point);
         }
         let previous_target = self.input.hovered.clone();
         let handled = self.flush_button_press_events();
@@ -6768,13 +6920,13 @@ impl<C: Component> Application<C> {
             || self.input.drawer_preview().is_some()
             || self.input.has_overscroll();
         let table_drag = self.input.cancel_scroll_table_drag();
-        match (self.layout.as_ref(), key) {
+        match (self.frame.layout(), key) {
             (Some(layout), Some(Key::Named(NamedKey::Tab))) => self
                 .input
-                .cancel_scroll_gesture_for_picker_key(&self.scene, layout, false),
+                .cancel_scroll_gesture_for_picker_key(self.frame.scene(), layout, false),
             (Some(layout), Some(key)) if activation_key_value(key).is_some() => self
                 .input
-                .cancel_scroll_gesture_for_picker_key(&self.scene, layout, true),
+                .cancel_scroll_gesture_for_picker_key(self.frame.scene(), layout, true),
             _ => self.input.cancel_scroll_gesture(),
         }
         if self.input.has_pending_swipe_events() {
@@ -6805,16 +6957,16 @@ impl<C: Component> Application<C> {
                 .input
                 .focused
                 .as_ref()
-                .and_then(|target| self.layout.as_ref()?.at_path(&target.path))
+                .and_then(|target| self.frame.layout()?.at_path(&target.path))
                 .is_some_and(|item| item.visible_window_bounds(item.bounds).contains(point))
         {
             self.finish_committed_suggestion();
         }
         #[cfg(target_os = "android")]
         if touch.phase == TouchPhase::Started
-            && self.layout.as_ref().is_some_and(|layout| {
+            && self.frame.layout().is_some_and(|layout| {
                 self.input
-                    .touch_text_target(&self.scene, layout, point)
+                    .touch_text_target(self.frame.scene(), layout, point)
                     .is_some()
             })
             && let Some(native) = self
@@ -6860,10 +7012,10 @@ impl<C: Component> Application<C> {
                 state.window.request_redraw();
             }
         }
-        if let Some(layout) = &self.layout {
+        if let Some(layout) = self.frame.layout() {
             let (consumed, events) = self.scale_rotate.touch(
                 &scale_rotate::Context {
-                    scene: &self.scene,
+                    scene: self.frame.scene(),
                     layout,
                     input: &self.input,
                 },
@@ -6893,10 +7045,10 @@ impl<C: Component> Application<C> {
             if matches!(phase, TouchPhase::Moved | TouchPhase::Ended)
                 && self.input.split_resize_active()
                 && self.input.pointer_position() != Some(point)
-                && let Some(layout) = &self.layout
+                && let Some(layout) = self.frame.layout()
             {
-                self.input.pointer_move(&self.scene, layout, point);
-                if let Some(resize) = self.input.split_drag(&self.scene, layout) {
+                self.input.pointer_move(self.frame.scene(), layout, point);
+                if let Some(resize) = self.input.split_drag(self.frame.scene(), layout) {
                     self.apply_split_resize(resize);
                 }
             }
@@ -6922,29 +7074,33 @@ impl<C: Component> Application<C> {
                     );
                     return;
                 }
-                if let Some(update) = self.layout.as_ref().and_then(|layout| {
+                if let Some(update) = self.frame.layout().and_then(|layout| {
                     self.input
-                        .touch_scroll_bar_press(&self.scene, layout, point)
+                        .touch_scroll_bar_press(self.frame.scene(), layout, point)
                 }) {
                     self.scroll_contact =
                         Some(ScrollContact::Touch(device, id, TouchRoute::Direct));
                     self.apply_scroll_bar(update, true);
                     return;
                 }
-                if let Some(layout) = &self.layout
-                    && self.input.touch_range_press(&self.scene, layout, point)
+                if let Some(layout) = self.frame.layout()
+                    && self
+                        .input
+                        .touch_range_press(self.frame.scene(), layout, point)
                 {
                     self.scroll_contact =
                         Some(ScrollContact::Touch(device, id, TouchRoute::Direct));
-                    if let Some(action) = self.input.slider_press(&self.scene, layout) {
+                    if let Some(action) = self.input.slider_press(self.frame.scene(), layout) {
                         self.adjust_range(action);
                     } else {
                         self.update_editor();
                     }
                     return;
                 }
-                if let Some(layout) = &self.layout
-                    && self.input.touch_split_press(&self.scene, layout, point)
+                if let Some(layout) = self.frame.layout()
+                    && self
+                        .input
+                        .touch_split_press(self.frame.scene(), layout, point)
                 {
                     self.scroll_contact = Some(ScrollContact::Touch(device, id, TouchRoute::Split));
                     self.pending_clipboard = None;
@@ -6957,9 +7113,10 @@ impl<C: Component> Application<C> {
                     now,
                 );
                 if self.scroll_contact.is_some()
-                    && let Some(layout) = &self.layout
+                    && let Some(layout) = self.frame.layout()
                 {
-                    self.input.arm_touch_drag(&self.scene, layout, point, now);
+                    self.input
+                        .arm_touch_drag(self.frame.scene(), layout, point, now);
                 }
                 if matches!(self.scroll_contact, Some(ScrollContact::Touch(current_device, current_id, _))
                     if current_device == device && current_id == id)
@@ -6974,9 +7131,9 @@ impl<C: Component> Application<C> {
             TouchPhase::Ended if owned && self.input.touch_range_captured() => {
                 self.move_touch_range(point);
                 let released = self
-                    .layout
-                    .as_ref()
-                    .and_then(|layout| self.input.slider_release(&self.scene, layout));
+                    .frame
+                    .layout()
+                    .and_then(|layout| self.input.slider_release(self.frame.scene(), layout));
                 self.input.finish_touch_range();
                 self.scroll_contact = None;
                 if let Some(action) = released {
@@ -6986,11 +7143,10 @@ impl<C: Component> Application<C> {
                 }
             }
             TouchPhase::Moved if owned && self.input.scroll_bar_captured() => {
-                if let Some(update) = self
-                    .layout
-                    .as_ref()
-                    .map(|layout| self.input.touch_scroll_bar_drag(&self.scene, layout, point))
-                {
+                if let Some(update) = self.frame.layout().map(|layout| {
+                    self.input
+                        .touch_scroll_bar_drag(self.frame.scene(), layout, point)
+                }) {
                     self.apply_scroll_bar(update, false);
                 }
             }
@@ -7008,9 +7164,9 @@ impl<C: Component> Application<C> {
             }
             TouchPhase::Ended if owned && self.input.scroll_bar_captured() => {
                 self.scroll_contact = None;
-                let update = if let Some(layout) = &self.layout {
+                let update = if let Some(layout) = self.frame.layout() {
                     self.input
-                        .release_touch_scroll_bar(&self.scene, layout, point)
+                        .release_touch_scroll_bar(self.frame.scene(), layout, point)
                         .unwrap_or(ScrollBarUpdate::Unchanged)
                 } else {
                     self.input.finish_touch_scroll_bar();
@@ -7066,17 +7222,20 @@ impl<C: Component> Application<C> {
             self.touch_hold = None;
             return;
         }
-        self.touch_hold = self.layout.as_ref().and_then(|layout| {
+        self.touch_hold = self.frame.layout().and_then(|layout| {
             let hold_deadline = now + Duration::from_millis(500);
             let (kind, deadline) = if let Some(target) =
                 self.input
-                    .touch_context_menu_target(&self.scene, layout, point)
+                    .touch_context_menu_target(self.frame.scene(), layout, point)
             {
                 (TouchHoldKind::ContextMenu(target), hold_deadline)
-            } else if let Some(target) = self.input.touch_text_target(&self.scene, layout, point) {
+            } else if let Some(target) =
+                self.input
+                    .touch_text_target(self.frame.scene(), layout, point)
+            {
                 PointerCaret::new(
                     &self.input,
-                    &self.scene,
+                    self.frame.scene(),
                     layout,
                     &target,
                     point,
@@ -7087,7 +7246,7 @@ impl<C: Component> Application<C> {
             } else {
                 let (tooltip, deadline) =
                     self.input
-                        .touch_tooltip_at(&self.scene, layout, point, now)?;
+                        .touch_tooltip_at(self.frame.scene(), layout, point, now)?;
                 (TouchHoldKind::Tooltip(tooltip), deadline)
             };
             Some(TouchHold {
@@ -7125,9 +7284,9 @@ impl<C: Component> Application<C> {
             TouchHoldKind::ContextMenu(target) => {
                 if self.input.delay_deadline().is_none()
                     && self.input.button_hold_deadline().is_none()
-                    && self.layout.as_ref().is_some_and(|layout| {
+                    && self.frame.layout().is_some_and(|layout| {
                         self.input.open_touch_context_menu(
-                            &self.scene,
+                            self.frame.scene(),
                             layout,
                             target,
                             selection.origin,
@@ -7144,9 +7303,9 @@ impl<C: Component> Application<C> {
                 if self.input.delay_deadline().is_none()
                     && self.input.button_hold_deadline().is_none()
                     && self.input.table_touch_hold_deadline().is_none()
-                    && let Some(layout) = &self.layout
+                    && let Some(layout) = self.frame.layout()
                     && self.input.show_touch_tooltip(
-                        &self.scene,
+                        self.frame.scene(),
                         layout,
                         candidate,
                         selection.origin,
@@ -7172,12 +7331,12 @@ impl<C: Component> Application<C> {
         if self.input.focused.as_ref() == Some(&target) {
             self.finish_committed_suggestion();
         }
-        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
+        let (Some(state), Some(layout)) = (&self.state, self.frame.layout()) else {
             return;
         };
         if self
             .input
-            .touch_text_target(&self.scene, layout, selection.origin)
+            .touch_text_target(self.frame.scene(), layout, selection.origin)
             .as_ref()
             != Some(&target)
         {
@@ -7185,7 +7344,7 @@ impl<C: Component> Application<C> {
         }
         let Some(caret) = PointerCaret::new(
             &self.input,
-            &self.scene,
+            self.frame.scene(),
             layout,
             &target,
             selection.origin,
@@ -7196,13 +7355,18 @@ impl<C: Component> Application<C> {
         };
         if self
             .input
-            .focus_text_from_touch(&self.scene, layout, target.clone())
-            && caret.place(&state.renderer.text, &mut self.input, &self.scene, layout)
-            && let Some(node) = target.node_in(&self.scene)
+            .focus_text_from_touch(self.frame.scene(), layout, target.clone())
+            && caret.place(
+                &state.renderer.text,
+                &mut self.input,
+                self.frame.scene(),
+                layout,
+            )
+            && let Some(node) = target.node_in(self.frame.scene())
         {
             self.pending_clipboard = None;
             self.input
-                .apply_text_selection(&self.scene, TextCommand::SelectWord);
+                .apply_text_selection(self.frame.scene(), TextCommand::SelectWord);
             self.input.set_touch_selection_handles(true);
             self.touch_hold = Some(TouchHold {
                 deadline: None,
@@ -7252,13 +7416,13 @@ impl<C: Component> Application<C> {
             return false;
         };
         let current = self.touch_text_selection_is_current(target, value);
-        if let (Some(state), Some(layout)) = (&self.state, &self.layout)
+        if let (Some(state), Some(layout)) = (&self.state, self.frame.layout())
             && current
             && matches!(phase, TouchPhase::Moved | TouchPhase::Ended)
             && distance > TOUCH_HOLD_SLOP
             && let Some(caret) = PointerCaret::new(
                 &self.input,
-                &self.scene,
+                self.frame.scene(),
                 layout,
                 target,
                 selection.origin,
@@ -7269,7 +7433,7 @@ impl<C: Component> Application<C> {
             caret.during_touch_drag().place(
                 &state.renderer.text,
                 &mut self.input,
-                &self.scene,
+                self.frame.scene(),
                 layout,
             );
         } else {
@@ -7300,7 +7464,7 @@ impl<C: Component> Application<C> {
             }
             if matches!(phase, TouchPhase::Moved | TouchPhase::Ended)
                 && self.touch_text_selection_is_current(&drag.target, &drag.value)
-                && let (Some(state), Some(layout)) = (&self.state, &self.layout)
+                && let (Some(state), Some(layout)) = (&self.state, self.frame.layout())
             {
                 let caret = Point {
                     x: point.x - drag.finger_offset.x,
@@ -7308,7 +7472,7 @@ impl<C: Component> Application<C> {
                 };
                 if let Some(hit) = PointerCaret::new(
                     &self.input,
-                    &self.scene,
+                    self.frame.scene(),
                     layout,
                     &drag.target,
                     drag.origin,
@@ -7318,7 +7482,7 @@ impl<C: Component> Application<C> {
                     hit.during_touch_drag().place(
                         &state.renderer.text,
                         &mut self.input,
-                        &self.scene,
+                        self.frame.scene(),
                         layout,
                     );
                 } else {
@@ -7344,7 +7508,7 @@ impl<C: Component> Application<C> {
         }
         let (Some(state), Some(layout), Some(target)) = (
             &self.state,
-            &self.layout,
+            self.frame.layout(),
             self.input.touch_selection_target().cloned(),
         ) else {
             return false;
@@ -7352,14 +7516,14 @@ impl<C: Component> Application<C> {
         let Some(handle) = state
             .renderer
             .text
-            .touch_selection_handles(&self.scene, layout, &self.input)
+            .touch_selection_handles(self.frame.scene(), layout, &self.input)
             .into_iter()
             .filter(|handle| handle.distance(point) <= 17.0)
             .min_by(|a, b| a.distance(point).total_cmp(&b.distance(point)))
         else {
             return false;
         };
-        let Some(node) = target.node_in(&self.scene) else {
+        let Some(node) = target.node_in(self.frame.scene()) else {
             return false;
         };
         let value = self.input.editor_value(node).into_owned();
@@ -7393,23 +7557,24 @@ impl<C: Component> Application<C> {
         self.input.touch_selection_target() == Some(target)
             && self.input.editor_active(&target.path)
             && target
-                .node_in(&self.scene)
+                .node_in(self.frame.scene())
                 .is_some_and(|node| self.input.editor_value(node) == value)
     }
 
     fn open_touch_selection_menu(&mut self, target: Target, mut point: Point) {
-        let (Some(state), Some(layout)) = (&mut self.state, &self.layout) else {
+        let (Some(state), Some(layout)) = (&mut self.state, self.frame.layout()) else {
             return;
         };
-        let handles = state
-            .renderer
-            .text
-            .touch_selection_handles(&self.scene, layout, &self.input);
+        let handles =
+            state
+                .renderer
+                .text
+                .touch_selection_handles(self.frame.scene(), layout, &self.input);
         for handle in handles {
             point.y = point.y.max(handle.center.y + 14.0);
         }
         self.input
-            .open_touch_text_menu(&self.scene, layout, target, point);
+            .open_touch_text_menu(self.frame.scene(), layout, target, point);
         #[cfg(target_os = "ios")]
         if self.input.menu_open() {
             if state.ios_edit_menu.is_none() {
@@ -7421,7 +7586,7 @@ impl<C: Component> Application<C> {
                 && let Some(snapshot) = self.input.take_native_text_menu()
             {
                 if let Some(anchor) = state.renderer.text.editor_menu_anchor(
-                    &self.scene,
+                    self.frame.scene(),
                     layout,
                     &mut self.input,
                     state.ios_keyboard_occlusion.floating(),
@@ -7438,9 +7603,9 @@ impl<C: Component> Application<C> {
         if self.input.pointer_position() == Some(point) {
             return;
         }
-        if let Some(layout) = &self.layout {
-            self.input.pointer_move(&self.scene, layout, point);
-            if let Some(action) = self.input.slider_drag(&self.scene, layout) {
+        if let Some(layout) = self.frame.layout() {
+            self.input.pointer_move(self.frame.scene(), layout, point);
+            if let Some(action) = self.input.slider_drag(self.frame.scene(), layout) {
                 self.adjust_range(action);
             } else if self.input.has_slider_preview()
                 && let Some(state) = &self.state
@@ -7455,7 +7620,7 @@ impl<C: Component> Application<C> {
     }
 
     fn apply_scale_rotate(&mut self, event: scale_rotate::Delivery) {
-        let scene = self.scene.clone();
+        let scene = self.frame.scene().clone();
         self.apply_scale_rotate_in(&scene, event);
     }
 
@@ -7501,7 +7666,7 @@ impl<C: Component> Application<C> {
         let starting = events[0]
             .as_ref()
             .is_some_and(|event| event.event == "started");
-        let scene = self.scene.clone();
+        let scene = self.frame.scene().clone();
         for event in events.into_iter().flatten() {
             if !starting || event.event != "updated" || self.scale_rotate.is_active() {
                 self.apply_scale_rotate_in(&scene, event);
@@ -7522,7 +7687,7 @@ impl<C: Component> Application<C> {
         phase: TouchPhase,
         delta: scale_rotate::TrackpadDelta,
     ) {
-        let Some(layout) = &self.layout else {
+        let Some(layout) = self.frame.layout() else {
             return;
         };
         if self.scroll_contact.is_some() && !self.scale_rotate.is_active() {
@@ -7530,7 +7695,7 @@ impl<C: Component> Application<C> {
         }
         let deliveries = self.scale_rotate.trackpad(
             &scale_rotate::Context {
-                scene: &self.scene,
+                scene: self.frame.scene(),
                 layout,
                 input: &self.input,
             },
@@ -7544,9 +7709,9 @@ impl<C: Component> Application<C> {
     fn tick_button_holds(&mut self, now: Instant) {
         let pending = self.input.delay_deadline().is_some();
         if let Some(action) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.advance_delay(&self.scene, layout, now))
+            .frame
+            .layout()
+            .and_then(|layout| self.input.advance_delay(self.frame.scene(), layout, now))
         {
             self.apply_control(action);
         } else if pending
@@ -7555,18 +7720,17 @@ impl<C: Component> Application<C> {
         {
             state.window.request_redraw();
         }
-        if let Some((target, event)) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.advance_button_hold(&self.scene, layout, now))
-        {
+        if let Some((target, event)) = self.frame.layout().and_then(|layout| {
+            self.input
+                .advance_button_hold(self.frame.scene(), layout, now)
+        }) {
             self.last_button_click = None;
             match event {
                 xrack_layout::ButtonHoldEvent::Repeat => self.activate(Some(target)),
                 xrack_layout::ButtonHoldEvent::PressAndHold => {
                     if self
                         .component
-                        .dispatch_at(&self.scene, &target.path, event.handler())
+                        .dispatch_at(self.frame.scene(), &target.path, event.handler())
                     {
                         self.refresh_scene();
                     }
@@ -7577,10 +7741,10 @@ impl<C: Component> Application<C> {
 
     fn sync_window_effects(&mut self, now: Instant) {
         let effects = self
-            .layout
-            .as_ref()
+            .frame
+            .layout()
             .map_or_else(WindowEffects::default, |layout| {
-                WindowEffects::collect(&self.scene, layout)
+                WindowEffects::collect(self.frame.scene(), layout)
             });
         self.timers.sync(now, effects.timers);
         self.button_animations.sync(effects.button_animations);
@@ -7670,9 +7834,9 @@ impl<C: Component> Application<C> {
     }
 
     fn tick_table_hold(&mut self, now: Instant) {
-        if self.layout.as_ref().is_some_and(|layout| {
+        if self.frame.layout().is_some_and(|layout| {
             self.input
-                .advance_table_touch_hold(&self.scene, layout, now)
+                .advance_table_touch_hold(self.frame.scene(), layout, now)
         }) {
             self.update_editor();
         }
@@ -7693,9 +7857,13 @@ impl<C: Component> Application<C> {
             RecordedAction::Reload { .. } => return Err("Expected a pointer or text action".into()),
         };
         let path = inspector
-            .input_path(&self.scene, id)
+            .input_path(self.frame.scene(), id)
             .ok_or_else(|| format!("Target {id} is absent, repeated, or ambiguous"))?;
-        let node = self.scene.at_path(&path).ok_or("Target disappeared")?;
+        let node = self
+            .frame
+            .scene()
+            .at_path(&path)
+            .ok_or("Target disappeared")?;
         if !allowed.contains(&node.kind)
             || node.is_password()
             || matches!(action, RecordedAction::Fill { .. }) && node.text_read_only()
@@ -7705,8 +7873,8 @@ impl<C: Component> Application<C> {
             ));
         }
         let item = self
-            .layout
-            .as_ref()
+            .frame
+            .layout()
             .and_then(|layout| layout.at_path(&path))
             .filter(|item| item.visible && item.enabled)
             .ok_or("Target is hidden or disabled")?;
@@ -7718,9 +7886,9 @@ impl<C: Component> Application<C> {
             x: bounds.x + bounds.width * 0.5,
             y: bounds.y + bounds.height * 0.5,
         };
-        let hit = self.layout.as_ref().and_then(|layout| {
-            self.input.pointer_move(&self.scene, layout, point);
-            self.input.pointer_hover_target(&self.scene, layout)
+        let hit = self.frame.layout().and_then(|layout| {
+            self.input.pointer_move(self.frame.scene(), layout, point);
+            self.input.pointer_hover_target(self.frame.scene(), layout)
         });
         if !hit.is_some_and(|target| target.path == path) {
             return Err("Target center is covered by another control".into());
@@ -7775,30 +7943,33 @@ impl<C: Component> Application<C> {
         self.tick_touch_hold(now);
         let animating = self.transition.running(Duration::ZERO);
         let elapsed = self.transition_epoch.elapsed();
-        let tumbler = self
-            .layout
-            .as_ref()
-            .map_or_else(Default::default, |layout| {
-                self.input.advance_tumbler_motion(&self.scene, layout, now)
-            });
+        let tumbler = self.frame.layout().map_or_else(Default::default, |layout| {
+            self.input
+                .advance_tumbler_motion(self.frame.scene(), layout, now)
+        });
         if let Some(control) = tumbler.control {
             self.apply_control(control);
         }
-        let scrolled = self.layout.as_ref().is_some_and(|layout| {
-            self.input.advance_scroll_motion(&self.scene, layout, now)
-                || self.input.advance_drag_scroll(&self.scene, layout, now)
+        let scrolled = self.frame.layout().is_some_and(|layout| {
+            self.input
+                .advance_scroll_motion(self.frame.scene(), layout, now)
                 || self
                     .input
-                    .advance_table_column_move(&self.scene, layout, now)
-                || self.input.advance_table_row_move(&self.scene, layout, now)
+                    .advance_drag_scroll(self.frame.scene(), layout, now)
                 || self
                     .input
-                    .advance_table_drag_selection(&self.scene, layout, now)
+                    .advance_table_column_move(self.frame.scene(), layout, now)
+                || self
+                    .input
+                    .advance_table_row_move(self.frame.scene(), layout, now)
+                || self
+                    .input
+                    .advance_table_drag_selection(self.frame.scene(), layout, now)
         });
         if scrolled || tumbler.scrolled {
             self.relayout_after_scroll();
         } else if animating
-            || self.layout.is_none()
+            || self.frame.layout().is_none()
             || self
                 .state
                 .as_ref()
@@ -7890,13 +8061,14 @@ impl<C: Component> Application<C> {
         let target = target.or_else(|| metal_frame.as_ref().map(|frame| &frame.texture));
         let target = target.ok_or("missing window drawable")?;
         self.stack_transitions.advance(Instant::now());
-        let layout = self
-            .layout
-            .as_ref()
+        let prepared = self
+            .frame
+            .prepared()
             .ok_or("layout was not prepared for the window")?;
+        let (scene, layout) = prepared.parts();
         let pointer_changed = self.input.sync_stack_transitions(&self.stack_transitions);
         if pointer_changed {
-            self.input.reconcile(&self.scene, layout);
+            self.input.reconcile(scene, layout);
         }
         let outline = inspector
             .as_ref()
@@ -7909,7 +8081,7 @@ impl<C: Component> Application<C> {
             state
                 .renderer
                 .draw_window_prepared(
-                    &self.scene,
+                    scene,
                     layout,
                     target,
                     state.window.scale_factor() as f32,
@@ -7986,13 +8158,13 @@ impl<C: Component> Application<C> {
             inspector.push_render_sample(
                 sample,
                 micros,
-                state.frame.revision(),
+                prepared.generation(),
                 state.renderer.scene_changes(),
             );
         }
-        if self.loader_frame_scene.as_ptr() != Rc::as_ptr(&self.scene) {
-            self.loader_frame_scene = Rc::downgrade(&self.scene);
-            if xrack_runtime::finish_loader_frame(&self.scene) {
+        if self.loader_frame_scene.as_ptr() != Rc::as_ptr(self.frame.scene()) {
+            self.loader_frame_scene = Rc::downgrade(self.frame.scene());
+            if xrack_runtime::finish_loader_frame(self.frame.scene()) {
                 self.loader_redraw = true;
                 state.window.request_redraw();
             }
@@ -8035,14 +8207,14 @@ impl<C: Component> Application<C> {
                 .as_ref()
                 .is_some_and(|scroll| scroll.ready(&self.stack_transitions))
             && let Some(scroll) = state.ios_scroll_announcement.take()
-            && let Some(layout) = &self.layout
+            && let Some(layout) = self.frame.layout()
             && self
                 .input
-                .accessibility_target(&self.scene, layout, &scroll.target.path)
+                .accessibility_target(self.frame.scene(), layout, &scroll.target.path)
                 .as_ref()
                 == Some(&scroll.target)
         {
-            scroll.announce(&self.scene, layout);
+            scroll.announce(self.frame.scene(), layout);
         }
         Ok(())
     }
@@ -8219,7 +8391,7 @@ impl<C: Component> HostedWindow for Application<C> {
             self.modifiers = self.android_keyboard.clear();
         }
         if let Some(event) = self.scale_rotate.reset() {
-            let scene = self.scene.clone();
+            let scene = self.frame.scene().clone();
             self.dispatch_scale_rotate(&scene, event);
         }
         self.focus_requests.drain();
@@ -8246,7 +8418,7 @@ impl<C: Component> HostedWindow for Application<C> {
         self.input.cancel_press();
         self.input.pointer_leave();
         self.input.clear_file_drag();
-        self.layout = None;
+        self.frame = WindowFrame::Unprepared(self.frame.scene().clone());
         self.timers = TimerQueue::default();
         self.button_animations.sync([]);
         self.image_playback.sync(Instant::now(), []);
@@ -8390,18 +8562,22 @@ impl<C: Component> HostedWindow for Application<C> {
             .viewport_observers
             .scroll_activity_deadline()
             .is_some_and(|wake| now >= wake)
-            && let Some(layout) = &self.layout
+            && let Some(layout) = self.frame.layout()
         {
-            self.viewport_observers
-                .sync_scroll_activity(&self.scene, layout, &self.input, now);
+            self.viewport_observers.sync_scroll_activity(
+                self.frame.scene(),
+                layout,
+                &self.input,
+                now,
+            );
         }
         self.refresh_dependencies();
         self.tick_button_holds(now);
         for _ in 0..64 {
-            let Some(delivery) = self.button_animations.next(&self.scene, now) else {
+            let Some(delivery) = self.button_animations.next(self.frame.scene(), now) else {
                 break;
             };
-            delivery.apply(&mut self.component, &self.scene);
+            delivery.apply(&mut self.component, self.frame.scene());
             self.refresh_after_update(true);
         }
         self.tick_table_hold(now);
@@ -8437,11 +8613,11 @@ impl<C: Component> HostedWindow for Application<C> {
         {
             self.input.finish_touch_selection_scroll();
         }
-        if let (Some(state), Some(layout)) = (&self.state, &self.layout)
+        if let (Some(state), Some(layout)) = (&self.state, self.frame.layout())
             && PointerCaret::advance_drag_scroll(
                 &state.renderer.text,
                 &mut self.input,
-                &self.scene,
+                self.frame.scene(),
                 layout,
                 now,
             )
@@ -8459,9 +8635,9 @@ impl<C: Component> HostedWindow for Application<C> {
         }
         let deadline = if let Some(state) = &self.state
             && state.window.has_focus()
-            && let Some(layout) = &self.layout
+            && let Some(layout) = self.frame.layout()
         {
-            if self.input.update_tooltip(&self.scene, layout, now) {
+            if self.input.update_tooltip(self.frame.scene(), layout, now) {
                 state.window.request_redraw();
             }
             self.input.tooltip_deadline()
@@ -8474,32 +8650,33 @@ impl<C: Component> HostedWindow for Application<C> {
                 state.window.request_redraw();
             }
         }
-        let scroll_wake =
-            self.state.as_ref().and_then(|state| {
-                let wake =
-                    self.input
-                        .scroll_motion_deadline()
-                        .into_iter()
-                        .chain(self.layout.as_ref().and_then(|layout| {
-                            self.input.drag_scroll_deadline(&self.scene, layout)
-                        }))
-                        .chain(self.layout.as_ref().and_then(|layout| {
-                            self.input.table_column_move_deadline(&self.scene, layout)
-                        }))
-                        .chain(self.layout.as_ref().and_then(|layout| {
-                            self.input.table_row_move_deadline(&self.scene, layout)
-                        }))
-                        .chain(self.layout.as_ref().and_then(|layout| {
-                            self.input
-                                .table_drag_selection_deadline(&self.scene, layout)
-                        }))
-                        .min()?;
-                if now >= wake {
-                    state.window.request_redraw();
-                    return None;
-                }
-                Some(wake)
-            });
+        let scroll_wake = self.state.as_ref().and_then(|state| {
+            let wake =
+                self.input
+                    .scroll_motion_deadline()
+                    .into_iter()
+                    .chain(self.frame.layout().and_then(|layout| {
+                        self.input.drag_scroll_deadline(self.frame.scene(), layout)
+                    }))
+                    .chain(self.frame.layout().and_then(|layout| {
+                        self.input
+                            .table_column_move_deadline(self.frame.scene(), layout)
+                    }))
+                    .chain(self.frame.layout().and_then(|layout| {
+                        self.input
+                            .table_row_move_deadline(self.frame.scene(), layout)
+                    }))
+                    .chain(self.frame.layout().and_then(|layout| {
+                        self.input
+                            .table_drag_selection_deadline(self.frame.scene(), layout)
+                    }))
+                    .min()?;
+            if now >= wake {
+                state.window.request_redraw();
+                return None;
+            }
+            Some(wake)
+        });
         [
             deadline,
             window_deadline,
@@ -8590,11 +8767,13 @@ impl<C: Component> Application<C> {
             if *button == ElementState::Pressed
                 && self.scroll_contact.is_none()
                 && self.pointer_capture.is_none()
-                && let Some((layout, point)) = self.layout.as_ref().zip(point)
+                && let Some((layout, point)) = self.frame.layout().zip(point)
                 && let Some(inspector) = self.component.window_inspector(&self.base_scene)
                 && (inspector.picking() || self.modifiers.alt_key())
             {
-                let path = self.input.inspection_path(&self.scene, layout, point);
+                let path = self
+                    .input
+                    .inspection_path(self.frame.scene(), layout, point);
                 inspector.pick(path.as_deref());
                 self.inspection_press = true;
                 state.window.request_redraw();
@@ -8760,11 +8939,11 @@ impl<C: Component> Application<C> {
                 phase,
             } => {
                 if phase == TouchPhase::Started && self.hover_pointer.is_none() {
-                    let Some((position, layout)) = position.zip(self.layout.as_ref()) else {
+                    let Some((position, layout)) = position.zip(self.frame.layout()) else {
                         return;
                     };
                     self.input.pointer_move(
-                        &self.scene,
+                        self.frame.scene(),
                         layout,
                         Point {
                             x: position.x as f32,
@@ -8784,10 +8963,10 @@ impl<C: Component> Application<C> {
                     // A trackpad pan's gesture location can move with the scroll.
                     // Keep routing from the last actual pointer location when available.
                     if self.hover_pointer.is_none()
-                        && let Some(layout) = &self.layout
+                        && let Some(layout) = self.frame.layout()
                     {
                         self.input.pointer_move(
-                            &self.scene,
+                            self.frame.scene(),
                             layout,
                             Point {
                                 x: position.x as f32,
@@ -8902,8 +9081,9 @@ impl<C: Component> Application<C> {
                 #[cfg(target_os = "macos")]
                 if let Some(state) = self.state.as_mut()
                     && state.resize_drag.is_some()
-                    && state.update_client_resize(self.layout.as_ref().is_some_and(|layout| {
-                        self.input.window_gestures_allowed(&self.scene, layout)
+                    && state.update_client_resize(self.frame.layout().is_some_and(|layout| {
+                        self.input
+                            .window_gestures_allowed(self.frame.scene(), layout)
                     }))
                 {
                     return;
@@ -8913,8 +9093,10 @@ impl<C: Component> Application<C> {
                 };
                 let p = position.to_logical::<f32>(state.window.scale_factor());
                 let point = Point { x: p.x, y: p.y };
-                if let Some(layout) = &self.layout
-                    && self.input.take_window_move(&self.scene, layout, point)
+                if let Some(layout) = self.frame.layout()
+                    && self
+                        .input
+                        .take_window_move(self.frame.scene(), layout, point)
                 {
                     #[cfg(not(target_os = "android"))]
                     let _ = state.window.drag_window();
@@ -8944,9 +9126,9 @@ impl<C: Component> Application<C> {
                 let Some(state) = self.state.as_ref() else {
                     return;
                 };
-                if let Some(layout) = &self.layout {
+                if let Some(layout) = self.frame.layout() {
                     let before_resize = self.window_resize_cursor();
-                    let changed = self.input.pointer_move(&self.scene, layout, point);
+                    let changed = self.input.pointer_move(self.frame.scene(), layout, point);
                     if self.input.table_row_move_drag(layout, Instant::now()) {
                         state.window.request_redraw();
                         return;
@@ -8965,32 +9147,32 @@ impl<C: Component> Application<C> {
                     }
                 }
                 if let Some(update) = self
-                    .layout
-                    .as_ref()
-                    .and_then(|layout| self.input.scroll_bar_drag(&self.scene, layout))
+                    .frame
+                    .layout()
+                    .and_then(|layout| self.input.scroll_bar_drag(self.frame.scene(), layout))
                 {
                     self.apply_scroll_bar(update, false);
                     return;
                 }
                 if let Some(input) = self
-                    .layout
-                    .as_ref()
-                    .and_then(|layout| self.input.split_drag(&self.scene, layout))
+                    .frame
+                    .layout()
+                    .and_then(|layout| self.input.split_drag(self.frame.scene(), layout))
                 {
                     self.apply_split_resize(input);
                     return;
                 }
-                if let Some(input) = self.layout.as_ref().and_then(|layout| {
+                if let Some(input) = self.frame.layout().and_then(|layout| {
                     self.input
-                        .table_resize_drag(&self.scene, layout)
-                        .or_else(|| self.input.table_row_resize_drag(&self.scene, layout))
+                        .table_resize_drag(self.frame.scene(), layout)
+                        .or_else(|| self.input.table_row_resize_drag(self.frame.scene(), layout))
                 }) {
                     self.apply_control(input);
                     return;
                 }
                 if self
-                    .layout
-                    .as_ref()
+                    .frame
+                    .layout()
                     .is_some_and(|layout| self.input.table_column_move_drag(layout, Instant::now()))
                 {
                     if let Some(state) = &self.state {
@@ -9001,7 +9183,8 @@ impl<C: Component> Application<C> {
                 if self.input.pressed.is_some()
                     && self.input.pressed == self.input.focused
                     && self.input.focused.as_ref().is_some_and(|target| {
-                        self.scene
+                        self.frame
+                            .scene()
                             .at_path(&target.path)
                             .is_some_and(|node| self.input.is_text_editor(node, target))
                     })
@@ -9010,9 +9193,9 @@ impl<C: Component> Application<C> {
                     self.refresh_editor(false);
                 }
                 if let Some(input) = self
-                    .layout
-                    .as_ref()
-                    .and_then(|layout| self.input.slider_drag(&self.scene, layout))
+                    .frame
+                    .layout()
+                    .and_then(|layout| self.input.slider_drag(self.frame.scene(), layout))
                 {
                     self.adjust_range(input);
                 } else if self.input.has_slider_preview() {
@@ -9069,9 +9252,9 @@ impl<C: Component> Application<C> {
                 } else {
                     delta.y.signum() as isize * ((delta.y.abs() / 28.0).round() as isize).max(1)
                 };
-                if self.layout.as_ref().is_some_and(|layout| {
-                    self.input.menu_scroll(&self.scene, layout, rows)
-                        || self.input.choice_scroll(&self.scene, layout, rows)
+                if self.frame.layout().is_some_and(|layout| {
+                    self.input.menu_scroll(self.frame.scene(), layout, rows)
+                        || self.input.choice_scroll(self.frame.scene(), layout, rows)
                 }) {
                     self.input.reset_wheel_adjustment();
                     self.update_editor();
@@ -9086,11 +9269,11 @@ impl<C: Component> Application<C> {
                     }
                     if !self.modifiers.shift_key()
                         && delta.y.abs() > delta.x.abs()
-                        && let Some(layout) = &self.layout
+                        && let Some(layout) = self.frame.layout()
                     {
                         let distance = lines.map_or(delta.y, |lines| lines.y);
                         match self.input.tumbler_scroll(
-                            &self.scene,
+                            self.frame.scene(),
                             layout,
                             distance,
                             lines.is_some(),
@@ -9104,9 +9287,9 @@ impl<C: Component> Application<C> {
                         }
                     }
                     let remaining = self.scroll_text_area(delta);
-                    if self.layout.as_ref().is_some_and(|layout| {
+                    if self.frame.layout().is_some_and(|layout| {
                         self.input.scroll_wheel_in_scene(
-                            &self.scene,
+                            self.frame.scene(),
                             layout,
                             remaining,
                             self.modifiers.shift_key() && delta.x == 0.0,
@@ -9130,17 +9313,16 @@ impl<C: Component> Application<C> {
                 }
                 self.cancel_direct_scroll();
                 self.dismiss_tooltip();
-                if self.layout.as_ref().is_some_and(|layout| {
+                if self.frame.layout().is_some_and(|layout| {
                     self.input
-                        .pointer_context_menu_changes_focus(&self.scene, layout)
+                        .pointer_context_menu_changes_focus(self.frame.scene(), layout)
                 }) {
                     self.commit_spin();
                 }
-                if self
-                    .layout
-                    .as_ref()
-                    .is_some_and(|layout| self.input.open_context_menu(&self.scene, layout, false))
-                {
+                if self.frame.layout().is_some_and(|layout| {
+                    self.input
+                        .open_context_menu(self.frame.scene(), layout, false)
+                }) {
                     self.pending_clipboard = None;
                     self.update_editor();
                 }
@@ -9213,10 +9395,10 @@ impl<C: Component> Application<C> {
                         self.left_pointer(state, click);
                         if !self.input.table_drag_selection_armed()
                             && let (Some(layout), Some(point)) =
-                                (&self.layout, self.input.pointer_position())
+                                (self.frame.layout(), self.input.pointer_position())
                         {
                             self.input.arm_mouse_viewport_pan(
-                                &self.scene,
+                                self.frame.scene(),
                                 layout,
                                 point,
                                 Instant::now(),
@@ -9263,7 +9445,7 @@ impl<C: Component> Application<C> {
             }
             WindowEvent::Ime(Ime::Commit(value)) if !self.input.menu_open() => {
                 if let Some(expected) = self.list_ime_focus.take() {
-                    if self.input.list_typeahead_focus(&self.scene) == Some(&expected) {
+                    if self.input.list_typeahead_focus(self.frame.scene()) == Some(&expected) {
                         self.list_typeahead_text(&value);
                     }
                 } else if !self.list_typeahead_text(&value) {
@@ -9274,7 +9456,8 @@ impl<C: Component> Application<C> {
                 self.pending_clipboard = None;
                 if !value.is_empty() {
                     self.input.cancel_shortcut_sequence();
-                    self.list_ime_focus = self.input.list_typeahead_focus(&self.scene).cloned();
+                    self.list_ime_focus =
+                        self.input.list_typeahead_focus(self.frame.scene()).cloned();
                 }
                 if !value.is_empty() && self.input.editor.is_some() {
                     self.input.dismiss_choice();
